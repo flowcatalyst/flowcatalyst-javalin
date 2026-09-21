@@ -9,6 +9,7 @@ import io.flowcatalyst.platform.function.DnsLabel;
 import io.flowcatalyst.platform.function.FunctionAddress;
 import io.flowcatalyst.platform.function.Manifest;
 import io.flowcatalyst.platform.function.SignerIdentity;
+import io.flowcatalyst.platform.function.artifact.ArtifactException;
 import io.flowcatalyst.platform.function.artifact.ArtifactStore;
 import io.flowcatalyst.platform.function.artifact.FileArtifactStore;
 import io.flowcatalyst.platform.function.artifact.SignatureVerifier;
@@ -25,6 +26,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.Collections;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -536,6 +538,32 @@ class ReconcilerTest {
                 .as("mutant: Required loads a validly-signed bundle whose signer was never recorded").isNull();
         HeartbeatReport.LoadedEntry loaded = fake.heartbeats().getLast().loaded().getFirst();
         assertThat(((HeartbeatReport.LoadState.Failed) loaded.state()).error()).isEqualTo("UNSIGNED");
+    }
+
+    // ── function-artifact-upload.md §5: prepare fetches through the three-arg form ──
+
+    /// [Reconciler#prepareOne] must call [ArtifactStore]'s THREE-arg `fetch`
+    /// with the desired-state entry's OWN version id — `PlatformArtifactStore`
+    /// (spec §5) needs it to reach the download route, which is keyed by
+    /// version id, not by ref. Mutant: call the two-arg form instead.
+    @Test
+    void prepareFetchesWithTheEntrysVersionId(@TempDir Path dir) {
+        Path jar = TestFixtures.functionJar(dir, "verid-v1", "verid-1");
+        var recording = new RecordingArtifactStore(fileArtifactStore(dir));
+        FakeControlPlane fake = new FakeControlPlane();
+        FunctionRegistry registry = new FunctionRegistry(50);
+        Reconciler r = new Reconciler(POOL, "host-1", fake, recording, new Signatures.Off(),
+                new JvmFunctionLoader(), registry);
+
+        DesiredDocument doc = docWithOneWarmLive(1, jar); // helper names the version id "v1"
+        fake.desiredStateReturns((pool, etag) -> new ControlPlane.Fetched.Changed("etag1", doc));
+
+        r.reconcileOnce(Instant.now());
+
+        assertThat(recording.versionIdsSeen).as("mutant: call the two-arg form").containsExactly("v1");
+        assertThat(recording.twoArgCalls.get()).as("mutant: call the two-arg form").isZero();
+        // the fetch must still have actually happened, through the real store underneath
+        assertThat(registry.peek(TestFixtures.ADDR_A)).as("prepare/load must still succeed").isNotNull();
     }
 
     // ── R6: control-plane outage vs NotModified ──────────────────────────
@@ -1111,6 +1139,32 @@ class ReconcilerTest {
             counter.incrementAndGet();
             return delegate.fetch(artifactRef, expected);
         };
+    }
+
+    /// Records which overload of [ArtifactStore#fetch] the caller used —
+    /// `function-artifact-upload.md` §5's own test seam: a plain lambda
+    /// cannot distinguish the two (the interface's default three-arg form
+    /// just calls the two-arg one), so this overrides BOTH explicitly.
+    private static final class RecordingArtifactStore implements ArtifactStore {
+        private final ArtifactStore delegate;
+        final List<String> versionIdsSeen = Collections.synchronizedList(new java.util.ArrayList<>());
+        final AtomicInteger twoArgCalls = new AtomicInteger();
+
+        RecordingArtifactStore(ArtifactStore delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Fetched fetch(String artifactRef, Digest expected) throws ArtifactException {
+            twoArgCalls.incrementAndGet();
+            return delegate.fetch(artifactRef, expected);
+        }
+
+        @Override
+        public Fetched fetch(String artifactRef, Digest expected, String versionId) throws ArtifactException {
+            versionIdsSeen.add(versionId);
+            return delegate.fetch(artifactRef, expected, versionId);
+        }
     }
 
     private static boolean pollUntil(BooleanSupplier condition, Duration timeout) {

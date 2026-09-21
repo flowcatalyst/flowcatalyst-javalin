@@ -36,10 +36,10 @@ public final class DeployCommand implements Callable<Integer> {
     @Option(names = "--manifest", required = true, paramLabel = "<file>", description = "the manifest JSON file")
     String manifestFile;
 
-    @Option(names = "--artifact-ref", paramLabel = "<ref>", description = "oci://… or s3://… (omit for local mode)")
+    @Option(names = "--artifact-ref", paramLabel = "<ref>", description = "oci://… or s3://… (omit to upload through the platform)")
     String artifactRef;
 
-    @Option(names = "--bundle", paramLabel = "<file>", description = "sigstore bundle file (remote mode only)")
+    @Option(names = "--bundle", paramLabel = "<file>", description = "sigstore bundle file (cosign sign-blob of the jar)")
     String bundleFile;
 
     @Option(names = "--client", paramLabel = "<id>", description = "owning client id, when creating a client-owned function")

@@ -419,7 +419,10 @@ public final class Reconciler {
     private void prepareOne(DesiredDocument.Entry entry) {
         Key key = new Key(entry.address(), entry.version());
         try {
-            ArtifactStore.Fetched fetched = artifactStore.fetch(entry.artifactRef(), entry.digest());
+            // spec `function-artifact-upload.md` §5: the three-arg widening — the entry's OWN
+            // version id, so a `platform://` ref (PlatformArtifactStore) can call the download
+            // route, which is keyed by version id, not by ref.
+            ArtifactStore.Fetched fetched = artifactStore.fetch(entry.artifactRef(), entry.digest(), entry.versionId());
             switch (signatures) {
                 case Signatures.Off ignored -> {
                     // fetch and digest only (spec §1.2 step 2)

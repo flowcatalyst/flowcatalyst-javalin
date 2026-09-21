@@ -9,6 +9,7 @@ import io.flowcatalyst.fnhost.load.LoadedFunction;
 import io.flowcatalyst.fnhost.metrics.FnMetrics;
 import io.flowcatalyst.fnhost.reconcile.HostEnv;
 import io.flowcatalyst.fnhost.reconcile.HttpControlPlane;
+import io.flowcatalyst.fnhost.reconcile.PlatformArtifactStore;
 import io.flowcatalyst.fnhost.reconcile.ReconcileLoop;
 import io.flowcatalyst.fnhost.reconcile.Reconciler;
 import io.flowcatalyst.fnhost.reconcile.TokenSource;
@@ -25,6 +26,7 @@ import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
 
@@ -70,11 +72,17 @@ public final class FnHost implements AutoCloseable {
     public FnHost(HostEnv env) {
         this.env = Objects.requireNonNull(env, "env");
         this.registry = new FunctionRegistry(env.maxLoaded());
-        ArtifactStores stores = new ArtifactStores(
-                new FileArtifactStore(env.cacheDir()),
-                new OciArtifactStore(env.cacheDir(), RegistryCredentials.none()));
         HttpClient http = HttpClient.newHttpClient();
         TokenSource tokenSource = new TokenSource(http, env.platformUrl(), env.clientId(), env.clientSecret());
+        // spec `function-artifact-upload.md` §5: scheme `platform` — the ArtifactStores
+        // widening lets this composition root register it without ArtifactStores (server
+        // module) ever depending on function-host.
+        PlatformArtifactStore platformStore =
+                new PlatformArtifactStore(http, env.platformUrl(), tokenSource, env.cacheDir());
+        ArtifactStores stores = new ArtifactStores(
+                new FileArtifactStore(env.cacheDir()),
+                new OciArtifactStore(env.cacheDir(), RegistryCredentials.none()),
+                Map.of("platform", platformStore));
         HttpControlPlane controlPlane = new HttpControlPlane(env.platformUrl(), tokenSource);
         ContextFactory contextFactory = ContextFactory.production(env.maxDbPools(), controlPlane, env.hostId());
         this.reconciler = new Reconciler(env.pool(), env.hostId(), controlPlane, stores, env.signatures(),

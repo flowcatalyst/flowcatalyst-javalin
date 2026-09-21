@@ -26,7 +26,10 @@ public final class FileArtifactStore extends ArtifactStoreSupport {
     }
 
     @Override
-    SourceStream open(String ref, Digest expected) throws ArtifactException {
+    protected SourceStream open(String ref, Digest expected, String versionId) throws ArtifactException {
+        // versionId (ArtifactStoreSupport's three-arg fetch widening, spec §5) is
+        // PlatformArtifactStore's own concern — a file:// ref already names the exact
+        // path, so this store never needs it.
         Path source = resolve(ref);
         if (!Files.isRegularFile(source) || !Files.isReadable(source)) {
             throw new ArtifactException(new ArtifactException.NotFound());

@@ -377,12 +377,27 @@ make examples
 #   = mvn -q -B -Pexamples -pl examples/function-hello -am verify
 ```
 
-Publishing for real:
+Publishing for real (spec `function-artifact-upload.md` §5, R14): the jar is **uploaded through the
+platform** by default — no registry of your own required, one path for local dev and a deployed
+platform alike. Signing is unaffected; it is still the jar's own bytes that get signed, before the
+upload:
 
 ```
 build → shade → ProGuard shrink → tests run against the SHRUNK jar
-      → oras push (OCI registry)
       → cosign sign-blob --new-bundle-format --bundle fn.sigstore.json   (keyless; pin cosign — §8)
+      → fcdev fn deploy target/my-function-shrunk.jar --manifest manifest.json --bundle fn.sigstore.json --wait 120s
+```
+
+`fn deploy`/`fn publish` upload the jar (`PUT /api/functions/{address}/artifacts/{digest}`, your
+service account's own credentials — nobody but the platform holds storage credentials) and publish
+the `platform://…` ref the upload returns; the platform writes it to whichever backend
+`FC_FN_ARTIFACT_STORE` names (`docs/deployments.md` §"Function artifacts" has the owner-facing
+side of that variable). A team that wants to publish by reference against its own registry instead
+opts in with `--artifact-ref oci://…` (`s3://` is a backend here, not a reference scheme a
+developer points at) — `--bundle` still carries the same signature either way:
+
+```
+      → oras push (OCI registry)
       → fcdev fn publish --artifact-ref oci://… --bundle fn.sigstore.json
       → fcdev fn promote --wait 120s
 ```
@@ -416,7 +431,7 @@ two forms, or a two-part address, is a usage error (exit 2).
 
 | Command | Does |
 |---|---|
-| `fn publish <jar> [<address>] --manifest <file>` | sha256's the jar; local mode copies it into `fcdev`'s own artifact store (`file://`); `--artifact-ref oci://…` + `--bundle` for a real publish. Creates the function on first publish unless `--no-create` |
+| `fn publish <jar> [<address>] --manifest <file>` | sha256's the jar; **uploads it through the platform** (`PUT .../artifacts/{digest}`) and publishes the returned `platform://…` ref — the default, local dev and a deployed platform alike; `--artifact-ref oci://…` + `--bundle` publishes by reference instead (opt-in, for a team running its own registry). Creates the function on first publish unless `--no-create` |
 | `fn promote <address> --version <n> [--wait 60s]` | polls for `READY`, then promotes; `--wait 0` promotes immediately |
 | `fn deploy <jar> [<address>] --manifest <file> [--wait 60s]` | publish + promote in one step — what `watch` runs each cycle |
 | `fn status [<address>]` | versions, live alias, hosts (with per-host loaded state/error), wiring |

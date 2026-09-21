@@ -11,6 +11,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.util.List;
 import java.util.Map;
@@ -89,6 +90,34 @@ public final class FnClient {
 
     public void delete(String path) {
         send("DELETE", path, null);
+    }
+
+    /// Streams `file`'s bytes as the request body (`function-artifact-upload.md`
+    /// §3/§5: `fn publish`/`fn deploy` without `--artifact-ref` upload the jar
+    /// this way) — `HttpRequest.BodyPublishers.ofFile`, never read into a byte
+    /// array first, `Content-Type: application/octet-stream`, the same
+    /// bearer auth as every other platform call. A non-2xx response is the
+    /// same [FnClientException] mapping as {@link #send} (the platform's
+    /// `{error, message, details}` envelope carried verbatim — a 413/422/503
+    /// surfaces exactly like any other platform error).
+    public JsonNode putFile(String path, Path file) {
+        HttpRequest.BodyPublisher publisher;
+        try {
+            publisher = HttpRequest.BodyPublishers.ofFile(file);
+        } catch (java.io.FileNotFoundException e) {
+            throw new FnClientException("IO_ERROR", "could not read " + file + ": " + e.getMessage(), 0);
+        }
+        var builder = HttpRequest.newBuilder(URI.create(baseUrl + path))
+                .header("Authorization", "Bearer " + tokenManager.token())
+                .header("Content-Type", "application/octet-stream")
+                .PUT(publisher);
+        HttpResponse<String> resp = execute(builder.build(), HttpResponse.BodyHandlers.ofString(), baseUrl + path);
+        int status = resp.statusCode();
+        if (status >= 200 && status < 300) {
+            String b = resp.body();
+            return (b == null || b.isBlank()) ? null : Json.MAPPER.readTree(b);
+        }
+        throw toException(status, resp.body());
     }
 
     private JsonNode send(String method, String path, JsonNode body) {

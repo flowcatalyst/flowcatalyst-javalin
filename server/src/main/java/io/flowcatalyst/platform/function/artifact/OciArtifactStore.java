@@ -58,7 +58,10 @@ public final class OciArtifactStore extends ArtifactStoreSupport {
     }
 
     @Override
-    SourceStream open(String ref, Digest expected) throws ArtifactException {
+    protected SourceStream open(String ref, Digest expected, String versionId) throws ArtifactException {
+        // versionId (ArtifactStoreSupport's three-arg fetch widening, spec §5) is
+        // PlatformArtifactStore's own concern — an oci:// blob is addressed by
+        // digest alone, so this store never needs it.
         OciRef parsed = OciRef.parse(ref);
         URI blobUri = blobUri(parsed, expected);
         try {

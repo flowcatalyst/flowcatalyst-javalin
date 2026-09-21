@@ -15,10 +15,10 @@ name: Publish function-hello (TEMPLATE — not wired into this repo's CI)
 #     §1 — the same role `fcdev fn` uses locally, minted for real in your own
 #     platform's client/service-account admin instead of `fcdev start`'s
 #     throwaway dev credentials)
-#   - the OCI registry `oras push` targets
 #
 # ── Pipeline shape (docs/function-runner-plan.md §8, "Shrinking"; §10 rulings
-#    1 and 5) ──
+#    1 and 5; artifact transport per docs/spec/function-artifact-upload.md §5,
+#    R14) ──
 #   build+shrink+test (this repo's own Maven build: shade with minimizeJar=true —
 #     the DEFAULT shrinker, ORCHESTRATOR RULING 2026-09-20: ProGuard needs a JDK
 #     that still ships `jmods/`, which `setup-java`'s Temurin distribution does
@@ -28,14 +28,18 @@ name: Publish function-hello (TEMPLATE — not wired into this repo's CI)
 #     remains available, opt-in, as the `shrink-proguard` Maven profile, for a
 #     JDK that still ships `jmods/`; add `,shrink-proguard` to the `-P` list below
 #     only on a runner that provides one.)
-#   -> oras push (OCI is the artifact store; `s3://`/`file://` are the other
-#      two `ArtifactStore` schemes, not used by CI)
 #   -> cosign sign-blob --new-bundle-format --bundle (keyless; the workflow's
 #      own OIDC token identifies the signer — ruling 1, "Publishers: only our
 #      CI. Signer policy lists the pipeline's OIDC identity; nothing else is
-#      accepted for any runtime.")
-#   -> fcdev fn publish --artifact-ref oci://... --bundle ...
-#   -> fcdev fn promote --wait 120s
+#      accepted for any runtime.") — still the JAR's own bytes, signed before
+#      the upload below
+#   -> fcdev fn deploy ... --bundle ...   (uploads the jar THROUGH THE PLATFORM
+#      — PUT .../artifacts/{digest} with this service account's own
+#      credentials, no registry of your own required — and publishes the ref
+#      the upload returns, then promotes; `--wait 120s`. A team that wants to
+#      publish by reference against its own registry instead adds
+#      `oras push` and passes `--artifact-ref oci://...` — see
+#      docs/functions.md "Publishing for real" for that variant.)
 #
 # ── READ THIS BEFORE TOUCHING THE COSIGN VERSION
 #    (docs/spec/function-artifacts.md §4, "What this does not verify") ──
@@ -78,7 +82,6 @@ env:
   # A DNS label pool name, not a URL — matches Manifest.pool / FC_FN_POOL_URL's
   # {pool} template (function-invocation.md §4).
   FUNCTION_ADDRESS: hello.default.hello
-  OCI_REPO: ghcr.io/<YOUR-ORG>/functions/hello # oras push target — fill in
 
 jobs:
   publish:
@@ -113,17 +116,6 @@ jobs:
           digest=$(sha256sum "$jar" | cut -d' ' -f1)
           echo "path=$jar" >> "$GITHUB_OUTPUT"
           echo "digest=sha256:$digest" >> "$GITHUB_OUTPUT"
-
-      # Pinned exact version — see the comment block above before bumping.
-      - name: Install oras
-        uses: oras-project/setup-oras@v1
-        with:
-          version: 1.2.0
-
-      - name: oras push
-        run: |
-          oras push "${{ env.OCI_REPO }}:${{ github.sha }}" \
-            "${{ steps.jar.outputs.path }}:application/java-archive"
 
       # Pinned exact version — see the comment block above before bumping.
       # `cosign-release` (NOT just the installer action's own tag) is the pin
@@ -164,29 +156,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      # `fcdev fn publish`'s remote mode (docs/spec/function-developer-surface.md
-      # §2): `--artifact-ref oci://…` + `--bundle` — never the local `file://`
-      # copy mode a bare jar path implies. Creates the function on first
-      # publish (the platform-owned default; add `--client <id>` for a
-      # client-owned function, or `--no-create` to require it exist already).
-      - name: fcdev fn publish
+      # `fcdev fn deploy` = publish + promote (docs/spec/function-developer-surface.md
+      # §2). No `--artifact-ref`: the jar is UPLOADED through the platform
+      # (`PUT .../artifacts/{digest}`, this service account's own credentials —
+      # docs/spec/function-artifact-upload.md §5, R14) and published with the
+      # `platform://…` ref the upload itself returns; `--bundle` still carries
+      # the signature produced above. Creates the function on first publish
+      # (the platform-owned default; add `--client <id>` for a client-owned
+      # function, or `--no-create` to require it exist already).
+      - name: fcdev fn deploy
         run: |
-          ./fcdev fn publish "${{ steps.jar.outputs.path }}" "${{ env.FUNCTION_ADDRESS }}" \
+          ./fcdev fn deploy "${{ steps.jar.outputs.path }}" "${{ env.FUNCTION_ADDRESS }}" \
             --manifest examples/function-hello/manifest.json \
-            --artifact-ref "oci://${{ env.OCI_REPO }}:${{ github.sha }}" \
             --bundle fn.sigstore.json \
-            --platform-url "${{ vars.FLOWCATALYST_PLATFORM_URL }}" \
-            --client-id "${{ secrets.FLOWCATALYST_CLIENT_ID }}" \
-            --client-secret "${{ secrets.FLOWCATALYST_CLIENT_SECRET }}" \
-            --output json > publish.json
-          cat publish.json
-
-      - name: fcdev fn promote --wait
-        run: |
-          version=$(jq -r '.version' publish.json)
-          ./fcdev fn promote "${{ env.FUNCTION_ADDRESS }}" \
-            --version "$version" \
             --wait 120s \
             --platform-url "${{ vars.FLOWCATALYST_PLATFORM_URL }}" \
             --client-id "${{ secrets.FLOWCATALYST_CLIENT_ID }}" \
-            --client-secret "${{ secrets.FLOWCATALYST_CLIENT_SECRET }}"
+            --client-secret "${{ secrets.FLOWCATALYST_CLIENT_SECRET }}" \
+            --output json > deploy.json
+          cat deploy.json

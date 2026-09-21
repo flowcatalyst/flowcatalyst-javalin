@@ -1,6 +1,5 @@
 package io.flowcatalyst.fcdev.fn;
 
-import io.flowcatalyst.fcdev.DevPaths;
 import io.flowcatalyst.platform.function.api.FunctionApi;
 import io.flowcatalyst.platform.shared.json.Json;
 import picocli.CommandLine;
@@ -10,7 +9,6 @@ import tools.jackson.databind.JsonNode;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
@@ -20,6 +18,15 @@ import java.util.regex.Pattern;
 /// = publish + promote with the same options — spec §2). Kept as ordinary
 /// static methods, not an object, so neither command's `@Option`-bound state
 /// needs to be copied into a second type.
+///
+/// `--artifact-ref` omitted (spec `function-artifact-upload.md` §5): the jar
+/// is UPLOADED through the platform (`PUT .../artifacts/{digest}`) and the
+/// response's OWN `artifactRef` is what gets published — never a locally
+/// built `platform://…` string, so a caller can never publish a ref the
+/// platform did not itself hand back. One path, local dev and a deployed
+/// platform alike — `Publisher.storeLocally`/`DevPaths.fnArtifactsDir` are
+/// gone from this class (`fcdev start`'s own default store still uses the
+/// accessor, just not from here).
 final class Publisher {
 
     private static final Pattern REMOTE_REF = Pattern.compile("^(oci|s3)://.+");
@@ -38,6 +45,7 @@ final class Publisher {
         Path jarPath = Path.of(opts.jar());
         String digest = sha256(jarPath);
         JsonNode manifest = readManifest(spec, opts.manifestFile());
+        FnClient platform = root.client();
 
         String artifactRef;
         String signatureBundle = null;
@@ -47,19 +55,32 @@ final class Publisher {
                         "--artifact-ref must start with oci:// or s3://, got \"" + opts.artifactRef() + "\"");
             }
             artifactRef = opts.artifactRef();
-            if (opts.bundleFile() != null && !opts.bundleFile().isBlank()) {
-                signatureBundle = Files.readString(Path.of(opts.bundleFile()));
-            }
+            ensureFunctionExists(platform, address, manifest, opts.client(), opts.noCreate());
         } else {
-            artifactRef = storeLocally(jarPath, digest, root.paths());
+            // The function must exist BEFORE the upload — the route 404s otherwise.
+            ensureFunctionExists(platform, address, manifest, opts.client(), opts.noCreate());
+            artifactRef = uploadArtifact(platform, address, digest, jarPath);
+        }
+        // Either way: the bundle signs the jar's bytes, not where they are kept, and a
+        // platform with signatures required refuses an upload published without one.
+        if (opts.bundleFile() != null && !opts.bundleFile().isBlank()) {
+            signatureBundle = Files.readString(Path.of(opts.bundleFile()));
         }
 
-        FnClient platform = root.client();
-        ensureFunctionExists(platform, address, manifest, opts.client(), opts.noCreate());
         var body = new FunctionApi.PublishRequest(artifactRef, digest, signatureBundle, manifest);
         JsonNode response = platform.post("/api/functions/" + address + "/versions", Json.MAPPER.valueToTree(body));
         FunctionApi.PublishResponse parsed = Json.MAPPER.convertValue(response, FunctionApi.PublishResponse.class);
         return new Outcome(address, parsed.version(), parsed.digest());
+    }
+
+    /// `PUT /api/functions/{address}/artifacts/{digest}` (spec §3/§5) — the
+    /// returned `artifactRef` is what gets published, never a ref this CLI
+    /// built itself.
+    private static String uploadArtifact(FnClient platform, String address, String digest, Path jarPath) {
+        JsonNode response = platform.putFile("/api/functions/" + address + "/artifacts/" + digest, jarPath);
+        FunctionApi.UploadArtifactResponse parsed =
+                Json.MAPPER.convertValue(response, FunctionApi.UploadArtifactResponse.class);
+        return parsed.artifactRef();
     }
 
     /// @throws FnClientException the GET failed for any reason OTHER than the
@@ -91,27 +112,6 @@ final class Publisher {
             throw new CommandLine.ParameterException(spec.commandLine(),
                     "invalid JSON in manifest file " + manifestFile + ": " + e.getMessage());
         }
-    }
-
-    /// Copies `jarPath` into `<state>/fn-artifacts/<hex>.jar` — an atomic move
-    /// from a temp file in the same directory, so a reader never sees a
-    /// partial file; reused verbatim when the digest already has a copy
-    /// there (spec §4 E4: "stores the copy, not the build path").
-    static String storeLocally(Path jarPath, String digest, DevPaths paths) throws IOException {
-        String hex = digest.substring("sha256:".length());
-        Path dir = paths.fnArtifactsDir();
-        Files.createDirectories(dir);
-        Path target = dir.resolve(hex + ".jar");
-        if (!Files.exists(target)) {
-            Path tmp = Files.createTempFile(dir, "upload-", ".jar.tmp");
-            try {
-                Files.copy(jarPath, tmp, StandardCopyOption.REPLACE_EXISTING);
-                Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE);
-            } finally {
-                Files.deleteIfExists(tmp);
-            }
-        }
-        return target.toUri().toString();
     }
 
     static String sha256(Path file) throws IOException {

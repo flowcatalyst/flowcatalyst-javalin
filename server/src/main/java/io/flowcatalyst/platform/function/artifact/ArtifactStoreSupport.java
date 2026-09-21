@@ -22,8 +22,12 @@ import java.util.OptionalLong;
 /// running digest into a temp file in the cache directory and `ATOMIC_MOVE`s
 /// it into place only once the digest matches — nothing with the wrong bytes
 /// ever exists under a digest's name, even briefly. [FileArtifactStore] and
-/// [OciArtifactStore] differ only in [#open].
-abstract class ArtifactStoreSupport implements ArtifactStore {
+/// [OciArtifactStore] differ only in [#open]. `public` (constructor and
+/// [#open] `protected`) so `function-host`'s `PlatformArtifactStore` (spec
+/// `function-artifact-upload.md` §5) can extend it from another module and
+/// reuse this SAME cache/hash/cap machinery — the widening is additive only,
+/// no behaviour here changed.
+public abstract class ArtifactStoreSupport implements ArtifactStore {
 
     private static final long DEFAULT_MAX_BYTES = 256L * 1024 * 1024;
     private static final int BUFFER_SIZE = 8192;
@@ -31,7 +35,7 @@ abstract class ArtifactStoreSupport implements ArtifactStore {
     private final Path cacheDir;
     private final long maxBytes;
 
-    ArtifactStoreSupport(Path cacheDir, long maxBytes) {
+    protected ArtifactStoreSupport(Path cacheDir, long maxBytes) {
         this.cacheDir = Objects.requireNonNull(cacheDir, "cacheDir");
         if (maxBytes <= 0) {
             throw new IllegalArgumentException("maxBytes must be positive");
@@ -44,16 +48,28 @@ abstract class ArtifactStoreSupport implements ArtifactStore {
         }
     }
 
-    static long defaultMaxBytes() {
+    protected static long defaultMaxBytes() {
         return DEFAULT_MAX_BYTES;
     }
 
     /// Opens the source named by `ref`, addressed by `expected` where the
     /// scheme needs the digest to locate the bytes (`oci://`'s blob path).
-    abstract SourceStream open(String ref, Digest expected) throws ArtifactException;
+    /// `versionId` is the three-arg [ArtifactStore#fetch]'s own addition
+    /// (spec `function-artifact-upload.md` §5) — `null` on every two-arg
+    /// call; [FileArtifactStore] and [OciArtifactStore] both ignore it,
+    /// `PlatformArtifactStore` requires it (the download route is keyed by
+    /// version id, not by ref).
+    protected abstract SourceStream open(String ref, Digest expected, String versionId) throws ArtifactException;
 
     @Override
     public final Fetched fetch(String artifactRef, Digest expected) throws ArtifactException {
+        return fetch(artifactRef, expected, null);
+    }
+
+    /// [ArtifactStore#fetch]'s three-arg widening (spec §5) — same cache
+    /// check, same [#downloadAndCache] as the two-arg form, `versionId`
+    /// threaded through to [#open] for a store that needs it.
+    public final Fetched fetch(String artifactRef, Digest expected, String versionId) throws ArtifactException {
         Objects.requireNonNull(artifactRef, "artifactRef");
         Objects.requireNonNull(expected, "expected");
         Path cached = cachePath(expected);
@@ -65,11 +81,11 @@ abstract class ArtifactStoreSupport implements ArtifactStore {
             // a poisoned cache entry is detected here, by re-hashing, and replaced — never trusted on sight
             deleteQuietly(cached);
         }
-        return downloadAndCache(artifactRef, expected, cached);
+        return downloadAndCache(artifactRef, expected, versionId, cached);
     }
 
-    private Fetched downloadAndCache(String ref, Digest expected, Path target) throws ArtifactException {
-        try (SourceStream source = open(ref, expected)) {
+    private Fetched downloadAndCache(String ref, Digest expected, String versionId, Path target) throws ArtifactException {
+        try (SourceStream source = open(ref, expected, versionId)) {
             if (source.contentLength().isPresent() && source.contentLength().getAsLong() > maxBytes) {
                 throw new ArtifactException(new ArtifactException.TooLarge(maxBytes));
             }
@@ -164,8 +180,8 @@ abstract class ArtifactStoreSupport implements ArtifactStore {
 
     /// A fetch source: the byte stream and, when the transport declared one,
     /// its length — checked against `maxBytes` before a single byte is read.
-    record SourceStream(InputStream body, OptionalLong contentLength) implements AutoCloseable {
-        SourceStream {
+    public record SourceStream(InputStream body, OptionalLong contentLength) implements AutoCloseable {
+        public SourceStream {
             Objects.requireNonNull(body, "body");
             Objects.requireNonNull(contentLength, "contentLength");
         }

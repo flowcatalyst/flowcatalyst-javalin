@@ -18,6 +18,19 @@ public interface ArtifactStore {
     ///                           bytes do not hash to `expected`
     Fetched fetch(String artifactRef, Digest expected) throws ArtifactException;
 
+    /// Widening for a store that needs to know WHICH desired-state entry is
+    /// being fetched, not just its ref and digest (spec
+    /// `function-artifact-upload.md` §5): the host's download route is keyed
+    /// by version id, not by `artifactRef`. Defaults to the two-arg form —
+    /// every store that does not care ([FileArtifactStore], [OciArtifactStore])
+    /// gets this for free; `PlatformArtifactStore` overrides it.
+    ///
+    /// @throws ArtifactException the artifact could not be fetched, or its
+    ///                           bytes do not hash to `expected`
+    default Fetched fetch(String artifactRef, Digest expected, String versionId) throws ArtifactException {
+        return fetch(artifactRef, expected);
+    }
+
     /// @param file  a regular file under the store's cache directory, named
     ///              `<cache>/sha256/<hex>`, whose bytes hash to the digest requested
     /// @param bytes the file's size

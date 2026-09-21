@@ -17,7 +17,8 @@ public final class ArtifactException extends Exception {
     private static final long serialVersionUID = 1L;
 
     public sealed interface Reason
-            permits NotFound, DigestMismatch, TooLarge, UnsupportedScheme, Unauthorized, Transport, BadRef {
+            permits NotFound, DigestMismatch, TooLarge, UnsupportedScheme, Unauthorized, Transport, BadRef,
+            VersionRequired {
     }
 
     /// The artifact reference resolved to nothing — a registry `404`, or a
@@ -69,6 +70,14 @@ public final class ArtifactException extends Exception {
         }
     }
 
+    /// `PlatformArtifactStore`'s own reason (spec `function-artifact-upload.md`
+    /// §5): a `platform://` fetch needs a version id — the download route is
+    /// keyed by it, not by the ref — and the two-arg [ArtifactStore#fetch]
+    /// carries none. Never a guess: this is raised instead of picking a
+    /// version some other way.
+    public record VersionRequired() implements Reason {
+    }
+
     private final Reason reason;
 
     public ArtifactException(Reason reason) {
@@ -95,6 +104,7 @@ public final class ArtifactException extends Exception {
             case Unauthorized _ -> "registry rejected every credential";
             case Transport(var cause) -> "transport failure: " + cause.getMessage();
             case BadRef(var why) -> "malformed artifact reference: " + why;
+            case VersionRequired _ -> "platform:// artifact fetch requires a version id";
         };
     }
 }

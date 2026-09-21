@@ -457,6 +457,23 @@ class FunctionArtifactUploadApiTest {
         assertThat(r.status()).isEqualTo(404);
     }
 
+    /// What `fcdev fn publish` actually does: the JDK `HttpClient` sending a
+    /// real-sized jar. A refusal that leaves the body unread must still REACH
+    /// that client — `HttpClient#send` does not return an early response while
+    /// its body write is blocked, so a server that answers and then never
+    /// reads hangs the CLI instead of printing the 403. Bounded, so a hang is
+    /// a failure, not a stuck build.
+    @Test
+    void aRefusedUploadOfARealSizedJarStillAnswersAJdkHttpClient() throws Exception {
+        var f = create(http, "u5c-" + RUN, "svc", "fn");
+        String address = f.get("address").asText();
+        byte[] jar = new byte[10 * 1024 * 1024];
+        var pending = java.util.concurrent.CompletableFuture.supplyAsync(
+                () -> upload(http, address, digestOf(jar), jar, VIEW_ONLY));
+        HttpResponse<byte[]> r = pending.get(20, java.util.concurrent.TimeUnit.SECONDS);
+        assertThat(r.statusCode()).isEqualTo(403);
+    }
+
     // ── U6: platform:// ref mismatch / not-uploaded, no version row either way ──
 
     @Test

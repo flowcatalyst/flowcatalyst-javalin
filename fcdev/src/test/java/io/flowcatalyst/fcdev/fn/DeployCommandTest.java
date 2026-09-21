@@ -16,6 +16,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// names — via `details.version`, never parsed prose — not fail.
 class DeployCommandTest {
 
+    /// sha256 hex of the literal jar bytes `"same-bytes"` / `"x"` used below —
+    /// `fn deploy` with no `--artifact-ref` now uploads before publishing, so
+    /// every test needs a PUT handler at the exact digest path.
+    private static final String SAME_BYTES_DIGEST = "7ad5509fac1a1be4a59ae87959468840d2808bab1b3cd5676733194aa82ef338";
+    private static final String X_DIGEST = "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881";
+
     @TempDir
     Path dir;
 
@@ -40,6 +46,9 @@ class DeployCommandTest {
     void deployingTheSameJarTwiceSecondCallPromotesExistingVersionNoError() throws Exception {
         try (var platform = FakePlatform.start()) {
             platform.on("GET", "/api/functions/app.svc.fn", ex -> FakePlatform.writeJson(ex, 200, Map.of("id", "fnc_1")));
+            platform.on("PUT", "/api/functions/app.svc.fn/artifacts/sha256:" + SAME_BYTES_DIGEST, ex ->
+                    FakePlatform.writeJson(ex, 200, Map.of("artifactRef", "platform://fnc_1/" + SAME_BYTES_DIGEST,
+                            "digest", "sha256:" + SAME_BYTES_DIGEST, "bytes", 10)));
             AtomicInteger publishCalls = new AtomicInteger();
             platform.on("POST", "/api/functions/app.svc.fn/versions", ex -> {
                 if (publishCalls.incrementAndGet() == 1) {
@@ -88,6 +97,9 @@ class DeployCommandTest {
     void reDeployingAnAlreadyLiveVersionIsSuccessNotAliasUnchanged() throws Exception {
         try (var platform = FakePlatform.start()) {
             platform.on("GET", "/api/functions/app.svc.fn", ex -> FakePlatform.writeJson(ex, 200, Map.of("id", "fnc_1")));
+            platform.on("PUT", "/api/functions/app.svc.fn/artifacts/sha256:" + SAME_BYTES_DIGEST, ex ->
+                    FakePlatform.writeJson(ex, 200, Map.of("artifactRef", "platform://fnc_1/" + SAME_BYTES_DIGEST,
+                            "digest", "sha256:" + SAME_BYTES_DIGEST, "bytes", 10)));
             platform.on("POST", "/api/functions/app.svc.fn/versions", ex ->
                     FakePlatform.writeError(ex, 409, "VERSION_DIGEST_EXISTS",
                             "digest is already published as version 1 for this function", Map.of("version", 1)));
@@ -114,6 +126,9 @@ class DeployCommandTest {
     void aDifferentPublishFailureIsNotTreatedAsADigestMatch() throws Exception {
         try (var platform = FakePlatform.start()) {
             platform.on("GET", "/api/functions/app.svc.fn", ex -> FakePlatform.writeJson(ex, 200, Map.of("id", "fnc_1")));
+            platform.on("PUT", "/api/functions/app.svc.fn/artifacts/sha256:" + X_DIGEST, ex ->
+                    FakePlatform.writeJson(ex, 200, Map.of("artifactRef", "platform://fnc_1/" + X_DIGEST,
+                            "digest", "sha256:" + X_DIGEST, "bytes", 1)));
             platform.on("POST", "/api/functions/app.svc.fn/versions", ex ->
                     FakePlatform.writeError(ex, 409, "FUNCTION_DISABLED", "function is disabled"));
 

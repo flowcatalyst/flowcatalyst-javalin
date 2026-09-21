@@ -427,6 +427,13 @@ public final class VertxListener implements AutoCloseable {
         // TCP reset, reproduced while pinning this exact path). HTTP/2 is excluded
         // unconditionally: this listener shares h2/h2c on one port, and closing the
         // connection would tear down every OTHER multiplexed stream on it too.
+        // A handler that refused the request before ever opening the body (401/403/404,
+        // the Content-Length precheck) leaves it just as unread as one that stopped half
+        // way: closing here is what resumes and discards it. Without it the request stays
+        // paused for ever, and a client that writes its whole body before it reads the
+        // response — the JDK HttpClient, which is what `fcdev fn publish` is — blocks on
+        // the write and never sees the refusal.
+        if (bodyStream != null) bodyStream.close();
         boolean closeConnectionAfterWrite = bodyStream != null && bodyStream.abandonedBeforeEof()
                 && rc.request().version() != HttpVersion.HTTP_2;
         InputStream streamed = x.streamedBody();

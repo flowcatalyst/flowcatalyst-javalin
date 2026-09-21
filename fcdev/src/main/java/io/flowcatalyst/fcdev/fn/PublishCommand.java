@@ -10,13 +10,15 @@ import picocli.CommandLine.Spec;
 
 import java.util.concurrent.Callable;
 
-/// `fn publish <jar> --manifest <file>` (spec §2 row `fn publish`, §4 E4).
-/// sha256 of the jar streamed; local mode (no `--artifact-ref`) copies it
-/// into the CLI's own artifact store; remote mode requires `--artifact-ref`
-/// (`oci://`/`s3://`) and sends `--bundle`'s content as `signatureBundle`.
-/// Creates the function when the platform answers 404 for its address
-/// (`--no-create` to forbid — exits 1 with the platform's 404 message). The
-/// actual work is [Publisher#publish] — shared with `fn deploy`.
+/// `fn publish <jar> --manifest <file>` (spec §2 row `fn publish`,
+/// `function-artifact-upload.md` §5). sha256 of the jar streamed; no
+/// `--artifact-ref` uploads it through the platform (`PUT
+/// .../artifacts/{digest}`) and publishes the returned `platform://` ref;
+/// `--artifact-ref` (`oci://`/`s3://`) publishes by reference instead, with
+/// `--bundle`'s content sent as `signatureBundle`. Creates the function when
+/// the platform answers 404 for its address (`--no-create` to forbid — exits
+/// 1 with the platform's 404 message). The actual work is [Publisher#publish]
+/// — shared with `fn deploy`.
 @Command(name = "publish", description = "Publish a new version of a function", sortOptions = false)
 public final class PublishCommand implements Callable<Integer> {
 
@@ -32,10 +34,10 @@ public final class PublishCommand implements Callable<Integer> {
     @Option(names = "--manifest", required = true, paramLabel = "<file>", description = "the manifest JSON file")
     String manifestFile;
 
-    @Option(names = "--artifact-ref", paramLabel = "<ref>", description = "oci://… or s3://… (omit for local mode)")
+    @Option(names = "--artifact-ref", paramLabel = "<ref>", description = "oci://… or s3://… (omit to upload through the platform)")
     String artifactRef;
 
-    @Option(names = "--bundle", paramLabel = "<file>", description = "sigstore bundle file (remote mode only)")
+    @Option(names = "--bundle", paramLabel = "<file>", description = "sigstore bundle file (cosign sign-blob of the jar)")
     String bundleFile;
 
     @Option(names = "--client", paramLabel = "<id>", description = "owning client id, when creating a client-owned function")

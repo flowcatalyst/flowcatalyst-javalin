@@ -54,7 +54,7 @@ usage. Addresses: a full `app.service.name`, or `--app` `--service` (default `de
 
 | Command | Does |
 |---|---|
-| `fn publish <jar> --manifest <file>` | sha256 of the jar; local: copies it to `<state>/fn-artifacts/<hex>.jar` and uses that `file://` ref (the build dir's jar is about to be overwritten); remote: `--artifact-ref oci://…` (+ `--bundle <sigstore.json>`). Creates the function when absent (runtime from the manifest, `--client <id>` for a client-owned one, else platform-owned) — `--no-create` to forbid. Prints address, version, digest |
+| `fn publish <jar> --manifest <file>` | **superseded by `function-artifact-upload.md` §5 (R14)** — this row described package E's own local/remote split (`<state>/fn-artifacts/<hex>.jar` copy, `file://` ref); no `--artifact-ref` now UPLOADS the jar through the platform and publishes the ref the upload returns, local dev and a deployed platform alike, and there is no more CLI-local artifact store. `--artifact-ref oci://…` (+ `--bundle <sigstore.json>`) is unchanged: publish by reference. Creates the function when absent (runtime from the manifest, `--client <id>` for a client-owned one, else platform-owned) — `--no-create` to forbid. Prints address, version, digest |
 | `fn promote <address> --version <n> [--wait 60s]` | waits (polling status) for `READY`, then promotes; on timeout prints each host's state/error for that version and exits 1 |
 | `fn deploy <jar> --manifest <file> [--wait 60s]` | publish + promote — what `watch` runs |
 | `fn status <address\|pattern>` | versions, live, hosts, wiring, missing settings |
@@ -112,7 +112,7 @@ retries; schedules ignore `retry`; JVM functions share a process; metaspace sizi
 | E1 | `fcdev start` (JVM): platform + host up; `fn-cli.json` works; publish→ready→promote→invoke of a fixture function end to end in one test; the function cannot load a server class | start without `FC_FN_SIGNATURES=off` (publish 400); wrong pool URL (subscription target unreachable — assert the stored endpoint) |
 | E2 | native branch: child process started with the right env and stopped with fcdev (a fake `java` script recording its args/env and trapping TERM); no JDK ⇒ `Disabled` + WARN naming both remedies and `start` still succeeds; no jar ⇒ same | fail start; leave the child running |
 | E3 | `--no-functions` starts no host, creates no clients, prints no banner line | — |
-| E4 | `fn publish` stores the copy, not the build path; re-publishing the same jar is the platform's `VERSION_DIGEST_EXISTS`, exit 1, message printed; two-part address ⇒ exit 2 | use the build path; swallow the error |
+| E4 | **superseded by `function-artifact-upload.md` §5/§7 (U12-U13)** — this row's own local-copy behaviour ("stores the copy, not the build path") no longer exists; re-publishing the same jar is still the platform's `VERSION_DIGEST_EXISTS`, exit 1, message printed; two-part address ⇒ exit 2 | swallow the error |
 | E5 | `fn promote --wait`: waits for `READY`; times out with the hosts' errors | promote immediately |
 | E6 | `fn secret set` never takes the value as an argument and never echoes it (capture stdout/stderr) | print the value |
 | E7 | `fn invoke --webhook` produces a signature the host accepts; without it a `webhook` endpoint is 401 | sign the wrong bytes |

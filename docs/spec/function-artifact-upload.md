@@ -98,6 +98,13 @@ exchange throw `IllegalStateException`. **Every other route keeps the 1 MB cap, 
    An HTTP/2 connection must survive an abandoned upload on it (pinned by the client's local port
    staying the same for the next request, not merely by a sibling stream completing — a graceful
    GOAWAY lets the sibling finish and would pass that weaker test).
+4. **An unread body is drained at the end of every streaming request**, opened or not. A handler
+   that refuses before touching the body (401/403/404, the length precheck) used to leave the
+   request paused for ever; a client that writes its whole body before reading the response — the
+   JDK `HttpClient`, i.e. `fcdev fn publish` — then blocked on the write and never saw the refusal
+   (reproduced: a 10 MB upload by a caller without rights hung). Pinned with that exact client.
+5. **`--bundle` is read on the upload path too** — the first cut read it only beside
+   `--artifact-ref`, so every uploaded publish would have been `UNSIGNED` under `required`.
 3. **A buffered body replaces a pending streamed one** (`json`/`result` after `resultStream`, the
    exception-mapper case) and closes it; so does the listener's own 500/503 override.
 
