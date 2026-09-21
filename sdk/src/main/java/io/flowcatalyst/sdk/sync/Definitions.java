@@ -153,9 +153,18 @@ public final class Definitions {
     }
 
     /**
-     * A subscription declaration: where to deliver ({@code target} URL or
-     * {@code connectionId} reference), which event types trigger it, and how
-     * to handle failures.
+     * A subscription declaration: where to deliver ({@code target} URL, or a
+     * connection reference — {@code connectionId}, or the environment-stable
+     * {@code connectionCode}), which event types trigger it, and how to
+     * handle failures.
+     *
+     * <p>{@code connectionCode} names a connection owned by the same
+     * application being synced, UNLESS {@link #sharedConnection} is true, in
+     * which case it names a SHARED (application-less) connection instead —
+     * the two namespaces are distinct with no fallback between them
+     * (`code-first-connections.md`). {@code sharedConnection} normalises
+     * {@code false} to {@code null} via {@link #withSharedConnection} so it
+     * is omitted from the wire payload entirely when not true.
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Subscription(
@@ -169,48 +178,108 @@ public final class Definitions {
             SubscriptionMode mode,
             Integer maxRetries,
             Integer timeoutSeconds,
-            Boolean dataOnly) {
+            Boolean dataOnly,
+            String connectionCode,
+            Boolean sharedConnection) {
 
         public static Subscription of(
                 String code, String name, String target, List<SubscriptionEventType> eventTypes) {
-            return new Subscription(
-                    code, name, null, target, null, eventTypes, null, null, null, null, null);
+            return new Subscription(code, name, null, target, null, eventTypes, null, null, null,
+                    null, null, null, null);
         }
 
         public Subscription withDescription(String description) {
             return new Subscription(code, name, description, target, connectionId, eventTypes,
-                    dispatchPoolCode, mode, maxRetries, timeoutSeconds, dataOnly);
+                    dispatchPoolCode, mode, maxRetries, timeoutSeconds, dataOnly, connectionCode,
+                    sharedConnection);
         }
 
         public Subscription withConnectionId(String connectionId) {
             return new Subscription(code, name, description, target, connectionId, eventTypes,
-                    dispatchPoolCode, mode, maxRetries, timeoutSeconds, dataOnly);
+                    dispatchPoolCode, mode, maxRetries, timeoutSeconds, dataOnly, connectionCode,
+                    sharedConnection);
+        }
+
+        /**
+         * Names the connection by its code — stable across environments,
+         * unlike {@link #withConnectionId}, whose id is minted per
+         * environment. A bare code names a connection owned by THIS
+         * application; combine with {@link #withSharedConnection} to name a
+         * shared one instead.
+         */
+        public Subscription withConnectionCode(String connectionCode) {
+            return new Subscription(code, name, description, target, connectionId, eventTypes,
+                    dispatchPoolCode, mode, maxRetries, timeoutSeconds, dataOnly, connectionCode,
+                    sharedConnection);
         }
 
         public Subscription withDispatchPoolCode(String dispatchPoolCode) {
             return new Subscription(code, name, description, target, connectionId, eventTypes,
-                    dispatchPoolCode, mode, maxRetries, timeoutSeconds, dataOnly);
+                    dispatchPoolCode, mode, maxRetries, timeoutSeconds, dataOnly, connectionCode,
+                    sharedConnection);
         }
 
         public Subscription withMode(SubscriptionMode mode) {
             return new Subscription(code, name, description, target, connectionId, eventTypes,
-                    dispatchPoolCode, mode, maxRetries, timeoutSeconds, dataOnly);
+                    dispatchPoolCode, mode, maxRetries, timeoutSeconds, dataOnly, connectionCode,
+                    sharedConnection);
         }
 
         public Subscription withMaxRetries(int maxRetries) {
             return new Subscription(code, name, description, target, connectionId, eventTypes,
-                    dispatchPoolCode, mode, maxRetries, timeoutSeconds, dataOnly);
+                    dispatchPoolCode, mode, maxRetries, timeoutSeconds, dataOnly, connectionCode,
+                    sharedConnection);
         }
 
         public Subscription withTimeoutSeconds(int timeoutSeconds) {
             return new Subscription(code, name, description, target, connectionId, eventTypes,
-                    dispatchPoolCode, mode, maxRetries, timeoutSeconds, dataOnly);
+                    dispatchPoolCode, mode, maxRetries, timeoutSeconds, dataOnly, connectionCode,
+                    sharedConnection);
         }
 
         /** When true, only the event's {@code data} field is POSTed (no metadata envelope). */
         public Subscription withDataOnly(boolean dataOnly) {
             return new Subscription(code, name, description, target, connectionId, eventTypes,
-                    dispatchPoolCode, mode, maxRetries, timeoutSeconds, dataOnly);
+                    dispatchPoolCode, mode, maxRetries, timeoutSeconds, dataOnly, connectionCode,
+                    sharedConnection);
+        }
+
+        /**
+         * Marks {@link #connectionCode} as naming a SHARED (application-less)
+         * connection rather than one owned by this application. Normalises
+         * {@code false} to {@code null} so the field is omitted from the wire
+         * payload entirely when not true (the platform default).
+         */
+        public Subscription withSharedConnection(boolean sharedConnection) {
+            return new Subscription(code, name, description, target, connectionId, eventTypes,
+                    dispatchPoolCode, mode, maxRetries, timeoutSeconds, dataOnly, connectionCode,
+                    sharedConnection ? Boolean.TRUE : null);
+        }
+    }
+
+    /**
+     * A connection declaration. A connection is application-owned: the
+     * platform assigns its service account itself (the application's own
+     * provisioned account), so this definition carries nothing
+     * environment-specific — no service account id, no secret. It exists
+     * purely to give a subscription's {@code connectionCode} something to
+     * resolve, and {@link DefinitionSynchronizer} syncs connections BEFORE
+     * subscriptions for that reason.
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record Connection(String code, String name, String description, String externalId) {
+
+        public static Connection of(String code, String name) {
+            return new Connection(code, name, null, null);
+        }
+
+        public Connection withDescription(String description) {
+            return new Connection(code, name, description, externalId);
+        }
+
+        /** Your own system's identifier for this connection, if any. */
+        public Connection withExternalId(String externalId) {
+            return new Connection(code, name, description, externalId);
         }
     }
 
@@ -385,11 +454,13 @@ public final class Definitions {
         private final List<Permission> permissions = new ArrayList<>();
         private final List<EventType> eventTypes = new ArrayList<>();
         private final List<Subscription> subscriptions = new ArrayList<>();
+        private final List<Connection> connections = new ArrayList<>();
         private final List<DispatchPool> dispatchPools = new ArrayList<>();
         private final List<Principal> principals = new ArrayList<>();
         private final List<Process> processes = new ArrayList<>();
         private final List<ScheduledJob> scheduledJobs = new ArrayList<>();
         private Map<String, Object> openapiSpec;
+        private String clientId;
 
         private DefinitionSet(String applicationCode) {
             this.applicationCode = applicationCode;
@@ -471,6 +542,47 @@ public final class Definitions {
         public DefinitionSet withSubscriptions(List<Subscription> subscriptions) {
             this.subscriptions.addAll(subscriptions);
             return this;
+        }
+
+        /**
+         * Add connections to the definition set. {@link
+         * DefinitionSynchronizer} syncs them BEFORE subscriptions — a
+         * subscription's {@code connectionCode} must resolve in the same
+         * run.
+         */
+        public DefinitionSet withConnections(List<Connection> connections) {
+            this.connections.addAll(connections);
+            return this;
+        }
+
+        public List<Connection> connections() {
+            return connections;
+        }
+
+        /**
+         * Scope this whole set's connections and subscriptions to one
+         * FlowCatalyst client (its id, or its identifier slug — the
+         * platform resolves either). This is the multi-tenant shape: build
+         * one {@link DefinitionSet} per (application, client) — the plain
+         * {@link #define} set stays global. {@link
+         * DefinitionSynchronizer#syncGrouped} merges every set sharing an
+         * application code before syncing, issuing exactly one platform call
+         * per distinct (application, client) scope — the global scope
+         * first, then each client scope in first-seen order — so that two
+         * sets contributing to the SAME scope never become two calls (the
+         * second of which would delete, under {@code removeUnlisted}, what
+         * the first just created).
+         *
+         * @return this set, now scoped to {@code clientId}
+         */
+        public DefinitionSet forClient(String clientId) {
+            this.clientId = clientId;
+            return this;
+        }
+
+        /** The client this set is scoped to, or null for global. */
+        public String clientId() {
+            return clientId;
         }
 
         public DefinitionSet withDispatchPools(List<DispatchPool> pools) {

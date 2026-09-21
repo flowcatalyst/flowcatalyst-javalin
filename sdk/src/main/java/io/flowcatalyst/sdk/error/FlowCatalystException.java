@@ -4,8 +4,15 @@ package io.flowcatalyst.sdk.error;
  * The single exception thrown by SDK operations. The {@link SdkError} variant
  * it carries identifies the failure; switch on {@link #error()} to handle
  * specific cases.
+ *
+ * <p>Not {@code final}: an operation that needs to carry extra typed context
+ * beyond the {@link SdkError} — e.g. {@code
+ * io.flowcatalyst.sdk.sync.DefinitionSyncException}, which carries the
+ * partial {@code SyncResult} a failed definition sync still produced — does
+ * so as a subclass, so {@code catch (FlowCatalystException e)} keeps
+ * catching everything the SDK throws.
  */
-public final class FlowCatalystException extends RuntimeException {
+public class FlowCatalystException extends RuntimeException {
 
     private final transient SdkError error;
 

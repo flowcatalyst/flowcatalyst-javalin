@@ -35,8 +35,19 @@ public @interface AsSubscription {
     /** Full event type codes this subscription consumes. */
     String[] eventTypes();
 
-    /** Pre-configured connection reference (alternative to {@code target}). */
+    /** Pre-configured connection reference by id (alternative to {@code target}). */
     String connectionId() default "";
+
+    /**
+     * Pre-configured connection reference by code — stable across
+     * environments, unlike {@link #connectionId}. A bare code names a
+     * connection owned by THIS application; combine with {@link
+     * #sharedConnection} to name a shared one instead.
+     */
+    String connectionCode() default "";
+
+    /** When true, {@link #connectionCode} names a SHARED (application-less) connection. */
+    boolean sharedConnection() default false;
 
     /** Dispatch pool code; platform default pool when omitted. */
     String dispatchPoolCode() default "";

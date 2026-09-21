@@ -53,7 +53,9 @@ public final class DefinitionScanner {
                                 : Definitions.SubscriptionMode.valueOf(subscription.mode()),
                         negativeToNull(subscription.maxRetries()),
                         negativeToNull(subscription.timeoutSeconds()),
-                        subscription.dataOnly()));
+                        subscription.dataOnly(),
+                        emptyToNull(subscription.connectionCode()),
+                        subscription.sharedConnection() ? Boolean.TRUE : null));
             }
 
             AsDispatchPool pool = clazz.getAnnotation(AsDispatchPool.class);

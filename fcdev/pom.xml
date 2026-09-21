@@ -32,6 +32,18 @@
       <version>${project.version}</version>
     </dependency>
 
+    <!-- Test-only: the K4 end-to-end pin drives the REAL sdk/ DefinitionSynchronizer
+         over HTTP against a `fcdev start`-booted in-process platform
+         (docs/spec/code-first-connections.md §4a). fcdev's own main code has no
+         dependency on the client SDK (see the native-reflect-config comment
+         below) — this is test scope only, so it does not affect that. -->
+    <dependency>
+      <groupId>io.flowcatalyst</groupId>
+      <artifactId>flowcatalyst-sdk</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+
     <dependency>
       <groupId>info.picocli</groupId>
       <artifactId>picocli</artifactId>
