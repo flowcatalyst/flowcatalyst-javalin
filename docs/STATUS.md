@@ -4,6 +4,36 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## Test isolation: every test class has its own database; ports are asked for, not probed (2026-09-21)
+
+On `function-service` (`5892b152`, `369bc5b1`, `5c4bd7ac`). `TestPg.dataSource()` is a **router** to
+the database of the test class running now — cloned from a migrated template, dropped `WITH (FORCE)`
+when the class ends; a JUnit extension auto-registered through `META-INF/services` tracks the class,
+so no test opts in and static fixtures stay static. `TestPg.forEveryDatabase` for schema a fixture
+creates outside the migrations; `TestPg.databaseName()` for a test that builds its own connection
+string (never hardcode `postgres` — it is no longer migrated). Guard tests in `server` and
+`function-host` fail if the extension ever stops being registered. **The whole reactor is green under
+`-Dsurefire.runOrder=random`** (server ×2, reactor ×3); the random-order family recorded below
+(`StreamEventsTest`, `OutboxProcessorTest`, `PrincipalApiTest`, `PrincipalOperationsTest`,
+`DesiredStateTest`) is closed. Cost: about a minute on the server module.
+
+Probe-and-release ports are gone wherever a server can be asked for its port (`Http2Test`,
+`TlsAlpnTest`, the function-host integration tests; `Server.Running.tlsPort()` is new). Left, with
+the reason at each site: three tests where a URL naming the port is baked into `Env` before the
+server that binds it exists, and the deliberately-dead-port cases.
+
+**The four "unexplained" sightings:** `DispatchDeliveryCredentialsWiringTest` — a real `Server` on
+the shared database, exposed to any scheduler another class leaked; closed by per-class databases.
+`Http2Test.h2cByUpgrade` — probe-and-release; closed. `MainTest.exitAfterStart…` — asserted that a
+connect to a freed ephemeral port is refused, which the OS does not promise; now passes on refusal
+or on an answer that is not our `/health`, and still fails when the server is not stopped (mutant).
+**`FnHttpServerTest` — still open, and now reproduced uncontended:** in one of four full reactor
+runs (random order) `h4_platformBearerToken` answered **404** for its first request; the class alone
+is 12/12 green, so it is an interaction with another class in the same function-host JVM. The
+assertion now prints the body (which 404 — `FUNCTION_NOT_FOUND`, `ENDPOINT_NOT_FOUND`,
+`VERSION_NOT_AVAILABLE` — was never recorded). Next: loop the function-host module in random order
+until it shows its body.
+
 ## Package G — function artifacts uploaded through the platform (R14, 2026-09-21)
 
 Landed on `function-service` (`9997a70d` platform side, then the host + CLI slice). Spec
