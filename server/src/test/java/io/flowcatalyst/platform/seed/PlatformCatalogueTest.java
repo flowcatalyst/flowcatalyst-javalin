@@ -19,7 +19,7 @@ class PlatformCatalogueTest {
     void eventTypeCatalogueShape() {
         List<PlatformEventTypes.Definition> defs = PlatformEventTypes.all();
         assertThat(defs).hasSizeGreaterThanOrEqualTo(41);
-        assertThat(defs).hasSize(72);
+        assertThat(defs).hasSize(73);
         Set<String> seen = new HashSet<>();
         for (var d : defs) {
             assertThat(seen.add(d.code())).as("duplicate definition: %s", d.code()).isTrue();
@@ -93,7 +93,7 @@ class PlatformCatalogueTest {
             assertThat(r.permissions()).isNotEmpty().doesNotHaveDuplicates();
             total += r.permissions().size();
         }
-        assertThat(total).isEqualTo(187);
+        assertThat(total).isEqualTo(192);
         assertThat(roles.get(0).permissions()).containsExactly(Permissions.ADMIN_ALL);
         assertThat(roles.get(13).permissions()).isEqualTo(Permissions.APPLICATION_SERVICE);
         // R3′ (`docs/spec/router-config-auth.md`): exactly the one permission

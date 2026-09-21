@@ -43,6 +43,7 @@ import java.util.stream.Stream;
 import static io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS;
 import static io.flowcatalyst.db.generated.Tables.IAM_PRINCIPAL_ROLES;
 import static io.flowcatalyst.db.generated.Tables.IAM_ROLES;
+import static io.flowcatalyst.db.generated.Tables.IAM_ROLE_PERMISSIONS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -616,6 +617,54 @@ class RoleOperationsTest {
         var admin = byName("platform:admin");
         assertThat(admin.source()).isEqualTo(RoleSource.CODE);
         assertThat(admin.permissions()).contains("platform:admin:client:view");
+    }
+
+    /// C16 (`code-first-connections.md` §5): the hand-off's rollout step 3
+    /// — "the seeder never rewrites a role that already exists, so without
+    /// [`POST /bff/roles/sync-platform`] existing `messaging-admin` /
+    /// `application-service` roles do NOT hold the new connection
+    /// permissions and every connection sync is 403" — is true of the Java
+    /// route too. Simulates a pre-K2 deployment by stripping exactly the new
+    /// permission rows from the two REAL, already-seeded roles (never their
+    /// other permissions, and only these two names), then asserts
+    /// [SyncPlatformRoles] — the operation `/bff/roles/sync-platform` calls
+    /// — puts them back by re-upserting from the current catalogue.
+    @Test
+    void platformSyncGrantsTheNewConnectionPermissionsToPreExistingRoles() {
+        List<RoleDefinition> catalogue = PlatformRoles.all();
+        // Establish both real rows first (idempotent: a no-op if another test
+        // already synced the full catalogue onto this shared database).
+        Auth.runAs(ANCHOR, () -> SyncPlatformRoles.of(repo, catalogue).run(uow, new SyncPlatformRolesCommand(), EC));
+
+        String messagingAdminId = byName("platform:messaging-admin").id();
+        String applicationServiceId = byName("platform:application-service").id();
+        List<String> newAppSvcConnectionPerms = List.of(
+                "platform:application-service:connection:view", "platform:application-service:connection:create",
+                "platform:application-service:connection:update", "platform:application-service:connection:delete");
+
+        // Strip exactly the new rows — a pre-K2 snapshot of these two roles,
+        // every other permission of theirs (and every other role) untouched.
+        DB.deleteFrom(IAM_ROLE_PERMISSIONS)
+                .where(IAM_ROLE_PERMISSIONS.ROLE_ID.eq(messagingAdminId)
+                        .and(IAM_ROLE_PERMISSIONS.PERMISSION.eq("platform:messaging:connection:sync")))
+                .execute();
+        DB.deleteFrom(IAM_ROLE_PERMISSIONS)
+                .where(IAM_ROLE_PERMISSIONS.ROLE_ID.eq(applicationServiceId)
+                        .and(IAM_ROLE_PERMISSIONS.PERMISSION.in(newAppSvcConnectionPerms)))
+                .execute();
+        assertThat(byName("platform:messaging-admin").permissions())
+                .as("pre-K2 snapshot: connection:sync stripped").doesNotContain("platform:messaging:connection:sync");
+        assertThat(byName("platform:application-service").permissions())
+                .as("pre-K2 snapshot: the four app-svc connection perms stripped")
+                .doesNotContainAnyElementsOf(newAppSvcConnectionPerms);
+
+        Auth.runAs(ANCHOR, () -> SyncPlatformRoles.of(repo, catalogue).run(uow, new SyncPlatformRolesCommand(), EC));
+
+        assertThat(byName("platform:messaging-admin").permissions())
+                .as("rollout step 3 restores connection:sync").contains("platform:messaging:connection:sync");
+        assertThat(byName("platform:application-service").permissions())
+                .as("rollout step 3 restores the four app-svc connection perms")
+                .containsAll(newAppSvcConnectionPerms);
     }
 
     private static RoleDefinition def(String applicationCode, String roleName, String displayName) {

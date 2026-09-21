@@ -10,8 +10,8 @@ import java.util.List;
 /**
  * Builds a {@link DefinitionSet} from explicitly registered annotated
  * classes. No classpath scanning — pass the classes carrying
- * {@link AsEventType}, {@link AsSubscription}, {@link AsDispatchPool}, and
- * {@link AsRole}:
+ * {@link AsEventType}, {@link AsConnection}, {@link AsSubscription},
+ * {@link AsDispatchPool}, and {@link AsRole}:
  *
  * <pre>{@code
  * DefinitionSet set = DefinitionScanner.scan("orders",
@@ -24,16 +24,45 @@ public final class DefinitionScanner {
     private DefinitionScanner() {}
 
     public static DefinitionSet scan(String applicationCode, Collection<Class<?>> classes) {
+        return scan(applicationCode, classes, null);
+    }
+
+    /**
+     * As {@link #scan(String, Collection)}, additionally applying
+     * {@code defaultClient} to any scanned {@link AsConnection} or
+     * {@link AsSubscription} that doesn't set its own {@code client()}. This
+     * is the single-tenant path — a definition's own {@code client()} always
+     * wins. A multi-tenant application should NOT set a default client here;
+     * build one {@link DefinitionSet} per (application, client) instead via
+     * {@code DefinitionSet.forClient(...)}.
+     *
+     * @param defaultClient FlowCatalyst client (identifier slug); null or
+     *        blank = global
+     */
+    public static DefinitionSet scan(
+            String applicationCode, Collection<Class<?>> classes, String defaultClient) {
         List<Definitions.EventType> eventTypes = new ArrayList<>();
         List<Definitions.Subscription> subscriptions = new ArrayList<>();
+        List<Definitions.Connection> connections = new ArrayList<>();
         List<Definitions.DispatchPool> pools = new ArrayList<>();
         List<Definitions.Role> roles = new ArrayList<>();
+        String fallbackClient = emptyToNull(defaultClient);
 
         for (Class<?> clazz : classes) {
             AsEventType eventType = clazz.getAnnotation(AsEventType.class);
             if (eventType != null) {
                 eventTypes.add(new Definitions.EventType(
                         eventType.code(), eventType.name(), emptyToNull(eventType.description())));
+            }
+
+            AsConnection connection = clazz.getAnnotation(AsConnection.class);
+            if (connection != null) {
+                connections.add(new Definitions.Connection(
+                        connection.code(),
+                        connection.name(),
+                        emptyToNull(connection.description()),
+                        emptyToNull(connection.externalId()),
+                        resolveClient(connection.client(), fallbackClient)));
             }
 
             AsSubscription subscription = clazz.getAnnotation(AsSubscription.class);
@@ -53,7 +82,10 @@ public final class DefinitionScanner {
                                 : Definitions.SubscriptionMode.valueOf(subscription.mode()),
                         negativeToNull(subscription.maxRetries()),
                         negativeToNull(subscription.timeoutSeconds()),
-                        subscription.dataOnly()));
+                        subscription.dataOnly(),
+                        emptyToNull(subscription.connectionCode()),
+                        subscription.sharedConnection() ? Boolean.TRUE : null,
+                        resolveClient(subscription.client(), fallbackClient)));
             }
 
             AsDispatchPool pool = clazz.getAnnotation(AsDispatchPool.class);
@@ -81,9 +113,16 @@ public final class DefinitionScanner {
 
         return DefinitionSet.define(applicationCode)
                 .withEventTypes(eventTypes)
+                .withConnections(connections)
                 .withSubscriptions(subscriptions)
                 .withDispatchPools(pools)
                 .withRoles(roles);
+    }
+
+    /** The annotation's own client wins; falls back to the scanner's configured default. */
+    private static String resolveClient(String annotationClient, String fallbackClient) {
+        String own = emptyToNull(annotationClient);
+        return own != null ? own : fallbackClient;
     }
 
     private static String emptyToNull(String value) {

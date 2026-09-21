@@ -24,4 +24,20 @@ final class Access {
         Checks.checkScopeAccess(Auth.current(), c.clientId());
         return c;
     }
+
+    /// The current principal must be able to act for the application a
+    /// connection sync is scoped to, and — when `clientId` is given — for
+    /// that client too. A client-less sync needs ONLY application access
+    /// (hand-off "Connection sync (new)", ruled 2026-09-21: deliberately
+    /// unlike the scheduled-jobs sync's anchor gate — ownership, not reach,
+    /// fences a client-less connection sync in, see [SyncConnections]).
+    ///
+    /// @throws UseCaseException authorization `FORBIDDEN` | `UNAUTHENTICATED`
+    static void checkSyncAccess(String applicationId, String applicationCode, String clientId) {
+        var ac = Auth.current();
+        Checks.checkApplicationAccess(ac, applicationId, applicationCode);
+        if (clientId != null && !ac.canAccessClient(clientId)) {
+            throw UseCaseException.authorization("FORBIDDEN", "No access to client: " + clientId);
+        }
+    }
 }

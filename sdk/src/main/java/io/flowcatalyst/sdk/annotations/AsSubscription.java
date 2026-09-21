@@ -35,8 +35,19 @@ public @interface AsSubscription {
     /** Full event type codes this subscription consumes. */
     String[] eventTypes();
 
-    /** Pre-configured connection reference (alternative to {@code target}). */
+    /** Pre-configured connection reference by id (alternative to {@code target}). */
     String connectionId() default "";
+
+    /**
+     * Pre-configured connection reference by code — stable across
+     * environments, unlike {@link #connectionId}. A bare code names a
+     * connection owned by THIS application; combine with {@link
+     * #sharedConnection} to name a shared one instead.
+     */
+    String connectionCode() default "";
+
+    /** When true, {@link #connectionCode} names a SHARED (application-less) connection. */
+    boolean sharedConnection() default false;
 
     /** Dispatch pool code; platform default pool when omitted. */
     String dispatchPoolCode() default "";
@@ -52,4 +63,16 @@ public @interface AsSubscription {
 
     /** When true, only the event's {@code data} field is POSTed (no metadata envelope). */
     boolean dataOnly() default true;
+
+    /**
+     * The FlowCatalyst client (by identifier slug — never an id; ids differ
+     * per environment) this subscription is scoped to. Empty = the default
+     * client passed to {@link DefinitionScanner#scan(String,
+     * java.util.Collection, String)} (single-tenant apps), and empty there
+     * too means global (no client). For a multi-tenant application, don't
+     * set this on the annotation — build one {@link
+     * io.flowcatalyst.sdk.sync.Definitions.DefinitionSet} per client instead
+     * (see {@code DefinitionSet.forClient}).
+     */
+    String client() default "";
 }

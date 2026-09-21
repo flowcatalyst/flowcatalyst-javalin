@@ -608,15 +608,33 @@ public final class Pool implements AutoCloseable {
                 // for this outcome — never the fixed REJECTED_NACK_DELAY.
                 // Siblings are untried and carry no information about the
                 // outcome, so they keep the fixed delay regardless.
+                Duration headDelay;
+                String headReason;
                 if (outcome instanceof MediationOutcome.Deferred deferred && deferred.delaySeconds() > 0) {
-                    broker.nack(returned.head(), Duration.ofSeconds(deferred.delaySeconds()), "deferred");
+                    headDelay = Duration.ofSeconds(deferred.delaySeconds());
+                    headReason = "deferred";
                 } else {
                     // The target is down. Nothing here is wrong; the broker
                     // holds it until it or the target gives way.
-                    broker.nack(returned.head(), backoffFor(returned.head(), outcome), "target-unavailable");
+                    headDelay = backoffFor(returned.head(), outcome);
+                    headReason = "target-unavailable";
                 }
+                broker.nack(returned.head(), headDelay, headReason);
                 returned.siblings().forEach(sibling ->
                         broker.nack(sibling, REJECTED_NACK_DELAY, "target-unavailable"));
+                // Go abcd9fa: a group release leaves the router entirely (pool
+                // idle, nothing in flight), and without delay_seconds an instant
+                // hand-back read the same as one parked for minutes. reason is
+                // "who asked" — the target itself (a real deferral) or the
+                // router's own backoff because the target was unreachable.
+                log.atInfo().setMessage("released message group to broker")
+                        .addKeyValue("group", group)
+                        .addKeyValue("pool", config.code())
+                        .addKeyValue("message_id", returned.head().id())
+                        .addKeyValue("buffered_released", returned.siblings().size())
+                        .addKeyValue("delay_seconds", headDelay.toSeconds())
+                        .addKeyValue("reason", headReason)
+                        .log();
                 yield false;
             }
             case HeadFailure.Continue carryOn -> {
@@ -841,6 +859,16 @@ public final class Pool implements AutoCloseable {
             }
             case MediationOutcome.Deferred deferred -> {
                 recordMetric(metric, took);
+                // Go abcd9fa: a deferral (2xx + ack=false) is the one delivery
+                // outcome the mediator itself logs nothing for — it answered
+                // with success. Say who asked (the target) and for how long.
+                log.atInfo().setMessage("target deferred message (ack=false)")
+                        .addKeyValue("message_id", message.id())
+                        .addKeyValue("group", message.group())
+                        .addKeyValue("pool", config.code())
+                        .addKeyValue("delay_seconds", deferred.delaySeconds())
+                        .addKeyValue("status", deferred.statusCode())
+                        .log();
                 yield new Attempt.Failed(deferred, false);
             }
             case MediationOutcome.ErrorProcess process -> {

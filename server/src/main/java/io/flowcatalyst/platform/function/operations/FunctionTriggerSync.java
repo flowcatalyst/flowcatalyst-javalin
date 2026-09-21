@@ -585,7 +585,7 @@ public final class FunctionTriggerSync implements TriggerSync {
 
     /// spec `function-public-routes.md` §2: this function's `fn_routes` rows
     /// need no code here at all — `fn_routes_function_id_fkey` is
-    /// `ON DELETE CASCADE` (`V12__functions.sql`), so they are gone the
+    /// `ON DELETE CASCADE` (`V13__functions.sql`), so they are gone the
     /// instant `DeleteFunction` deletes the function row itself, in the same
     /// transaction. `FunctionTriggerSyncTest` asserts this directly rather
     /// than trusting the schema silently.

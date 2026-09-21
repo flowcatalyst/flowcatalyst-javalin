@@ -162,18 +162,21 @@ public final class SubscriptionEvents {
 
     /// The rollup emitted by [SyncSubscriptions]: subject
     /// `platform.subscriptions.{applicationCode}`, message group per
-    /// application (spec X-08, ruled 2026-09-01 — see [#messageGroup()]).
-    public record SubscriptionsSynced(EventMetadata metadata, String applicationCode, int created, int updated,
-                                      int deleted, List<String> syncedCodes) implements DomainEvent {
+    /// application (spec X-08, ruled 2026-09-01 — see [#messageGroup()]),
+    /// plus `clientId` — a subscription sync is also scoped to one client
+    /// (`code-first-connections.md` §3; mirrors
+    /// [io.flowcatalyst.platform.connection.operations.ConnectionEvents.ConnectionsSynced]).
+    public record SubscriptionsSynced(EventMetadata metadata, String applicationCode, String clientId, int created,
+                                      int updated, int deleted, List<String> syncedCodes) implements DomainEvent {
 
         public SubscriptionsSynced {
             syncedCodes = syncedCodes == null ? List.of() : List.copyOf(syncedCodes);
         }
 
-        public static SubscriptionsSynced of(ExecutionContext ec, String applicationCode, int created, int updated,
-                                             int deleted, List<String> syncedCodes) {
+        public static SubscriptionsSynced of(ExecutionContext ec, String applicationCode, String clientId, int created,
+                                             int updated, int deleted, List<String> syncedCodes) {
             return new SubscriptionsSynced(EventMetadata.of(ec, SYNCED, SOURCE, syncSubjectFor(applicationCode)),
-                    applicationCode, created, updated, deleted, syncedCodes);
+                    applicationCode, clientId, created, updated, deleted, syncedCodes);
         }
 
         /// One FIFO lane per application (spec X-08): `platform:subscriptions:<code>`,
@@ -187,10 +190,11 @@ public final class SubscriptionEvents {
 
         @Override
         public Object data() {
-            return new Data(applicationCode, created, updated, deleted, syncedCodes);
+            return new Data(applicationCode, clientId, created, updated, deleted, syncedCodes);
         }
 
-        private record Data(String applicationCode, int created, int updated, int deleted, List<String> syncedCodes) {
+        private record Data(String applicationCode, String clientId, int created, int updated, int deleted,
+                            List<String> syncedCodes) {
         }
     }
 }

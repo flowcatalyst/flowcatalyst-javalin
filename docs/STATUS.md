@@ -55,7 +55,7 @@ Java-first, no Go counterpart. Design `docs/function-runner-plan.md` (§10 decis
 `docs/function-runner-workplan.md`. Split: orchestrator writes the spec, `sonnet` writes the code,
 every load-bearing behaviour mutation-checked (spec §8 tables name the mutants).
 
-- **Package A landed** (`2a5ba6f8`..`1170c382`): spec `docs/spec/function-registry.md`; `V12__functions.sql`
+- **Package A landed** (`2a5ba6f8`..`1170c382`): spec `docs/spec/function-registry.md`; `V13__functions.sql`
   (seven Java-only `fn_` tables); `platform/function/` — addresses, route patterns, manifest
   (strict + stored readers, limits frozen at publish), entities, repositories; `Env.functionLimits`
   (`FC_FN_*`). Server suite 4495 run, 1 failure — the one below.
@@ -229,6 +229,43 @@ every load-bearing behaviour mutation-checked (spec §8 tables name the mutants)
   (survivors on six slices); restore a mutated file from a copy, never `git checkout`; tell coders
   not to spawn forks (one slice was implemented five times concurrently in one tree); `caffeinate -dims`.
 
+## Application-owned connections and the code-first connection sync (owner rulings 2026-09-21)
+
+Mirrors Go `56aea7c`, `291ae7a`, `f06ebc2`, `774a18b`, `abcd9fa` and the SDK commits `bb1b483`,
+`be8a52f`, `a2c093b`, `f7b472d`, `bb660d5`. Contract: `docs/go-mirror/2026-09-21-code-first-connections-handoff.md`
+(the owner's hand-off, copied); Java spec `docs/spec/code-first-connections.md`. Last synced Go
+commit for this unit: `52993a0`.
+
+- **K1** `d3dd8638` — lockfile; `V12__connection_application_scope.sql` = Go 056 statement for
+  statement, pre-checks included; Go schema fixture re-dumped at goose 56; the key is
+  `(application_code, client_id, code)` with **NULL a value** (`findByCode`, replaced not overloaded,
+  in both repositories); connection create/update take `applicationCode`.
+- **K2** `29482a38` — `POST /api/applications/{appCode}/connections/sync`; ownership = application
+  AND client AND source API/CODE; the application's service account always; `removeUnlisted` refuses
+  as a whole on a referenced connection; five permissions, role grants, `roles/sync-platform` grants
+  them to existing roles; rollup event + seeded schema.
+- **K3** `fd2f828d` — subscription sync is client-scoped; `connectionCode` within an explicit
+  namespace, **no fallback either way**; the mismatch and scope errors; legacy requests unchanged;
+  router release/deferral log lines; parity scenario `code-first-connections` (Java-first).
+- **K4** `6b9e52b0` (TypeScript + Laravel copies at Go head, `tools/sdk-drift.sh` = 0), `9da62a01` +
+  `84bd1a3b` (the Java `sdk/` port: connections in code and by `@AsConnection`, per-row client,
+  relative targets, merged sets, `DefinitionSyncException` carrying what did sync). End to end in
+  `fcdev`: the real SDK over HTTP with an application's own service account — the test that would
+  have caught "a subscription cannot be defined in code". **No SDK release is cut.**
+
+Reactor green from clean: usecase 30, sdk 85, server 4257, fcdev 113, parity 48.
+**Rollout is the hand-off's:** pre-scan production (`scripts/ops/056-application-scope-prescan.sql`
+in the Go repo), deploy, then `POST /bff/roles/sync-platform` as an anchor or every connection sync
+is 403. Seed fixture rows were added by hand from Go's seed code, not re-dumped.
+
+**For the owner:** (1) Go's git index names `RoleAssignmentDto.php` / `…DtoNormalizer.php` while the
+classes are `…DTO` — PSR-4 cannot autoload them on Linux; fixed here, Go commands in
+`docs/go-mirror/2026-09-21-laravel-sdk-filename-case.md`. (2) The seeded schemas for
+`connection:created` / `:updated` require fields the events never carry — both repos,
+`docs/backlog.md`. (3) `frontend/openapi/openapi.json` is an orphan nothing reads or writes.
+**Done at the merge into `function-service`:** the functions migration moved V12 → V13;
+`FunctionTriggerSync`'s subscription lookups take the three-part key.
+
 ## Next: the verification plan (2026-09-11)
 
 **Start with `docs/verification-plan.md`.** It lays out how to prove Java is
@@ -259,7 +296,7 @@ is adopted from Go's `055_platform_event_schema_version.sql`, which was
 first does the rename and the other's run matches no rows. Pinned by
 `SeededSchemaVersionTest` (four mutants killed: seeder literal, legacy-row
 check, migration scope, collision guard) and `SeederTest.specVersionsMatchGo`.
-The functions migration is `V12__functions.sql` (renumbered from V11 when this merged).
+The functions migration was `V12__functions.sql` from here until the connections unit took V12; it is `V13__functions.sql` now.
 
 ## Dispatch-job deliveries now carry the application's webhook credentials (2026-09-19)
 

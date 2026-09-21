@@ -554,6 +554,91 @@ class PoolTest {
     }
 
     @Test
+    @DisplayName("Go abcd9fa: a group release logs how long the message is held and who asked")
+    void groupReleaseLogsDelayAndReason() {
+        // Same scenario as T4 (a real deferral, honoured), but pinning the
+        // log line rather than the broker call — a release that drops
+        // delay_seconds would read identically whether the group was parked
+        // for 600s or handed back instantly, which is exactly what abcd9fa
+        // fixed in Go.
+        mediator.answer("m0", new MediationOutcome.Deferred(200, 600, "come back later"));
+        var log = (Logger) LoggerFactory.getLogger(Pool.class);
+        var captured = new ListAppender<ILoggingEvent>();
+        captured.start();
+        log.addAppender(captured);
+        try {
+            var p = pool(2, 0);
+
+            IntStream.range(0, 3).forEach(i -> p.submit(ordered("g", "m" + i, DispatchMode.BLOCK_ON_ERROR)));
+
+            await(() -> broker.nacked.size() == 3);
+            assertThat(captured.list)
+                    .as("the release must say how long the message is held (delay_seconds) and who asked (reason)")
+                    .anySatisfy(event -> {
+                        assertThat(event.getLevel()).isEqualTo(Level.INFO);
+                        assertThat(event.getFormattedMessage()).contains("released message group to broker");
+                        assertThat(event.getKeyValuePairs())
+                                .anySatisfy(kv -> {
+                                    assertThat(kv.key).isEqualTo("delay_seconds");
+                                    assertThat(kv.value).isEqualTo(600L);
+                                })
+                                .anySatisfy(kv -> {
+                                    assertThat(kv.key).isEqualTo("reason");
+                                    assertThat(kv.value).isEqualTo("deferred");
+                                })
+                                .anySatisfy(kv -> {
+                                    assertThat(kv.key).isEqualTo("buffered_released");
+                                    assertThat(kv.value).isEqualTo(2);
+                                })
+                                .anySatisfy(kv -> {
+                                    assertThat(kv.key).isEqualTo("group");
+                                    assertThat(kv.value).isEqualTo("g");
+                                });
+                    });
+        } finally {
+            log.detachAppender(captured);
+        }
+    }
+
+    @Test
+    @DisplayName("Go abcd9fa: a 2xx deferral (ack=false) is logged — the one outcome the mediator otherwise says nothing about")
+    void deferredOutcomeIsLogged() {
+        mediator.always("m1", new MediationOutcome.Deferred(200, 45, "not yet"));
+        var log = (Logger) LoggerFactory.getLogger(Pool.class);
+        var captured = new ListAppender<ILoggingEvent>();
+        captured.start();
+        log.addAppender(captured);
+        try {
+            var p = pool(4, 0);
+
+            p.submit(immediate("m1"));
+
+            await(() -> !captured.list.isEmpty());
+            assertThat(captured.list)
+                    .as("a deferral must be logged with the requested delay and status — it is a 2xx to the mediator and logs nothing on its own")
+                    .anySatisfy(event -> {
+                        assertThat(event.getLevel()).isEqualTo(Level.INFO);
+                        assertThat(event.getFormattedMessage()).contains("target deferred message (ack=false)");
+                        assertThat(event.getKeyValuePairs())
+                                .anySatisfy(kv -> {
+                                    assertThat(kv.key).isEqualTo("delay_seconds");
+                                    assertThat(kv.value).isEqualTo(45);
+                                })
+                                .anySatisfy(kv -> {
+                                    assertThat(kv.key).isEqualTo("status");
+                                    assertThat(kv.value).isEqualTo(200);
+                                })
+                                .anySatisfy(kv -> {
+                                    assertThat(kv.key).isEqualTo("message_id");
+                                    assertThat(kv.value).isEqualTo("m1");
+                                });
+                    });
+        } finally {
+            log.detachAppender(captured);
+        }
+    }
+
+    @Test
     @DisplayName("A-01 gate OFF (default): BLOCK_ON_ERROR's untried siblings are released to the broker, not ACKed")
     void blockOnErrorReleasesSiblingsWhenGateIsOff() {
         // R-57: REJECTED is terminal on the first attempt, no bounded retry.

@@ -92,6 +92,7 @@ public enum Permission {
     CONNECTION_UPDATE("platform:messaging:connection:update"),
     CONNECTION_DELETE("platform:messaging:connection:delete"),
     CONNECTION_MANAGE("platform:messaging:connection:manage"),
+    CONNECTION_SYNC("platform:messaging:connection:sync"),
 
     // messaging / subscription
     SUBSCRIPTION_VIEW("platform:messaging:subscription:view"),
@@ -236,6 +237,12 @@ public enum Permission {
     APP_SVC_SUBSCRIPTION_CREATE("platform:application-service:subscription:create"),
     APP_SVC_SUBSCRIPTION_UPDATE("platform:application-service:subscription:update"),
     APP_SVC_SUBSCRIPTION_DELETE("platform:application-service:subscription:delete"),
+
+    // application-service / connection
+    APP_SVC_CONNECTION_VIEW("platform:application-service:connection:view"),
+    APP_SVC_CONNECTION_CREATE("platform:application-service:connection:create"),
+    APP_SVC_CONNECTION_UPDATE("platform:application-service:connection:update"),
+    APP_SVC_CONNECTION_DELETE("platform:application-service:connection:delete"),
 
     // application-service / role
     APP_SVC_ROLE_VIEW("platform:application-service:role:view"),

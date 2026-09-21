@@ -1,6 +1,6 @@
 # Syncing Definitions to FlowCatalyst
 
-This guide covers how to sync your application's roles, event types, and subscriptions to the FlowCatalyst platform.
+This guide covers how to sync your application's roles, event types, connections, and subscriptions to the FlowCatalyst platform.
 
 There are two approaches:
 
@@ -47,7 +47,7 @@ per definition, in this order:
 
 1. **`application:` on the attribute** — supported by *every* definition
    attribute (`AsScheduledJob`, `AsEventType`, `AsRole`, `AsSubscription`,
-   `AsDispatchPool`, `AsProcess`, `AsPermission`).
+   `AsConnection`, `AsDispatchPool`, `AsProcess`, `AsPermission`).
 2. **Longest-prefix match** in `flowcatalyst.definitions.application_map` —
    maps a namespace onto an application code, so a whole module inherits one.
 3. **The default** — `--app` on the command, else `FLOWCATALYST_APP_CODE`.
@@ -230,6 +230,33 @@ use FlowCatalyst\Attributes\AsEventType;
 class OrderPlacedEvent {}
 ```
 
+#### Connections
+
+A connection is application-owned: the platform assigns its service account
+itself (the application's provisioned one), so the definition carries nothing
+environment-specific — no service account id, no secret. It exists so a
+subscription's `connectionCode` has something to resolve.
+
+```php
+<?php
+// app/FlowCatalyst/Connections/OrdersWebhookConnection.php
+
+namespace App\FlowCatalyst\Connections;
+
+use FlowCatalyst\Attributes\AsConnection;
+
+#[AsConnection(
+    code: 'orders-webhook',
+    name: 'Orders Webhook',
+    description: 'Delivers order events to the orders service',
+)]
+class OrdersWebhookConnection {}
+```
+
+Connections are always synced **before** subscriptions in the same run, so a
+subscription's `connectionCode` resolves in that same sync — you don't need
+to sync twice.
+
 #### Subscriptions
 
 ```php
@@ -243,18 +270,64 @@ use FlowCatalyst\Attributes\AsSubscription;
 #[AsSubscription(
     code: 'order-notifications',
     name: 'Order Notifications',
-    target: 'https://myapp.com/webhooks/orders',
+    target: '/webhooks/orders',     // path → resolved against APP_URL at sync
+    connectionCode: 'orders-webhook',
     queue: 'orders',
     dispatchPoolCode: 'default',
-    eventTypeCode: 'order.placed',  // Subscribe to specific event type
+    eventTypes: ['myapp:orders:order:placed'],
     description: 'Sends order notifications to our webhook',
     maxRetries: 5,
-    retryDelaySeconds: 120,
     timeoutSeconds: 30,
-    active: true
 )]
 class OrderNotificationSubscription {}
 ```
+
+`connectionCode` names a connection owned by THIS application by default. To
+reference a **shared** (application-less) connection instead, set
+`sharedConnection: true` — there's no fallback between the two namespaces, so
+picking the wrong one is a 404 (`CONNECTION_NOT_FOUND`), never a silent switch
+to the other connection's credentials.
+
+#### Where events are delivered: `target`
+
+The platform requires a delivery URL for every subscription, so `target` is a
+required argument. The SDK mounts no event-receiving route of its own (unlike
+scheduled jobs), so there is nothing it could default to — you name the route
+your app handles.
+
+`target` takes either form:
+
+- **A path** (`/webhooks/orders`) — recommended. It is joined onto a base URL
+  when you run `flowcatalyst:sync`, so the same class works in every
+  environment. The base is `flowcatalyst.subscriptions.target_base_url`
+  (`FLOWCATALYST_SUBSCRIPTION_TARGET_BASE_URL`) when set, otherwise `app.url`
+  (`APP_URL`).
+- **An absolute URL** (`https://hooks.example.org/orders`) — sent as-is.
+
+Resolution happens at sync time, not scan time, so a definition cache built in
+CI still picks up the host of the environment that runs the sync. Set
+`target_base_url` when the URL the platform must call is not `APP_URL` — a
+tunnel, an internal gateway, or a per-tenant host.
+
+#### Client scoping (single-tenant apps)
+
+`#[AsSubscription]` and `#[AsConnection]` both accept an optional `client:` —
+the FlowCatalyst client (by **identifier slug**, never an id — ids differ per
+environment) the definition belongs to. Resolution order:
+
+1. **`client:` on the attribute**;
+2. **the config default** `flowcatalyst.client` (`FLOWCATALYST_CLIENT`);
+3. **null** — a global (client-less) definition.
+
+```php
+#[AsConnection(code: 'acme-webhook', name: 'Acme Webhook', client: 'acme')]
+class AcmeWebhookConnection {}
+```
+
+This default is for **single-tenant** applications only — one codebase, one
+client (or none). A **multi-tenant** application (one codebase serving many
+clients) doesn't use `client:` at all; see
+[Multi-tenant applications](#multi-tenant-applications) below.
 
 ### Step 3: Scan Definitions
 
@@ -277,6 +350,7 @@ Scan complete!
 | Roles         | 2     |
 | Event Types   | 2     |
 | Subscriptions | 1     |
+| Connections   | 1     |
 +---------------+-------+
 
 Definitions cached to: /var/www/storage/flowcatalyst/definitions.json
@@ -297,7 +371,7 @@ php artisan flowcatalyst:sync
 Output:
 
 ```
-Syncing definitions to application: my-application
+Synced definitions for application: my-application
 
 Sync Summary:
 +---------------+---------+---------+---------+
@@ -305,6 +379,7 @@ Sync Summary:
 +---------------+---------+---------+---------+
 | Roles         | 2       | 0       | 0       |
 | Event Types   | 2       | 0       | 0       |
+| Connections   | 1       | 0       | 0       |
 | Subscriptions | 1       | 0       | 0       |
 +---------------+---------+---------+---------+
 ```
@@ -315,6 +390,7 @@ Options:
 - `--roles` - Sync only roles
 - `--event-types` - Sync only event types
 - `--subscriptions` - Sync only subscriptions
+- `--connections` - Sync only connections
 - `--remove-unlisted` - Remove platform definitions not in your local cache (only removes API-sourced definitions, not UI-created ones)
 - `--dry-run` - Preview what would be synced without making changes
 
@@ -436,7 +512,8 @@ $eventType = EventTypeDefinition::make('article.published', 'Article Published')
 $subscription = SubscriptionDefinition::make(
     code: 'article-webhook',
     name: 'Article Webhook',
-    target: 'https://example.com/webhooks/articles',
+    target: '/webhooks/articles',   // or an absolute URL
+    connectionCode: 'orders-webhook',
     queue: 'webhooks',
     dispatchPoolCode: 'default'
 )
@@ -499,6 +576,7 @@ $crmDefinitions = SyncDefinitionSet::forApplication('crm-service')
             code: 'billing-integration',
             name: 'Billing Integration',
             target: 'https://crm.example.com/webhooks/billing',
+            connectionCode: 'orders-webhook',
             queue: 'integrations',
             dispatchPoolCode: 'default',
             eventTypeCode: 'invoice.created',
@@ -524,6 +602,147 @@ foreach ($results as $appCode => $result) {
     }
 }
 ```
+
+### Multi-tenant applications
+
+A **multi-tenant** application — one codebase, many FlowCatalyst clients —
+doesn't use attributes for connections/subscriptions at all, and doesn't use
+the `flowcatalyst.client` config default either. Attributes are compiled into
+the codebase, but the tenant list is runtime data (a database table, a config
+file, …) that no attribute could express. Build one `SyncDefinitionSet` per
+(application, client) programmatically instead:
+
+- `SyncDefinitionSet::forApplication('integral')` is the **global** set (no
+  client);
+- `->forClient('acme', targetBaseUrl: 'https://acme.example.com')` produces a
+  set bound to that client. The optional `targetBaseUrl` overrides the base
+  URL a path-style subscription target resolves against, **for that set
+  only** — tenants often have their own host.
+
+```php
+use FlowCatalyst\Sync\ConnectionDefinition;
+use FlowCatalyst\Sync\SubscriptionDefinition;
+use FlowCatalyst\Sync\SyncDefinitionSet;
+
+$global = SyncDefinitionSet::forApplication('integral')
+    ->withConnections([
+        ConnectionDefinition::make('shared-webhook', 'Shared Webhook'),
+    ]);
+
+$acme = SyncDefinitionSet::forApplication('integral')
+    ->forClient('acme', targetBaseUrl: 'https://acme.example.com')
+    ->withConnections([
+        ConnectionDefinition::make('acme-webhook', 'Acme Webhook'),
+    ])
+    ->withSubscriptions([
+        SubscriptionDefinition::make(
+            code: 'acme-orders',
+            name: 'Acme Orders',
+            target: '/webhooks/orders',   // resolved against acme.example.com, not APP_URL
+            connectionCode: 'acme-webhook',
+            queue: 'orders',
+            dispatchPoolCode: 'default',
+        )->forEventType('integral:orders:order:created'),
+    ]);
+```
+
+**Ordering is automatic.** Within one set, connections sync before
+subscriptions. Across sets for the same application, the global set syncs
+before any client set — a client-scoped subscription may reference a global
+connection, so it must exist first. Use `syncGrouped()` (rather than
+`syncAll()`) to get this ordering, and one combined result per application,
+when more than one set targets the same application:
+
+```php
+$results = $synchronizer->syncGrouped([$acme, $global], SyncOptions::withRemoveUnlisted());
+
+// One combined SyncResult per application code, regardless of how many
+// sets (global + N clients) targeted it.
+$results['integral']->getTotals();
+```
+
+`removeUnlisted` is applied **per (application, client) call**: everything of
+that scope that a call does not list is deleted. Two consequences:
+
+- **One scope, one call.** `syncGrouped()` merges every set you pass for the
+  same application before syncing, so each (application, client) scope — and
+  each application's roles, event types, pools and processes — reaches the
+  platform exactly once, however many sets contributed to it. `flowcatalyst:sync`
+  uses it for the scanned attributes and every provider's sets together.
+  Calling `sync()` / `syncAll()` yourself with two sets for the same scope does
+  NOT merge them: under `removeUnlisted` the second call deletes what the first
+  just created. Use `syncGrouped()` whenever more than one set can target an
+  application.
+- **The same code twice in one scope is an error**, not a last-one-wins: that
+  type's sync for that scope fails locally, naming the code and the scope, and
+  nothing is sent.
+
+A tenant that stops being yielded is simply no longer synced — its rows are
+NOT removed, and an empty set does not remove them either (a scope with no
+definitions produces no call at all). Offboarding a tenant currently means
+removing its connections and subscriptions in the platform.
+
+#### Wiring tenants into `flowcatalyst:sync`
+
+For the tenant list to be picked up by the `flowcatalyst:sync` artisan
+command (not just your own scripts), implement
+`FlowCatalyst\Sync\ProvidesSyncDefinitionSets` and register it:
+
+```php
+<?php
+// app/FlowCatalyst/TenantDefinitionSetProvider.php
+
+namespace App\FlowCatalyst;
+
+use App\Models\Tenant;
+use FlowCatalyst\Sync\ConnectionDefinition;
+use FlowCatalyst\Sync\ProvidesSyncDefinitionSets;
+use FlowCatalyst\Sync\SubscriptionDefinition;
+use FlowCatalyst\Sync\SyncDefinitionSet;
+
+class TenantDefinitionSetProvider implements ProvidesSyncDefinitionSets
+{
+    public function syncDefinitionSets(): iterable
+    {
+        yield SyncDefinitionSet::forApplication('integral')
+            ->withConnections([
+                ConnectionDefinition::make('shared-webhook', 'Shared Webhook'),
+            ]);
+
+        foreach (Tenant::query()->where('sync_enabled', true)->cursor() as $tenant) {
+            yield SyncDefinitionSet::forApplication('integral')
+                ->forClient($tenant->flowcatalyst_client, targetBaseUrl: $tenant->webhook_base_url)
+                ->withConnections([
+                    ConnectionDefinition::make("{$tenant->slug}-webhook", "{$tenant->name} Webhook"),
+                ])
+                ->withSubscriptions([
+                    SubscriptionDefinition::make(
+                        code: "{$tenant->slug}-orders",
+                        name: "{$tenant->name} Orders",
+                        target: '/webhooks/orders',
+                        connectionCode: "{$tenant->slug}-webhook",
+                        queue: 'orders',
+                        dispatchPoolCode: 'default',
+                    )->forEventType('integral:orders:order:created'),
+                ]);
+        }
+    }
+}
+```
+
+```php
+// config/flowcatalyst.php
+'definitions' => [
+    'set_providers' => [
+        App\FlowCatalyst\TenantDefinitionSetProvider::class,
+    ],
+],
+```
+
+`flowcatalyst:sync` resolves every configured provider from the container and
+syncs every set it yields — grouped and ordered as above — **in addition to**
+whatever the attribute scanner found. `--dry-run` previews every set (labeled
+by application and, for a client set, its client) without syncing.
 
 ### Building Definitions Dynamically
 
@@ -743,7 +962,8 @@ class FlowCatalystSyncProvider extends ServiceProvider
 | ------------------- | ------ | -------- | ---------------------------------------------- |
 | `code`              | string | Yes      | Unique subscription code                       |
 | `name`              | string | Yes      | Human-readable name                            |
-| `target`            | string | Yes      | Webhook URL                                    |
+| `target`            | string | Yes      | Delivery URL — absolute, or a path resolved against `target_base_url` / `APP_URL` at sync |
+| `connectionCode`    | string | Yes      | Connection code — stable across environments   |
 | `queue`             | string | Yes      | Queue name for delivery                        |
 | `dispatchPoolCode`  | string | Yes      | Dispatch pool code                             |
 | `description`       | string | No       | Subscription description                       |
@@ -752,6 +972,23 @@ class FlowCatalystSyncProvider extends ServiceProvider
 | `retryDelaySeconds` | int    | No       | Delay between retries (default: 60)            |
 | `timeoutSeconds`    | int    | No       | Webhook timeout (default: 30)                  |
 | `active`            | bool   | No       | Whether subscription is active (default: true) |
+| `sharedConnection`  | bool   | No       | `connectionCode` names a SHARED (application-less) connection rather than one owned by this application (default: false) |
+| `client`            | string | No       | FlowCatalyst client (identifier slug) this subscription is scoped to. Null = global. For a multi-tenant app, scope the whole SET with `forClient()` instead |
+
+### ConnectionDefinition
+
+A connection carries nothing environment-specific — the platform assigns its
+service account itself.
+
+| Property      | Type   | Required | Description                                    |
+| ------------- | ------ | -------- | ----------------------------------------------- |
+| `code`        | string | Yes      | Unique connection code — stable across environments; what `connectionCode` names |
+| `name`        | string | Yes      | Human-readable name                            |
+| `description` | string | No       | Connection description                         |
+| `externalId`  | string | No       | Your own system's identifier for this connection |
+| `client`      | string | No       | FlowCatalyst client (identifier slug) this connection is scoped to. Null = global. For a multi-tenant app, scope the whole SET with `forClient()` instead |
+
+Fluent builder: `ConnectionDefinition::make($code, $name)->withDescription(...)->withExternalId(...)->forClient(...)`.
 
 ### SyncResult
 
@@ -764,6 +1001,8 @@ class FlowCatalystSyncProvider extends ServiceProvider
 | `hasRoleChanges()`         | bool    | Whether roles were changed         |
 | `hasEventTypeChanges()`    | bool    | Whether event types were changed   |
 | `hasSubscriptionChanges()` | bool    | Whether subscriptions were changed |
+| `hasConnectionChanges()`   | bool    | Whether connections were changed   |
+| `merge($other)`            | SyncResult | Sum this result with another for the SAME application (used internally by `syncGrouped()`) |
 
 ### SyncOptions Factory Methods
 
@@ -774,3 +1013,4 @@ class FlowCatalystSyncProvider extends ServiceProvider
 | `SyncOptions::rolesOnly()`          | Only sync roles                       |
 | `SyncOptions::eventTypesOnly()`     | Only sync event types                 |
 | `SyncOptions::subscriptionsOnly()`  | Only sync subscriptions               |
+| `SyncOptions::connectionsOnly()`    | Only sync connections                 |

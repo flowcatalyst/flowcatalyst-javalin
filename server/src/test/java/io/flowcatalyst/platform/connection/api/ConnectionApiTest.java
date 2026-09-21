@@ -1,6 +1,9 @@
 package io.flowcatalyst.platform.connection.api;
 
 import tools.jackson.databind.JsonNode;
+import io.flowcatalyst.platform.application.Application;
+import io.flowcatalyst.platform.application.ApplicationRepository;
+import io.flowcatalyst.platform.application.ApplicationType;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
@@ -11,6 +14,7 @@ import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
+import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.testpg.TestPg;
 import org.junit.jupiter.api.AfterAll;
@@ -18,6 +22,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.net.http.HttpResponse;
+import java.sql.SQLException;
 import java.util.Locale;
 import java.util.UUID;
 
@@ -49,8 +54,9 @@ class ConnectionApiTest {
             Authenticator.TEST_CLIENTS, CLIENT,
             Authenticator.TEST_PERMISSIONS, "platform:messaging:connection:view,platform:messaging:connection:create,platform:messaging:connection:update"};
 
+    private static final ApplicationRepository apps = new ApplicationRepository(TestPg.dataSource());
     private static final ConnectionApi.State state = new ConnectionApi.State(new ConnectionRepository(TestPg.dataSource()),
-            new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)));
+            apps, new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)));
     private static TestHttp http;
 
     @BeforeAll
@@ -96,6 +102,20 @@ class ConnectionApiTest {
         return body;
     }
 
+    /// Persists a raw application row (spec `code-first-connections.md` §3
+    /// fixture) and returns its (normalised) code.
+    private static String application(String tag) {
+        Application app = Application.create(ApplicationType.APPLICATION, tag + "-" + RUN, tag);
+        try (java.sql.Connection conn = TestPg.dataSource().getConnection()) {
+            conn.setAutoCommit(false);
+            apps.persist(app, DbTx.wrapForBootstrap(conn));
+            conn.commit();
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        return app.code();
+    }
+
     // ── Happy paths ────────────────────────────────────────────────────────
 
     @Test
@@ -115,8 +135,10 @@ class ConnectionApiTest {
         assertThat(created.has("clientIdentifier")).as("null clientIdentifier omitted").isFalse();
         assertThat(created.get("createdAt").asText()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z");
         assertThat(created.get("updatedAt").asText()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z");
+        assertThat(created.get("source").asText()).as("admin create always stamps UI").isEqualTo("UI");
+        assertThat(created.has("applicationCode")).as("null applicationCode omitted").isFalse();
         assertThat(created.propertyNames()).containsExactly("id", "code", "name", "description", "externalId",
-                "status", "serviceAccountId", "createdAt", "updatedAt");
+                "status", "source", "serviceAccountId", "createdAt", "updatedAt");
 
         // GET by id returns the same shape.
         var get = http.get("/api/connections/" + id, ANCHOR);
@@ -255,6 +277,34 @@ class ConnectionApiTest {
         var denied = http.post("/api/connections/" + platformId + "/pause", null, CLIENT_WRITER);
         assertThat(denied.statusCode()).isEqualTo(403);
         assertThat(json(denied).get("error").asText()).isEqualTo("SCOPE_FORBIDDEN");
+    }
+
+    /// `applicationCode` end to end (spec §3): an unknown code 404s, the
+    /// created/updated row round-trips it on the wire, and update cannot
+    /// clear it by omission.
+    @Test
+    void applicationCodeRoundTripsAndAnUnknownCode404s() {
+        String appCode = application("connapi-app");
+
+        var unknown = http.post("/api/connections", createBody(code("connapi-app-unknown"), "X",
+                ",\"applicationCode\":\"app-does-not-exist-" + RUN + "\""), ANCHOR);
+        assertThat(unknown.statusCode()).isEqualTo(404);
+        assertThat(json(unknown).get("error").asText()).isEqualTo("Application_NOT_FOUND");
+
+        var created = create(code("connapi-app-ok"), "App Owned", ",\"applicationCode\":\"" + appCode + "\"");
+        assertThat(created.get("applicationCode").asText()).isEqualTo(appCode);
+        String id = created.get("id").asText();
+
+        // Omitting applicationCode on update leaves the current owner alone.
+        var put = http.put("/api/connections/" + id, "{\"name\":\"App Owned Renamed\"}", ANCHOR);
+        assertThat(put.statusCode()).as(put.body()).isEqualTo(204);
+        var reloaded = json(http.get("/api/connections/" + id, ANCHOR));
+        assertThat(reloaded.get("applicationCode").asText()).isEqualTo(appCode);
+
+        var updateUnknown = http.put("/api/connections/" + id,
+                "{\"name\":\"X\",\"applicationCode\":\"app-does-not-exist-" + RUN + "\"}", ANCHOR);
+        assertThat(updateUnknown.statusCode()).isEqualTo(404);
+        assertThat(json(updateUnknown).get("error").asText()).isEqualTo("Application_NOT_FOUND");
     }
 
     @Test

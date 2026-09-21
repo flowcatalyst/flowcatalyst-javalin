@@ -8,10 +8,13 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
-/// The subscription aggregate root (spec: `docs/spec/subscription.md`). A
-/// subscription binds event-type patterns to a delivery endpoint (optionally
-/// through a connection) with the dispatch settings the router applies. It
-/// is unique per `(code, clientId)`; a `null` client means platform-wide.
+/// The subscription aggregate root (spec: `docs/spec/subscription.md`,
+/// `docs/spec/code-first-connections.md` §2). A subscription binds
+/// event-type patterns to a delivery endpoint (optionally through a
+/// connection) with the dispatch settings the router applies. It is unique
+/// per `(applicationCode, clientId, code)`, `NULL` a real value on both
+/// nullable parts — not per `(code, clientId)` alone; a `null` client means
+/// platform-wide, a `null` applicationCode means shared (no application).
 ///
 /// Immutable record: each transition returns a copy, so an operation is just
 /// load → transition → event. The two status transitions are unconditional

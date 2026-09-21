@@ -3,7 +3,11 @@ package io.flowcatalyst.platform.sdksync.api;
 import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ApplicationType;
+import io.flowcatalyst.platform.client.Client;
+import io.flowcatalyst.platform.client.ClientIdentifier;
+import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
+import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
 import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository;
 import io.flowcatalyst.platform.docs.AppDocRepository;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
@@ -25,15 +29,21 @@ import io.flowcatalyst.platform.subscription.SubscriptionRepository;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.testpg.TestPg;
 import tools.jackson.databind.JsonNode;
+import org.jooq.SQLDialect;
+import org.jooq.impl.DSL;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.net.http.HttpResponse;
+import java.sql.SQLException;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.Locale;
 import java.util.UUID;
 
+import static io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// The ten SDK self-registration routes end to end (`docs/spec/sdksync.md`):
@@ -45,9 +55,16 @@ class SdkSyncApiTest {
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
     private static final String APP = "sdksync" + RUN;
     private static final String OTHER_APP = "sdkother" + RUN;
+    /// A separate application, WITH a provisioned service account — every
+    /// other route here needs none, but `connections/sync` refuses without
+    /// one (`APPLICATION_SERVICE_ACCOUNT_REQUIRED`), so [#APP] itself must
+    /// stay bare (other routes' `unknownApplicationIsNotFound`-style
+    /// assumptions are unaffected either way).
+    private static final String CONN_APP = "sdksyncconn" + RUN;
 
     private static final UnitOfWork UOW = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
     private static final ApplicationRepository APPS = new ApplicationRepository(TestPg.dataSource());
+    private static final ClientRepository CLIENTS = new ClientRepository(TestPg.dataSource());
 
     /// A real TSID: `client_id` is `varchar(17)`, so a readable string like
     /// `cli_sdksync_<run>` overflows the column.
@@ -55,6 +72,8 @@ class SdkSyncApiTest {
 
     private static String appId;
     private static String otherAppId;
+    private static String connAppId;
+    private static Client connClient;
     private static TestHttp http;
 
     /// An anchor: every permission, every application.
@@ -81,10 +100,13 @@ class SdkSyncApiTest {
     static void start() {
         appId = seedApplication(APP);
         otherAppId = seedApplication(OTHER_APP);
+        connAppId = seedApplicationWithServiceAccount(CONN_APP);
+        connClient = seedClient("sdksyncconncli");
 
         var state = new SdkSyncApi.State(APPS,
                 new EventTypeRepository(TestPg.dataSource()), new RoleRepository(TestPg.dataSource()),
                 new SubscriptionRepository(TestPg.dataSource()), new ConnectionRepository(TestPg.dataSource()),
+                CLIENTS,
                 new ProcessRepository(TestPg.dataSource()), new DispatchPoolRepository(TestPg.dataSource()),
                 new ScheduledJobRepository(TestPg.dataSource()), new OpenApiSpecRepository(TestPg.dataSource()),
                 new AppDocRepository(TestPg.dataSource()), new PrincipalRepository(TestPg.dataSource()), UOW,
@@ -112,6 +134,47 @@ class SdkSyncApiTest {
             return null;
         });
         return app.id();
+    }
+
+    /// `app_applications.service_account_id` is FK'd to `iam_principals.id`
+    /// (a `SERVICE`-typed principal) — `connections/sync` refuses without one.
+    private static String seedApplicationWithServiceAccount(String code) {
+        var app = Application.create(ApplicationType.INTEGRATION, code, code + " app")
+                .attachServiceAccount(servicePrincipal(code));
+        UOW.inTransaction(tx -> {
+            APPS.persist(app, tx.dbTx());
+            return null;
+        });
+        return app.id();
+    }
+
+    private static String servicePrincipal(String tag) {
+        String id = EntityType.SERVICE_ACCOUNT.generate();
+        var now = OffsetDateTime.now(ZoneOffset.UTC);
+        DSL.using(TestPg.dataSource(), SQLDialect.POSTGRES).insertInto(IAM_PRINCIPALS)
+                .set(IAM_PRINCIPALS.ID, id).set(IAM_PRINCIPALS.TYPE, "SERVICE")
+                .set(IAM_PRINCIPALS.NAME, "sa " + tag).set(IAM_PRINCIPALS.ACTIVE, true)
+                .set(IAM_PRINCIPALS.SERVICE_ACCOUNT_ID, id)
+                .set(IAM_PRINCIPALS.CREATED_AT, now).set(IAM_PRINCIPALS.UPDATED_AT, now).execute();
+        return id;
+    }
+
+    /// A real client, for the connection sync's `clientId` id-or-identifier-
+    /// slug resolution (hand-off "Connection sync (new)").
+    private static Client seedClient(String tag) {
+        Client c = Client.create(tag, ClientIdentifier.parse(tag + "-" + RUN));
+        try (java.sql.Connection conn = TestPg.dataSource().getConnection()) {
+            conn.setAutoCommit(false);
+            CLIENTS.persist(c, DbTx.wrapForBootstrap(conn));
+            conn.commit();
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        return c;
+    }
+
+    private static String connSyncPath() {
+        return "/api/applications/" + CONN_APP + "/connections/sync";
     }
 
     private static JsonNode json(HttpResponse<String> r) {
@@ -188,6 +251,101 @@ class SdkSyncApiTest {
                 boundTo(otherAppId, "platform:iam:role:manage"));
         assertThat(r.statusCode()).as("body was: %s", r.body()).isEqualTo(403);
         assertThat(json(r).get("error").asText()).isEqualTo("FORBIDDEN");
+    }
+
+    // ── Connections (code-first-connections.md §3, tests C9 + C10) ──────────
+
+    private static String connBody(String code) {
+        return "{\"connections\":[{\"code\":\"" + code + "\",\"name\":\"C\"}]}";
+    }
+
+    /// C10: each of the five permissions in the route's any-of gate admits
+    /// ALONE (mutant: remove one from `Checks.requireAny(...)` — the ONE
+    /// test using exactly that permission then 403s).
+    @Test
+    @DisplayName("connections sync: each of the five gate permissions alone admits")
+    void connectionsSyncEachOfTheFivePermissionsAloneAdmits() {
+        String[] perms = {
+                "platform:messaging:connection:sync",
+                "platform:messaging:connection:manage",
+                "platform:application-service:connection:create",
+                "platform:application-service:connection:update",
+                "platform:application-service:connection:delete"};
+        for (String perm : perms) {
+            String code = "c10-" + perm.replace(':', '-') + "-" + RUN;
+            var r = post(connSyncPath(), connBody(code), boundTo(connAppId, perm));
+            assertThat(r.statusCode()).as("permission '%s' alone, body: %s", perm, r.body()).isEqualTo(200);
+            assertThat(json(r).get("created").asInt()).isEqualTo(1);
+        }
+    }
+
+    @Test
+    @DisplayName("connections sync: none of the five is 403 PERMISSION_REQUIRED")
+    void connectionsSyncWithNoneOfTheFivePermissionsIs403() {
+        var r = post(connSyncPath(), connBody("c10-none-" + RUN), boundTo(connAppId, "platform:messaging:connection:view"));
+        assertThat(r.statusCode()).isEqualTo(403);
+        assertThat(json(r).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+    }
+
+    /// C9's HTTP-level half: `clientId` resolves by id OR identifier slug
+    /// before authorization, and an unknown reference is 404.
+    @Test
+    @DisplayName("connections sync: clientId resolves by id or identifier slug")
+    void connectionsSyncResolvesClientByIdOrIdentifierSlug() {
+        String byId = "c9-byid-" + RUN;
+        var r1 = post(connSyncPath(),
+                "{\"clientId\":\"" + connClient.id() + "\",\"connections\":[{\"code\":\"" + byId + "\",\"name\":\"ById\"}]}", anchor());
+        assertThat(r1.statusCode()).as("body: %s", r1.body()).isEqualTo(200);
+
+        String bySlug = "c9-byslug-" + RUN;
+        // Upper-cased on purpose — identifiers are normalised lower-case at create time.
+        var r2 = post(connSyncPath(),
+                "{\"clientId\":\"" + connClient.identifier().toUpperCase(Locale.ROOT)
+                        + "\",\"connections\":[{\"code\":\"" + bySlug + "\",\"name\":\"BySlug\"}]}", anchor());
+        assertThat(r2.statusCode()).as("body: %s", r2.body()).isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("connections sync: an unknown clientId is 404 Client_NOT_FOUND")
+    void connectionsSyncUnknownClientIsNotFound() {
+        var r = post(connSyncPath(),
+                "{\"clientId\":\"does-not-exist-" + RUN + "\",\"connections\":[]}", anchor());
+        assertThat(r.statusCode()).isEqualTo(404);
+        assertThat(json(r).get("error").asText()).isEqualTo("Client_NOT_FOUND");
+    }
+
+    // ── Subscriptions (code-first-connections.md §3) — the same HTTP-level
+    // clientId resolution as connections, now on the subscriptions route too.
+
+    /// The subscriptions route resolves `clientId` the same way the
+    /// connections route does — by id OR identifier slug, before authorization.
+    @Test
+    @DisplayName("subscriptions sync: clientId resolves by id or identifier slug")
+    void subscriptionsSyncResolvesClientByIdOrIdentifierSlug() {
+        String byId = "subc9-byid-" + RUN;
+        var r1 = post(syncPath("subscriptions"),
+                "{\"clientId\":\"" + connClient.id() + "\",\"subscriptions\":[{\"code\":\"" + byId + "\",\"name\":\"ById\",\"target\":\"https://example.test/"
+                        + byId + "\",\"eventTypes\":[{\"eventTypeCode\":\"test:a:b:c\"}]}]}", anchor());
+        assertThat(r1.statusCode()).as("body: %s", r1.body()).isEqualTo(200);
+        assertThat(json(r1).get("created").asInt()).isEqualTo(1);
+
+        String bySlug = "subc9-byslug-" + RUN;
+        // Upper-cased on purpose — identifiers are normalised lower-case at create time.
+        var r2 = post(syncPath("subscriptions"),
+                "{\"clientId\":\"" + connClient.identifier().toUpperCase(Locale.ROOT)
+                        + "\",\"subscriptions\":[{\"code\":\"" + bySlug + "\",\"name\":\"BySlug\",\"target\":\"https://example.test/"
+                        + bySlug + "\",\"eventTypes\":[{\"eventTypeCode\":\"test:a:b:c\"}]}]}", anchor());
+        assertThat(r2.statusCode()).as("body: %s", r2.body()).isEqualTo(200);
+        assertThat(json(r2).get("created").asInt()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("subscriptions sync: an unknown clientId is 404 Client_NOT_FOUND")
+    void subscriptionsSyncUnknownClientIsNotFound() {
+        var r = post(syncPath("subscriptions"),
+                "{\"clientId\":\"does-not-exist-" + RUN + "\",\"subscriptions\":[]}", anchor());
+        assertThat(r.statusCode()).isEqualTo(404);
+        assertThat(json(r).get("error").asText()).isEqualTo("Client_NOT_FOUND");
     }
 
     // ── Happy paths ────────────────────────────────────────────────────────

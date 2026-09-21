@@ -4,7 +4,7 @@ package io.flowcatalyst.platform.subscription;
 /// `API` (application sync), `UI` (admin create), or `FUNCTION` (created by
 /// the function platform at promote, `function-invocation.md` §4.1, ruling
 /// R6 — a deliberate divergence from Go: `chk_msg_subscriptions_source` is
-/// widened for it in `V12`, and `SchemaFingerprintTest` /
+/// widened for it in `V13`, and `SchemaFingerprintTest` /
 /// `GoAdoptionTest` each carry a named, exact allowance for that one
 /// constraint line). Sync updates and removes `API`/`CODE` rows only;
 /// `UI` and `FUNCTION` rows are never touched by an application SDK sync

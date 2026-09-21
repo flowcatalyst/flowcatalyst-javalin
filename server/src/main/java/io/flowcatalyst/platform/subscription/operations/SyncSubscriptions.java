@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.subscription.operations;
 
+import io.flowcatalyst.platform.connection.Connection;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
 import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository;
 import io.flowcatalyst.platform.subscription.Subscription;
@@ -23,17 +24,21 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-/// Bulk-upserts an application SDK's subscription catalogue in one
-/// transaction (spec §7). Rows are matched by code among the subscriptions
-/// stamped with the application's code: `API`/`CODE`-sourced matches are
-/// updated, `UI`-authored matches are skipped, new codes are created
-/// `API`-sourced, and with `removeUnlisted` the `API`/`CODE` rows absent
-/// from the batch are hard-deleted. One per-row event per row touched plus
-/// one [SubscriptionsSynced] rollup.
+/// Bulk-upserts an application SDK's subscription catalogue, scoped to
+/// `(applicationCode, clientId)`, in one transaction (spec §7,
+/// `docs/spec/code-first-connections.md` §3). Rows are matched by code among
+/// the subscriptions owned by `(applicationCode, clientId)` — `NULL` client
+/// matches `NULL` only
+/// ([SubscriptionRepository#findByApplicationAndClient]): `API`/`CODE`-sourced
+/// matches are updated, `UI`-authored matches are skipped, new codes are
+/// created `API`-sourced with the request's client, and with `removeUnlisted`
+/// the owned `API`/`CODE` rows absent from the batch are hard-deleted. One
+/// per-row event per row touched plus one [SubscriptionsSynced] rollup.
 ///
 /// Authorization is resource-level against the application the sync is
-/// scoped to ([Access#checkApplicationAccess]); the coarse sync permission
-/// and the `appCode → id` resolution belong to the sdksync handler.
+/// scoped to, and — when `clientId` is given — the client too
+/// ([Access#checkSyncAccess]); the coarse sync permission and the
+/// `appCode`/`clientId` resolution belong to the sdksync handler.
 public final class SyncSubscriptions {
 
     private SyncSubscriptions() {
@@ -47,37 +52,42 @@ public final class SyncSubscriptions {
                             "Application code is required");
                     cmd.subscriptions().forEach(SyncSubscriptions::validateInput);
                 })
-                .authorize(cmd -> Access.checkApplicationAccess(cmd.applicationId(), cmd.applicationCode()))
+                .authorize(cmd -> Access.checkSyncAccess(cmd.applicationId(), cmd.applicationCode(), cmd.clientId()))
                 .execute((cmd, ec) -> {
-                    // Every named connection must exist before anything is written (spec §6).
-                    for (SyncSubscriptionInput in : cmd.subscriptions()) {
-                        if (in.connectionId() != null && connections.findById(in.connectionId()).isEmpty()) {
-                            throw UseCaseException.notFound("CONNECTION_NOT_FOUND",
-                                    "Connection '" + in.connectionId() + "' not found");
-                        }
+                    List<SyncSubscriptionInput> subs = cmd.subscriptions();
+
+                    // Resolve every subscription's connection to an id FIRST (spec §3):
+                    // wherever it is named, its scope must be consistent with this
+                    // sync's client before anything is written.
+                    String[] resolvedConnectionIds = new String[subs.size()];
+                    for (int i = 0; i < subs.size(); i++) {
+                        resolvedConnectionIds[i] = resolveConnectionId(subs.get(i), cmd, connections);
                     }
 
-                    Map<String, Subscription> existingByCode = repo.findByApplicationCode(cmd.applicationCode()).stream()
+                    Map<String, Subscription> existingByCode = repo.findByApplicationAndClient(cmd.applicationCode(), cmd.clientId()).stream()
                             .collect(Collectors.toMap(Subscription::code, Function.identity(), (a, _) -> a, LinkedHashMap::new));
-                    Set<String> incomingCodes = cmd.subscriptions().stream()
+                    Set<String> incomingCodes = subs.stream()
                             .map(SyncSubscriptionInput::code).collect(Collectors.toSet());
 
-                    var saves = new ArrayList<SyncSave<Subscription>>(cmd.subscriptions().size());
+                    var saves = new ArrayList<SyncSave<Subscription>>(subs.size());
                     var deletes = new ArrayList<SyncDelete<Subscription>>();
                     int created = 0;
                     int updated = 0;
-                    for (SyncSubscriptionInput in : cmd.subscriptions()) {
+                    for (int i = 0; i < subs.size(); i++) {
+                        SyncSubscriptionInput in = subs.get(i);
+                        String resolvedConnectionId = resolvedConnectionIds[i];
                         Subscription existing = existingByCode.get(in.code());
                         if (existing != null) {
                             if (!existing.source().isSyncManaged()) continue; // UI-authored rows are never touched
-                            Subscription s = applyInput(existing, in, pools);
+                            Subscription s = applyInput(existing, in, resolvedConnectionId, pools);
                             saves.add(new SyncSave<>(s, SubscriptionUpdated.of(ec, s)));
                             updated++;
                         } else {
                             Subscription s = applyInput(Subscription.create(in.code(), in.name(), in.target())
                                     .withApplicationCode(cmd.applicationCode())
+                                    .withClientId(cmd.clientId())
                                     .withSource(SubscriptionSource.API)
-                                    .withCreatedBy(ec.principalId()), in, pools);
+                                    .withCreatedBy(ec.principalId()), in, resolvedConnectionId, pools);
                             saves.add(new SyncSave<>(s, SubscriptionCreated.of(ec, s)));
                             created++;
                         }
@@ -88,14 +98,16 @@ public final class SyncSubscriptions {
                                 .forEach(s -> deletes.add(new SyncDelete<>(s, SubscriptionDeleted.of(ec, s))));
                     }
 
-                    List<String> syncedCodes = cmd.subscriptions().stream().map(SyncSubscriptionInput::code).toList();
-                    var rollup = SubscriptionsSynced.of(ec, cmd.applicationCode(), created, updated, deletes.size(), syncedCodes);
+                    List<String> syncedCodes = subs.stream().map(SyncSubscriptionInput::code).toList();
+                    var rollup = SubscriptionsSynced.of(ec, cmd.applicationCode(), cmd.clientId(),
+                            created, updated, deletes.size(), syncedCodes);
                     return Plan.sync(repo, saves, deletes, rollup);
                 });
     }
 
     /// The sync row rules (spec §4): presence only — no code normalisation, no
-    /// URL format check.
+    /// URL format check. `sharedConnection` requires `connectionCode`
+    /// (`code-first-connections.md` §3).
     private static void validateInput(SyncSubscriptionInput in) {
         UseCaseException.requireNonBlank(in.code(), "CODE_REQUIRED", "Subscription code is required");
         UseCaseException.requireNonBlank(in.name(), "NAME_REQUIRED", "Subscription name is required");
@@ -103,6 +115,70 @@ public final class SyncSubscriptions {
         if (in.eventTypes().isEmpty()) {
             throw UseCaseException.validation("EVENT_TYPES_REQUIRED", "At least one event type is required");
         }
+        if (in.sharedConnection() && (in.connectionCode() == null || in.connectionCode().isBlank())) {
+            throw UseCaseException.validation("SHARED_CONNECTION_REQUIRES_CODE",
+                    "Subscription '" + in.code() + "': sharedConnection requires connectionCode");
+        }
+    }
+
+    /// Resolves one input's connection to an id, however it was named
+    /// (`code-first-connections.md` §3):
+    ///
+    ///   - `connectionCode` set: the namespace is EXPLICIT, never guessed — a
+    ///     bare code names a connection owned by THIS application;
+    ///     `sharedConnection` switches to the shared (application-less)
+    ///     namespace. No fallback between the two. Within that namespace, a
+    ///     client-scoped sync prefers its own client's connection, falling
+    ///     back to a global one; a client-less sync only ever resolves a
+    ///     global connection (the fallback lookup below IS that resolution
+    ///     when `cmd.clientId()` is `null`, since `findByCode(..., null)`
+    ///     only matches a `NULL` `client_id`). Not found → `404
+    ///     CONNECTION_NOT_FOUND`. When `connectionId` is ALSO given, it must
+    ///     name the same connection → `400 CONNECTION_MISMATCH`.
+    ///   - `connectionId` only: an id can name ANY row, so its scope needs an
+    ///     explicit check — its client must be absent or equal to this
+    ///     sync's client (`400 CONNECTION_SCOPE_MISMATCH`: a global sync may
+    ///     never point at a client-owned connection), and its application
+    ///     must be absent (shared, usable by anyone) or equal to this sync's
+    ///     application (`400 CONNECTION_SCOPE_MISMATCH`: a connection signs
+    ///     deliveries with its application's credentials, so an id must not
+    ///     reach across).
+    ///   - Neither given: `null` (clears any existing link).
+    private static String resolveConnectionId(SyncSubscriptionInput in, SyncSubscriptionsCommand cmd, ConnectionRepository connections) {
+        if (in.connectionCode() != null && !in.connectionCode().isBlank()) {
+            String code = in.connectionCode().strip();
+            String namespaceAppCode = in.sharedConnection() ? null : cmd.applicationCode();
+
+            Connection c = null;
+            if (cmd.clientId() != null) {
+                c = connections.findByCode(code, namespaceAppCode, cmd.clientId()).orElse(null);
+            }
+            if (c == null) {
+                c = connections.findByCode(code, namespaceAppCode, null).orElse(null);
+            }
+            if (c == null) {
+                throw UseCaseException.notFound("CONNECTION_NOT_FOUND", "Connection with code '" + code + "' not found");
+            }
+            if (in.connectionId() != null && !in.connectionId().equals(c.id())) {
+                throw UseCaseException.validation("CONNECTION_MISMATCH",
+                        "Subscription '" + in.code() + "': connectionId and connectionCode name different connections");
+            }
+            return c.id();
+        }
+        if (in.connectionId() == null) {
+            return null;
+        }
+        Connection c = connections.findById(in.connectionId())
+                .orElseThrow(() -> UseCaseException.notFound("CONNECTION_NOT_FOUND", "Connection '" + in.connectionId() + "' not found"));
+        if (c.clientId() != null && (cmd.clientId() == null || !c.clientId().equals(cmd.clientId()))) {
+            throw UseCaseException.validation("CONNECTION_SCOPE_MISMATCH",
+                    "Subscription '" + in.code() + "': connection '" + in.connectionId() + "' is scoped to a different client");
+        }
+        if (c.applicationCode() != null && !c.applicationCode().equals(cmd.applicationCode())) {
+            throw UseCaseException.validation("CONNECTION_SCOPE_MISMATCH",
+                    "Subscription '" + in.code() + "': connection '" + in.connectionId() + "' belongs to a different application");
+        }
+        return in.connectionId();
     }
 
     /// Writes a batch row onto a subscription (spec §7): name, description,
@@ -110,11 +186,11 @@ public final class SyncSubscriptions {
     /// are replaced; `maxRetries` / `timeoutSeconds` only when present; the
     /// dispatch pool is re-resolved only when a code is given; `mode` is
     /// deliberately ignored.
-    private static Subscription applyInput(Subscription s, SyncSubscriptionInput in, DispatchPoolRepository pools) {
+    private static Subscription applyInput(Subscription s, SyncSubscriptionInput in, String resolvedConnectionId, DispatchPoolRepository pools) {
         Subscription out = s.withName(in.name())
                 .withDescription(in.description())
                 .withEndpoint(in.target())
-                .withConnectionId(in.connectionId())
+                .withConnectionId(resolvedConnectionId)
                 .withEventTypes(in.eventTypes().stream().map(SyncEventTypeBindingInput::toBinding).toList())
                 .withDataOnly(in.dataOnly());
         if (in.maxRetries() != null) out = out.withMaxRetries(in.maxRetries());

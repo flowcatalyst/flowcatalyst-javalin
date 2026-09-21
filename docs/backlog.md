@@ -1575,3 +1575,20 @@ first-party (our SDKs and outbox processors, each an authenticated service accou
 write path to defend against ourselves. Functions stay enforced (R13) because they run code the
 platform did not write. **Reopen when** a producer that is not ours gets ingest credentials — a
 partner integration, a tenant-issued service account — and then as log-then-enforce.
+
+## Seeded event schemas that the events themselves do not satisfy (2026-09-21, **owner**, both repos)
+
+Found while pinning `platform:admin:connection:synced` against its seeded JSON schema. The seeded
+schema for `platform:admin:connection:created` **requires** `endpoint` and `serviceAccountId`; the
+event (`ConnectionCreated`, Java and Go alike) carries `connectionId`, `code`, `name` and nothing
+else. `connection:updated`'s schema requires `code`; the event carries `connectionId` and `name`.
+Every schema is `additionalProperties: false`, so a consumer that validates a platform event
+against the schema the platform itself publishes for it **rejects every one of these events**.
+
+Nothing checks this today: the catalogue is seeded from one hand-written table
+(`PlatformEventSchemas` / Go `seed/event_schemas.go`) and the events are written elsewhere. Only
+the two `:synced` rollups are pinned (this unit). **Suggested unit:** one test per platform — every
+`DomainEvent` record the platform can emit, built from a representative aggregate, validates
+against the seeded schema for its type — then fix whichever side is wrong, type by type (the
+schema is probably the stale one: connections lost their `endpoint` when subscriptions took it).
+It is a wire contract with subscribers, so which side moves is the owner's call.

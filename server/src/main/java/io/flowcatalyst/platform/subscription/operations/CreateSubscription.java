@@ -38,7 +38,10 @@ public final class CreateSubscription {
                 .authorize(cmd -> Checks.checkScopeAccess(Auth.current(), cmd.clientId()))
                 .execute((cmd, ec) -> {
                     String code = SubscriptionCode.parse(cmd.code()).value();
-                    if (repo.findByCodeAndClient(code, cmd.clientId()).isPresent()) {
+                    // Admin/API create never stamps applicationCode (null = shared);
+                    // the uniqueness key is (applicationCode, clientId, code) (spec
+                    // code-first-connections.md §2).
+                    if (repo.findByCode(code, null, cmd.clientId()).isPresent()) {
                         throw UseCaseException.conflict("CODE_EXISTS",
                                 "Subscription with code '" + code + "' already exists");
                     }

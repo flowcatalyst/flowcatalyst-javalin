@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict C3ErFwrSiSvMtcFLVYHiR2SGcHXKR4ti35maRwclUNdvL5B43EVnlWBhdtnLotE
+\restrict eOHt7xtG85gR3etO6NCuM6pZeybwjREWWazHWdd63iCFKUZTfVkztZvd5f02WtR
 
 -- Dumped from database version 18.4 (Debian 18.4-1.pgdg13+1)
 -- Dumped by pg_dump version 18.4 (Debian 18.4-1.pgdg13+1)
@@ -596,6 +596,9 @@ CREATE TABLE public.msg_connections (
     client_identifier character varying(100),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    application_code character varying(100),
+    source character varying(20) DEFAULT 'UI'::character varying NOT NULL,
+    CONSTRAINT chk_msg_connections_source CHECK (((source)::text = ANY ((ARRAY['CODE'::character varying, 'API'::character varying, 'UI'::character varying])::text[]))),
     CONSTRAINT chk_msg_connections_status CHECK (((status)::text = ANY ((ARRAY['ACTIVE'::character varying, 'PAUSED'::character varying])::text[])))
 );
 
@@ -4709,13 +4712,6 @@ CREATE INDEX idx_msg_connections_client_id ON public.msg_connections USING btree
 
 
 --
--- Name: idx_msg_connections_code_client; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX idx_msg_connections_code_client ON public.msg_connections USING btree (code, client_id);
-
-
---
 -- Name: idx_msg_connections_service_account; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -5140,13 +5136,6 @@ CREATE INDEX idx_msg_sub_event_types_subscription ON public.msg_subscription_eve
 --
 
 CREATE INDEX idx_msg_subscriptions_client_id ON public.msg_subscriptions USING btree (client_id);
-
-
---
--- Name: idx_msg_subscriptions_code_client; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX idx_msg_subscriptions_code_client ON public.msg_subscriptions USING btree (code, client_id);
 
 
 --
@@ -6634,10 +6623,24 @@ CREATE UNIQUE INDEX uq_iam_client_access_grants_principal_client ON public.iam_c
 
 
 --
+-- Name: uq_msg_connections_app_client_code; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_msg_connections_app_client_code ON public.msg_connections USING btree (COALESCE(application_code, ''::character varying), COALESCE(client_id, ''::character varying), code);
+
+
+--
 -- Name: uq_msg_spec_versions_event_type_version; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX uq_msg_spec_versions_event_type_version ON public.msg_event_type_spec_versions USING btree (event_type_id, version);
+
+
+--
+-- Name: uq_msg_subscriptions_app_client_code; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_msg_subscriptions_app_client_code ON public.msg_subscriptions USING btree (COALESCE(application_code, ''::character varying), COALESCE(client_id, ''::character varying), code);
 
 
 --
@@ -8356,5 +8359,5 @@ ALTER TABLE ONLY public.webauthn_credentials
 -- PostgreSQL database dump complete
 --
 
-\unrestrict C3ErFwrSiSvMtcFLVYHiR2SGcHXKR4ti35maRwclUNdvL5B43EVnlWBhdtnLotE
+\unrestrict eOHt7xtG85gR3etO6NCuM6pZeybwjREWWazHWdd63iCFKUZTfVkztZvd5f02WtR
 

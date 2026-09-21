@@ -44,11 +44,26 @@ public final class ConnectionRepository implements Persist<Connection> {
         return findOne(T.ID.eq(id));
     }
 
-    /// The connection with `code` under `clientId`; a `null` client id
-    /// matches platform-wide rows only (spec §6).
-    public Optional<Connection> findByCodeAndClient(String code, String clientId) {
-        Condition client = clientId == null ? T.CLIENT_ID.isNull() : T.CLIENT_ID.eq(clientId);
-        return findOne(T.CODE.eq(code).and(client));
+    /// The connection with `code` under the three-part key
+    /// `(applicationCode, clientId, code)` — `NULL` is a real value on both
+    /// nullable parts, never a wildcard (spec `code-first-connections.md` §2):
+    /// `(A, null, code)` does not match the shared `(null, null, code)` row,
+    /// nor another client's `(A, B, code)` row. Every part compares with
+    /// `isNotDistinctFrom`, `code` included (spec §2: "every lookup"), even
+    /// though `code` is `NOT NULL` at the schema level, so `eq` and
+    /// `isNotDistinctFrom` are equivalent for it in practice.
+    public Optional<Connection> findByCode(String code, String applicationCode, String clientId) {
+        return findOne(T.CODE.isNotDistinctFrom(code)
+                .and(T.APPLICATION_CODE.isNotDistinctFrom(applicationCode))
+                .and(T.CLIENT_ID.isNotDistinctFrom(clientId)));
+    }
+
+    /// Every connection owned by `(applicationCode, clientId)` — `NULL`
+    /// client matches `NULL` only (spec §2) — the set a connection sync
+    /// reconciles against.
+    public List<Connection> findByApplicationAndClient(String applicationCode, String clientId) {
+        return findMany(T.APPLICATION_CODE.isNotDistinctFrom(applicationCode)
+                .and(T.CLIENT_ID.isNotDistinctFrom(clientId)));
     }
 
     /// Connections matching every non-null filter, by code.
@@ -78,10 +93,12 @@ public final class ConnectionRepository implements Persist<Connection> {
 
         var row = new LinkedHashMap<Field<?>, Object>();
         row.put(T.CODE, c.code());
+        row.put(T.APPLICATION_CODE, c.applicationCode());
         row.put(T.NAME, c.name());
         row.put(T.DESCRIPTION, c.description());
         row.put(T.EXTERNAL_ID, c.externalId());
         row.put(T.STATUS, c.status().name());
+        row.put(T.SOURCE, c.source().name());
         row.put(T.SERVICE_ACCOUNT_ID, c.serviceAccountId());
         row.put(T.CLIENT_ID, c.clientId());
         row.put(T.CLIENT_IDENTIFIER, c.clientIdentifier());
@@ -105,10 +122,12 @@ public final class ConnectionRepository implements Persist<Connection> {
         return new Connection(
                 row.getId(),
                 row.getCode(),
+                row.getApplicationCode(),
                 row.getName(),
                 row.getDescription(),
                 row.getExternalId(),
                 status(row.getId(), row.getStatus()),
+                source(row.getId(), row.getSource()),
                 row.getServiceAccountId(),
                 row.getClientId(),
                 row.getClientIdentifier(),
@@ -122,6 +141,16 @@ public final class ConnectionRepository implements Persist<Connection> {
         try {
             return ConnectionStatus.parse(stored);
         } catch (ConnectionStatus.UnrecognisedConnectionStatusException e) {
+            throw new CorruptConnectionException(rowId, e);
+        }
+    }
+
+    /// [ConnectionSource#parse], wrapped so a corrupt stored value fails
+    /// loudly with the offending row's id (X-06).
+    private static ConnectionSource source(String rowId, String stored) {
+        try {
+            return ConnectionSource.parse(stored);
+        } catch (ConnectionSource.UnrecognisedConnectionSourceException e) {
             throw new CorruptConnectionException(rowId, e);
         }
     }

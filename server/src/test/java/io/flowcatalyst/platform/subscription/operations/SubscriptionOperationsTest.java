@@ -1,10 +1,13 @@
 package io.flowcatalyst.platform.subscription.operations;
 
 import tools.jackson.databind.JsonNode;
+import io.flowcatalyst.platform.connection.ConnectionCode;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
+import io.flowcatalyst.platform.connection.ConnectionSource;
 import io.flowcatalyst.platform.connection.operations.CreateConnection;
 import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository;
 import io.flowcatalyst.platform.dispatchpool.operations.CreateDispatchPool;
+import io.flowcatalyst.platform.seed.PlatformEventSchemas;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Scope;
@@ -20,10 +23,12 @@ import io.flowcatalyst.platform.subscription.SubscriptionRepository.ListFilter;
 import io.flowcatalyst.platform.subscription.SubscriptionSource;
 import io.flowcatalyst.platform.subscription.SubscriptionStatus;
 import io.flowcatalyst.platform.subscription.operations.SubscriptionEvents.SubscriptionCreated;
+import io.flowcatalyst.platform.subscription.operations.SubscriptionEvents.SubscriptionsSynced;
 import io.flowcatalyst.sdk.usecase.DomainEvent;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
 import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
+import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.sdk.usecase.op.Operation;
 import io.flowcatalyst.testpg.TestPg;
@@ -39,8 +44,11 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import javax.sql.DataSource;
+import java.sql.SQLException;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
 
@@ -65,6 +73,8 @@ class SubscriptionOperationsTest {
     private static final DSLContext DB = DSL.using(DS, SQLDialect.POSTGRES);
     private static final SubscriptionRepository repo = new SubscriptionRepository(DS);
     private static final ConnectionRepository connections = new ConnectionRepository(DS);
+    private static final io.flowcatalyst.platform.application.ApplicationRepository apps =
+            new io.flowcatalyst.platform.application.ApplicationRepository(DS);
     private static final DispatchPoolRepository pools = new DispatchPoolRepository(DS);
     private static final UnitOfWork uow = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
 
@@ -109,14 +119,21 @@ class SubscriptionOperationsTest {
         return new UpdateCommand(id, name, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
     }
 
+    /// A client-less sync — `clientId` omitted, exactly as every sync request
+    /// behaved before `code-first-connections.md` §3 (C14: these callers'
+    /// assertions are unmodified).
     private static SyncSubscriptionsCommand sync(String appCode, boolean removeUnlisted, SyncSubscriptionInput... rows) {
-        return new SyncSubscriptionsCommand(APP_ID, appCode, List.of(rows), removeUnlisted);
+        return sync(appCode, null, removeUnlisted, rows);
+    }
+
+    private static SyncSubscriptionsCommand sync(String appCode, String clientId, boolean removeUnlisted, SyncSubscriptionInput... rows) {
+        return new SyncSubscriptionsCommand(APP_ID, appCode, clientId, List.of(rows), removeUnlisted);
     }
 
     private static SyncSubscriptionInput row(String code, String name, String target, String connectionId,
                                              String dispatchPoolCode, Integer maxRetries, boolean dataOnly, String... patterns) {
         var bindings = Stream.of(patterns).map(p -> new SyncEventTypeBindingInput(p, null)).toList();
-        return new SyncSubscriptionInput(code, name, null, target, connectionId, bindings, dispatchPoolCode, null,
+        return new SyncSubscriptionInput(code, name, null, target, connectionId, null, false, bindings, dispatchPoolCode, null,
                 maxRetries, null, dataOnly);
     }
 
@@ -124,10 +141,75 @@ class SubscriptionOperationsTest {
         return row(code, name, "https://" + code + ".example.test/hook", null, null, null, true, "subsync:orders:order:created");
     }
 
+    /// A row naming its connection by `connectionCode` (`code-first-connections.md`
+    /// §3) instead of `connectionId`.
+    private static SyncSubscriptionInput rowByConnectionCode(String code, String name, String connectionCode,
+                                                              boolean sharedConnection, String... patterns) {
+        var bindings = Stream.of(patterns).map(p -> new SyncEventTypeBindingInput(p, null)).toList();
+        return new SyncSubscriptionInput(code, name, null, "https://" + code + ".example.test/hook", null,
+                connectionCode, sharedConnection, bindings, null, null, null, null, true);
+    }
+
     /// A real connection for sync's `connectionId` check; the service account is not validated by connections.
     private static String seededConnection(String code) {
-        return runAsAnchor(CreateConnection.of(connections), new io.flowcatalyst.platform.connection.operations.CreateCommand(
-                code, "Sub Sync Conn", null, "sva_subsync1", null, null)).connectionId();
+        return runAsAnchor(CreateConnection.of(connections, apps), new io.flowcatalyst.platform.connection.operations.CreateCommand(
+                code, "Sub Sync Conn", null, "sva_subsync1", null, null, null)).connectionId();
+    }
+
+    /// A connection row written directly (bypassing [CreateConnection], which
+    /// would require a persisted application) — `code-first-connections.md`
+    /// §3's namespace/scope rules (C12, C13). `applicationCode` `null` =
+    /// shared; `clientId` `null` = global within its namespace.
+    private static io.flowcatalyst.platform.connection.Connection seedConnection(String code, String applicationCode, String clientId) {
+        io.flowcatalyst.platform.connection.Connection c = io.flowcatalyst.platform.connection.Connection
+                .create(ConnectionCode.parse(code), "Seed " + code, EntityType.SERVICE_ACCOUNT.generate())
+                .withApplicationCode(applicationCode)
+                .withClientId(clientId)
+                .withSource(ConnectionSource.UI);
+        try (java.sql.Connection conn = DS.getConnection()) {
+            conn.setAutoCommit(false);
+            connections.persist(c, DbTx.wrapForBootstrap(conn));
+            conn.commit();
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        return c;
+    }
+
+    /// A subscription row written directly (bypassing [SyncSubscriptions]) so
+    /// a test can plant a row of any `(applicationCode, clientId, source)`
+    /// combination — C11's ownership/scoping tests.
+    private static Subscription seedSubscription(String code, String applicationCode, String clientId, SubscriptionSource source) {
+        Subscription s = Subscription.create(code, "Seed " + code, "https://example.test/" + code)
+                .withApplicationCode(applicationCode)
+                .withClientId(clientId)
+                .withSource(source);
+        try (java.sql.Connection conn = DS.getConnection()) {
+            conn.setAutoCommit(false);
+            repo.persist(s, DbTx.wrapForBootstrap(conn));
+            conn.commit();
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        return s;
+    }
+
+    /// A minimal structural JSON-Schema check (mirrors `SyncConnectionsTest`):
+    /// every `required` field is present, and — when the schema declares
+    /// `additionalProperties: false` — every field `data` carries is one the
+    /// schema declared. Omitting `clientId` from the seeded schema (C15's
+    /// mutant) makes a `data` that legitimately carries a `clientId` fail the
+    /// second loop.
+    private static void assertMatchesSchema(JsonNode schema, JsonNode data) {
+        for (JsonNode req : schema.path("required")) {
+            assertThat(data.has(req.stringValue())).as("required field '%s' present", req.stringValue()).isTrue();
+        }
+        if (!schema.path("additionalProperties").asBoolean(true)) {
+            Set<String> allowed = new HashSet<>();
+            schema.path("properties").propertyNames().forEach(allowed::add);
+            data.propertyNames().forEach(name ->
+                    assertThat(allowed).as("field '%s' not declared in the schema (additionalProperties:false)", name).contains(name));
+        }
     }
 
     /// A platform-wide pool for sync's `dispatchPoolCode` resolution.
@@ -290,8 +372,8 @@ class SubscriptionOperationsTest {
         var bound = runAsAnchor(CreateSubscription.of(repo), new CreateCommand(code, "Bound", ENDPOINT, null, client,
                 null, null, null, BINDINGS, null, null, null, null, null, null, null, null));
         assertThat(reload(bound.subscriptionId()).clientId()).isEqualTo(client);
-        assertThat(repo.findByCodeAndClient(code, client)).isPresent();
-        assertThat(repo.findByCodeAndClient(code, null)).as("platform-wide row is a different one").isPresent()
+        assertThat(repo.findByCode(code, null, client)).isPresent();
+        assertThat(repo.findByCode(code, null, null)).as("platform-wide row is a different one").isPresent()
                 .get().extracting(Subscription::id).isNotEqualTo(bound.subscriptionId());
     }
 
@@ -321,7 +403,7 @@ class SubscriptionOperationsTest {
         // Unauthenticated (no bound principal) → denied before anything is written.
         assertUseCaseError(() -> CreateSubscription.of(repo).run(uow, createCommand(code("subscope-anon"), "X"), ExecutionContext.of(null)),
                 UseCaseError.Authorization.class, "UNAUTHENTICATED");
-        assertThat(repo.findByCodeAndClient(code("subscope-anon"), null)).isEmpty();
+        assertThat(repo.findByCode(code("subscope-anon"), null, null)).isEmpty();
 
         // Bound to the principal's own client → allowed.
         var ev = Auth.runAs(clientCtx, () -> CreateSubscription.of(repo).run(uow,
@@ -495,7 +577,7 @@ class SubscriptionOperationsTest {
         // X-08 (ruled 2026-09-01): one FIFO lane per application.
         assertThat(first.messageGroup()).isEqualTo("platform:subscriptions:" + appCode);
 
-        var a = repo.findByCodeAndClient(code("subsync-a"), null).orElseThrow();
+        var a = repo.findByCode(code("subsync-a"), appCode, null).orElseThrow();
         assertThat(a.source()).as("synced rows are API-sourced").isEqualTo(SubscriptionSource.API);
         assertThat(a.applicationCode()).isEqualTo(appCode);
         assertThat(a.connectionId()).isEqualTo(connId);
@@ -508,7 +590,7 @@ class SubscriptionOperationsTest {
         assertThat(a.createdBy()).isEqualTo(PRINCIPAL);
         assertThat(a.dataOnly()).isTrue();
 
-        var b = repo.findByCodeAndClient(code("subsync-b"), null).orElseThrow();
+        var b = repo.findByCode(code("subsync-b"), appCode, null).orElseThrow();
         assertThat(b.dispatchPoolId()).as("an unresolvable pool code is silently ignored").isNull();
         assertThat(b.dispatchPoolCode()).isNull();
         assertThat(b.dataOnly()).isFalse();
@@ -523,12 +605,12 @@ class SubscriptionOperationsTest {
         assertThat(second.updated()).isEqualTo(1);
         assertThat(second.deleted()).as("only the unlisted API row is removed; the UI row is spared").isEqualTo(1);
 
-        var kept = repo.findByCodeAndClient(code("subsync-a"), null).orElseThrow();
+        var kept = repo.findByCode(code("subsync-a"), appCode, null).orElseThrow();
         assertThat(kept.name()).isEqualTo("A renamed");
         assertThat(kept.connectionId()).as("an absent connectionId clears the link (spec open question 5)").isNull();
         assertThat(kept.dispatchPoolCode()).as("an absent dispatchPoolCode leaves the existing pool link").isEqualTo(code("subsync-pool"));
         assertThat(kept.maxRetries()).as("an absent maxRetries leaves the existing value").isEqualTo(9);
-        assertThat(repo.findByCodeAndClient(code("subsync-b"), null)).as("removeUnlisted hard-deletes unlisted API rows").isEmpty();
+        assertThat(repo.findByCode(code("subsync-b"), appCode, null)).as("removeUnlisted hard-deletes unlisted API rows").isEmpty();
         assertThat(repo.findById(uiRow.subscriptionId())).as("removeUnlisted never touches UI rows").isPresent();
 
         // Per-row events + the rollup, each with an audit row naming the sync command.
@@ -577,7 +659,7 @@ class SubscriptionOperationsTest {
         var swept = runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appCode, true));
         assertThat(swept.deleted()).as("the ordinary unlisted row is still removed in the same call").isEqualTo(1);
         assertThat(repo.findById(fnRow.id())).as("removeUnlisted never removes a FUNCTION-sourced row").isPresent();
-        assertThat(repo.findByCodeAndClient(code("subsyncfn-ordinary"), null)).isEmpty();
+        assertThat(repo.findByCode(code("subsyncfn-ordinary"), appCode, null)).isEmpty();
     }
 
     /// X-08: two applications' syncs land in two different FIFO lanes.
@@ -595,13 +677,17 @@ class SubscriptionOperationsTest {
 
     static Stream<Arguments> badSyncCommands() {
         return Stream.of(
-                Arguments.of("missing application code", new SyncSubscriptionsCommand(APP_ID, null, List.of(), false), "APPLICATION_CODE_REQUIRED"),
+                Arguments.of("missing application code", new SyncSubscriptionsCommand(APP_ID, null, null, List.of(), false), "APPLICATION_CODE_REQUIRED"),
                 Arguments.of("entry missing code", sync("subsyncbad", false, row(" ", "X")), "CODE_REQUIRED"),
                 Arguments.of("entry missing name", sync("subsyncbad", false, row("subsync-noname", null)), "NAME_REQUIRED"),
                 Arguments.of("entry missing target", sync("subsyncbad", false,
                         row("subsync-notarget", "X", " ", null, null, null, true, "subsync:a:b:c")), "TARGET_REQUIRED"),
                 Arguments.of("entry missing event types", sync("subsyncbad", false,
-                        row("subsync-noet", "X", "https://x.example.test", null, null, null, true)), "EVENT_TYPES_REQUIRED"));
+                        row("subsync-noet", "X", "https://x.example.test", null, null, null, true)), "EVENT_TYPES_REQUIRED"),
+                // C13: sharedConnection:true without a connectionCode — mutant: drop the check.
+                Arguments.of("sharedConnection without connectionCode", sync("subsyncbad", false,
+                        rowByConnectionCode("subsync-sharednocode", "X", null, true, "subsync:a:b:c")),
+                        "SHARED_CONNECTION_REQUIRES_CODE"));
     }
 
     @ParameterizedTest(name = "{0} → {2}")
@@ -617,7 +703,7 @@ class SubscriptionOperationsTest {
         String appCode = "subsyncraw" + RUN;
         runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appCode, false,
                 row("Raw-" + RUN, "Raw", "not-a-url", null, null, null, true, "subsync:a:b:c")));
-        var got = repo.findByCodeAndClient("Raw-" + RUN, null).orElseThrow();
+        var got = repo.findByCode("Raw-" + RUN, appCode, null).orElseThrow();
         assertThat(got.endpoint()).isEqualTo("not-a-url");
         assertThat(got.applicationCode()).isEqualTo(appCode);
     }
@@ -660,6 +746,313 @@ class SubscriptionOperationsTest {
         var ev = Auth.runAs(explicitApp, () -> SyncSubscriptions.of(repo, connections, pools).run(uow,
                 sync(appCode, false, row(code("subsyncauth-one"), "A")), ExecutionContext.of(explicitApp.principalId())));
         assertThat(ev.created()).isEqualTo(1);
+    }
+
+    // ── C11 — client scoping (`code-first-connections.md` §3) ────────────────
+
+    /// Matching/creation are scoped to `(applicationCode, clientId)`: the SAME
+    /// code under three different clients (client A, client B, and the global
+    /// scope) is three DIFFERENT rows, never a match across scopes, and each
+    /// created row carries the request's client (mutant: load by application
+    /// only, dropping the client scope, for the MATCH path and "created rows
+    /// not stamped with the client").
+    @Test
+    void syncMatchesAndCreatesAreScopedToTheRequestsClientNeverCrossingIntoAnotherClientOrGlobal() {
+        String appCode = "subsyncclia" + RUN;
+        String clientA = EntityType.CLIENT.generate();
+        String clientB = EntityType.CLIENT.generate();
+        String c = code("subsyncscope-shared-code");
+
+        var forA = runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appCode, clientA, false, row(c, "A v1")));
+        assertThat(forA.created()).isEqualTo(1);
+        Subscription rowA = repo.findByCode(c, appCode, clientA).orElseThrow();
+        assertThat(rowA.clientId()).as("a created row carries the request's client").isEqualTo(clientA);
+
+        var forB = runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appCode, clientB, false, row(c, "B v1")));
+        assertThat(forB.created()).as("same code, different client — a DIFFERENT row, not an update").isEqualTo(1);
+        assertThat(forB.updated()).isZero();
+        Subscription rowB = repo.findByCode(c, appCode, clientB).orElseThrow();
+        assertThat(rowB.clientId()).isEqualTo(clientB);
+        assertThat(rowB.id()).isNotEqualTo(rowA.id());
+        assertThat(reload(rowA.id()).name()).as("client A's row untouched by client B's sync").isEqualTo("A v1");
+
+        var global = runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appCode, false, row(c, "Global v1")));
+        assertThat(global.created()).as("same code, no client — a THIRD, global row").isEqualTo(1);
+        Subscription rowGlobal = repo.findByCode(c, appCode, null).orElseThrow();
+        assertThat(rowGlobal.clientId()).isNull();
+        assertThat(reload(rowA.id()).name()).isEqualTo("A v1");
+        assertThat(reload(rowB.id()).name()).isEqualTo("B v1");
+
+        // Re-syncing client A now UPDATES only client A's row.
+        var forAAgain = runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appCode, clientA, false, row(c, "A v2")));
+        assertThat(forAAgain.created()).isZero();
+        assertThat(forAAgain.updated()).isEqualTo(1);
+        assertThat(reload(rowA.id()).name()).isEqualTo("A v2");
+        assertThat(reload(rowB.id()).name()).as("client B's row untouched by client A's sync").isEqualTo("B v1");
+        assertThat(reload(rowGlobal.id()).name()).as("the global row untouched by client A's sync").isEqualTo("Global v1");
+    }
+
+    /// The removal path's client filter: `removeUnlisted` never sweeps a
+    /// sibling client's row or the application's global row, even though both
+    /// are owned `API` rows of the SAME application (mutant: drop the client
+    /// filter on the removal path).
+    @Test
+    void syncRemovalNeverTouchesAnotherClientsOrTheGlobalRows() {
+        String appCode = "subsyncclir" + RUN;
+        String clientX = EntityType.CLIENT.generate();
+        String clientY = EntityType.CLIENT.generate();
+
+        Subscription otherClient = reload(seedSubscription(code("subsyncclir-otherclient"), appCode, clientY, SubscriptionSource.API).id());
+        Subscription global = reload(seedSubscription(code("subsyncclir-global"), appCode, null, SubscriptionSource.API).id());
+        Subscription uiInScope = reload(seedSubscription(code("subsyncclir-ui"), appCode, clientX, SubscriptionSource.UI).id());
+        Subscription removable = reload(seedSubscription(code("subsyncclir-removable"), appCode, clientX, SubscriptionSource.API).id());
+
+        var ev = runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appCode, clientX, true));
+
+        assertThat(ev.deleted()).as("exactly the one owned, in-scope, API-sourced row").isEqualTo(1);
+        assertThat(repo.findById(removable.id())).isEmpty();
+        assertThat(reload(otherClient.id())).as("client filter — a sibling client's row survives").isEqualTo(otherClient);
+        assertThat(reload(global.id())).as("the application's global row is a different key entirely — survives").isEqualTo(global);
+        assertThat(reload(uiInScope.id())).as("a UI row in scope is never swept").isEqualTo(uiInScope);
+    }
+
+    // ── C12 — connection namespace resolution ─────────────────────────────────
+
+    /// A bare `connectionCode` resolves ONLY this application's own connection
+    /// namespace — a SHARED connection of the same code is a different key
+    /// entirely and is never found (mutant: add a fallback from the
+    /// application namespace to the shared one).
+    @Test
+    void syncByConnectionCodeResolvesOnlyThisApplicationsNamespaceNeverFallingBackToShared() {
+        String appCode = "subsyncns1" + RUN;
+        String connCode = code("subsyncns1-conn");
+        var appOwned = seedConnection(connCode, appCode, null);
+        seedConnection(connCode, null, null); // a SHARED connection, same code
+
+        var ev = runAsAnchor(SyncSubscriptions.of(repo, connections, pools),
+                sync(appCode, false, rowByConnectionCode(code("subsyncns1-sub"), "S", connCode, false, "subsync:a:b:c")));
+        assertThat(ev.created()).isEqualTo(1);
+        Subscription s = repo.findByCode(code("subsyncns1-sub"), appCode, null).orElseThrow();
+        assertThat(s.connectionId()).as("resolves the application-owned connection, not the shared one").isEqualTo(appOwned.id());
+    }
+
+    /// `sharedConnection: true` resolves ONLY the shared namespace — the
+    /// reverse of the above (mutant: the reverse fallback, shared → application).
+    @Test
+    void syncSharedConnectionTrueResolvesOnlyTheSharedNamespace() {
+        String appCode = "subsyncns2" + RUN;
+        String connCode = code("subsyncns2-conn");
+        seedConnection(connCode, appCode, null); // application-owned, same code
+        var shared = seedConnection(connCode, null, null);
+
+        var ev = runAsAnchor(SyncSubscriptions.of(repo, connections, pools),
+                sync(appCode, false, rowByConnectionCode(code("subsyncns2-sub"), "S", connCode, true, "subsync:a:b:c")));
+        assertThat(ev.created()).isEqualTo(1);
+        Subscription s = repo.findByCode(code("subsyncns2-sub"), appCode, null).orElseThrow();
+        assertThat(s.connectionId()).as("resolves the shared connection, not the application-owned one").isEqualTo(shared.id());
+    }
+
+    /// The explicit-namespace rule has NO fallback: a bare code with only a
+    /// SHARED connection at that code is 404, not a silent match (this is the
+    /// specific case the hand-off calls out — a later application-owned
+    /// connection at the same code must never silently switch which
+    /// credentials sign a subscription's deliveries).
+    @Test
+    void syncByConnectionCodeIsNotFoundWhenOnlyASharedConnectionExistsAndSharedConnectionIsNotSet() {
+        String appCode = "subsyncns3" + RUN;
+        String connCode = code("subsyncns3-conn");
+        seedConnection(connCode, null, null); // ONLY a shared connection at this code
+
+        assertUseCaseError(() -> runAsAnchor(SyncSubscriptions.of(repo, connections, pools),
+                        sync(appCode, false, rowByConnectionCode(code("subsyncns3-sub"), "S", connCode, false, "subsync:a:b:c"))),
+                UseCaseError.NotFound.class, "CONNECTION_NOT_FOUND");
+        assertThat(repo.findByApplicationCode(appCode)).as("nothing written").isEmpty();
+    }
+
+    /// No fallback in the OTHER direction either: `sharedConnection: true` with
+    /// only an APPLICATION-OWNED connection at that code is 404. A definition
+    /// that says "the shared one" must never be signed with the application's
+    /// own credentials because the shared connection happens to be missing in
+    /// this environment.
+    @Test
+    void syncSharedConnectionIsNotFoundWhenOnlyAnApplicationOwnedConnectionExists() {
+        String appCode = "subsyncns3b" + RUN;
+        String connCode = code("subsyncns3b-conn");
+        seedConnection(connCode, appCode, null); // ONLY this application's own connection at this code
+
+        assertUseCaseError(() -> runAsAnchor(SyncSubscriptions.of(repo, connections, pools),
+                        sync(appCode, false, rowByConnectionCode(code("subsyncns3b-sub"), "S", connCode, true, "subsync:a:b:c"))),
+                UseCaseError.NotFound.class, "CONNECTION_NOT_FOUND");
+        assertThat(repo.findByApplicationCode(appCode)).as("nothing written").isEmpty();
+    }
+
+    /// Within one namespace, a client-scoped sync prefers its OWN client's
+    /// connection over the global one; a sync for a DIFFERENT client (with no
+    /// connection of its own at that code) falls back to the global one
+    /// (mutant: skip the client-first lookup step).
+    @Test
+    void syncClientScopedPrefersItsOwnClientsConnectionThenFallsBackToGlobalWithinTheNamespace() {
+        String appCode = "subsyncns4" + RUN;
+        String clientA = EntityType.CLIENT.generate();
+        String clientB = EntityType.CLIENT.generate();
+        String connCode = code("subsyncns4-conn");
+        var clientScoped = seedConnection(connCode, appCode, clientA);
+        var global = seedConnection(connCode, appCode, null);
+
+        var forA = runAsAnchor(SyncSubscriptions.of(repo, connections, pools),
+                sync(appCode, clientA, false, rowByConnectionCode(code("subsyncns4-sub-a"), "A", connCode, false, "subsync:a:b:c")));
+        assertThat(forA.created()).isEqualTo(1);
+        assertThat(repo.findByCode(code("subsyncns4-sub-a"), appCode, clientA).orElseThrow().connectionId())
+                .as("client A has its OWN connection at this code — resolves it, not the global one").isEqualTo(clientScoped.id());
+
+        var forB = runAsAnchor(SyncSubscriptions.of(repo, connections, pools),
+                sync(appCode, clientB, false, rowByConnectionCode(code("subsyncns4-sub-b"), "B", connCode, false, "subsync:a:b:c")));
+        assertThat(forB.created()).isEqualTo(1);
+        assertThat(repo.findByCode(code("subsyncns4-sub-b"), appCode, clientB).orElseThrow().connectionId())
+                .as("client B has none — falls back to the global connection in the SAME namespace").isEqualTo(global.id());
+    }
+
+    /// A client-less sync never resolves a client-scoped connection, even at
+    /// the exact code it asked for and even with no global alternative.
+    @Test
+    void syncClientLessNeverResolvesAClientScopedConnection() {
+        String appCode = "subsyncns5" + RUN;
+        String clientA = EntityType.CLIENT.generate();
+        String connCode = code("subsyncns5-conn");
+        seedConnection(connCode, appCode, clientA); // ONLY a client-scoped connection
+
+        assertUseCaseError(() -> runAsAnchor(SyncSubscriptions.of(repo, connections, pools),
+                        sync(appCode, false, rowByConnectionCode(code("subsyncns5-sub"), "S", connCode, false, "subsync:a:b:c"))),
+                UseCaseError.NotFound.class, "CONNECTION_NOT_FOUND");
+    }
+
+    // ── C13 — connectionId/connectionCode mismatch and scope checks ─────────
+
+    private static SyncSubscriptionInput rowByConnectionIdAndCode(String code, String name, String connectionId,
+                                                                   String connectionCode, boolean sharedConnection, String... patterns) {
+        var bindings = Stream.of(patterns).map(p -> new SyncEventTypeBindingInput(p, null)).toList();
+        return new SyncSubscriptionInput(code, name, null, "https://" + code + ".example.test/hook", connectionId,
+                connectionCode, sharedConnection, bindings, null, null, null, null, true);
+    }
+
+    private static SyncSubscriptionInput rowByConnectionId(String code, String name, String connectionId, String... patterns) {
+        return rowByConnectionIdAndCode(code, name, connectionId, null, false, patterns);
+    }
+
+    @Test
+    void syncConnectionIdAndConnectionCodeNamingDifferentConnectionsIsConnectionMismatch() {
+        String appCode = "subsyncc13a" + RUN;
+        var connA = seedConnection(code("subsyncc13a-a"), appCode, null);
+        seedConnection(code("subsyncc13a-b"), appCode, null);
+
+        assertUseCaseError(() -> runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appCode, false,
+                        rowByConnectionIdAndCode(code("subsyncc13a-sub"), "S", connA.id(), code("subsyncc13a-b"), false, "subsync:a:b:c"))),
+                UseCaseError.Validation.class, "CONNECTION_MISMATCH");
+    }
+
+    /// Scope check, "other client" clause: a client-scoped sync's
+    /// `connectionId` names a DIFFERENT client's connection (mutant: drop the
+    /// `!= cmd.clientId()` half of the check).
+    @Test
+    void syncConnectionIdScopedToAnotherClientIsScopeMismatch() {
+        String appCode = "subsyncc13b" + RUN;
+        String clientA = EntityType.CLIENT.generate();
+        String clientB = EntityType.CLIENT.generate();
+        var conn = seedConnection(code("subsyncc13b-conn"), appCode, clientB);
+
+        assertUseCaseError(() -> runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appCode, clientA, false,
+                        rowByConnectionId(code("subsyncc13b-sub"), "S", conn.id(), "subsync:a:b:c"))),
+                UseCaseError.Validation.class, "CONNECTION_SCOPE_MISMATCH");
+    }
+
+    /// Scope check, "global sync with a client-scoped id" clause: a
+    /// CLIENT-LESS sync's `connectionId` names a client-scoped connection
+    /// (mutant: drop the `cmd.clientId() == null ||` half of the check —
+    /// distinct from the above, which needs BOTH sides non-null to observe).
+    @Test
+    void syncConnectionIdScopedToAClientButTheSyncIsGlobalIsScopeMismatch() {
+        String appCode = "subsyncc13c" + RUN;
+        String clientA = EntityType.CLIENT.generate();
+        var conn = seedConnection(code("subsyncc13c-conn"), appCode, clientA);
+
+        assertUseCaseError(() -> runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appCode, false,
+                        rowByConnectionId(code("subsyncc13c-sub"), "S", conn.id(), "subsync:a:b:c"))),
+                UseCaseError.Validation.class, "CONNECTION_SCOPE_MISMATCH");
+    }
+
+    /// Scope check, "other application" clause: `connectionId` names a
+    /// connection owned by a DIFFERENT application (mutant: drop the clause).
+    @Test
+    void syncConnectionIdFromAnotherApplicationIsScopeMismatch() {
+        String appCode = "subsyncc13d" + RUN;
+        String otherAppCode = "subsyncc13other" + RUN;
+        var conn = seedConnection(code("subsyncc13d-conn"), otherAppCode, null);
+
+        assertUseCaseError(() -> runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appCode, false,
+                        rowByConnectionId(code("subsyncc13d-sub"), "S", conn.id(), "subsync:a:b:c"))),
+                UseCaseError.Validation.class, "CONNECTION_SCOPE_MISMATCH");
+    }
+
+    /// A SHARED connection named by id is allowed for ANY application or
+    /// client — the positive case the scope checks must not wrongly refuse
+    /// (mutant: refuse a shared connection the same as an owned one).
+    @Test
+    void syncConnectionIdOfASharedConnectionIsAllowedRegardlessOfApplicationOrClient() {
+        String appCode = "subsyncc13e" + RUN;
+        var shared = seedConnection(code("subsyncc13e-conn"), null, null);
+
+        var ev = runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appCode, false,
+                rowByConnectionId(code("subsyncc13e-sub"), "S", shared.id(), "subsync:a:b:c")));
+        assertThat(ev.created()).isEqualTo(1);
+        assertThat(repo.findByCode(code("subsyncc13e-sub"), appCode, null).orElseThrow().connectionId()).isEqualTo(shared.id());
+    }
+
+    // ── C15 — the seeded schema, and authorization's client-access check ────
+
+    @Test
+    void syncRollupEventValidatesAgainstTheSeededSchemaIncludingClientId() {
+        String appCode = "subsyncc15" + RUN;
+        String client = EntityType.CLIENT.generate();
+
+        SubscriptionsSynced ev = runAsAnchor(SyncSubscriptions.of(repo, connections, pools),
+                sync(appCode, client, false, row(code("subsyncc15-sub"), "Evt")));
+
+        var rollupRow = DB.fetch("SELECT data::text AS data FROM msg_events WHERE id = ?", ev.eventId());
+        assertThat(rollupRow).hasSize(1);
+        JsonNode data = json(rollupRow.getFirst().get("data", String.class));
+        assertThat(data.propertyNames()).containsExactlyInAnyOrder(
+                "applicationCode", "clientId", "created", "updated", "deleted", "syncedCodes");
+        assertThat(data.get("clientId").asText()).isEqualTo(client);
+
+        JsonNode schema = PlatformEventSchemas.all().get(SubscriptionEvents.SYNCED);
+        assertThat(schema).as("schema seeded for " + SubscriptionEvents.SYNCED).isNotNull();
+        assertMatchesSchema(schema, data);
+    }
+
+    /// Authorization requires client access when `clientId` is given, but NOT
+    /// for a client-less sync (mutant: drop the client-access check in
+    /// [Access#checkSyncAccess] — a caller with application access only would
+    /// then reach ANY client's subscriptions).
+    @Test
+    void syncAuthorizationRequiresClientAccessOnlyWhenClientIdIsGiven() {
+        String appCode = "sc15auth" + RUN;
+        String ownClient = EntityType.CLIENT.generate();
+        String otherClient = EntityType.CLIENT.generate();
+        var appAccessOnly = new AuthContext(EntityType.PRINCIPAL.generate(), Scope.CLIENT, "c@x.io",
+                List.of(ownClient), List.of(), List.of(APP_ID), false, List.of());
+
+        assertUseCaseError(() -> Auth.runAs(appAccessOnly, () -> SyncSubscriptions.of(repo, connections, pools).run(uow,
+                        sync(appCode, otherClient, false, row(code("sc15auth-a"), "A")), ExecutionContext.of(appAccessOnly.principalId()))),
+                UseCaseError.Authorization.class, "FORBIDDEN");
+
+        var withOwnClient = Auth.runAs(appAccessOnly, () -> SyncSubscriptions.of(repo, connections, pools).run(uow,
+                sync(appCode, ownClient, false, row(code("sc15auth-b"), "B")), ExecutionContext.of(appAccessOnly.principalId())));
+        assertThat(withOwnClient.created()).isEqualTo(1);
+
+        // Client-less: application access alone is enough, even for a non-anchor.
+        var clientLess = Auth.runAs(appAccessOnly, () -> SyncSubscriptions.of(repo, connections, pools).run(uow,
+                sync(appCode, false, row(code("sc15auth-c"), "C")), ExecutionContext.of(appAccessOnly.principalId())));
+        assertThat(clientLess.created()).isEqualTo(1);
     }
 
     // ── Repository reads ───────────────────────────────────────────────────

@@ -12,6 +12,16 @@
 # added by `docs/spec/function-context.md` §1, package D slice D4a; `platform:function:domain:manage`
 # added by `docs/spec/function-public-routes.md` §1, package F slice F1) — there is no Go for the
 # function platform at all.
+# code-first-connections.md slice K2 (2026-09-21): 5 `perm` rows (messaging-admin's
+# `connection:sync`, application-service's `connection:view/create/update/delete`) plus the
+# `platform:admin:connection:synced` `eventtype`/`schema` rows are hand-added, not re-dumped from
+# a live Go database — the exact strings/JSON are read verbatim from Go
+# `internal/platform/seed/{permissions,roles,event_types,event_schemas}.go` at the hand-off's
+# reference commit (`07184da`+), which the K2 report cites; a live-DB re-dump was not run for this unit.
+# code-first-connections.md slice K3 (2026-09-21): the `platform:admin:subscription:synced` `schema`
+# row's JSON is hand-edited (not re-dumped) to add `"clientId":{"type":["string","null"]}`, read
+# verbatim from Go `internal/platform/seed/event_schemas.go` at `07184da` (`56aea7c`+), which adds
+# `optStr("clientId")` to that schema — mirrors the `connection:synced` row above, same reason.
 role	platform:super-admin	Platform Super Admin	Full access to all platform operations	CODE	platform	false
 role	platform:admin	Platform Admin	Manages clients, applications, and platform configuration	CODE	platform	false
 role	platform:admin-readonly	Platform Admin Read-Only	View-only access to clients, applications, and platform configuration	CODE	platform	false
@@ -134,6 +144,7 @@ perm	platform:messaging-admin	platform:messaging:connection:view
 perm	platform:messaging-admin	platform:messaging:connection:create
 perm	platform:messaging-admin	platform:messaging:connection:update
 perm	platform:messaging-admin	platform:messaging:connection:delete
+perm	platform:messaging-admin	platform:messaging:connection:sync
 perm	platform:messaging-admin	platform:messaging:event:view
 perm	platform:messaging-admin	platform:messaging:event:view-raw
 perm	platform:messaging-admin	platform:messaging:dispatch-job:view
@@ -198,6 +209,10 @@ perm	platform:application-service	platform:application-service:subscription:view
 perm	platform:application-service	platform:application-service:subscription:create
 perm	platform:application-service	platform:application-service:subscription:update
 perm	platform:application-service	platform:application-service:subscription:delete
+perm	platform:application-service	platform:application-service:connection:view
+perm	platform:application-service	platform:application-service:connection:create
+perm	platform:application-service	platform:application-service:connection:update
+perm	platform:application-service	platform:application-service:connection:delete
 perm	platform:application-service	platform:application-service:role:view
 perm	platform:application-service	platform:application-service:role:create
 perm	platform:application-service	platform:application-service:role:update
@@ -277,6 +292,7 @@ eventtype	platform:admin:eventtypes:synced	Event Types Synced	CURRENT	UI	false	p
 eventtype	platform:admin:connection:created	Connection Created	CURRENT	UI	false	platform	admin	connection
 eventtype	platform:admin:connection:updated	Connection Updated	CURRENT	UI	false	platform	admin	connection
 eventtype	platform:admin:connection:deleted	Connection Deleted	CURRENT	UI	false	platform	admin	connection
+eventtype	platform:admin:connection:synced	Connection Synced	CURRENT	UI	false	platform	admin	connection
 eventtype	platform:admin:dispatch-pool:created	Dispatch Pool Created	CURRENT	UI	false	platform	admin	dispatch-pool
 eventtype	platform:admin:dispatch-pool:updated	Dispatch Pool Updated	CURRENT	UI	false	platform	admin	dispatch-pool
 eventtype	platform:admin:dispatch-pool:archived	Dispatch Pool Archived	CURRENT	UI	false	platform	admin	dispatch-pool
@@ -349,6 +365,7 @@ schema	platform:admin:eventtypes:synced	1.0	application/schema+json	JSON_SCHEMA	
 schema	platform:admin:connection:created	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":["string","null"]},"code":{"type":"string"},"connectionId":{"type":"string"},"endpoint":{"type":"string"},"name":{"type":"string"},"serviceAccountId":{"type":"string"}},"required":["connectionId","code","name","endpoint","serviceAccountId"],"type":"object"}
 schema	platform:admin:connection:updated	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"connectionId":{"type":"string"},"endpoint":{"type":["string","null"]},"name":{"type":["string","null"]},"status":{"type":["string","null"]}},"required":["connectionId","code"],"type":"object"}
 schema	platform:admin:connection:deleted	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":["string","null"]},"code":{"type":"string"},"connectionId":{"type":"string"}},"required":["connectionId","code"],"type":"object"}
+schema	platform:admin:connection:synced	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationCode":{"type":"string"},"clientId":{"type":["string","null"]},"created":{"minimum":0,"type":"integer"},"deleted":{"minimum":0,"type":"integer"},"syncedCodes":{"items":{"type":"string"},"type":"array"},"updated":{"minimum":0,"type":"integer"}},"required":["applicationCode","created","updated","deleted","syncedCodes"],"type":"object"}
 schema	platform:admin:dispatch-pool:created	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":["string","null"]},"code":{"type":"string"},"dispatchPoolId":{"type":"string"},"name":{"type":"string"}},"required":["dispatchPoolId","code","name"],"type":"object"}
 schema	platform:admin:dispatch-pool:updated	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"concurrency":{"minimum":0,"type":["integer","null"]},"dispatchPoolId":{"type":"string"},"name":{"type":["string","null"]},"rateLimit":{"minimum":0,"type":["integer","null"]}},"required":["dispatchPoolId"],"type":"object"}
 schema	platform:admin:dispatch-pool:archived	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"dispatchPoolId":{"type":"string"}},"required":["dispatchPoolId","code"],"type":"object"}
@@ -359,7 +376,7 @@ schema	platform:admin:subscription:updated	1.0	application/schema+json	JSON_SCHE
 schema	platform:admin:subscription:paused	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"subscriptionId":{"type":"string"}},"required":["subscriptionId","code"],"type":"object"}
 schema	platform:admin:subscription:resumed	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"subscriptionId":{"type":"string"}},"required":["subscriptionId","code"],"type":"object"}
 schema	platform:admin:subscription:deleted	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"subscriptionId":{"type":"string"}},"required":["subscriptionId","code"],"type":"object"}
-schema	platform:admin:subscription:synced	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationCode":{"type":"string"},"created":{"minimum":0,"type":"integer"},"deleted":{"minimum":0,"type":"integer"},"syncedCodes":{"items":{"type":"string"},"type":"array"},"updated":{"minimum":0,"type":"integer"}},"required":["applicationCode","created","updated","deleted","syncedCodes"],"type":"object"}
+schema	platform:admin:subscription:synced	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationCode":{"type":"string"},"clientId":{"type":["string","null"]},"created":{"minimum":0,"type":"integer"},"deleted":{"minimum":0,"type":"integer"},"syncedCodes":{"items":{"type":"string"},"type":"array"},"updated":{"minimum":0,"type":"integer"}},"required":["applicationCode","created","updated","deleted","syncedCodes"],"type":"object"}
 application	APPLICATION	platform	FlowCatalyst Platform	Core platform — its own OpenAPI document is published here as one of the applications	true
 process	platform:fulfilment:on-demand-flow	On-Demand Fulfilment Flow	CURRENT	CODE	platform	fulfilment	on-demand-flow	mermaid	{example,fulfilment,platform}
 idp	internal	Internal Authentication	INTERNAL	false	false

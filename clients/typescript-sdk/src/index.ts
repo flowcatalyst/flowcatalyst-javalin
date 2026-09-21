@@ -64,6 +64,7 @@ export type {
 	ForbiddenError,
 	ConflictError,
 	RateLimitError,
+	PartialFailureError,
 } from "./errors.js";
 export {
 	authError,
@@ -74,6 +75,8 @@ export {
 	conflictError,
 	rateLimitError,
 	mapHttpStatusToError,
+	partialFailureError,
+	isPartialFailureError,
 } from "./errors.js";
 
 // Resource classes

@@ -12,20 +12,31 @@ accident?** need an owner ruling — until ruled on, the behaviour is kept.
 A subscription binds one or more **event-type patterns** to a delivery
 target (an `endpoint` URL, optionally through a `connection`), with the
 dispatch settings the router applies (mode, timeout, retries, delay, max
-age, dispatch pool). It is identified by a **code**, unique per client
-(`(code, client_id)` — a platform-wide subscription has `client_id = NULL`;
-the unique index treats `NULL`s as distinct, so uniqueness of platform-wide
-codes is enforced by the operation, not the database — **load-bearing or
-accident?**).
+age, dispatch pool). It is identified by a **code**, unique per
+`(applicationCode, clientId)` — **answered by owner ruling 2026-09-21**
+(`docs/spec/code-first-connections.md`): the old "unique per client,
+`(code, client_id)`, DB treats `NULL` as distinct" question is superseded.
+V12 (`code-first-connections.md` §1, mirroring Go migration 056) replaces
+the old `(code, client_id)` unique index with an expression index on
+`(COALESCE(application_code,''), COALESCE(client_id,''), code)` —
+uniqueness of the three-part key, **`NULL` a real value on every nullable
+part**, is now enforced by the database itself. K1 migrated the admin
+create/update lookup to the new key with identical *admin* behaviour.
+**K3 (landed)** migrates `SyncSubscriptions`' own matching to the same key
+— scoped to `(applicationCode, clientId)`, not `applicationCode` alone —
+and adds the `connectionCode`/`sharedConnection`/`clientId` fields §3 and §7
+below now describe; see `code-first-connections.md` §3 "Subscription sync"
+for the full rule set (the behavioural authority — this file records where
+it lands in Java).
 
 | Field | Type | Notes |
 |---|---|---|
 | `id` | `sub_` + 13-char TSID | generated on create |
 | `code` | string, required | admin create: trimmed + lower-cased, `^[a-z][a-z0-9-]*$`; sync: stored **as given**, only non-blank is checked (§7). Immutable after create |
-| `applicationCode` | string, optional | set only by sync (the owning SDK application); admin creates leave it `null` |
+| `applicationCode` | string, optional | set only by sync (the owning SDK application); admin creates leave it `null`. The first part of the three-part uniqueness key (above) |
 | `name` | string, required | admin create/update: trimmed; sync: as given |
 | `description` | string, optional | |
-| `clientId` | string, optional | `null` = platform-wide; persisted; drives authorization, list visibility and `matchesClient` |
+| `clientId` | string, optional | `null` = platform-wide; persisted; drives authorization, list visibility and `matchesClient`. **K3**: also the second part of sync's ownership key — a sync scopes its matching/creation/removal to `(applicationCode, clientId)`, `NULL` matching `NULL` only (`code-first-connections.md` §3) |
 | `clientIdentifier` | string, optional | column read/written, **no operation ever sets it** — **load-bearing or accident?** |
 | `clientScoped` | boolean | column read/written, always `false` — nothing sets it. **accident?** |
 | `eventTypes` | list of binding | ≥ 1 on create; replaced wholesale on update/sync |
@@ -132,8 +143,8 @@ Wire shapes:
 | `ConfigEntryDTO` | `key`*, `value`* | |
 | `SubscriptionResponse` | `id, code, applicationCode?, name, description?, clientId?, clientIdentifier?, clientScoped, eventTypes[], connectionId?, endpoint, queue?, customConfig[], source, status, maxAgeSeconds, dispatchPoolId?, dispatchPoolCode?, delaySeconds, sequence, mode, timeoutSeconds, maxRetries, serviceAccountId?, dataOnly, createdBy?, createdAt, updatedAt` | optional (`?`) fields omitted when null; the two arrays are always present (possibly empty); timestamps RFC 3339 with 6 fractional digits, `Z` |
 | `SubscriptionListResponse` | `subscriptions[]`, `total` | no pagination |
-| `SyncSubscriptionsRequest` | `subscriptions[]`* of `SyncSubscriptionInputRequest` | |
-| `SyncSubscriptionInputRequest` | `code`*, `name`*, `target`*, `eventTypes[]`* of `{eventTypeCode*, filter}`, `description`, `connectionId`, `dispatchPoolCode`, `mode`, `maxRetries`, `timeoutSeconds`, `dataOnly` | `mode` accepted and **ignored** (§7) |
+| `SyncSubscriptionsRequest` | `subscriptions[]`* of `SyncSubscriptionInputRequest`, `clientId` | **K3**: `clientId` is the client's id OR its identifier slug — resolved to an id by `SdkSyncApi` before authorization, same as connection sync's; absent/blank = a client-less (global) sync (`code-first-connections.md` §3) |
+| `SyncSubscriptionInputRequest` | `code`*, `name`*, `target`*, `eventTypes[]`* of `{eventTypeCode*, filter}`, `description`, `connectionId`, `connectionCode`, `sharedConnection`, `dispatchPoolCode`, `mode`, `maxRetries`, `timeoutSeconds`, `dataOnly` | `mode` accepted and **ignored** (§7). **K3**: `connectionCode` names a connection by code within an EXPLICIT namespace (this application's own by default, the shared/application-less one when `sharedConnection: true`), no fallback between namespaces; `connectionId` still works; both together must name the same connection (§7, §6) |
 | `SyncResultResponse` | `applicationCode, created, updated, deleted, syncedCodes[]` | |
 
 ## 4. Validation (command shape, before authorization)
@@ -154,6 +165,7 @@ Wire shapes:
 | Sync, per row | `name` non-blank | `NAME_REQUIRED` | `Subscription name is required` |
 | Sync, per row | `target` non-blank | `TARGET_REQUIRED` | `Target endpoint URL is required` |
 | Sync, per row | `eventTypes` non-empty | `EVENT_TYPES_REQUIRED` | `At least one event type is required` |
+| Sync, per row (**K3**) | `sharedConnection: true` requires a non-blank `connectionCode` | `SHARED_CONNECTION_REQUIRES_CODE` | `Subscription '<code>': sharedConnection requires connectionCode` |
 
 Validation is in this order; the first failure wins. A binding's
 `eventTypeCode` and a config entry's `key` / `value` are **not** validated:
@@ -177,45 +189,76 @@ Malformed JSON body → 400 `INVALID_JSON` (transport).
 | Handler | coarse permission per route (table §3); unauthenticated → 403 `UNAUTHENTICATED` |
 | Create — `authorize` phase | `checkScopeAccess(principal, cmd.clientId)`: client-bound create requires access to that client; `clientId` absent (platform-wide) requires anchor / super-admin → else 403 `SCOPE_FORBIDDEN` |
 | Update / Delete / Pause / Resume — `execute`, right after load + 404 | `checkScopeAccess(principal, loaded.clientId)`; these operations declare `publicAccess` for that reason |
-| Sync — `authorize` phase | `checkApplicationAccess(principal, cmd.applicationId, cmd.applicationCode)`: the principal must be able to access the **application** → else 403 `FORBIDDEN` `Not authorised for application '<code>'`; unauthenticated → `UNAUTHENTICATED`. The coarse sync permission and the `appCode → applicationId` resolution belong to the sdksync handler |
+| Sync — `authorize` phase | `checkSyncAccess(principal, cmd.applicationId, cmd.applicationCode, cmd.clientId)`: the principal must be able to access the **application** always → else 403 `FORBIDDEN` `Not authorised for application '<code>'`; when `clientId` is given, client access too → else 403 `FORBIDDEN` `No access to client: <id>`; unauthenticated → `UNAUTHENTICATED`. **K3**: a client-less sync needs ONLY application access, deliberately not anchor — ownership (§7's client scoping) fences it in, mirroring connection sync (`code-first-connections.md` §3). The coarse sync permission and the `appCode`/`clientId` resolution belong to the sdksync handler |
 | Reads | handler only: list filters client-scoped rows; get-by-id → 403 `FORBIDDEN` `No access to this subscription` |
 
 Sync writes are **not** scope-checked per subscription (rows are matched by
-`applicationCode`, which sync itself stamps; an admin-created row only enters
-the application's scope if something else sets its `application_code`).
+`(applicationCode, clientId)`, which sync itself stamps; an admin-created row
+only enters the application's scope if something else sets its
+`application_code`).
 
 ## 6. Conflicts and not-found (execute phase)
 
 | Operation | Condition | Code | Status |
 |---|---|---|---|
-| Create | another subscription has the same normalised code **and the same `clientId`** (`null` matches only `null`) | `CODE_EXISTS` | 409 — `Subscription with code '<code>' already exists` |
+| Create | another subscription has the same normalised code under the same three-part key **`(applicationCode, clientId, code)`** (`null` matches only `null` on both nullable parts; admin create always uses `applicationCode = null`) | `CODE_EXISTS` | 409 — `Subscription with code '<code>' already exists` |
 | Update / Delete / Pause / Resume | no subscription with that id | `Subscription_NOT_FOUND` | 404 — `Subscription not found: <id>` |
 | Sync | a row names a `connectionId` that does not exist | `CONNECTION_NOT_FOUND` | 404 — `Connection '<id>' not found` (checked for **every** row, before any write) |
+| Sync (**K3**) | a row names a `connectionCode` that does not resolve within its namespace (no fallback) | `CONNECTION_NOT_FOUND` | 404 — `Connection with code '<code>' not found` |
+| Sync (**K3**) | a row names both `connectionId` and `connectionCode`, resolving to different connections | `CONNECTION_MISMATCH` | 400 — `Subscription '<code>': connectionId and connectionCode name different connections` |
+| Sync (**K3**) | the `connectionId` path: the resolved connection is bound to a different client than the sync's (incl. a global sync naming a client-scoped connection), or belongs to a different application (a shared connection is usable by anyone) | `CONNECTION_SCOPE_MISMATCH` | 400 — `Subscription '<code>': connection '<id>' is scoped to a different client` / `… belongs to a different application` |
 
-A client-bound create may reuse a code that exists platform-wide or under
-another client (**load-bearing** — multi-tenant codes). Sync never conflicts
-on code: an existing code is updated — and it does **not** check `(code,
-clientId)` at all: a new sync code that already exists platform-wide under a
-*different* `applicationCode` (or none) hits the unique index and fails with
-a 500 `PERSIST`. **load-bearing or accident?**
+A client-bound create may reuse a code that exists platform-wide, under
+another client, or under another application (**load-bearing** — multi-tenant,
+multi-application codes). Sync never conflicts on code: an existing code is
+updated — and it does **not** check `(applicationCode, clientId, code)` at
+all: a new sync code that already exists under a *different* scope hits the
+database's unique index and fails with a 500 `PERSIST`. **load-bearing or
+accident?** (unchanged by K1: V12 reshapes the index sync can hit, from
+`(code, clientId)` to the three-part key, but `SyncSubscriptions` itself is
+not migrated to pre-check it until K3.)
 
 ## 7. Sync semantics
 
-Input: `applicationId`, `applicationCode`, `subscriptions[]`,
-`removeUnlisted`. Existing rows = every subscription whose
-`application_code` equals `applicationCode` (any client, any status),
-matched to input rows **by code alone**. Should two rows in that scope share
-a code (only possible when something other than sync stamps a client-bound
-admin row with the application code), the first in code order is the match
-and the other is treated as unlisted. **accident?** (sync never creates such
-a pair itself.)
+Input: `applicationId`, `applicationCode`, `clientId` (**K3**, optional —
+already resolved to an id by the handler), `subscriptions[]`,
+`removeUnlisted`. Existing rows = every subscription owned by
+`(applicationCode, clientId)` — `NULL` client matches `NULL` only (**K3**;
+previously every client's rows for the application were loaded and matched
+by code alone), matched to input rows **by code alone within that scope**.
+Should two rows in that scope share a code (only possible when something
+other than sync stamps a client-bound admin row with the application code),
+the first in code order is the match and the other is treated as unlisted.
+**accident?** (sync never creates such a pair itself.)
+
+**K3 — connection resolution, before any row is matched/written**: every
+input row's connection (`connectionId` and/or `connectionCode`) is resolved
+to an id first, so a bad reference on row 5 aborts before row 1 is touched
+(mirrors the pre-K3 `connectionId`-only check, now covering `connectionCode`
+too). Rules (`code-first-connections.md` §3):
+
+- `connectionCode` set: the namespace is EXPLICIT, never guessed — a bare
+  code names a connection owned by THIS application; `sharedConnection: true`
+  switches to the shared (application-less) namespace. **No fallback**
+  between the two. Within the chosen namespace, a client-scoped sync
+  (`clientId` set) prefers its own client's connection, falling back to a
+  global one; a client-less sync only ever resolves a global connection. Not
+  found → `CONNECTION_NOT_FOUND`. When `connectionId` is ALSO given, it must
+  name the same connection → `CONNECTION_MISMATCH`.
+- `connectionId` only: an id can name ANY row, so its scope needs an
+  explicit check — its client must be absent or equal to this sync's client
+  (`CONNECTION_SCOPE_MISMATCH`: a global sync may never point at a
+  client-owned connection), and its application must be absent (shared,
+  usable by anyone) or equal to this sync's application
+  (`CONNECTION_SCOPE_MISMATCH`).
+- Neither given: the row's connection link is cleared (unchanged from pre-K3).
 
 | Input row | Effect | Per-row event |
 |---|---|---|
-| code exists, `source` `API` or `CODE` | `name`, `description`, `endpoint`(=`target`), `connectionId` (**unconditionally** — absent clears it), `eventTypes` (replaced; `filter` carried, not stored; `eventTypeId`/`specVersion` null), `dataOnly` (plain boolean, absent ⇒ `false`) replaced; `maxRetries` / `timeoutSeconds` replaced **only when present**; dispatch pool re-resolved when `dispatchPoolCode` present (see below); `mode`, `status`, `clientId`, `delaySeconds`, `maxAgeSeconds`, `serviceAccountId`, `customConfig` untouched | `updated` |
+| code exists, `source` `API` or `CODE` | `name`, `description`, `endpoint`(=`target`), `connectionId` (the **resolved** id — **unconditionally** replaced; absent clears it), `eventTypes` (replaced; `filter` carried, not stored; `eventTypeId`/`specVersion` null), `dataOnly` (plain boolean, absent ⇒ `false`) replaced; `maxRetries` / `timeoutSeconds` replaced **only when present**; dispatch pool re-resolved when `dispatchPoolCode` present (see below); `mode`, `status`, `clientId`, `delaySeconds`, `maxAgeSeconds`, `serviceAccountId`, `customConfig` untouched | `updated` |
 | code exists, `source` `UI` | **skipped entirely** (not updated, not counted) — but its code is in `syncedCodes` and counts as "listed" for `removeUnlisted` | — |
-| code new | created: `source=API`, `applicationCode` stamped, `createdBy` = principal, `clientId` null, defaults for everything not in the input (`mode` always `IMMEDIATE` — the input's `mode` is **ignored**), `dataOnly` from the input (absent ⇒ `false`) | `created` |
-| `removeUnlisted` and existing row with `source` `API`/`CODE` not in input | hard-deleted | `deleted` |
+| code new | created: `source=API`, `applicationCode` stamped, `clientId` stamped from the sync's `clientId` (**K3**; previously always `null`), `createdBy` = principal, defaults for everything not in the input (`mode` always `IMMEDIATE` — the input's `mode` is **ignored**), `dataOnly` from the input (absent ⇒ `false`) | `created` |
+| `removeUnlisted` and existing row with `source` `API`/`CODE` not in input | hard-deleted (still scoped to `(applicationCode, clientId)` — never a sibling client's or the global rows, **K3**) | `deleted` |
 | `removeUnlisted` and existing row with `source` `UI` not in input | untouched | — |
 
 `dispatchPoolCode` resolution: when present and non-blank, looked up among
@@ -246,7 +289,7 @@ is `platform.subscription.{id}` with message group
 | `platform:admin:subscription:deleted` | same | `subscriptionId, code` |
 | `platform:admin:subscription:paused` | same | `subscriptionId` |
 | `platform:admin:subscription:resumed` | same | `subscriptionId` |
-| `platform:admin:subscription:synced` (**singular** — event types/pools use the plural `…s:synced`; **accident?**, kept) | `platform.subscriptions.{applicationCode}` / group `platform:subscriptions` (**no** application suffix; all syncs share one group — same as dispatch pools) | `applicationCode, created, updated, deleted, syncedCodes[]` |
+| `platform:admin:subscription:synced` (**singular** — event types/pools use the plural `…s:synced`; **accident?**, kept) | `platform.subscriptions.{applicationCode}` / group `platform:subscriptions` (**no** application suffix; all syncs share one group — same as dispatch pools) | `applicationCode, clientId?, created, updated, deleted, syncedCodes[]` (**K3**: `clientId` added, omitted when null; the seeded JSON schema — `additionalProperties:false` — gained it too, mirroring `connection:synced`) |
 
 The `updated` payload carries only `subscriptionId` + `name`: endpoint,
 binding and settings changes are **not** on the event. **load-bearing or
@@ -290,16 +333,16 @@ hydrate both junctions in one `IN` query each. List reads order by `code`.
 
 ## 10. Open questions for the owner (summary)
 
-1. Platform-wide code uniqueness relies on the operation's pre-check (`NULL` client ids are distinct to the index); sync does no `(code, clientId)` check at all and can hit the index (500).
+1. ~~Platform-wide code uniqueness relies on the operation's pre-check (`NULL` client ids are distinct to the index)~~ **Answered, owner ruling 2026-09-21**: uniqueness is now `(applicationCode, clientId, code)`, enforced by a database expression index (V12) — see `code-first-connections.md`. Sync still does no pre-check of its own key and can hit that index (500) — **still open**: K3 landed sync's client scoping (§7) but did not add this pre-check, same gap as before, now against the three-part key instead of the two-part one.
 2. `filter` on a binding is accepted everywhere and stored nowhere.
 3. Sync does not normalise/validate the code (`My-Sub` stored verbatim) nor the target URL format; admin create does both.
 4. Sync `dataOnly` is a plain boolean — an SDK that omits it flips an existing `true` to `false` on every sync.
-5. Sync clears `connectionId` when the row omits it; admin update cannot clear it.
+5. Sync clears `connectionId` when the row omits it; admin update cannot clear it. **K3**: a row naming neither `connectionId` nor `connectionCode` still clears it — unchanged.
 6. Unresolvable `dispatchPoolCode` is silently ignored; admin `dispatchPoolId` is stored without existence check and never sets `dispatchPoolCode`.
 7. `mode` is parsed leniently on the wire (typo ⇒ `IMMEDIATE`) and ignored by sync.
 8. `clientIdentifier`, `clientScoped`, `queue`, `sequence`, `eventTypeId` are never set by any operation.
 9. Pause/resume are idempotent (no 409 on a no-op flip); `updated` carries no settings.
 10. Numeric settings are unbounded; a binding's `eventTypeCode` may be blank; an update with `eventTypes: []` leaves zero bindings.
 11. Create/update/pause/resume are gated by *any* write permission rather than the specific verb.
-12. Sync rollup event type is singular (`subscription:synced`) and its message group is shared (`platform:subscriptions`).
-13. Admin create/update do not check that `connectionId` exists; sync does.
+12. Sync rollup event type is singular (`subscription:synced`) and its message group is shared (`platform:subscriptions`) — **K3**: the message group itself is still keyed on `applicationCode` alone, not `clientId` (two clients syncing the same application still share one FIFO lane); only the rollup's `data.clientId` field is new.
+13. Admin create/update do not check that `connectionId` exists; sync does. **K3**: sync now also resolves/checks `connectionCode`, with the namespace and scope rules in §6/§7.

@@ -72,6 +72,20 @@ public sealed interface SdkError {
     /** 429 — {@code retryAfter} is populated from the response when present. */
     record RateLimited(String message, Duration retryAfter) implements SdkError {}
 
+    // ── Client-side, multi-part operations ──────────────────────────
+
+    /**
+     * One or more parts of a client-side, multi-step operation failed —
+     * distinct from every variant above, each of which describes ONE failed
+     * HTTP call. {@code message} names every failure. Thrown by {@link
+     * io.flowcatalyst.sdk.sync.DefinitionSyncException} (a {@link
+     * FlowCatalystException} subclass) when {@link
+     * io.flowcatalyst.sdk.sync.DefinitionSynchronizer} syncs several
+     * categories/scopes and some — but not necessarily all — of them fail;
+     * the exception's typed accessors carry whatever DID sync.
+     */
+    record PartialFailure(String message) implements SdkError {}
+
     /**
      * Map an HTTP status + parsed JSON error body to the matching variant.
      * Platform error JSON is {@code {"error": "<CODE>", "message": "<text>"}};

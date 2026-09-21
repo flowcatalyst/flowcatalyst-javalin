@@ -17,6 +17,7 @@ public record SyncOptions(boolean removeUnlisted, Set<SyncCategory> skip) {
     public enum SyncCategory {
         ROLES,
         EVENT_TYPES,
+        CONNECTIONS,
         SUBSCRIPTIONS,
         DISPATCH_POOLS,
         PRINCIPALS,

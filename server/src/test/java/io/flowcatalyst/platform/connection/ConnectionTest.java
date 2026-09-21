@@ -59,6 +59,8 @@ class ConnectionTest {
         assertThat(c.externalId()).isNull();
         assertThat(c.clientId()).isNull();
         assertThat(c.clientIdentifier()).isNull();
+        assertThat(c.applicationCode()).as("a fresh connection is shared (no application)").isNull();
+        assertThat(c.source()).as("create always stamps UI").isEqualTo(ConnectionSource.UI);
         assertThat(c.createdAt()).isEqualTo(c.updatedAt());
     }
 
@@ -102,6 +104,43 @@ class ConnectionTest {
         assertThat(updated.clientId()).isEqualTo("cli_x");
         assertThat(updated.serviceAccountId()).isEqualTo("sva_test1");
         assertThat(updated.createdAt()).isEqualTo(c.createdAt());
+    }
+
+    /// `withApplicationCode` is set-if-provided, never a full replace like
+    /// its siblings above: `null` leaves the current value alone (spec
+    /// `code-first-connections.md` §3 — update cannot clear it).
+    @Test
+    void withApplicationCodeIsSetIfProvidedAndNeverClears() {
+        var shared = Connection.create(CODE, "Name", "sva_test1");
+        assertThat(shared.applicationCode()).isNull();
+
+        var owned = shared.withApplicationCode("app-orders");
+        assertThat(owned.applicationCode()).isEqualTo("app-orders");
+        assertThat(shared.applicationCode()).as("records are immutable").isNull();
+
+        var stillOwned = owned.withApplicationCode(null);
+        assertThat(stillOwned.applicationCode()).as("a null argument never clears").isEqualTo("app-orders");
+
+        var movedOwned = owned.withApplicationCode("app-shipping");
+        assertThat(movedOwned.applicationCode()).isEqualTo("app-shipping");
+    }
+
+    // ── Source (spec §3, X-06) ───────────────────────────────────────────────
+
+    @Test
+    void sourceStrictReaderParsesTheThreeRecognisedValues() {
+        assertThat(ConnectionSource.parse("CODE")).isEqualTo(ConnectionSource.CODE);
+        assertThat(ConnectionSource.parse("API")).isEqualTo(ConnectionSource.API);
+        assertThat(ConnectionSource.parse("UI")).isEqualTo(ConnectionSource.UI);
+    }
+
+    /// X-06: never a silent default — an unrecognised or absent stored value
+    /// throws, it does not fall back to `UI`.
+    @ParameterizedTest
+    @CsvSource(nullValues = "null", value = {"unknown", "code", "''", "null"})
+    void sourceStrictReaderRejectsAnythingElse(String raw) {
+        assertThatThrownBy(() -> ConnectionSource.parse(raw))
+                .isInstanceOf(ConnectionSource.UnrecognisedConnectionSourceException.class);
     }
 
     // ── Wire-side lenient reader (the update command's status field) ───────

@@ -222,7 +222,7 @@ public class MsgSubscriptions extends TableImpl<MsgSubscriptionsRecord> {
 
     @Override
     public List<Index> getIndexes() {
-        return Arrays.asList(Indexes.IDX_MSG_SUBSCRIPTIONS_CLIENT_ID, Indexes.IDX_MSG_SUBSCRIPTIONS_CODE_CLIENT, Indexes.IDX_MSG_SUBSCRIPTIONS_CONNECTION_ID, Indexes.IDX_MSG_SUBSCRIPTIONS_DISPATCH_POOL, Indexes.IDX_MSG_SUBSCRIPTIONS_SOURCE, Indexes.IDX_MSG_SUBSCRIPTIONS_STATUS);
+        return Arrays.asList(Indexes.IDX_MSG_SUBSCRIPTIONS_CLIENT_ID, Indexes.IDX_MSG_SUBSCRIPTIONS_CONNECTION_ID, Indexes.IDX_MSG_SUBSCRIPTIONS_DISPATCH_POOL, Indexes.IDX_MSG_SUBSCRIPTIONS_SOURCE, Indexes.IDX_MSG_SUBSCRIPTIONS_STATUS);
     }
 
     @Override

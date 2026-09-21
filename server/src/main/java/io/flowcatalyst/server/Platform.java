@@ -348,7 +348,7 @@ public final class Platform {
         var eventTypeRepo = new EventTypeRepository(pool);
         EventTypeApi.register(routes, new EventTypeApi.State(eventTypeRepo, uow));
         var connectionRepo = new ConnectionRepository(pool);
-        ConnectionApi.register(routes, new ConnectionApi.State(connectionRepo, uow));
+        ConnectionApi.register(routes, new ConnectionApi.State(connectionRepo, new ApplicationRepository(pool), uow));
         var dispatchPoolRepo = new DispatchPoolRepository(pool);
         DispatchPoolApi.register(routes, new DispatchPoolApi.State(dispatchPoolRepo, uow));
         // R3′ (`docs/spec/router-config-auth.md`): the router-config document moved
@@ -611,7 +611,7 @@ public final class Platform {
         // remove/archive sweep — the operations themselves stay free of `fn_` knowledge.
         var triggerObjectRepo = new io.flowcatalyst.platform.function.TriggerObjectRepository(pool);
         SdkSyncApi.register(routes, new SdkSyncApi.State(applicationRepo, eventTypeRepo, roleRepo, subscriptionRepo,
-                connectionRepo, processRepo, dispatchPoolRepo, scheduledJobRepo, openApiSpecRepo,
+                connectionRepo, clientRepo, processRepo, dispatchPoolRepo, scheduledJobRepo, openApiSpecRepo,
                 appDocRepo, principalRepo, uow, triggerObjectRepo));
 
         // function platform API (docs/spec/function-api.md, work package B, slices B1-B3): Java-first,

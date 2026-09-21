@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.connection.api;
 
+import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.connection.Connection;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
 import io.flowcatalyst.platform.connection.ConnectionRepository.ListFilter;
@@ -49,9 +50,10 @@ public final class ConnectionApi {
     }
 
     /// The handlers' dependencies.
-    public record State(ConnectionRepository repo, UnitOfWork uow) {
+    public record State(ConnectionRepository repo, ApplicationRepository apps, UnitOfWork uow) {
         public State {
             Objects.requireNonNull(repo, "repo");
+            Objects.requireNonNull(apps, "apps");
             Objects.requireNonNull(uow, "uow");
         }
     }
@@ -88,14 +90,14 @@ public final class ConnectionApi {
     private static void create(Exchange ctx, State s) {
         Checks.require(Auth.current(), CONNECTION_CREATE);
         var cmd = ctx.bodyAsClass(CreateConnectionRequest.class).toCommand();
-        var event = CreateConnection.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
+        var event = CreateConnection.of(s.repo(), s.apps()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(ConnectionResponse.from(load(s, event.connectionId())));
     }
 
     private static void update(Exchange ctx, State s) {
         Checks.require(Auth.current(), CONNECTION_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateConnectionRequest.class).toCommand(ctx.pathParam("id"));
-        UpdateConnection.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
+        UpdateConnection.of(s.repo(), s.apps()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
@@ -146,30 +148,42 @@ public final class ConnectionApi {
 
     // ── Wire DTOs (lockfile components) ────────────────────────────────────
 
-    /// Body of `POST /api/connections`.
+    /// Body of `POST /api/connections`. `applicationCode` is optional
+    /// (spec `code-first-connections.md` §3); a blank string is treated as
+    /// absent (no empty-string sentinels inside the JVM — CONVENTIONS).
     public record CreateConnectionRequest(String code, String name, String description, String serviceAccountId,
-                                          String externalId, String clientId) {
+                                          String externalId, String clientId, String applicationCode) {
         public CreateCommand toCommand() {
-            return new CreateCommand(code, name, description, serviceAccountId, externalId, clientId);
+            return new CreateCommand(code, name, description, serviceAccountId, externalId, clientId,
+                    blankToNull(applicationCode));
         }
     }
 
     /// Body of `PUT /api/connections/{id}`; the path id is authoritative.
-    public record UpdateConnectionRequest(String name, String description, String externalId, String status) {
+    /// `applicationCode` is set-if-provided and never cleared (spec §3).
+    public record UpdateConnectionRequest(String name, String description, String externalId, String status,
+                                          String applicationCode) {
         public UpdateCommand toCommand(String id) {
-            return new UpdateCommand(id, name, description, externalId, status);
+            return new UpdateCommand(id, name, description, externalId, status, blankToNull(applicationCode));
         }
     }
 
+    private static String blankToNull(String s) {
+        return s == null || s.isBlank() ? null : s;
+    }
+
     /// The wire shape of one connection; optional fields (`description`,
-    /// `externalId`, `clientId`, `clientIdentifier`) are omitted when `null`.
+    /// `externalId`, `clientId`, `clientIdentifier`, `applicationCode`) are
+    /// omitted when `null`.
     public record ConnectionResponse(
             String id,
             String code,
+            String applicationCode,
             String name,
             String description,
             String externalId,
             String status,
+            String source,
             String serviceAccountId,
             String clientId,
             String clientIdentifier,
@@ -177,9 +191,9 @@ public final class ConnectionApi {
             Instant updatedAt) {
 
         public static ConnectionResponse from(Connection c) {
-            return new ConnectionResponse(c.id(), c.code(), c.name(), c.description(), c.externalId(),
-                    c.status().name(), c.serviceAccountId(), c.clientId(), c.clientIdentifier(),
-                    c.createdAt(), c.updatedAt());
+            return new ConnectionResponse(c.id(), c.code(), c.applicationCode(), c.name(), c.description(),
+                    c.externalId(), c.status().name(), c.source().name(), c.serviceAccountId(), c.clientId(),
+                    c.clientIdentifier(), c.createdAt(), c.updatedAt());
         }
     }
 

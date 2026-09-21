@@ -2,7 +2,10 @@ package io.flowcatalyst.platform.sdksync.api;
 
 import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
+import io.flowcatalyst.platform.client.Client;
+import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
+import io.flowcatalyst.platform.connection.operations.SyncConnections;
 import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository;
 import io.flowcatalyst.platform.docs.AppDocRepository;
 import io.flowcatalyst.platform.docs.operations.SyncAppDocs;
@@ -31,6 +34,7 @@ import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
+import java.util.Locale;
 import java.util.Objects;
 
 import static io.flowcatalyst.platform.shared.auth.Permission.*;
@@ -81,7 +85,7 @@ public final class SdkSyncApi {
     /// this surface assembles their commands, it does not own their state.
     public record State(ApplicationRepository apps, EventTypeRepository eventTypes, RoleRepository roles,
                         SubscriptionRepository subscriptions, ConnectionRepository connections,
-                        ProcessRepository processes, DispatchPoolRepository dispatchPools,
+                        ClientRepository clients, ProcessRepository processes, DispatchPoolRepository dispatchPools,
                         ScheduledJobRepository scheduledJobs, OpenApiSpecRepository specs,
                         AppDocRepository appDocs, PrincipalRepository principals, UnitOfWork uow,
                         TriggerObjectRepository triggerObjects) {
@@ -98,6 +102,7 @@ public final class SdkSyncApi {
         write.post("/api/applications/{appCode}/event-types/sync", Auth.scoped(ctx -> syncEventTypes(ctx, s)));
         write.post("/api/applications/{appCode}/roles/sync", Auth.scoped(ctx -> syncRoles(ctx, s)));
         write.post("/api/applications/{appCode}/subscriptions/sync", Auth.scoped(ctx -> syncSubscriptions(ctx, s)));
+        write.post("/api/applications/{appCode}/connections/sync", Auth.scoped(ctx -> syncConnections(ctx, s)));
         write.post("/api/applications/{appCode}/dispatch-pools/sync", Auth.scoped(ctx -> syncDispatchPools(ctx, s)));
         write.post("/api/applications/{appCode}/principals/sync", Auth.scoped(ctx -> syncPrincipals(ctx, s)));
         write.post("/api/applications/{appCode}/docs/sync", Auth.scoped(ctx -> syncDocs(ctx, s)));
@@ -129,13 +134,54 @@ public final class SdkSyncApi {
         ctx.json(SyncResultResponse.from(SyncRoles.of(s.roles()).run(s.uow(), cmd, Auth.executionContext())));
     }
 
+    /// `code-first-connections.md` §3: the same `clientId` id-or-identifier-slug
+    /// resolution as [#syncConnections], resolved BEFORE authorization so the
+    /// access check sees the id, not a slug.
     private static void syncSubscriptions(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), SUBSCRIPTION_SYNC, SUBSCRIPTION_MANAGE,
                 APP_SVC_SUBSCRIPTION_CREATE, APP_SVC_SUBSCRIPTION_UPDATE, APP_SVC_SUBSCRIPTION_DELETE);
         var app = application(ctx, s);
-        var cmd = ctx.bodyAsClass(SyncSubscriptionsRequest.class).toCommand(app.id(), app.code(), removeUnlisted(ctx));
+        var body = ctx.bodyAsClass(SyncSubscriptionsRequest.class);
+        String clientId = resolveClientRef(body.clientId(), s);
+        var cmd = body.toCommand(app.id(), app.code(), clientId, removeUnlisted(ctx));
         var op = SyncSubscriptions.of(s.subscriptions(), s.connections(), s.dispatchPools());
         ctx.json(SyncResultResponse.from(op.run(s.uow(), cmd, Auth.executionContext())));
+    }
+
+    /// `code-first-connections.md` §3: the same any-of gate pattern as
+    /// subscriptions, but the per-application access check lives in
+    /// [SyncConnections]'s `authorize` phase (its command carries an
+    /// `applicationId`) rather than here.
+    private static void syncConnections(Exchange ctx, State s) {
+        Checks.requireAny(Auth.current(), CONNECTION_SYNC, CONNECTION_MANAGE,
+                APP_SVC_CONNECTION_CREATE, APP_SVC_CONNECTION_UPDATE, APP_SVC_CONNECTION_DELETE);
+        var app = application(ctx, s);
+        var body = ctx.bodyAsClass(SyncConnectionsRequest.class);
+        // clientId resolves BEFORE authorization (hand-off "Connection sync
+        // (new)") so the access check below sees the id, not a slug.
+        String clientId = resolveClientRef(body.clientId(), s);
+        var cmd = body.toCommand(app.id(), app.code(), clientId, removeUnlisted(ctx));
+        var op = SyncConnections.of(s.connections(), s.apps(), s.subscriptions());
+        ctx.json(SyncResultResponse.from(op.run(s.uow(), cmd, Auth.executionContext())));
+    }
+
+    /// Canonicalises a connection or subscription sync's client reference —
+    /// the client's `clt_…` id or its identifier slug — to the id (hand-off
+    /// "Connection sync (new)" / "Subscription sync",
+    /// `code-first-connections.md` §3). `null`/blank stays `null` (a
+    /// client-less sync). Unknown → 404: a typo'd identifier must not
+    /// silently sync against the wrong tenant.
+    private static String resolveClientRef(String ref, State s) {
+        if (ref == null || ref.isBlank()) {
+            return null;
+        }
+        String trimmed = ref.strip();
+        if (s.clients().findById(trimmed).isPresent()) {
+            return trimmed;
+        }
+        return s.clients().findByIdentifier(trimmed.toLowerCase(Locale.ROOT))
+                .map(Client::id)
+                .orElseThrow(() -> HttpError.notFound("Client", trimmed));
     }
 
     private static void syncDispatchPools(Exchange ctx, State s) {

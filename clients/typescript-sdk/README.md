@@ -136,9 +136,9 @@ const result = await client.request((httpClient, headers) =>
 
 ## Syncing Definitions
 
-Declare your application's roles, permissions, event types, subscriptions,
-dispatch pools, and principals in code, then push them to the platform with
-a single call:
+Declare your application's roles, permissions, event types, connections,
+subscriptions, dispatch pools, and principals in code, then push them to the
+platform with a single call:
 
 ```typescript
 import { FlowCatalystClient, sync } from "@flowcatalyst/sdk";
