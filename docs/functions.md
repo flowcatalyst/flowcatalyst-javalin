@@ -459,6 +459,15 @@ two forms, or a two-part address, is a usage error (exit 2).
 - asserts `EventEmitException` with a 5xx status maps to `Result.retry` and anything else maps to
   `Result.fail` — two mutants, two conditions, not one test covering both by accident.
 
+## 11. The platform API surface
+
+Everything above talks about the function itself; the platform routes that create, publish, promote,
+configure and observe it — `/api/functions…`, `/api/function-pools`, `/api/function-policies…`,
+`/api/function-domains…`, `/api/function-routes`, and the function-host control plane under
+`/control/functions/…` — are hand-documented separately, since there is no Go implementation to
+generate a lockfile entry from: `GET /api/openapi-functions.json` serves that OpenAPI 3.1 document,
+unauthenticated, alongside the platform's main `/api/openapi.json`.
+
 ## Sources
 
 - §1, §5, §6 — `docs/spec/function-invocation.md` §1–§4, §6

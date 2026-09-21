@@ -151,6 +151,7 @@ import io.flowcatalyst.platform.shared.auth.SigningKeys;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.platform.shared.openapi.FunctionOpenApiRoutes;
 import io.flowcatalyst.platform.shared.openapi.Lockfile;
 import io.flowcatalyst.platform.shared.openapi.SchemaValidation;
 import io.flowcatalyst.platform.shared.openapi.SpecRoutes;
@@ -685,6 +686,9 @@ public final class Platform {
         // `lockfile` was already loaded above, ahead of the routes.before wiring,
         // so SchemaValidation and SpecRoutes serve the exact same parsed document.
         new SpecRoutes(lockfile).register(routes);
+        // function-openapi.md §2: functions.openapi.json's own bytes, unauthenticated,
+        // beside SpecRoutes for the same reason — tooling fetches it without a token.
+        new FunctionOpenApiRoutes(Lockfile.load(Json.MAPPER, "openapi/functions.openapi.json")).register(routes);
 
         // ── SPA's own BFF routes + /api/me (docs/spec/bff.md) ─────────────
         // Cookie- or bearer-authenticated, same Authenticator as /api (both

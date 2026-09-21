@@ -50,14 +50,24 @@ public final class Lockfile {
     /// Loads the embedded lockfile. Fails loudly if it is missing — the
     /// server must never start without its wire contract.
     public static Lockfile load(ObjectMapper mapper) {
-        try (InputStream in = Lockfile.class.getClassLoader().getResourceAsStream(RESOURCE)) {
+        return load(mapper, RESOURCE);
+    }
+
+    /// Loads any OpenAPI-shaped document off the classpath as a
+    /// `Lockfile`-like view (spec `function-openapi.md` §3: "a small
+    /// generalisation — a Lockfile-like view over any document"). Used for
+    /// `openapi/functions.openapi.json`, which is hand-authored rather than
+    /// vendored from Go but shares every structural convention this class
+    /// already reads (`paths`, `operationId`, `components/schemas`, `$ref`).
+    public static Lockfile load(ObjectMapper mapper, String resourcePath) {
+        try (InputStream in = Lockfile.class.getClassLoader().getResourceAsStream(resourcePath)) {
             if (in == null) {
-                throw new IllegalStateException("missing " + RESOURCE + " on the classpath");
+                throw new IllegalStateException("missing " + resourcePath + " on the classpath");
             }
             byte[] bytes = in.readAllBytes();
             return new Lockfile(bytes, mapper.readTree(bytes));
         } catch (IOException e) {
-            throw new UncheckedIOException("could not read " + RESOURCE, e);
+            throw new UncheckedIOException("could not read " + resourcePath, e);
         }
     }
 

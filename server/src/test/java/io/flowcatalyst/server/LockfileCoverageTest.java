@@ -35,7 +35,7 @@ class LockfileCoverageTest {
     private static final List<String> OUTSIDE_LOCKFILE_PREFIXES = List.of(
             "/health", "/auth/", "/oauth/", "/.well-known/", "/portal/", "/bff/", "/api/me",
             "/api/public/", "/api/config/platform", "/api/dispatch/", "/api/dispatch-jobs/batch", "/api/audit-logs/batch",
-            "/api/openapi.json", "/api/openapi.yaml", "/q/openapi", "/swagger-ui", "/mcp", "/router/",
+            "/api/openapi.json", "/api/openapi.yaml", "/api/openapi-functions.json", "/q/openapi", "/swagger-ui", "/mcp", "/router/",
             // function-api.md §0: the function platform API is Java-first — there is no Go, so
             // there is no lockfile document for it. Covers /api/functions and /api/function-policies.
             "/api/function");
@@ -52,6 +52,31 @@ class LockfileCoverageTest {
     /// (CONVENTIONS §7: never edit the lockfile by hand).
     private static final List<String> OUTSIDE_LOCKFILE_EXACT_ROUTES = List.of(
             "POST /api/dispatch-jobs", "POST /api/oauth-clients/{id}/revoke-previous-secret");
+
+    /// The function surface is excluded from the lockfile above by PREFIX, so
+    /// nothing there would notice a new function route. Its own document is
+    /// the contract (`docs/spec/function-openapi.md` §3 O1) — and it is checked
+    /// here against the COMPOSED server, because
+    /// `FunctionOpenApiCoverageTest` registers the four function API classes
+    /// itself and cannot see a route `Platform` adds through a fifth.
+    @Test
+    void everyFunctionRouteOfTheComposedServerIsInTheFunctionDocumentAndViceVersa() {
+        Env env = Env.load(Map.of("FC_API_PORT", "0", "FC_METRICS_PORT", "0", "FC_PLATFORM_ENABLED", "true"));
+        var server = new Server(env, new Server.Mode.Platform(io.flowcatalyst.platform.shared.database.Pools.ofSingle(TestPg.dataSource())), Server.Spa.none(), new PrometheusRegistry());
+        Set<String> registered = new TreeSet<>();
+        for (var reg : server.buildApi().registry().registrations()) {
+            String path = reg.path();
+            if (path.startsWith("/api/function") || path.startsWith("/control/functions")) {
+                registered.add(reg.method() + " " + path);
+            }
+        }
+        Set<String> documented = new TreeSet<>();
+        Lockfile.load(Json.MAPPER, "openapi/functions.openapi.json").operations()
+                .forEach(op -> documented.add(op.method() + " " + op.path()));
+
+        assertThat(registered).as("function routes of the composed server vs functions.openapi.json")
+                .isNotEmpty().isEqualTo(documented);
+    }
 
     @Test
     void registeredApiRoutesAreInTheLockfileAndCoverageIsReported() {

@@ -28,6 +28,7 @@
   "GET /api/me/clients",
   "GET /api/me/clients/{clientId}",
   "GET /api/me/clients/{clientId}/applications",
+  "GET /api/openapi-functions.json",
   "GET /api/openapi.json",
   "GET /api/openapi.yaml",
   "GET /api/public/login-theme",

@@ -86,6 +86,29 @@ public final class SchemaValidation implements Handler {
         return new SchemaValidation(lockfile, List.copyOf(table));
     }
 
+    /// The public façade onto [SchemaValidator] (package-private) for a
+    /// caller outside this package that already holds a [Lockfile]-like
+    /// document — `FunctionOpenApiConformanceTest` (spec `function-openapi.md`
+    /// §3, O2/O3/O4) validates request/response/error bodies against
+    /// `functions.openapi.json` this way, without duplicating the engine.
+    /// Returns one `{location, message, value?}` map per failure, empty when
+    /// `value` conforms to `schema`.
+    public static List<Map<String, Object>> validate(Lockfile document, JsonNode schema, String location, JsonNode value) {
+        var errors = new ArrayList<Map<String, Object>>();
+        SchemaValidator.validateValue(document, schema, location, value, errors);
+        return errors;
+    }
+
+    /// The public façade onto [SchemaValidator#checkKeywords] — walks every
+    /// schema node reachable from `schema` and throws if any uses a keyword
+    /// this validator does not implement (see [SchemaValidator]'s class doc).
+    /// `FunctionOpenApiCoverageTest` (O5) calls this once per operation's
+    /// request/response schemas at document-load time, exactly as
+    /// [#build] does for the platform lockfile.
+    public static void checkKeywords(Lockfile document, JsonNode schema, Set<String> visitedRefs) {
+        SchemaValidator.checkKeywords(document, schema, visitedRefs);
+    }
+
     @Override
     public void handle(Exchange ctx) {
         var method = ctx.method();
