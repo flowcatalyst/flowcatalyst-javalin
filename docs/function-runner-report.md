@@ -19,7 +19,7 @@ recorded in the specs that apply them; live state is `docs/STATUS.md`.
 
 **Not built, by decision:** `@AsFunction` SDK annotation (superseded by manifest-declared wiring);
 `s3://` store and ECR credentials (no SDK module on the class path); wasm runtime (phase 3); weighted
-aliases (P4). **Owed:** an OpenAPI document for the function API; a registry for `fnhost-image.yml`;
+aliases (P4). **Owed:** a registry for `fnhost-image.yml`;
 the ops runbook beyond `docs/deployments.md`'s sizing rule; the unexplained intermittent test
 failures and the random-order fragility listed in `docs/STATUS.md`.
 
