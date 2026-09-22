@@ -1,0 +1,17 @@
+{
+  "runtime": "jvm",
+  "entrypoint": "io.flowcatalyst.example.subscriptiontest.SubscriptionTestFunction",
+  "pool": "default",
+  "warm": true,
+  "limits": { "maxDurationMs": 10000, "maxConcurrency": 4 },
+  "endpoints": [
+    { "path": "/events/received", "auth": "webhook" },
+    { "path": "/healthz", "auth": "none", "methods": ["GET"] }
+  ],
+  "subscriptions": [
+    { "eventType": "platform:admin:eventtypes:synced", "path": "/events/received",
+      "mode": "IMMEDIATE", "maxRetries": 3, "timeoutSeconds": 30, "dataOnly": false }
+  ],
+  "secrets": ["EVENTS_DSN"],
+  "db": [ { "name": "events", "secretRef": "EVENTS_DSN", "poolSize": 2 } ]
+}

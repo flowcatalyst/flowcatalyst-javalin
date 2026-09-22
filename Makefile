@@ -54,8 +54,8 @@ fnhost-smoke: ## Package the fc-fnhost exec jar, then run it for real (P9, docs/
 	$(MVN) -q -DskipTests -pl function-host -am package
 	$(MVN) -pl function-api,function-host -am test -Dtest='FnHostSmokeTest' $(NO_EMPTY)
 
-examples: ## Build, shrink and test the sample function (examples/function-hello, docs/functions.md)
-	$(MVN) -q -B -Pexamples -pl examples/function-hello -am verify -Dtest='ShrunkJarTest' -Dsurefire.failIfNoSpecifiedTests=false
+examples: ## Build, shrink and test the sample functions (examples/function-hello, examples/function-subscription-test)
+	$(MVN) -q -B -Pexamples -pl examples/function-hello,examples/function-subscription-test -am verify -Dtest='ShrunkJarTest' -Dsurefire.failIfNoSpecifiedTests=false
 
 test-one: ## One class or pattern: make test-one T=PoolTest
 	@[ -n "$(T)" ] || { echo "usage: make test-one T=<ClassName|pattern>"; exit 2; }

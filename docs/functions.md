@@ -39,6 +39,10 @@ and `stop` once when the version unloads. `FunctionContext` is everything your f
 outside the invocation itself: a logger, config, secrets, a database pool, host-mediated outbound
 HTTP, event emission, a clock, and your own address/version.
 
+> A second sample, `examples/function-subscription-test`, is the smallest useful function: it
+> subscribes to a platform event and stores every delivery in its own database through a
+> platform-held secret. Its README is a five-step walkthrough of the whole path on a dev machine.
+
 ## 2. Quickstart
 
 ```sh
