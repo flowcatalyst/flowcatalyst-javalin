@@ -1684,3 +1684,17 @@ stays the source of truth; the UI is an editor.
 
 Production side (owner, IaC): a wildcard certificate and a `*.mybusinessdomain.com` rule to the
 function hosts.
+
+## function-host intermittent failures recurred under contention (2026-09-22, evening)
+
+During the backlog units, a `-pl fcdev -am` reactor run in a worktree (concurrent with the main
+tree's server suite) saw `FnHttpServerPublicListenerTest` fail once and `FnHttpServerTest` fail once,
+both passing on rerun. The worktree was removed before its surefire reports were kept, so the
+response bodies are lost — **keep `target/surefire-reports` of a failed run before removing a
+worktree.** `FnHttpServerTest` h4's assertion prints the body since 2026-09-22; the next occurrence
+names the code. Candidate sources of a 404 on the private listener are enumerated in
+`FnHttpServer` (`NOT_FOUND` for a non-`/functions` path, `FUNCTION_NOT_FOUND` when `liveEntry` is
+null, `ENDPOINT_NOT_FOUND`, `VERSION_NOT_AVAILABLE`) — reconcile is synchronous in the harness, so
+`FUNCTION_NOT_FOUND` would mean the document was not set; the others are deterministic on the
+fixture. Next: loop the class uncontended (`-Dsurefire.rerunFailingTestsCount` is the wrong tool —
+run the class 10× and diff the reports).
