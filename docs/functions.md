@@ -469,7 +469,7 @@ two forms, or a two-part address, is a usage error (exit 2).
 | `fn status [<address>]` | versions, live alias, hosts (with per-host loaded state/error), wiring |
 | `fn versions [<address>]`, `fn retire [<address>] --version <n>` | list / retire a version (refuses the live one) |
 | `fn config get\|set [<address>] [KEY=VALUE…]` | `set` is read-modify-write of the whole map. Config and secrets belong to a **function**, so it must exist: `fn publish` first (creates it, no promote), set the values, then `fn deploy` — promote refuses with `SETTINGS_MISSING` until every declared key has a value |
-| `fn secret set [<address>] <KEY> [--from-file <file>]`, `fn secret list\|delete` | the value is **never** a CLI argument — stdin (no echo at a TTY) or `--from-file` only. The value is a secret-manager reference (`aws-sm://`, `aws-ps://`, `gcp-sm://`, `vault://`, `env://`) unless prefixed **`encrypt:`**, which stores the plaintext encrypted at rest (`INVALID_SECRET_REF` otherwise); the prefix is stripped and the function receives the plain value |
+| `fn secret set [<address>] <KEY> [--from-file <file>]`, `fn secret list\|delete` | the value is **never** a CLI argument — stdin (no echo at a TTY) or `--from-file` only. The CLI treats the value as a secret-manager reference (`aws-sm://`, `aws-ps://`, `gcp-sm://`, `vault://`, `env://`) unless prefixed **`encrypt:`**, which stores the plaintext encrypted at rest (`INVALID_SECRET_REF` otherwise); the prefix is stripped and the function receives the plain value. The admin UI and the raw `PUT …/secrets/{key}` take the plain value with no prefix — `encrypt:` is the CLI's convention only |
 | `fn invoke <address>[:<version>] [--path /x] [--method POST] [--body <file>\|-] [-H k:v…] [--host-url] [--webhook --signing-secret <secret>]` | calls the function **host** directly, never the platform |
 | `fn watch <dir> [<address>] [--jar <glob>] [--manifest manifest.json]` | debounced (500 ms) file watch; every change runs a deploy cycle; a failing cycle prints its error and the watch keeps going |
 | `fn domain claim <hostname> [--client <id>]` | claims a hostname (§6a); prints the TXT record to create, or nothing further if it auto-verified (`.localhost` under dev mode) |
@@ -502,12 +502,22 @@ unauthenticated, alongside the platform's main `/api/openapi.json`.
 
 ## 12. From the admin UI
 
-Everything above is the CLI/API path. The admin SPA (`docs/spec/function-ui.md`, packages H1–H3,
+Everything above is the CLI/API path. The admin SPA (`docs/spec/function-ui.md`, packages H1–H4,
 merged) covers most of the same ground with a browser instead:
 
 - **List** — `/functions`: address, owner, runtime, live version, status; filters by application,
   client (anchor only) and status. A **Function Pools** card underneath (`GET /api/function-pools`)
-  shows each pool's host count, read-only.
+  shows each pool's host count, read-only. A **New Function** button (gated on
+  `platform:function:function:manage`, hidden rather than disabled otherwise) opens the create
+  drawer at `/functions/new`.
+- **Create drawer** — application code, service and name (the three address labels, with the
+  resulting `app.service.name` address previewed live as they're typed), runtime (only `jvm` is
+  offered; `wasm` is shown disabled with a note — the platform refuses it today), description, and
+  for an anchor an owner client (platform-owned by default, matching `CreateFunction.java`'s own
+  rule: a client-scoped caller's function is always their own client's, sent automatically and
+  never a choice in this form). Platform error codes (`APPLICATION_CODE_NOT_ADDRESSABLE`,
+  `FUNCTION_EXISTS`, `Application_NOT_FOUND`, field `details`) surface verbatim in the form; on
+  success the drawer closes and opens the new function's own detail drawer.
 - **Publish drawer** — open a function's detail page (`/functions/{address}`) → **Versions** →
   **Publish Version**: pick the jar and `manifest.json` (a Sigstore bundle is optional), submit. The
   drawer sha256s the jar in the browser, uploads it (`PUT …/artifacts/{digest}`), then publishes with
@@ -518,28 +528,25 @@ merged) covers most of the same ground with a browser instead:
   proven it loadable); confirms before applying the manifest.
 - **Config & secrets** — the detail page's **Config & Secrets** tab: config values are inline-editable;
   secrets are set/replaced through a one-time input and the tab never displays a stored value again,
-  only "set"/"not set". A banner warns when a declared key has no value (promote refuses with
-  `SETTINGS_MISSING` until every one does).
+  only "set"/"not set". Declared keys are the UNION of the live manifest's declared keys and every
+  non-retired version's own manifest (fetched the same way the Versions tab does, on this tab's
+  load rather than on row expand) — each key is tagged with where it comes from ("live", "v2
+  (ready)", …), and a key with a stored value that no manifest declares reads "not declared". An
+  **Add key** row on each table sets a key directly, by name, even before any manifest has been
+  loaded. The SETTINGS_MISSING banner is computed from the union too — specifically from the
+  candidate version promote will actually check (the newest non-retired `PUBLISHED`/`READY`
+  version), not only the live one — so it warns correctly even before a function's first promote.
+  This closes what used to be a real gap: before this, the tab's rows came only from
+  `GET …/config`/`…/secrets`, whose `declared` list is the *live* manifest's — empty until the
+  first promote — while promote's own missing-settings check looks at the version being promoted,
+  not the live one, so the one time a key most needed setting (before a function's first promote)
+  was the one time the tab offered no way to set it. The fix here is client-side only; the server
+  could usefully expose the candidate's declared keys directly (`GET …/config`/`…/secrets` taking
+  an explicit version, or a dedicated field) instead of the SPA reconstructing them from
+  `listVersions` + per-version `getVersion` calls.
 - **Domains** — `/function-domains`: **Claim Domain** takes a hostname (+ client, for an anchor); a
   hostname ending in `.localhost` auto-verifies immediately, no DNS record needed (dev mode). The
   detail drawer shows the TXT record to create for anything else, a **Verify** button, and **Release**.
-
-**Two gaps found while writing `e2e/tests/functions.spec.ts` (H4), plain rather than rounded off**
-(see that file and `e2e/fixtures/functions.ts` for the exact citations):
-
-1. **There is no "Create Function" action anywhere in the SPA.** The list page has no create button,
-   the router has no `/functions/new`, and the detail drawer for an address that doesn't exist yet
-   just reads "Function not found" with nothing further to do. A function must exist before its
-   detail page — and therefore its Publish drawer — is reachable at all; today only
-   `POST /api/functions` (CLI `fn publish`, or a direct call) can create one.
-2. **The Config & Secrets tab cannot set a key before the function has a live version.** The tab's
-   rows come from `GET …/config`/`…/secrets`, whose `declared` list is the *live* manifest's keys —
-   empty until the first promote. Promote's own missing-settings check looks at the version being
-   promoted, not the live one, so the one time a key most needs setting (before a function's first
-   promote) is the one time the tab offers no way to set it. `fn config set`/`fn secret set` (or a
-   direct `PUT`) between publish and promote — the sequence
-   `examples/function-subscription-test/README.md` already walks through for exactly this reason —
-   is the only way in today.
 
 ## Sources
 

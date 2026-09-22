@@ -25,11 +25,10 @@
 // after a reload, never a transient banner — every polled step below
 // reloads the page and re-reads the DOM, not an in-memory flag.
 //
-// Two steps use a documented API-level workaround instead of a UI action —
-// see the big comment in fixtures/functions.ts above
-// createFunctionViaApi/setConfigAndSecretViaApi for exactly which UI gaps
-// make that unavoidable today, with file/line citations. Every other step
-// below is UI-driven.
+// Every step below is UI-driven, including the create drawer and the
+// Config & Secrets tab's "Add key" rows — see the comment in
+// fixtures/functions.ts above createFunctionViaUi/setConfigAndSecretViaUi
+// for what those closed (docs/functions.md §12).
 import path from "node:path";
 import { existsSync } from "node:fs";
 import {
@@ -49,9 +48,9 @@ import {
     FN_DOMAIN_HOSTNAME,
     FN_NAME,
     FN_PUBLIC_PORT,
-    createFunctionViaApi,
+    createFunctionViaUi,
     helloManifestWithPublicRoute,
-    setConfigAndSecretViaApi,
+    setConfigAndSecretViaUi,
     waitForHostState,
     waitForVersionState,
 } from "../fixtures/functions.js";
@@ -129,12 +128,12 @@ test.describe("functions", () => {
         await expect(page.getByText("VERIFIED", { exact: true }).first()).toBeVisible();
         await expect(page.getByText("Auto-verified in dev mode", { exact: false })).toBeVisible();
 
-        // ── 4. Functions: create hello.default.hello (API workaround — Gap 1,
-        // fixtures/functions.ts), then publish its first version through the
+        // ── 4. Functions: create hello.default.hello through the real Create
+        // Function drawer (Gap 1, closed — fixtures/functions.ts's
+        // createFunctionViaUi), then publish its first version through the
         // real Publish drawer UI. ───────────────────────────────────────────
-        await createFunctionViaApi(page.request);
+        await createFunctionViaUi(page);
 
-        await page.goto(`/functions/${FN_ADDRESS}`);
         // FunctionDetailDrawer.vue's title is `fn.name` (the address's third
         // DNS label, "hello" — FunctionResponse.name is NOT a separate
         // display name, it is literally `f.address().name().value()`,
@@ -172,12 +171,11 @@ test.describe("functions", () => {
 
         await expect(page.locator("tr", { hasText: `v${published.version}` })).toBeVisible();
 
-        // ── 5. Config & secrets: GREETING / API_KEY (API workaround — Gap 2,
-        // fixtures/functions.ts: the tab cannot set a key before a live
-        // version exists, and promote's own settings check needs it set
-        // NOW, before promote — there is no UI ordering that satisfies both).
-        // ────────────────────────────────────────────────────────────────
-        await setConfigAndSecretViaApi(page.request, FN_ADDRESS, GREETING_VALUE, API_KEY_VALUE);
+        // ── 5. Config & secrets: GREETING / API_KEY through the real Config &
+        // Secrets tab's "Add key" rows (Gap 2, closed — fixtures/functions.ts's
+        // setConfigAndSecretViaUi), set before this version has ever been
+        // promoted. ─────────────────────────────────────────────────────────
+        await setConfigAndSecretViaUi(page, FN_ADDRESS, GREETING_VALUE, API_KEY_VALUE);
 
         // ── 6. Wait for READY (the in-process fcdev host's own reconcile
         // loop), then Promote through the real UI. ─────────────────────────

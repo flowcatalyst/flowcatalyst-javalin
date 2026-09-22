@@ -6,8 +6,8 @@
 // examples/function-hello manifest in-memory, polling out-of-band host
 // state, and two documented workarounds for UI gaps H4 discovered (see the
 // big comment below).
-import type { APIRequestContext, Page } from "@playwright/test";
-import { expect } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { bareInput, expect, submitDrawer } from "./catalogue.js";
 
 /// The three-label address `applicationCode.serviceName.name` this flow
 /// exercises — fixed, not `unique()`-suffixed, because it must match the
@@ -78,79 +78,81 @@ export function helloManifestWithPublicRoute(): Record<string, unknown> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Two documented workarounds for real gaps this flow found in the admin
-// SPA as merged (commits 8fa6ac78 / c402c98b / 24721348, packages H1–H3).
-// Both are cited precisely in the H4 report; neither is "the intended
-// shape" of this test — they exist because the step they perform has
-// literally no UI path today. Every OTHER step of this flow goes through
-// the real UI (claim, publish, promote, hosts, routes, healthz).
+// Two real gaps this flow originally found in the admin SPA (commits
+// 8fa6ac78 / c402c98b / 24721348, packages H1–H3) — both now closed
+// (docs/functions.md §12): a create drawer at `/functions/new`
+// (FunctionCreateDrawer.vue) and a Config & Secrets tab that derives its
+// declared keys from the union of the live manifest and every non-retired
+// version's own manifest, with an explicit "Add key" row on each table
+// (FunctionConfigSecretsTab.vue). Every step of this flow now goes through
+// the real UI (create, claim, publish, configure, promote, hosts, routes,
+// healthz).
 // ─────────────────────────────────────────────────────────────────────────
 
-/// **Gap 1 — there is no "Create Function" action anywhere in the SPA.**
-/// `frontend/src/router/index.ts`'s `/functions` route has only a
-/// `:address` child (no `new`); `FunctionListPage.vue`'s header has no
-/// create button; `FunctionDetailDrawer.vue` renders nothing but
-/// `loadError = "Function not found"` when `GET /api/functions/{address}`
-/// 404s, with no affordance to proceed from there. `functionsApi.create`
-/// (wrapping `POST /api/functions`) is exported from `api/functions.ts`
-/// but is never called from any page — confirmed by grepping the whole
-/// `frontend/src` tree. A brand-new function cannot be created through the
-/// admin UI at all; this call is the one prerequisite every subsequent
-/// UI-driven step in this flow depends on. Takes `page.request` (which
-/// shares the page's session cookie — `frontend/src/api/client.ts` uses
-/// `credentials: "include"`, no CSRF header — Playwright's `page.request`
-/// is the same `APIRequestContext` the browser's own cookie jar backs).
-export async function createFunctionViaApi(request: APIRequestContext): Promise<void> {
-    const res = await request.post("/api/functions", {
-        data: {
-            applicationCode: FN_APPLICATION_CODE,
-            serviceName: FN_SERVICE_NAME,
-            name: FN_NAME,
-            runtime: "jvm",
-            description: "E2E function-hello",
-        },
-    });
-    expect(res.ok(), await res.text()).toBe(true);
+/// Creates `hello.default.hello` through the real Create Function drawer
+/// (`/functions/new`) — the one prerequisite every subsequent UI-driven
+/// step in this flow depends on. Lands the browser on the new function's
+/// own detail drawer (`FunctionCreateDrawer.vue`'s `replaceToDetail` on
+/// success), so the caller has no further navigation to do.
+export async function createFunctionViaUi(page: Page): Promise<void> {
+    await page.goto("/functions/new");
+    await bareInput(page, "Application Code").fill(FN_APPLICATION_CODE);
+    await bareInput(page, "Service").fill(FN_SERVICE_NAME);
+    await bareInput(page, "Name").fill(FN_NAME);
+
+    const created = await submitDrawer<{ address: string }>(
+        page,
+        "Create Function",
+        "/api/functions",
+    );
+    expect(created.address).toBe(FN_ADDRESS);
+    await expect(page).toHaveURL(new RegExp(`/functions/${FN_ADDRESS}$`));
 }
 
-/// **Gap 2 — the Config & Secrets tab cannot set a key before the function
-/// has a LIVE version.** `FunctionApi.java`'s `declaredConfig`/
-/// `declaredSecrets` (used by both `GET .../config` and `GET .../secrets`)
-/// read `liveVersionOf(s, f)` and return `List.of()` when there is none —
-/// so before any promote, `FunctionConfigSecretsTab.vue`'s `configRows`/
-/// `secretRows` computeds (the union of `declared` and whatever is already
-/// in `values`/`keys`) are always empty, and the tab offers no "add a new
-/// key" action — only edit/replace buttons on rows that already exist.
-/// Meanwhile `PromoteVersion.requireSettingsPresent` (spec
-/// `function-context.md` §1) checks the CANDIDATE version's OWN manifest,
-/// not the live one — so the real requirement (GREETING/API_KEY set before
-/// promoting the function's first version) is impossible to satisfy
-/// through the tab: promote's own SETTINGS_MISSING check depends on a
-/// value only a UI row driven off the (not-yet-existing) live manifest
-/// could ever offer to set. `docs/functions.md`'s own CLI walkthrough
-/// sidesteps this by calling `fn secret set`/`fn config set` directly
-/// against the API between publish and promote — this does the same over
-/// HTTP, since the SPA has no equivalent. Also answers the task's open
-/// question: this is NOT the `encrypt:`-prefix CLI convention —
+/// Sets GREETING (config) and API_KEY (secret) through the Config & Secrets
+/// tab's "Add key" rows — the affordance that lets a key be set even
+/// before any manifest has been loaded (the exact case this flow is in
+/// right after publish: the version is PUBLISHED, not yet READY, so
+/// `FunctionConfigSecretsTab.vue`'s union already has GREETING/API_KEY as
+/// declared-but-unset rows too, but this exercises the always-available
+/// path). `page.getByTestId` — both rows carry explicit `data-testid`s
+/// (`FunctionConfigSecretsTab.vue`: `add-config-key-input`/
+/// `add-config-value-input`/`add-config-key-button`, and the `secret-`
+/// equivalents). Also answers a question the original API-based workaround
+/// raised: this is NOT the `encrypt:`-prefix CLI convention —
 /// `SetFunctionSecret`/`SecretValue` (server) never special-case a prefix;
 /// the admin route always stores whatever raw value is PUT, encrypted at
 /// rest. `encrypt:` is purely a local `fn secret set` CLI convenience for
 /// `db[].secretRef`-style values (secrets-manager references vs. a literal
 /// DSN) — irrelevant to this route.
-export async function setConfigAndSecretViaApi(
-    request: APIRequestContext,
+export async function setConfigAndSecretViaUi(
+    page: Page,
     address: string,
     greeting: string,
     apiKey: string,
 ): Promise<void> {
-    const configRes = await request.put(`/api/functions/${address}/config`, {
-        data: { values: { GREETING: greeting } },
-    });
+    await page.getByRole("tab", { name: "Config & Secrets", exact: true }).click();
+
+    const configResponse = page.waitForResponse(
+        (r) =>
+            new URL(r.url()).pathname === `/api/functions/${address}/config` &&
+            r.request().method() === "PUT",
+    );
+    await page.getByTestId("add-config-key-input").fill("GREETING");
+    await page.getByTestId("add-config-value-input").fill(greeting);
+    await page.getByTestId("add-config-key-button").click();
+    const configRes = await configResponse;
     expect(configRes.ok(), await configRes.text()).toBe(true);
 
-    const secretRes = await request.put(`/api/functions/${address}/secrets/API_KEY`, {
-        data: { value: apiKey },
-    });
+    const secretResponse = page.waitForResponse(
+        (r) =>
+            new URL(r.url()).pathname === `/api/functions/${address}/secrets/API_KEY` &&
+            r.request().method() === "PUT",
+    );
+    await page.getByTestId("add-secret-key-input").fill("API_KEY");
+    await page.getByTestId("add-secret-value-input").fill(apiKey);
+    await page.getByTestId("add-secret-key-button").click();
+    const secretRes = await secretResponse;
     expect(secretRes.ok(), await secretRes.text()).toBe(true);
 }
 

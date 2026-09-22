@@ -493,6 +493,12 @@ const router = createRouter({
 						import("@/pages/functions/FunctionListPage.vue"),
 					children: [
 						{
+							path: "new",
+							name: "function-create",
+							component: () =>
+								import("@/pages/functions/FunctionCreateDrawer.vue"),
+						},
+						{
 							path: ":address",
 							name: "function-detail",
 							component: () =>

@@ -34,6 +34,8 @@ const mocks = vi.hoisted(() => ({
 	listSecrets: vi.fn(),
 	setSecret: vi.fn(),
 	deleteSecret: vi.fn(),
+	listVersions: vi.fn(),
+	getVersion: vi.fn(),
 }));
 
 vi.mock("@/api/functions", async (importOriginal) => {
@@ -47,6 +49,8 @@ vi.mock("@/api/functions", async (importOriginal) => {
 			listSecrets: mocks.listSecrets,
 			setSecret: mocks.setSecret,
 			deleteSecret: mocks.deleteSecret,
+			listVersions: mocks.listVersions,
+			getVersion: mocks.getVersion,
 		},
 	};
 });
@@ -102,9 +106,17 @@ describe("FunctionConfigSecretsTab — secret value never rendered (U7)", () => 
 		mocks.listSecrets.mockReset();
 		mocks.setSecret.mockReset();
 		mocks.deleteSecret.mockReset();
+		mocks.listVersions.mockReset();
+		mocks.getVersion.mockReset();
 
 		mocks.getConfig.mockResolvedValue(emptyConfig);
 		mocks.listSecrets.mockResolvedValue(secretsBeforeSet);
+		// No versions in this test — API_KEY's declared/missing come from the
+		// live manifest alone (secretsBeforeSet above); the union logic under
+		// test elsewhere (function-config-secrets-declared.test.ts) covers the
+		// candidate-version path.
+		mocks.listVersions.mockResolvedValue([]);
+		mocks.getVersion.mockResolvedValue({});
 	});
 
 	it('reads "not set" before, "set" after saving, and the typed value never appears in the DOM', async () => {

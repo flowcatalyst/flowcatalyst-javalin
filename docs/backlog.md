@@ -1649,3 +1649,13 @@ without deregistering — every `fcdev` restart, every ECS task replacement — 
 last heartbeat, shown `stale` after the live window. Inert (desired state and routing ignore stale
 hosts) but the list grows for ever. Purge rows stale for more than a day, from the reaper or the
 heartbeat handler.
+
+## The function settings routes should expose the CANDIDATE version's declared keys (2026-09-22)
+
+`GET /api/functions/{address}/config` and `…/secrets` compute `declared`/`missing` from the LIVE
+manifest, but `PromoteVersion.requireSettingsPresent` checks the candidate's, so before a
+function's first promote the routes say nothing is declared while promote refuses with
+`SETTINGS_MISSING`. The SPA (H5, `FunctionConfigSecretsTab.vue`) reconstructs the union from
+`listVersions` + one `getVersion` per version on every tab load. Fix on the server: an optional
+`?version=` on both routes, or `declared` computed over live ∪ newest PUBLISHED/READY, and
+`missing` against the candidate. Then the SPA drops its N+1.

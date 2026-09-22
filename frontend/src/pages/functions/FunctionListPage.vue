@@ -9,13 +9,21 @@ import {
 import { applicationsApi, type Application } from "@/api/applications";
 import { clientsApi, type Client } from "@/api/clients";
 import { useAuthStore } from "@/stores/auth";
-import { userScope } from "@/stores/permissions";
+import { userScope, userHasPermission } from "@/stores/permissions";
 import { useListState } from "@/composables/useListState";
 import { useTableFilters } from "@/composables/useTableFilters";
 
 const router = useRouter();
 const route = useRoute();
 const authStore = useAuthStore();
+
+const canManage = computed(() =>
+	userHasPermission(authStore.user, "platform:function:function:manage"),
+);
+
+function createFunction() {
+	void router.push({ path: "/functions/new", query: route.query });
+}
 
 const functions = ref<FunctionResponse[]>([]);
 const total = ref(0);
@@ -160,6 +168,12 @@ function formatDate(s?: string): string {
         <h1 class="page-title">Functions</h1>
         <p class="page-subtitle">Platform-run functions: code the platform hosts and invokes</p>
       </div>
+      <Button
+        v-if="canManage"
+        label="New Function"
+        icon="pi pi-plus"
+        @click="createFunction"
+      />
     </header>
 
     <div class="fc-card table-card">
