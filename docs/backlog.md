@@ -1696,5 +1696,17 @@ names the code. Candidate sources of a 404 on the private listener are enumerate
 `FnHttpServer` (`NOT_FOUND` for a non-`/functions` path, `FUNCTION_NOT_FOUND` when `liveEntry` is
 null, `ENDPOINT_NOT_FOUND`, `VERSION_NOT_AVAILABLE`) — reconcile is synchronous in the harness, so
 `FUNCTION_NOT_FOUND` would mean the document was not set; the others are deterministic on the
-fixture. Next: loop the class uncontended (`-Dsurefire.rerunFailingTestsCount` is the wrong tool —
-run the class 10× and diff the reports).
+fixture. Looped uncontended 8× (`FnHttpServerTest` + `FnHttpServerPublicListenerTest`, 58 tests): one
+failure in run 3, a DIFFERENT symptom — `h3_secretRotationWindow`'s FIRST request (a POST, fresh
+`HttpClient`, 51 ms after `start`) died with `HTTP/1.1 header parser received no bytes` / `EOF
+reached while reading`: the server closed the connection without answering. Report kept at the
+session scratchpad `fnhttp-loop/reports-run3`. Ruled out since: (a) the JDK client's `Upgrade: h2c`
+first-request attempt against the host's `setHttp2ClearTextEnabled(true)` — 1,200 first requests
+(GET/POST × HTTP/2-default/HTTP/1.1) against a warm host, 0 failures; (b) a just-started host with a
+lazy, not-yet-loaded function — 120 fresh hosts (start → first POST → close), 0 failures. Still
+open: something that closes an accepted connection early only under a full class run (a previous
+test's `close(3s)` still tearing down its Vert.x on shared event-loop threads? the JVM's port-0
+reuse handing a just-freed port to the next server while the old `HttpServer.close()` is still in
+flight?). Next: run the class with `-Dvertx.logger-delegate-factory-class-name` debug on the
+connection lifecycle, or make the harness log the server's `connectionHandler` close events with
+the port, and diff against the failing test's port.
