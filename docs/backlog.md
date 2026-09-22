@@ -1641,3 +1641,11 @@ to promote. Found walking `examples/function-hello` on a fresh platform. Fix: th
 create the function the way `publish` does (`Publisher.ensureFunctionExists`, honouring
 `--no-create`), so values can be set before the first publish. Small `fcdev` unit; pin with a
 test that `config set` on an unknown address creates it and stores the value.
+
+## Function hosts that stopped without deregistering accumulate (2026-09-22)
+
+A host's id is its process (`fcdev-<pid>` locally; a task id in ECS), and a host that stops
+without deregistering — every `fcdev` restart, every ECS task replacement — leaves its row with its
+last heartbeat, shown `stale` after the live window. Inert (desired state and routing ignore stale
+hosts) but the list grows for ever. Purge rows stale for more than a day, from the reaper or the
+heartbeat handler.
