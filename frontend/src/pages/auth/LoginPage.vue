@@ -350,8 +350,11 @@ async function onPasskeyLogin() {
           </div>
 
           <div class="form-options">
+            <!-- The whole query goes along: mid-OAuth (?oauth=true&client_id=…)
+                 the forgot page needs it to bring the user back to the
+                 application after the reset. -->
             <RouterLink
-              :to="{ name: 'forgot-password', query: currentEmail ? { email: currentEmail } : {} }"
+              :to="{ name: 'forgot-password', query: { ...route.query, ...(currentEmail ? { email: currentEmail } : {}) } }"
               class="forgot-password"
             >Forgot password?</RouterLink>
           </div>

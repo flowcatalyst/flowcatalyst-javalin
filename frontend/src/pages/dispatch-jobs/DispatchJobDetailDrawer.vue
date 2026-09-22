@@ -43,7 +43,10 @@ async function load() {
 			dispatchJobsApi.attempts(id.value),
 		]);
 		job.value = j;
-		attempts.value = a;
+		// The API lists attempts oldest-first; an operator reads the latest
+		// answer first. Position, not the stored attemptNumber, is the label:
+		// every requeue starts a new run numbered from 1 again.
+		attempts.value = [...a].reverse();
 	} catch (error) {
 		console.error("Failed to load dispatch job:", error);
 		loadError.value = "Failed to load dispatch job.";
@@ -117,7 +120,7 @@ function attemptSeverity(a: DispatchJobAttempt): "success" | "danger" | "warn" {
 }
 
 function requestLine(r: DeliveryRequestSummary | undefined): string {
-	if (!r) return "not recorded (attempt predates request logging)";
+	if (!r) return "not recorded";
 	if (r.unsignedReason) return `UNSIGNED — ${r.unsignedReason}`;
 	const parts: string[] = [];
 	if (r.signature) parts.push(`signed by ${r.signedBy || "?"}`);
@@ -214,9 +217,13 @@ function statusSeverity(status: string | undefined) {
         <section class="col">
           <h3>Attempts</h3>
           <p v-if="!attempts.length" class="text-muted">No attempts yet.</p>
-          <div v-for="a in attempts" :key="a.attemptNumber" class="attempt">
+          <div v-for="(a, i) in attempts" :key="`${a.attemptedAt}-${a.attemptNumber}`" class="attempt">
             <div class="attempt-head">
-              <Tag :value="`#${a.attemptNumber}`" severity="secondary" />
+              <Tag
+                :value="`#${attempts.length - i}`"
+                severity="secondary"
+                v-tooltip="`Attempt ${a.attemptNumber} of its run — a requeue starts a new run numbered from 1`"
+              />
               <Tag :value="a.responseCode ? String(a.responseCode) : (a.errorType || 'no response')" :severity="attemptSeverity(a)" />
               <span class="text-sm">{{ formatDate(a.attemptedAt) }}</span>
               <span v-if="a.durationMillis != null" class="text-sm text-muted">{{ a.durationMillis }}ms</span>
@@ -271,18 +278,19 @@ function statusSeverity(status: string | undefined) {
 .job-detail { display: flex; flex-direction: column; gap: 1rem; }
 .toolbar { display: flex; align-items: center; gap: 0.5rem; }
 .spacer { flex: 1; }
-.columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.5rem; }
+/* Attempts are what an operator reads; the job facts + payload are reference. */
+.columns { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 2rem; align-items: start; }
 @media (max-width: 1100px) { .columns { grid-template-columns: minmax(0, 1fr); } }
 .col { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
 h3 { font-size: 0.9375rem; font-weight: 600; margin: 0 0 0.25rem; color: var(--text-color); }
 .detail-row { display: flex; gap: 0.75rem; align-items: baseline; }
-.detail-row label { flex: 0 0 8rem; font-size: 0.8125rem; color: var(--text-color-secondary); }
+.detail-row label { flex: 0 0 7rem; font-size: 0.8125rem; color: var(--text-color-secondary); }
 .detail-row span { min-width: 0; }
 .detail-section { display: flex; flex-direction: column; gap: 0.25rem; margin-top: 0.5rem; }
 .detail-section > label, .section-head > label { font-size: 0.8125rem; color: var(--text-color-secondary); }
 .section-head { display: flex; align-items: center; justify-content: space-between; }
 .data-block {
-  margin: 0; padding: 0.75rem; border-radius: 6px; overflow: auto; max-height: 28rem;
+  margin: 0; padding: 0.75rem; border-radius: 6px; overflow: auto; max-height: 40vh;
   background: var(--surface-ground); font-size: 0.8125rem; white-space: pre-wrap; word-break: break-all;
 }
 .data-block.small { max-height: 14rem; }

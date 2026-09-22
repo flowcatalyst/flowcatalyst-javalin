@@ -70,9 +70,14 @@ class OciArtifactStoreTest {
                 .isInstanceOf(ArtifactException.class)
                 .satisfies(e -> assertThat(((ArtifactException) e).reason()).isInstanceOf(ArtifactException.TooLarge.class));
 
-        // the load-bearing part: far less than the 50 MiB body was ever produced —
-        // the transfer was cut off close to the 1000-byte cap, not after finishing.
-        assertThat(bytesWritten.get()).isLessThan(1024 * 1024);
+        // the load-bearing part: the transfer was cut off, not completed. What the
+        // SERVER managed to write before the abort reached it is the kernel's
+        // business — loopback socket buffers hold several MiB and a loaded machine
+        // schedules the writer for a while — so the bound is "nowhere near the whole
+        // body", not "close to the cap" (a full reactor run saw > 1 MiB written).
+        // The mutant this guards against — size checked only after the download —
+        // writes all 50 MiB.
+        assertThat(bytesWritten.get()).isLessThan(totalIfUnbounded / 2);
     }
 
     /// C4: the bearer-token dance (401 + challenge → token → 200) against a

@@ -96,8 +96,9 @@ public final class PasswordResetApi {
             return;
         }
         String email = body.path("email").asString("").trim().toLowerCase(Locale.ROOT);
+        String redirectUri = resetReturnUrl(body.path("redirectUri").asString(null));
         try {
-            tryIssueToken(s, email);
+            tryIssueToken(s, email, redirectUri);
         } catch (RuntimeException e) {
             LOG.atWarn().setMessage("password reset request suppressed error")
                     .addKeyValue("domain", domainOf(email))
@@ -111,6 +112,16 @@ public final class PasswordResetApi {
     /// without a strong factor is queued for approval only when the
     /// platform requires one; else one fresh token, mailed best-effort.
     static void tryIssueToken(State s, String email) {
+        tryIssueToken(s, email, null);
+    }
+
+    /// `redirectUri` (owner, 2026-09-22, Go `359df6b`): the OAuth authorize
+    /// round-trip the user was in the middle of when they clicked "Forgot
+    /// password" — stored on the token, returned by confirm, followed by the
+    /// SPA — so a user signing in to another application through this IdP
+    /// resumes that sign-in after the reset. Already filtered by
+    /// [#resetReturnUrl]; `null` keeps the reset exactly as before.
+    static void tryIssueToken(State s, String email, String redirectUri) {
         if (email.isEmpty()) {
             return;
         }
@@ -130,7 +141,7 @@ public final class PasswordResetApi {
             s.approvals().queue(p);
             return;
         }
-        String raw = s.links().mintSelfServiceReset(p.id(), strong);
+        String raw = s.links().mintSelfServiceReset(p.id(), strong, redirectUri);
         try {
             s.links().sendResetLink(p.email(), s.links().resetLink(raw), s.links().platformTheme());
         } catch (RuntimeException e) {
@@ -187,6 +198,20 @@ public final class PasswordResetApi {
     /// `null`) is dropped silently — the same rule `OidcBridgeApi#landing`
     /// applies to `returnUrl`, restated here rather than shared across
     /// packages for one two-line predicate.
+    /// The stricter rule for a self-service reset's post-reset redirect: only
+    /// the same-origin OAuth authorize round-trip. A reset is requested by
+    /// anyone who knows an e-mail address, so its redirect must not be a
+    /// general "send me anywhere on this origin"; `/oauth/authorize` validates
+    /// its own `client_id`/`redirect_uri`, which is the one reason this is
+    /// safe to honour. `null` for anything else — dropped silently.
+    static String resetReturnUrl(String uri) {
+        String safe = safeRelativeRedirect(uri == null ? null : uri.trim());
+        if (safe == null || !safe.startsWith("/oauth/authorize?") || safe.length() > 4096) {
+            return null;
+        }
+        return safe;
+    }
+
     static String safeRelativeRedirect(String uri) {
         if (uri != null && uri.startsWith("/") && !uri.startsWith("//") && !uri.startsWith("/\\")) {
             return uri;

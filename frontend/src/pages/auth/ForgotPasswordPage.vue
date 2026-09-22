@@ -5,7 +5,7 @@ import {
 	normalizeClientParam,
 	useLoginThemeStore,
 } from "@/stores/loginTheme";
-import { requestPasswordReset } from "@/api/auth";
+import { oauthAuthorizeUrl, requestPasswordReset } from "@/api/auth";
 import { getErrorMessage } from "@/utils/errors";
 
 const route = useRoute();
@@ -34,7 +34,18 @@ async function onSubmit() {
 	errorMessage.value = null;
 
 	try {
-		await requestPasswordReset(email.value.trim());
+		// Arrived here from the login page mid-OAuth round-trip (the login
+		// page forwards its ?oauth=true&client_id=… query): ask the server to
+		// bring the user back to that authorize URL after the reset, so the
+		// sign-in to the other application completes instead of being lost.
+		const redirectUri =
+			route.query["oauth"] === "true"
+				? oauthAuthorizeUrl((field) => {
+						const value = route.query[field];
+						return typeof value === "string" ? value : null;
+					})
+				: undefined;
+		await requestPasswordReset(email.value.trim(), redirectUri);
 		submitted.value = true;
 	} catch (e: unknown) {
 		errorMessage.value = getErrorMessage(e, "Something went wrong. Please try again.");

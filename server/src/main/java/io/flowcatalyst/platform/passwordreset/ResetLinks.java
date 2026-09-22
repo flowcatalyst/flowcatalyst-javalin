@@ -122,7 +122,11 @@ public final class ResetLinks implements PasswordResetEmailer, InviteEmailer {
 
     /// Self-service resets carry the factor requirement (§8.2 step 5).
     String mintSelfServiceReset(String principalId, boolean requiresFactor) {
-        return mint(principalId, ResetToken.Purpose.RESET, false, requiresFactor, null);
+        return mintSelfServiceReset(principalId, requiresFactor, null);
+    }
+
+    String mintSelfServiceReset(String principalId, boolean requiresFactor, String redirectUri) {
+        return mint(principalId, ResetToken.Purpose.RESET, false, requiresFactor, redirectUri);
     }
 
     void sendResetLink(String to, String link, EmailTheme t) {

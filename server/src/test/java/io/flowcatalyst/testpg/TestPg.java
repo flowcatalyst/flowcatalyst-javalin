@@ -88,6 +88,11 @@ public final class TestPg {
     static void enter(String testClass) {
         currentOwner = testClass;
         prepareTemplate();
+        // The class's own clone too, here rather than on its first connection:
+        // CREATE DATABASE … TEMPLATE copies files, and on a busy disk that first
+        // connection was seen taking over a second — inside a 1 s-deadline test
+        // whose query then never started (VertxListenerTest, uncontended).
+        current();
     }
 
     /// Migrates the template once per JVM, at the first class's start rather

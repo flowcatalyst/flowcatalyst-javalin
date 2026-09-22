@@ -451,6 +451,32 @@ class PasswordResetApiTest {
         }
     }
 
+    /// Owner, 2026-09-22 (Go `359df6b`): a reset started from an OAuth sign-in
+    /// keeps the authorize round-trip — and ONLY that. A reset is requested by
+    /// anyone who knows an e-mail, so a plain path (fine for an invite, above)
+    /// is not honoured here: the rule is stricter than the invite's.
+    @Test
+    void resetRequestKeepsOnlyASameOriginOauthAuthorizeReturnUrl() {
+        String authorize = "/oauth/authorize?client_id=acme&redirect_uri=https%3A%2F%2Fapp.acme.test%2Fcb&state=s1";
+        String email = "reset-return-" + RUN + "@example.com";
+        user(email, PasswordHash.hash(OLD_PASSWORD), null);
+        SENT.clear();
+        http.post("/auth/password-reset/request", Json.write(Map.of("email", email, "redirectUri", authorize)));
+        var token = TOKENS.findByHash(ResetToken.hash(linkToken(SENT.getFirst()))).orElseThrow();
+        assertThat(token.redirectUri()).as("mutant: the authorize URL dropped").isEqualTo(authorize);
+
+        int i = 0;
+        for (String rejected : List.of("/dashboard", "/oauth/authorize", "//evil.example/oauth/authorize?x",
+                "https://evil.example/oauth/authorize?x", "/oauth/authorizeX?x")) {
+            String other = "reset-return-" + RUN + "-" + (i++) + "@example.com";
+            user(other, PasswordHash.hash(OLD_PASSWORD), null);
+            SENT.clear();
+            http.post("/auth/password-reset/request", Json.write(Map.of("email", other, "redirectUri", rejected)));
+            assertThat(TOKENS.findByHash(ResetToken.hash(linkToken(SENT.getFirst()))).orElseThrow().redirectUri())
+                    .as("mutant: a reset honours a general redirect: " + rejected).isNull();
+        }
+    }
+
     // ── confirm: session establishment (app-managed-invitations §4) ─────────
 
     private static PasswordResetApi.State sessionState(TokenIssuer issuer, SessionCookie cookie) {

@@ -222,7 +222,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
 
     /// Every recorded attempt of a job, oldest first (spec §1.2).
     public List<Attempt> attemptsByJob(String jobId) {
-        return dsl.selectFrom(A).where(A.DISPATCH_JOB_ID.eq(jobId)).orderBy(A.ATTEMPT_NUMBER.asc())
+        return dsl.selectFrom(A).where(A.DISPATCH_JOB_ID.eq(jobId)).orderBy(A.ATTEMPTED_AT.asc(), A.ATTEMPT_NUMBER.asc())
                 .fetch(DispatchJobRepository::toAttempt);
     }
 

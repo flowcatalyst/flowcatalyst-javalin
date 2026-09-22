@@ -529,7 +529,13 @@ public final class VertxListener implements AutoCloseable {
         var lastProgressNanos = new AtomicLong(System.nanoTime());
         var pumpDone = new AtomicBoolean();
         var timerId = new AtomicLong();
-        scheduleResponseStallCheck(requestContext, resp, deadline, lastProgressNanos, pumpDone, timerId);
+        // The write the pump is blocked on right now. The stall timer fails it
+        // itself when it resets the response: whether a write still held in
+        // Vert.x's own outbound queue (not yet handed to Netty) is failed by a
+        // reset is an internal this must not depend on — a full reactor run
+        // caught the pump parked for ever after a reset, 512 KiB in.
+        var pending = new java.util.concurrent.atomic.AtomicReference<CompletableFuture<Void>>();
+        scheduleResponseStallCheck(requestContext, resp, deadline, lastProgressNanos, pumpDone, timerId, pending);
         try (streamed) {
             if (!awaitOnLoop(requestContext, () -> {
                 if (!resp.ended() && !resp.closed()) x.writeStreamedHead(resp);
@@ -543,6 +549,7 @@ public final class VertxListener implements AutoCloseable {
                 byte[] toWrite = n == chunk.length ? chunk : Arrays.copyOf(chunk, n);
                 var buf = Buffer.buffer(toWrite);
                 var accepted = new CompletableFuture<Void>();
+                pending.set(accepted);
                 requestContext.runOnContext(v -> resp.write(buf).onComplete(ar -> {
                     if (ar.succeeded()) accepted.complete(null);
                     else accepted.completeExceptionally(ar.cause());
@@ -580,7 +587,8 @@ public final class VertxListener implements AutoCloseable {
     /// returns; this method never touches `streamed` or interrupts anything
     /// itself, only the response.
     private void scheduleResponseStallCheck(Context requestContext, io.vertx.core.http.HttpServerResponse resp,
-            Duration deadline, AtomicLong lastProgressNanos, AtomicBoolean pumpDone, AtomicLong timerId) {
+            Duration deadline, AtomicLong lastProgressNanos, AtomicBoolean pumpDone, AtomicLong timerId,
+            java.util.concurrent.atomic.AtomicReference<CompletableFuture<Void>> pending) {
         long idleMillis = (System.nanoTime() - lastProgressNanos.get()) / 1_000_000L;
         long remainingMillis = Math.max(deadline.toMillis() - idleMillis, 1);
         long id = vertx.setTimer(remainingMillis, tid -> {
@@ -590,8 +598,12 @@ public final class VertxListener implements AutoCloseable {
             long idleNowMillis = (System.nanoTime() - lastProgressNanos.get()) / 1_000_000L;
             if (idleNowMillis >= deadline.toMillis()) {
                 resetQuietly(requestContext, resp);
+                CompletableFuture<Void> stuck = pending.get();
+                if (stuck != null) {
+                    stuck.completeExceptionally(new IOException("streamed response stalled for " + deadline));
+                }
             } else {
-                scheduleResponseStallCheck(requestContext, resp, deadline, lastProgressNanos, pumpDone, timerId);
+                scheduleResponseStallCheck(requestContext, resp, deadline, lastProgressNanos, pumpDone, timerId, pending);
             }
         });
         timerId.set(id);

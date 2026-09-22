@@ -271,10 +271,14 @@ export async function logout(): Promise<void> {
 	await router.replace("/auth/login");
 }
 
-export async function requestPasswordReset(email: string): Promise<void> {
+// requestPasswordReset emails a reset link. redirectUri, when present, is the
+// rebuilt /oauth/authorize?… URL of the sign-in the user was in the middle
+// of; the server stores it with the token (accepting only that shape) and
+// returns it from confirm, so the reset page can resume the round-trip.
+export async function requestPasswordReset(email: string, redirectUri?: string): Promise<void> {
 	await authFetch<void>("/password-reset/request", {
 		method: "POST",
-		body: JSON.stringify({ email }),
+		body: JSON.stringify(redirectUri ? { email, redirectUri } : { email }),
 	});
 }
 
