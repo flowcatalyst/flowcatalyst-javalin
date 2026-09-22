@@ -178,98 +178,108 @@ function statusSeverity(status: string | undefined) {
         />
       </div>
 
-      <div class="columns">
-        <section class="col">
-          <h3>Job</h3>
-          <div class="detail-row"><label>Descriptor</label><span>{{ job.descriptor || '-' }}</span></div>
-          <div class="detail-row"><label>Code</label><span class="font-mono">{{ job.code }}</span></div>
-          <div class="detail-row"><label>Client</label><span class="font-mono">{{ job.clientId || '-' }}</span></div>
-          <div class="detail-row"><label>Message group</label><span class="font-mono">{{ job.messageGroup || '-' }}</span></div>
-          <div class="detail-row"><label>Mode</label><span>{{ job.mode }}</span></div>
-          <div class="detail-row"><label>Target</label><span class="font-mono break">{{ job.targetUrl }}</span></div>
-          <div class="detail-row"><label>Subscription</label><span class="font-mono">{{ job.subscriptionId || '-' }}</span></div>
-          <div class="detail-row"><label>Event</label><span class="font-mono">{{ job.eventId || '-' }}</span></div>
-          <div class="detail-row"><label>Attempts</label><span>{{ job.attemptCount }} / {{ job.maxRetries }}</span></div>
-          <div class="detail-row"><label>Scheduled for</label><span>{{ formatDate(job.scheduledFor) }}</span></div>
-          <div class="detail-row"><label>Created</label><span>{{ formatDate(job.createdAt) }}</span></div>
-          <div class="detail-row"><label>Completed</label><span>{{ formatDate(job.completedAt) }}</span></div>
-          <div v-if="job.lastError" class="detail-row"><label>Last error</label><span class="error-text">{{ job.lastError }}</span></div>
-
-          <div v-if="job.metadata?.length" class="detail-section">
-            <label>Additional data</label>
-            <div class="kv">
-              <div v-for="m in job.metadata" :key="m.key" class="kv-item">
-                <span class="kv-key">{{ m.key }}</span>
-                <span class="kv-value">{{ m.value }}</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="detail-section">
-            <div class="section-head">
-              <label>Payload</label>
-              <Button icon="pi pi-copy" text size="small" v-tooltip="'Copy payload'" @click="copy('Payload', job.payload ?? undefined)" />
-            </div>
-            <pre class="data-block">{{ formatJson(job.payload) }}</pre>
-          </div>
-        </section>
-
-        <section class="col">
-          <h3>Attempts</h3>
-          <p v-if="!attempts.length" class="text-muted">No attempts yet.</p>
-          <div v-for="(a, i) in attempts" :key="`${a.attemptedAt}-${a.attemptNumber}`" class="attempt">
-            <div class="attempt-head">
-              <Tag
-                :value="`#${attempts.length - i}`"
-                severity="secondary"
-                v-tooltip="`Attempt ${a.attemptNumber} of its run — a requeue starts a new run numbered from 1`"
-              />
-              <Tag :value="a.responseCode ? String(a.responseCode) : (a.errorType || 'no response')" :severity="attemptSeverity(a)" />
-              <span class="text-sm">{{ formatDate(a.attemptedAt) }}</span>
-              <span v-if="a.durationMillis != null" class="text-sm text-muted">{{ a.durationMillis }}ms</span>
-            </div>
-            <div class="detail-row"><label>Sent</label><span>{{ requestLine(a.request) }}</span></div>
-            <div v-if="a.request?.timestamp" class="detail-row"><label>Timestamp</label><span class="font-mono">{{ a.request.timestamp }}</span></div>
-            <div v-if="a.request?.headers?.length" class="detail-row"><label>Headers</label><span class="font-mono small">{{ a.request.headers.join(', ') }}</span></div>
-            <div v-if="a.errorMessage" class="detail-row"><label>Error</label><span class="error-text">{{ a.errorMessage }}</span></div>
-            <div v-if="a.responseBody" class="detail-section">
-              <label>Response</label>
-              <pre class="data-block small">{{ formatJson(a.responseBody) }}</pre>
-            </div>
-          </div>
-
-          <div v-if="plan" class="plan">
-            <h3>Delivery as it would go out now</h3>
-            <div class="detail-row"><label>Sent</label><span>{{ requestLine(plan.request) }}</span></div>
-            <div class="detail-row"><label>Target</label><span class="font-mono break">{{ plan.request.target }}</span></div>
-            <div class="detail-section">
-              <label>Headers</label>
-              <div class="kv">
-                <div v-for="(v, k) in plan.headers" :key="k" class="kv-item">
-                  <span class="kv-key">{{ k }}</span>
-                  <span class="kv-value font-mono break">{{ v }}</span>
-                  <Button v-if="k !== 'Authorization'" icon="pi pi-copy" text size="small" @click="copy(String(k), v)" />
+      <!-- Attempts first: they are what an operator opens a job for. The job's facts and
+           its payload are reference, on their own tab — side by side they fought each other
+           (a short fact list beside a tall scrolling payload, attempts floating between). -->
+      <Tabs value="attempts">
+        <TabList>
+          <Tab value="attempts">Attempts</Tab>
+          <Tab value="details">Details</Tab>
+        </TabList>
+        <TabPanels>
+          <TabPanel value="attempts">
+            <section class="stack">
+              <p v-if="!attempts.length" class="text-muted">No attempts yet.</p>
+              <div v-for="(a, i) in attempts" :key="`${a.attemptedAt}-${a.attemptNumber}`" class="attempt">
+                <div class="attempt-head">
+                  <Tag
+                    :value="`#${attempts.length - i}`"
+                    severity="secondary"
+                    v-tooltip="`Attempt ${a.attemptNumber} of its run — a requeue starts a new run numbered from 1`"
+                  />
+                  <Tag :value="a.responseCode ? String(a.responseCode) : (a.errorType || 'no response')" :severity="attemptSeverity(a)" />
+                  <span class="text-sm">{{ formatDate(a.attemptedAt) }}</span>
+                  <span v-if="a.durationMillis != null" class="text-sm text-muted">{{ a.durationMillis }}ms</span>
+                </div>
+                <div class="detail-row"><label>Sent</label><span>{{ requestLine(a.request) }}</span></div>
+                <div v-if="a.request?.timestamp" class="detail-row"><label>Timestamp</label><span class="font-mono">{{ a.request.timestamp }}</span></div>
+                <div v-if="a.request?.headers?.length" class="detail-row"><label>Headers</label><span class="font-mono small">{{ a.request.headers.join(', ') }}</span></div>
+                <div v-if="a.errorMessage" class="detail-row"><label>Error</label><span class="error-text">{{ a.errorMessage }}</span></div>
+                <div v-if="a.responseBody" class="detail-section">
+                  <label>Response</label>
+                  <pre class="data-block small">{{ formatJson(a.responseBody) }}</pre>
                 </div>
               </div>
-            </div>
-            <div class="detail-section">
-              <div class="section-head">
-                <label>Verify on the subscriber</label>
-                <Button icon="pi pi-copy" text size="small" v-tooltip="'Copy command'" @click="copy('Verify command', verifyCommand)" />
+
+              <div v-if="plan" class="plan">
+                <h3>Delivery as it would go out now</h3>
+                <div class="detail-row"><label>Sent</label><span>{{ requestLine(plan.request) }}</span></div>
+                <div class="detail-row"><label>Target</label><span class="font-mono break">{{ plan.request.target }}</span></div>
+                <div class="detail-section">
+                  <label>Headers</label>
+                  <div class="kv">
+                    <div v-for="(v, k) in plan.headers" :key="k" class="kv-item">
+                      <span class="kv-key">{{ k }}</span>
+                      <span class="kv-value font-mono break">{{ v }}</span>
+                      <Button v-if="k !== 'Authorization'" icon="pi pi-copy" text size="small" @click="copy(String(k), v)" />
+                    </div>
+                  </div>
+                </div>
+                <div class="detail-section">
+                  <div class="section-head">
+                    <label>Verify on the subscriber</label>
+                    <Button icon="pi pi-copy" text size="small" v-tooltip="'Copy command'" @click="copy('Verify command', verifyCommand)" />
+                  </div>
+                  <p class="text-sm text-muted">Save the body below as <code>body.json</code>, then in the Laravel app:</p>
+                  <pre class="data-block small">{{ verifyCommand }}</pre>
+                </div>
+                <div class="detail-section">
+                  <div class="section-head">
+                    <label>Body (exactly as signed)</label>
+                    <Button icon="pi pi-copy" text size="small" v-tooltip="'Copy body — byte-for-byte, the signature covers it'" @click="copy('Body', plan.body)" />
+                  </div>
+                  <pre class="data-block small">{{ plan.body }}</pre>
+                </div>
               </div>
-              <p class="text-sm text-muted">Save the body below as <code>body.json</code>, then in the Laravel app:</p>
-              <pre class="data-block small">{{ verifyCommand }}</pre>
-            </div>
-            <div class="detail-section">
-              <div class="section-head">
-                <label>Body (exactly as signed)</label>
-                <Button icon="pi pi-copy" text size="small" v-tooltip="'Copy body — byte-for-byte, the signature covers it'" @click="copy('Body', plan.body)" />
+            </section>
+          </TabPanel>
+          <TabPanel value="details">
+            <section class="stack">
+              <div class="detail-row"><label>Descriptor</label><span>{{ job.descriptor || '-' }}</span></div>
+              <div class="detail-row"><label>Code</label><span class="font-mono">{{ job.code }}</span></div>
+              <div class="detail-row"><label>Client</label><span class="font-mono">{{ job.clientId || '-' }}</span></div>
+              <div class="detail-row"><label>Message group</label><span class="font-mono">{{ job.messageGroup || '-' }}</span></div>
+              <div class="detail-row"><label>Mode</label><span>{{ job.mode }}</span></div>
+              <div class="detail-row"><label>Target</label><span class="font-mono break">{{ job.targetUrl }}</span></div>
+              <div class="detail-row"><label>Subscription</label><span class="font-mono">{{ job.subscriptionId || '-' }}</span></div>
+              <div class="detail-row"><label>Event</label><span class="font-mono">{{ job.eventId || '-' }}</span></div>
+              <div class="detail-row"><label>Attempts</label><span>{{ job.attemptCount }} / {{ job.maxRetries }}</span></div>
+              <div class="detail-row"><label>Scheduled for</label><span>{{ formatDate(job.scheduledFor) }}</span></div>
+              <div class="detail-row"><label>Created</label><span>{{ formatDate(job.createdAt) }}</span></div>
+              <div class="detail-row"><label>Completed</label><span>{{ formatDate(job.completedAt) }}</span></div>
+              <div v-if="job.lastError" class="detail-row"><label>Last error</label><span class="error-text">{{ job.lastError }}</span></div>
+
+              <div v-if="job.metadata?.length" class="detail-section">
+                <label>Additional data</label>
+                <div class="kv">
+                  <div v-for="m in job.metadata" :key="m.key" class="kv-item">
+                    <span class="kv-key">{{ m.key }}</span>
+                    <span class="kv-value">{{ m.value }}</span>
+                  </div>
+                </div>
               </div>
-              <pre class="data-block small">{{ plan.body }}</pre>
-            </div>
-          </div>
-        </section>
-      </div>
+
+              <div class="detail-section">
+                <div class="section-head">
+                  <label>Payload</label>
+                  <Button icon="pi pi-copy" text size="small" v-tooltip="'Copy payload'" @click="copy('Payload', job.payload ?? undefined)" />
+                </div>
+                <pre class="data-block">{{ formatJson(job.payload) }}</pre>
+              </div>
+            </section>
+          </TabPanel>
+        </TabPanels>
+      </Tabs>
     </div>
   </EntityDrawer>
 </template>
@@ -278,10 +288,7 @@ function statusSeverity(status: string | undefined) {
 .job-detail { display: flex; flex-direction: column; gap: 1rem; }
 .toolbar { display: flex; align-items: center; gap: 0.5rem; }
 .spacer { flex: 1; }
-/* Attempts are what an operator reads; the job facts + payload are reference. */
-.columns { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 2rem; align-items: start; }
-@media (max-width: 1100px) { .columns { grid-template-columns: minmax(0, 1fr); } }
-.col { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
+.stack { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; padding-top: 0.5rem; }
 h3 { font-size: 0.9375rem; font-weight: 600; margin: 0 0 0.25rem; color: var(--text-color); }
 .detail-row { display: flex; gap: 0.75rem; align-items: baseline; }
 .detail-row label { flex: 0 0 7rem; font-size: 0.8125rem; color: var(--text-color-secondary); }

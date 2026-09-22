@@ -628,7 +628,8 @@ class FunctionHostListenerIntegrationTest {
         var mapper = new DispatchJobIngestMapper.RawItem(
                 null, null, "EVENT", eventTypeCode, "h15-test", null, subscription.endpoint(), payload,
                 "application/json", false, null, null, subscription.clientId(), subscription.id(), null,
-                subscription.dispatchPoolId(), null, "IMMEDIATE", 0, null, 30, 3, null, List.of(), null, null);
+                subscription.dispatchPoolId(), null, "IMMEDIATE", 0, null, 30, 3, null, List.of(), null,
+                /* descriptor */ null, /* queue */ null);
         DispatchJob job = DispatchJobIngestMapper.toJob(mapper);
         new DispatchJobRepository(DS).insertBatch(List.of(job));
         return job.id();

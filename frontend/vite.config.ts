@@ -9,6 +9,9 @@ const BACKEND_PORT = process.env.VITE_BACKEND_PORT ?? "8080";
 const BACKEND_URL = `http://localhost:${BACKEND_PORT}`;
 
 export default defineConfig({
+	test: {
+		setupFiles: ["./tests/setup.ts"],
+	},
 	plugins: [
 		vue(),
 		Components({
