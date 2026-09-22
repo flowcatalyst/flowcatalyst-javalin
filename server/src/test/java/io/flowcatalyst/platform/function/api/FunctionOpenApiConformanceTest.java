@@ -276,6 +276,11 @@ class FunctionOpenApiConformanceTest {
         call("putFunctionPolicy", http.put("/api/function-policies/platform", policyBody, FULL), 200, policyBody);
         call("getFunctionPolicy", http.get("/api/function-policies/platform", FULL), 200, null);
 
+        // 6b. listFunctionPolicies (S2) — the platform row we just wrote is in it.
+        JsonNode policyList = call("listFunctionPolicies", http.get("/api/function-policies", FULL), 200, null);
+        assertThat(policyList.get("policies")).as("the platform row we just wrote is listed")
+                .anySatisfy(p -> assertThat(p.get("owner").asText()).isEqualTo("platform"));
+
         // 7. uploadFunctionArtifact (version 1)
         byte[] bytes1 = ("openapi-payload-1-" + RUN).repeat(100).getBytes(StandardCharsets.UTF_8);
         String digest1 = digestOf(bytes1);
@@ -362,6 +367,9 @@ class FunctionOpenApiConformanceTest {
 
         // 23. listFunctionDomains
         call("listFunctionDomains", http.get("/api/function-domains?clientId=platform", FULL), 200, null);
+
+        // 23b. getFunctionDomain (S3)
+        call("getFunctionDomain", http.get("/api/function-domains/" + hostname, FULL), 200, null);
 
         // 24. listFunctionRoutes — persist the route a real promote would have materialised
         // (this scenario uses TriggerSync.none(), same precedent as FunctionControlApiTest).
@@ -453,6 +461,33 @@ class FunctionOpenApiConformanceTest {
         JsonNode noStoreBody = Json.MAPPER.readTree(new String(noStore.body(), StandardCharsets.UTF_8));
         assertThat(noStoreBody.get("error").asText()).isEqualTo("ARTIFACT_STORE_NOT_CONFIGURED");
         assertErrorConforms("uploadFunctionArtifact", 503, noStoreBody);
+
+        // S4: two 400 refusals from publishFunctionVersion's manifest validation,
+        // against another throwaway function — an unknown manifest key, and an
+        // unrecognised runtime. Both codes must be named in the operation's 400
+        // description (mutant: remove either code from the description).
+        var created4 = http.post("/api/functions",
+                "{\"applicationCode\":\"" + appCode + "\",\"serviceName\":\"svc4\",\"name\":\"fn4\",\"runtime\":\"jvm\"}", FULL);
+        assertThat(created4.statusCode()).as(created4.body()).isEqualTo(201);
+        String address4 = Json.MAPPER.readTree(created4.body()).get("address").asText();
+
+        String unknownFieldManifest = "{\"runtime\":\"jvm\",\"entrypoint\":\"com.acme.Fn\",\"bogus\":true}";
+        String unknownFieldBody = "{\"artifactRef\":\"oci://artifact/s4a\",\"digest\":\"" + digestOf("s4a".getBytes(StandardCharsets.UTF_8))
+                + "\",\"manifest\":" + unknownFieldManifest + "}";
+        var unknownField = http.post("/api/functions/" + address4 + "/versions", unknownFieldBody, FULL);
+        assertThat(unknownField.statusCode()).as(unknownField.body()).isEqualTo(400);
+        JsonNode unknownFieldError = Json.MAPPER.readTree(unknownField.body());
+        assertThat(unknownFieldError.get("error").asText()).isEqualTo("MANIFEST_UNKNOWN_FIELD");
+        assertErrorConforms("publishFunctionVersion", 400, unknownFieldError);
+
+        String badRuntimeManifest = "{\"runtime\":\"cobol\",\"entrypoint\":\"com.acme.Fn\"}";
+        String badRuntimeBody = "{\"artifactRef\":\"oci://artifact/s4b\",\"digest\":\"" + digestOf("s4b".getBytes(StandardCharsets.UTF_8))
+                + "\",\"manifest\":" + badRuntimeManifest + "}";
+        var badRuntime = http.post("/api/functions/" + address4 + "/versions", badRuntimeBody, FULL);
+        assertThat(badRuntime.statusCode()).as(badRuntime.body()).isEqualTo(400);
+        JsonNode badRuntimeError = Json.MAPPER.readTree(badRuntime.body());
+        assertThat(badRuntimeError.get("error").asText()).isEqualTo("RUNTIME_INVALID");
+        assertErrorConforms("publishFunctionVersion", 400, badRuntimeError);
 
         // ── O2: every documented operation was exercised at least once ──────
         Set<String> documented = new LinkedHashSet<>(byOperationId.keySet());

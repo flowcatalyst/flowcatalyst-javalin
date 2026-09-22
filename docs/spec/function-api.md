@@ -129,13 +129,21 @@ uses it; this supersedes A §6.4's "only the repository spells it"), and `Client
 `platform`; `fromWire`/`toWire` on `FunctionOwner` hold that mapping.
 
 - `GET /api/function-policies/{owner}` — the policy, or the **effective default** when no row exists:
-  `{owner, signers: [], ceilings: {…the platform defaults…}, stored: false}`.
+  `{owner, signers: [], ceilings: {…the platform defaults…}, stored: false}` (no `updatedAt` — there
+  is no row to carry one).
 - `PUT /api/function-policies/{owner}` — `PutFunctionPolicy` / `PutPolicyCommand`, a full replacement:
   `{signers: [{issuer, subject, runtimes: ["jvm"]}], ceilings: {maxDurationMs?, maxConcurrency?,
   maxWasmMemoryMb?, maxDbPoolSize?}}`. Blank issuer/subject ⇒ `SIGNER_INVALID`; empty or unknown
   runtimes ⇒ `RUNTIME_INVALID`; duplicate (issuer, subject) ⇒ `SIGNER_DUPLICATE`; a ceiling ≤ 0 ⇒
   `CEILING_INVALID`. A ceiling absent ⇒ null ⇒ the platform default applies (A §4.6). Client owner ⇒
-  the client must exist. 200 with the stored policy.
+  the client must exist. 200 with the stored policy, `updatedAt` = the row's own.
+- `GET /api/function-policies` (2026-09-22, backlog unit S2) — every **stored** policy row as
+  `{policies: [PolicyResponse…]}`, gated exactly as the two routes above (`requireAnchor` +
+  `FUNCTION_POLICY_MANAGE`), no paging (at most one row per client). Ordered the platform row
+  (`FunctionOwner.key()`, i.e. the stored `PLATFORM` primary key) first, then client ids ascending —
+  `ClientPolicyRepository#listAll`. An owner with no row is simply absent from the list — the SPA
+  already knows the client list and renders "defaults" for the rest — never the effective-default
+  shape.
 
 ### 4.4 Function response
 
@@ -231,13 +239,26 @@ Body `{hostId, pool, state: "ACTIVE"|"DRAINING", loaded: [{address, version, sta
 naming the index) — the stored reader is lenient, the wire is not. `error` is truncated to 1000
 chars. 204.
 
-1. Upsert the host (`register` on first sight, else `heartbeat`) via `UnitOfWork.inTransaction` — no
-   event, no audit (§0).
+1. In the SAME transaction, in this order: purge stale host rows (S5, below), then upsert the
+   heartbeating host (`register` on first sight, else `heartbeat`) via `UnitOfWork.inTransaction` —
+   no event, no audit (§0).
 2. For each `ok()` entry: resolve address → function → version. If it is `Published`, run
    `MarkVersionReady` (an `Operation`, audit principal = the host's service account): `markReady(now)`,
    event `version:ready` with `hostId`. Already `Ready` or `Retired` ⇒ nothing, no event. An entry
    naming an unknown function or version is ignored (the function may have just been deleted).
 3. A **`FAILED`** report never changes a version's state; it is visible in Status.
+
+**Stale host purge** (2026-09-22, backlog unit S5 — a host that stops without deregistering, e.g. a
+killed process, otherwise accumulates as a permanent `fn_hosts` row): `FunctionHost.PURGE_AFTER =
+Duration.ofDays(1)`. Inside the same transaction that persists the heartbeating host's row, and
+BEFORE that persist, the handler calls `FunctionHostRepository#deleteStale(now.minus(PURGE_AFTER),
+hostId, tx)` — `DELETE FROM fn_hosts WHERE last_heartbeat < ? AND id <> <the heartbeating hostId>`.
+The `id <>` guard protects the heartbeating host's own row from ever being swept, even when its
+stored `last_heartbeat` is itself older than `PURGE_AFTER` at the instant this runs (delete runs
+before the persist that would otherwise have refreshed it). The existing `(pool, last_heartbeat)`
+index serves the scan;
+one cheap statement per heartbeat, no separate scheduler. Logs INFO `function hosts purged` with
+`count` only when the delete actually removed one or more rows.
 
 ### 6.3 Status and pools
 

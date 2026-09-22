@@ -524,7 +524,7 @@
             }
           },
           "400": {
-            "description": "ARTIFACT_REF_REQUIRED, MANIFEST_REQUIRED, ENDPOINT_INVALID",
+            "description": "ARTIFACT_REF_REQUIRED, ARTIFACT_REF_INVALID, DIGEST_INVALID, MANIFEST_REQUIRED, MANIFEST_UNKNOWN_FIELD, MANIFEST_INVALID, RUNTIME_INVALID, RUNTIME_MISMATCH, ENTRYPOINT_REQUIRED, ENTRYPOINT_INVALID, POOL_INVALID, LIMIT_INVALID, LIMIT_OVER_CEILING, LIMIT_NOT_APPLICABLE, ENDPOINT_INVALID, ENDPOINT_AUTH_REQUIRED, ROUTE_AMBIGUOUS, SUBSCRIPTION_INVALID, SUBSCRIPTION_DUPLICATE, SUBSCRIPTION_PATH_NOT_WEBHOOK, SCHEDULE_INVALID, SCHEDULE_DUPLICATE, SCHEDULE_PATH_NOT_WEBHOOK, PUBLIC_ROUTE_INVALID, PUBLIC_ROUTE_DUPLICATE, DB_INVALID, CONFIG_INVALID, SIGNATURE_REQUIRED, SIGNATURE_REJECTED",
             "content": {
               "application/json": {
                 "schema": {
@@ -1107,6 +1107,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "required": false,
+            "description": "the version whose declared keys join the live manifest's; absent defaults to the newest non-retired version",
+            "schema": {
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -1116,6 +1125,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ConfigResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VERSION_INVALID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1131,7 +1150,7 @@
             }
           },
           "404": {
-            "description": "Function_NOT_FOUND",
+            "description": "Function_NOT_FOUND, FunctionVersion_NOT_FOUND",
             "content": {
               "application/json": {
                 "schema": {
@@ -1163,6 +1182,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "required": false,
+            "description": "the version whose declared keys join the live manifest's in the response; absent defaults to the newest non-retired version",
+            "schema": {
+              "type": "integer"
+            }
           }
         ],
         "requestBody": {
@@ -1187,7 +1215,7 @@
             }
           },
           "400": {
-            "description": "SETTING_KEY_INVALID, SETTING_TOO_LARGE",
+            "description": "SETTING_KEY_INVALID, SETTING_TOO_LARGE, VERSION_INVALID",
             "content": {
               "application/json": {
                 "schema": {
@@ -1207,7 +1235,7 @@
             }
           },
           "404": {
-            "description": "Function_NOT_FOUND",
+            "description": "Function_NOT_FOUND, FunctionVersion_NOT_FOUND",
             "content": {
               "application/json": {
                 "schema": {
@@ -1241,6 +1269,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "required": false,
+            "description": "the version whose declared keys join the live manifest's; absent defaults to the newest non-retired version",
+            "schema": {
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -1250,6 +1287,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SecretListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VERSION_INVALID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1265,7 +1312,7 @@
             }
           },
           "404": {
-            "description": "Function_NOT_FOUND",
+            "description": "Function_NOT_FOUND, FunctionVersion_NOT_FOUND",
             "content": {
               "application/json": {
                 "schema": {
@@ -1434,6 +1481,43 @@
           },
           "503": {
             "description": "ENCRYPTION_UNCONFIGURED",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/function-policies": {
+      "get": {
+        "operationId": "listFunctionPolicies",
+        "tags": [
+          "function-policies"
+        ],
+        "summary": "List every stored function policy row",
+        "description": "Requires anchor scope + `platform:function:policy:manage`. Owners with no row are not listed — no paging, at most one row per client.",
+        "responses": {
+          "200": {
+            "description": "The stored policies, platform first then client ids ascending",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyListResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "PERMISSION_REQUIRED",
             "content": {
               "application/json": {
                 "schema": {
@@ -1779,6 +1863,72 @@
       }
     },
     "/api/function-domains/{hostname}": {
+      "get": {
+        "operationId": "getFunctionDomain",
+        "tags": [
+          "function-domains"
+        ],
+        "summary": "Get a claimed domain by hostname",
+        "description": "Requires `platform:function:function:view`.",
+        "parameters": [
+          {
+            "name": "hostname",
+            "in": "path",
+            "required": true,
+            "description": "the claimed hostname",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The domain",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DomainResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "HOSTNAME_INVALID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "PERMISSION_REQUIRED",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "FunctionDomain_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
       "delete": {
         "operationId": "releaseFunctionDomain",
         "tags": [
@@ -3330,6 +3480,26 @@
         ],
         "additionalProperties": false
       },
+      "DeclaredByEntry": {
+        "type": "object",
+        "description": "One manifest that contributed to `declared`/`missing`: `keys` is that manifest's own full key list, not only the keys it added beyond another entry.",
+        "properties": {
+          "version": {
+            "type": "integer"
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "version",
+          "keys"
+        ],
+        "additionalProperties": false
+      },
       "ConfigResponse": {
         "type": "object",
         "properties": {
@@ -3350,12 +3520,19 @@
             "items": {
               "type": "string"
             }
+          },
+          "declaredBy": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeclaredByEntry"
+            }
           }
         },
         "required": [
           "values",
           "declared",
-          "missing"
+          "missing",
+          "declaredBy"
         ],
         "additionalProperties": false
       },
@@ -3412,12 +3589,19 @@
             "items": {
               "type": "string"
             }
+          },
+          "declaredBy": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeclaredByEntry"
+            }
           }
         },
         "required": [
           "keys",
           "declared",
-          "missing"
+          "missing",
+          "declaredBy"
         ],
         "additionalProperties": false
       },
@@ -3557,6 +3741,11 @@
           },
           "stored": {
             "type": "boolean"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "absent on the effective-default shape, which has no stored row"
           }
         },
         "required": [
@@ -3564,6 +3753,21 @@
           "signers",
           "ceilings",
           "stored"
+        ],
+        "additionalProperties": false
+      },
+      "PolicyListResponse": {
+        "type": "object",
+        "properties": {
+          "policies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PolicyResponse"
+            }
+          }
+        },
+        "required": [
+          "policies"
         ],
         "additionalProperties": false
       },

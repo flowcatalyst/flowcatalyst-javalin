@@ -32,6 +32,12 @@ public record FunctionHost(
     /// move it without sleeping.
     public static final Duration LIVE_WINDOW = Duration.ofSeconds(45);
 
+    /// How stale a host row must be before a heartbeat purges it (spec
+    /// `function-api.md` §6.2, S5): a host that stopped without
+    /// deregistering is garbage after this long, not a permanent
+    /// `fn_hosts` row.
+    public static final Duration PURGE_AFTER = Duration.ofDays(1);
+
     public FunctionHost {
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(pool, "pool");

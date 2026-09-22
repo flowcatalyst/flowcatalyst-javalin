@@ -26,6 +26,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.net.http.HttpResponse;
+import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 
@@ -144,6 +145,79 @@ class FunctionPolicyApiTest {
 
         assertThat(auditsFor("PLATFORM", "PutPolicyCommand")).as("audit entity id is never null for the platform")
                 .isNotEmpty();
+    }
+
+    // ── S2: GET /api/function-policies — every stored row ────────────────────
+
+    /// S2a: the list returns only STORED rows (not every owner ever asked
+    /// about), platform first then client ids ascending, and each entry's
+    /// `updatedAt` equals the row's own. Pins "drop the ordering" (platform
+    /// would not sort first / clients would not sort ascending) and "null
+    /// updatedAt" (the row's real timestamp would be missing).
+    @Test
+    void s2aListReturnsStoredRowsPlatformFirstThenClientIdsAscendingWithUpdatedAt() {
+        String clientLow = testClient("s2low");
+        String clientHigh = testClient("s2zzhigh");
+        // A client policy is looked up here (GET) but never PUT — no row, so it must
+        // never appear in the list, unlike getFunctionPolicy's own default-shape answer.
+        String clientNoRow = testClient("s2norow");
+        http.get("/api/function-policies/" + clientNoRow, ANCHOR_POLICY_MANAGE);
+
+        var putHigh = http.put("/api/function-policies/" + clientHigh, "{\"signers\":[],\"ceilings\":{}}", ANCHOR_POLICY_MANAGE);
+        assertThat(putHigh.statusCode()).as(putHigh.body()).isEqualTo(200);
+        var putLow = http.put("/api/function-policies/" + clientLow, "{\"signers\":[],\"ceilings\":{}}", ANCHOR_POLICY_MANAGE);
+        assertThat(putLow.statusCode()).as(putLow.body()).isEqualTo(200);
+        var putPlatform = http.put("/api/function-policies/platform", "{\"signers\":[],\"ceilings\":{}}", ANCHOR_POLICY_MANAGE);
+        assertThat(putPlatform.statusCode()).as(putPlatform.body()).isEqualTo(200);
+        String platformUpdatedAt = json(putPlatform).get("updatedAt").asText();
+        String lowUpdatedAt = json(putLow).get("updatedAt").asText();
+
+        var list = json(http.get("/api/function-policies", ANCHOR_POLICY_MANAGE));
+        List<String> owners = new java.util.ArrayList<>();
+        list.get("policies").forEach(p -> owners.add(p.get("owner").asText()));
+        assertThat(owners).as("mutant: an unstored owner (looked up via GET, never PUT) leaks into the list")
+                .doesNotContain(clientNoRow);
+
+        int platformIdx = owners.indexOf("platform");
+        int lowIdx = owners.indexOf(clientLow);
+        int highIdx = owners.indexOf(clientHigh);
+        assertThat(platformIdx).as("mutant: drop the ordering — platform sorts anywhere but first among the rows we wrote")
+                .isLessThan(Math.min(lowIdx, highIdx));
+        assertThat(lowIdx).as("mutant: drop the ordering — client ids stay unsorted").isLessThan(highIdx);
+
+        JsonNode platformEntry = list.get("policies").get(platformIdx);
+        assertThat(platformEntry.get("updatedAt").asText()).as("mutant: null updatedAt")
+                .isEqualTo(platformUpdatedAt);
+        JsonNode lowEntry = list.get("policies").get(lowIdx);
+        assertThat(lowEntry.get("updatedAt").asText()).as("mutant: null updatedAt").isEqualTo(lowUpdatedAt);
+    }
+
+    /// `getFunctionPolicy`'s no-row default answer has `updatedAt` absent
+    /// (never a fabricated timestamp) — the negative control for S2a's
+    /// "null updatedAt" mutant: on the STORED shape it must be the row's
+    /// own value, and on the default shape it must be absent altogether.
+    @Test
+    void updatedAtIsAbsentOnTheNoRowDefaultShape() {
+        String clientId = testClient("s2default");
+        var body = json(http.get("/api/function-policies/" + clientId, ANCHOR_POLICY_MANAGE));
+        assertThat(body.has("updatedAt")).as("mutant: fabricate an updatedAt on the effective-default shape").isFalse();
+    }
+
+    // ── S2b: the coarse gate applies to the list route too ───────────────────
+
+    /// S2b: non-anchor ⇒ 403; anchor without `FUNCTION_POLICY_MANAGE` ⇒ 403.
+    /// Two separate assertions, each dropping exactly one of `gate()`'s two
+    /// checks — pins "drop either gate".
+    @Test
+    void s2bListRequiresAnchorAndThePolicyManagePermission() {
+        String[] nonAnchor = {Authenticator.TEST_PRINCIPAL, "usr_s2b_nonanchor_" + RUN, Authenticator.TEST_SCOPE, "CLIENT",
+                Authenticator.TEST_PERMISSIONS, "platform:function:policy:manage"};
+        var notAnchor = http.get("/api/function-policies", nonAnchor);
+        assertThat(notAnchor.statusCode()).as("mutant: drop the requireAnchor check").isEqualTo(403);
+
+        String[] anchorNoPermission = {Authenticator.TEST_PRINCIPAL, "usr_s2b_noperm_" + RUN, Authenticator.TEST_SCOPE, "ANCHOR"};
+        var noPermission = http.get("/api/function-policies", anchorNoPermission);
+        assertThat(noPermission.statusCode()).as("mutant: drop the permission check").isEqualTo(403);
     }
 
     @Test

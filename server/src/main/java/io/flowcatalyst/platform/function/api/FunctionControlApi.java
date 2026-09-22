@@ -208,11 +208,21 @@ public final class FunctionControlApi {
                 : FunctionHost.register(hostId, pool, now).heartbeat(state, loaded, now);
 
         // §0 / spec §6.2 step 1: the host row alone, no event, no audit — a
-        // heartbeat is telemetry every 15s per host, not a use case.
-        s.uow().inTransaction(tx -> {
+        // heartbeat is telemetry every 15s per host, not a use case. S5: the
+        // same transaction purges hosts that stopped without deregistering
+        // (last_heartbeat older than PURGE_AFTER) — delete BEFORE persist, so
+        // this heartbeat's own row is always the one the persist just wrote,
+        // never a row the purge could have raced with; `hostId` itself is
+        // always excluded regardless of order (`FunctionHostRepository#deleteStale`'s
+        // own guard).
+        int purged = s.uow().inTransaction(tx -> {
+            int deleted = s.hosts().deleteStale(now.minus(FunctionHost.PURGE_AFTER), hostId, tx.dbTx());
             s.hosts().persist(host, tx.dbTx());
-            return null;
+            return deleted;
         });
+        if (purged > 0) {
+            LOG.atInfo().setMessage("function hosts purged").addKeyValue("count", purged).log();
+        }
 
         // Spec §6.2 step 2: ONLY an `ok()` entry (never FAILED — step 3) whose
         // resolved version is still `Published` becomes ready. This pre-check keeps the

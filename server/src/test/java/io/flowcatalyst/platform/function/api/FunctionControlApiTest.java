@@ -586,6 +586,69 @@ class FunctionControlApiTest {
         assertThat(versionReadyEventsFor(f.id())).isEmpty();
     }
 
+    // ── S5: stale host purge (spec §6.2) ──────────────────────────────────────
+
+    /// A host row 25h stale is gone after any OTHER host's heartbeat; one
+    /// 23h stale survives; the heartbeating host's OWN row survives even
+    /// though it too was stale going in (the transaction updates it in the
+    /// same breath the purge runs). Also pins the "logs only when it deleted
+    /// something" clause: the purge's own INFO line carries `count`.
+    @Test
+    void staleHostRowsArePurgedOnAnyHeartbeatButNeverTheHeartbeatingHostItself() {
+        Instant now = Instant.now();
+        DnsLabel pool = new DnsLabel("s5pool" + RUN);
+        String staleId = "host-s5-stale-" + RUN;
+        String freshId = "host-s5-fresh-" + RUN;
+        String selfId = "host-s5-self-" + RUN;
+
+        persist25hAnd23hAndSelf(pool, now, staleId, freshId, selfId);
+
+        var rootLogger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(
+                ch.qos.logback.classic.Logger.ROOT_LOGGER_NAME);
+        var captured = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        captured.start();
+        rootLogger.addAppender(captured);
+        try {
+            // `selfId`'s own stored row is 25h stale too — this heartbeat is what updates it.
+            var r = http.post("/control/functions/heartbeat",
+                    "{\"hostId\":\"" + selfId + "\",\"pool\":\"" + pool.value() + "\",\"state\":\"ACTIVE\",\"loaded\":[]}", HOST);
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(204);
+        } finally {
+            rootLogger.detachAppender(captured);
+        }
+
+        assertThat(hosts.findById(staleId)).as("mutant: never call deleteStale from the handler").isEmpty();
+        assertThat(hosts.findById(freshId)).as("a 23h-old row is not yet stale").isPresent();
+        FunctionHost self = hosts.findById(selfId).orElseThrow();
+        assertThat(self.lastHeartbeat()).as("mutant: the heartbeating host purges itself instead of updating")
+                .isAfter(now.minusSeconds(60));
+
+        assertThat(captured.list).as("mutant: never log the purge, or log unconditionally with count 0")
+                .anySatisfy(e -> {
+                    assertThat(e.getFormattedMessage()).isEqualTo("function hosts purged");
+                    assertThat(e.getKeyValuePairs()).as("the purge's own count")
+                            .anySatisfy(kv -> {
+                                assertThat(kv.key).isEqualTo("count");
+                                assertThat(String.valueOf(kv.value)).isEqualTo("1");
+                            });
+                });
+    }
+
+    private static void persist25hAnd23hAndSelf(DnsLabel pool, Instant now, String staleId, String freshId, String selfId) {
+        FunctionHost stale = FunctionHost.register(staleId, pool, now.minus(java.time.Duration.ofHours(25)))
+                .heartbeat(FunctionHost.HostState.ACTIVE, List.of(), now.minus(java.time.Duration.ofHours(25)));
+        FunctionHost fresh = FunctionHost.register(freshId, pool, now.minus(java.time.Duration.ofHours(23)))
+                .heartbeat(FunctionHost.HostState.ACTIVE, List.of(), now.minus(java.time.Duration.ofHours(23)));
+        FunctionHost self = FunctionHost.register(selfId, pool, now.minus(java.time.Duration.ofHours(25)))
+                .heartbeat(FunctionHost.HostState.ACTIVE, List.of(), now.minus(java.time.Duration.ofHours(25)));
+        uow.inTransaction(tx -> {
+            hosts.persist(stale, tx.dbTx());
+            hosts.persist(fresh, tx.dbTx());
+            hosts.persist(self, tx.dbTx());
+            return null;
+        });
+    }
+
     // ── POST /control/functions/events (spec §3, X9) ─────────────────────────
 
     private static void registerHost(String hostId, String pool) {

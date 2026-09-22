@@ -12,6 +12,8 @@
   "GET /api/config/platform",
   "GET /api/dispatch/router-config",
   "GET /api/function-domains",
+  "GET /api/function-domains/{hostname}",
+  "GET /api/function-policies",
   "GET /api/function-policies/{owner}",
   "GET /api/function-pools",
   "GET /api/function-routes",

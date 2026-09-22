@@ -127,6 +127,44 @@ class FunctionHostRepositoryTest {
         assertThat(kept.state()).isInstanceOf(FunctionHost.LoadState.Loaded.class);
     }
 
+    // ── S5: deleteStale (spec `function-api.md` §6.2) ────────────────────────
+
+    /// A row strictly before `before` is deleted; one at/after `before`
+    /// survives; and `exceptHostId`'s row survives EVEN THOUGH it is before
+    /// `before` too. Three assertions, each pinning a distinct mutant:
+    /// "compare with >" would flip which of the stale/fresh rows survives,
+    /// and "drop the `id <>` guard" would delete `exceptHostId`'s own row.
+    @Test
+    void deleteStaleDeletesOldRowsSparesFreshOnesAndNeverTheExceptedHost() {
+        DnsLabel pool = new DnsLabel("pool-" + RUN + "-" + fresh());
+        Instant now = Instant.now();
+        Instant cutoff = now.minusSeconds(3600);
+
+        String staleId = "host-stale-" + fresh();
+        String freshId = "host-fresh-" + fresh();
+        String exceptedId = "host-excepted-" + fresh();
+
+        // Before cutoff by a wide margin — must be deleted.
+        persist(FunctionHost.register(staleId, pool, now).heartbeat(FunctionHost.HostState.ACTIVE, List.of(),
+                cutoff.minusSeconds(60)));
+        // After cutoff — must survive.
+        persist(FunctionHost.register(freshId, pool, now).heartbeat(FunctionHost.HostState.ACTIVE, List.of(),
+                cutoff.plusSeconds(60)));
+        // Before cutoff, same as `staleId` — but named as the exception, so it must survive.
+        persist(FunctionHost.register(exceptedId, pool, now).heartbeat(FunctionHost.HostState.ACTIVE, List.of(),
+                cutoff.minusSeconds(60)));
+
+        // Never a table-wide count (`CONVENTIONS.md` §6) — other tests in this class
+        // persist their own stale/fresh rows against the same table; only THIS test's
+        // own three ids are asserted below.
+        UOW.inTransaction(tx -> REPO.deleteStale(cutoff, exceptedId, tx.dbTx()));
+
+        assertThat(REPO.findById(staleId)).as("mutant: compare with > — a row strictly before cutoff must go").isEmpty();
+        assertThat(REPO.findById(freshId)).as("mutant: compare with > — a row at/after cutoff must survive").isPresent();
+        assertThat(REPO.findById(exceptedId)).as("mutant: drop the id <> guard — the excepted host's own stale row must survive")
+                .isPresent();
+    }
+
     @Test
     void loadedReadsAsEmptyWhenTheColumnIsAnEmptyArray() throws SQLException {
         String id = "host-" + RUN + "-" + fresh();

@@ -59,6 +59,24 @@ A hand-written OpenAPI document is wrong within a month unless something fails w
 | O5 | the document is valid OpenAPI 3.1 structurally: unique `operationId`s, every `$ref` resolves, every path parameter in a template is declared and `required`, every operation has at least one 2xx response | break a `$ref` |
 | O6 | `GET /api/openapi-functions.json` serves the resource's exact bytes, without a token | — |
 
+**2026-09-22 (function backlog, unit S)**: three new operations join the scenario —
+`listFunctionPolicies` (`GET /api/function-policies`, S2) and `getFunctionDomain` (`GET
+/api/function-domains/{hostname}`, S3) are driven once each on their success path; `getFunctionConfig`
+/ `setFunctionConfig` / `listFunctionSecrets` gain a `version` query parameter and a `declaredBy`
+response field (S1, `function-context.md` §1) documented in place, no new operation. `O4`'s refusal
+set gains two, both against `publishFunctionVersion`'s `400`: a manifest with an unknown key
+(`MANIFEST_UNKNOWN_FIELD`) and one with `runtime: "cobol"` (`RUNTIME_INVALID`) — the mutant is the
+same as any other O4 row, remove either code from the description. `publishFunctionVersion`'s `400`
+description itself was rewritten to name every code the operation can actually throw (S4) — the
+codes came from reading `PublishVersion` and `Manifest.parseStrict`, not from copying
+`function-registry.md` §4.3's table verbatim: that table predates the manifest's current
+endpoints/subscriptions/schedules/public-routes shape and still names `TRIGGER_INVALID`/
+`TRIGGER_DUPLICATE`/`ROUTE_INVALID`, none of which the current code throws (it throws
+`SUBSCRIPTION_INVALID`/`SUBSCRIPTION_DUPLICATE`/`SCHEDULE_INVALID`/`SCHEDULE_DUPLICATE`/
+`PUBLIC_ROUTE_INVALID`/`PUBLIC_ROUTE_DUPLICATE`/`ENDPOINT_INVALID`/`ENDPOINT_AUTH_REQUIRED` instead) —
+flagged here rather than silently reconciled, since renaming those codes (or updating §4.3) is an
+owner call, not this unit's.
+
 The validator: reuse the in-house `shared/openapi/SchemaValidator` if it can be pointed at a second
 document cheaply (it is written against `Lockfile`; a small generalisation — a `Lockfile`-like view
 over any document — is acceptable, with `LockfileCoverageTest`/`SchemaValidationTest` still green).

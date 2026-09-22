@@ -77,6 +77,21 @@ public final class FunctionVersionRepository implements Persist<FunctionVersion>
                 .orderBy(T.VERSION.desc()).fetch().map(FunctionVersionRepository::toEntityOrThrow));
     }
 
+    /// The newest NON-RETIRED version for `functionId` (spec `function-context.md`
+    /// §1, S1): the highest `version` whose state is `PUBLISHED` or `READY`.
+    /// Since a function's `live` version can never be retired
+    /// ([io.flowcatalyst.platform.function.operations.RetireVersion]'s own
+    /// guard), this always resolves to (at least) the live version when one
+    /// is set — the live version itself once nothing newer is PUBLISHED/READY.
+    /// Scoped to ONE function, so a corrupt row here throws
+    /// [CorruptFunctionVersionException] like the other single-row readers.
+    public Optional<FunctionVersion> findNewestNonRetired(String functionId) {
+        Objects.requireNonNull(functionId, "functionId");
+        return dsl.selectFrom(T).where(T.FUNCTION_ID.eq(functionId)).and(T.STATE.ne("RETIRED"))
+                .orderBy(T.VERSION.desc()).limit(1).fetchOptional()
+                .map(FunctionVersionRepository::toEntityOrThrow);
+    }
+
     /// The desired-state batch read: every version named by `ids`, one query. An id
     /// with no matching row is simply absent from [VersionBatch#versions]. A row whose
     /// manifest [Manifest#readStored] refuses is reported in [VersionBatch#corrupt]

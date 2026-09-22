@@ -88,6 +88,21 @@ public final class FunctionHostRepository implements Persist<FunctionHost> {
 
     // ── Writes (inside the unit of work's transaction only) ────────────────
 
+    /// Purges host rows that stopped without deregistering (spec §6.2, S5):
+    /// every row whose `last_heartbeat` is strictly before `before`, EXCEPT
+    /// `exceptHostId` — the host that is heartbeating right now, whose own
+    /// stored row may still be older than `before` at the instant this runs
+    /// (`FunctionControlApi#heartbeat` deletes before it persists, in the
+    /// same transaction). Runs inside the caller's open transaction; returns
+    /// the number of rows deleted.
+    public int deleteStale(Instant before, String exceptHostId, DbTx tx) {
+        Objects.requireNonNull(before, "before");
+        Objects.requireNonNull(exceptHostId, "exceptHostId");
+        Objects.requireNonNull(tx, "tx");
+        DSLContext txDsl = DSL.using(tx.connection(), SQLDialect.POSTGRES);
+        return txDsl.deleteFrom(T).where(T.LAST_HEARTBEAT.lt(utc(before))).and(T.ID.ne(exceptHostId)).execute();
+    }
+
     /// Upsert by id. `pool` and `started_at` are absent from the `SET` list
     /// — neither changes after [FunctionHost#register] (spec §6.3).
     @Override

@@ -139,7 +139,7 @@ class FunctionOpenApiCoverageTest {
         assertThat(missingRoute).as("operations documented in " + RESOURCE + " with no registered route")
                 .isEmpty();
 
-        assertThat(registered).as("mutant: delete a route from the registry or the document").hasSize(30);
+        assertThat(registered).as("mutant: delete a route from the registry or the document").hasSize(32);
     }
 
     // ── O5: the document is structurally valid OpenAPI 3.1 ──────────────────

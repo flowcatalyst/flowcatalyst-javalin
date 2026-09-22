@@ -14,6 +14,7 @@ import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionStatus;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
+import io.flowcatalyst.platform.function.Manifest;
 import io.flowcatalyst.platform.function.SecretValue;
 import io.flowcatalyst.platform.function.SettingKey;
 import io.flowcatalyst.platform.function.SignerIdentity;
@@ -388,20 +389,22 @@ public final class FunctionApi {
 
     // ── §1 (function-context.md, D4a): platform-stored config/secrets ───────
 
-    /// spec §1: `GET .../config` — `{values, declared, missing}`. `declared`
-    /// is the LIVE manifest's `config` keys (empty when there is no live
-    /// version yet); `missing` is the subset of `declared` with no value set.
+    /// spec §1 (S1): `GET .../config` — `{values, declared, missing, declaredBy}`.
+    /// `declared` is the ordered union of the live manifest's `config` keys
+    /// and the `?version=` candidate's (absent ⇒ the newest non-retired
+    /// version); `missing` is the subset of `declared` with no value set.
     private static void getConfig(Exchange ctx, State s) {
         Checks.require(Auth.current(), FUNCTION_VIEW);
         Function f = functionByAddress(s, parseAddress(ctx.pathParam("address")), Auth.current());
         Map<String, String> values = s.settings().configMap(f.id());
-        List<String> declared = declaredConfig(s, f);
-        List<String> missing = missing(declared, values.keySet());
-        ctx.json(new ConfigResponse(new TreeMap<>(values), declared, missing));
+        Declared declared = declared(s, f, queryParam(ctx, "version"), Manifest::config);
+        ctx.json(new ConfigResponse(new TreeMap<>(values), declared.keys(), missing(declared.keys(), values.keySet()),
+                declared.declaredBy()));
     }
 
-    /// spec §1: `PUT .../config` — full replacement; `SetFunctionConfig` owns
-    /// the key-format/size validation. 200 with the GET shape.
+    /// spec §1 (S1): `PUT .../config` — full replacement; `SetFunctionConfig`
+    /// owns the key-format/size validation. 200 with the GET shape, honouring
+    /// the same optional `?version=` the GET route does.
     private static void putConfig(Exchange ctx, State s) {
         Checks.require(Auth.current(), FUNCTION_MANAGE);
         FunctionAddress address = parseAddress(ctx.pathParam("address"));
@@ -410,12 +413,13 @@ public final class FunctionApi {
                 .run(s.uow(), new SetConfigCommand(address, req.values()), Auth.executionContext());
         Function f = functionByAddress(s, address, Auth.current());
         Map<String, String> values = s.settings().configMap(f.id());
-        List<String> declared = declaredConfig(s, f);
-        ctx.json(new ConfigResponse(new TreeMap<>(values), declared, missing(declared, values.keySet())));
+        Declared declared = declared(s, f, queryParam(ctx, "version"), Manifest::config);
+        ctx.json(new ConfigResponse(new TreeMap<>(values), declared.keys(), missing(declared.keys(), values.keySet()),
+                declared.declaredBy()));
     }
 
-    /// spec §1: `GET .../secrets` — `{keys, declared, missing}`. **Never a
-    /// value** — [FunctionSettingsRepository.SecretInfo] carries none.
+    /// spec §1 (S1): `GET .../secrets` — `{keys, declared, missing, declaredBy}`.
+    /// **Never a value** — [FunctionSettingsRepository.SecretInfo] carries none.
     private static void getSecrets(Exchange ctx, State s) {
         Checks.require(Auth.current(), FUNCTION_VIEW);
         if (!encryptionConfigured(ctx, s)) {
@@ -425,10 +429,10 @@ public final class FunctionApi {
         List<FunctionSettingsRepository.SecretInfo> infos = s.settings().listSecrets(f.id());
         List<SecretKeyResponse> keys = infos.stream()
                 .map(i -> new SecretKeyResponse(i.key(), i.updatedAt(), i.updatedBy())).toList();
-        List<String> declared = declaredSecrets(s, f);
+        Declared declared = declared(s, f, queryParam(ctx, "version"), Manifest::secrets);
         Set<String> present = infos.stream().map(FunctionSettingsRepository.SecretInfo::key)
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
-        ctx.json(new SecretListResponse(keys, declared, missing(declared, present)));
+        ctx.json(new SecretListResponse(keys, declared.keys(), missing(declared.keys(), present), declared.declaredBy()));
     }
 
     /// spec §1: `PUT .../secrets/{key}` — `{value}`, 204. Never echoes the
@@ -476,14 +480,48 @@ public final class FunctionApi {
         return false;
     }
 
-    private static List<String> declaredConfig(State s, Function f) {
+    /// `declared`/`declaredBy` for `.../config` and `.../secrets` (spec §1,
+    /// S1). Absent `versionParam`: the candidate is the newest NON-RETIRED
+    /// version ([FunctionVersionRepository#findNewestNonRetired]) — the live
+    /// version itself once nothing newer is `PUBLISHED`/`READY`, since a
+    /// live version is never retired. Present: the candidate is that EXACT
+    /// version, `RETIRED` included ("its keys are historical but the caller
+    /// asked") — [#versionOrNotFound] never filters by state. `declared` is
+    /// live's keys first, then the candidate's not already listed;
+    /// `declaredBy` names each manifest that contributed, live first, each
+    /// with its OWN full key list (not just what it *added*) so the caller
+    /// can say which version(s) want a given key.
+    ///
+    /// @throws UseCaseException notFound `FunctionVersion_NOT_FOUND` when `versionParam` names no version of `f`
+    /// @throws UseCaseException validation `VERSION_INVALID` when `versionParam` is not a positive integer
+    private static Declared declared(State s, Function f, String versionParam,
+            java.util.function.Function<Manifest, List<String>> keysOf) {
         FunctionVersion live = liveVersionOf(s, f);
-        return live == null ? List.of() : live.manifest().config();
+        FunctionVersion candidate = versionParam == null
+                ? s.versions().findNewestNonRetired(f.id()).orElse(null)
+                : versionOrNotFound(s, f, parseVersionNumber(versionParam));
+
+        List<String> declared = new ArrayList<>();
+        List<DeclaredByEntry> declaredBy = new ArrayList<>();
+        if (live != null) {
+            List<String> liveKeys = keysOf.apply(live.manifest());
+            declared.addAll(liveKeys);
+            declaredBy.add(new DeclaredByEntry(live.version(), liveKeys));
+        }
+        if (candidate != null && (live == null || !candidate.id().equals(live.id()))) {
+            List<String> candidateKeys = keysOf.apply(candidate.manifest());
+            for (String key : candidateKeys) {
+                if (!declared.contains(key)) {
+                    declared.add(key);
+                }
+            }
+            declaredBy.add(new DeclaredByEntry(candidate.version(), candidateKeys));
+        }
+        return new Declared(List.copyOf(declared), List.copyOf(declaredBy));
     }
 
-    private static List<String> declaredSecrets(State s, Function f) {
-        FunctionVersion live = liveVersionOf(s, f);
-        return live == null ? List.of() : live.manifest().secrets();
+    /// [#declared]'s result: the union, and which manifest(s) contributed.
+    private record Declared(List<String> keys, List<DeclaredByEntry> declaredBy) {
     }
 
     private static List<String> missing(List<String> declared, Set<String> present) {
@@ -856,10 +894,19 @@ public final class FunctionApi {
 
     // ── §1 (function-context.md, D4a): config/secrets DTOs ──────────────────
 
-    /// `GET`/`PUT` `.../config` (spec §1): `values` is the full map, `declared`
-    /// is the live manifest's `config` keys, `missing` is `declared` minus
-    /// `values.keySet()`.
-    public record ConfigResponse(Map<String, String> values, List<String> declared, List<String> missing) {
+    /// `GET`/`PUT` `.../config` (spec §1, S1): `values` is the full map,
+    /// `declared` is the ordered union of the live manifest's and the
+    /// `?version=` candidate's `config` keys, `missing` is `declared` minus
+    /// `values.keySet()`, `declaredBy` names which manifest(s) want which keys.
+    public record ConfigResponse(Map<String, String> values, List<String> declared, List<String> missing,
+                                 List<DeclaredByEntry> declaredBy) {
+    }
+
+    /// One manifest that contributed to `declared`/`missing` (spec §1, S1):
+    /// `keys` is that manifest's OWN full `config`/`secrets` key list — not
+    /// only the keys it added beyond another entry — so a caller can say,
+    /// per key, which version(s) want it.
+    public record DeclaredByEntry(int version, List<String> keys) {
     }
 
     /// Body of `PUT /api/functions/{address}/config` (spec §1): full
@@ -870,9 +917,11 @@ public final class FunctionApi {
         }
     }
 
-    /// `GET /api/functions/{address}/secrets` (spec §1): `keys` never carries
-    /// a value.
-    public record SecretListResponse(List<SecretKeyResponse> keys, List<String> declared, List<String> missing) {
+    /// `GET /api/functions/{address}/secrets` (spec §1, S1): `keys` never
+    /// carries a value; `declared`/`declaredBy` are the same shape as
+    /// [ConfigResponse]'s.
+    public record SecretListResponse(List<SecretKeyResponse> keys, List<String> declared, List<String> missing,
+                                     List<DeclaredByEntry> declaredBy) {
     }
 
     /// One entry of [SecretListResponse#keys] — key, `updatedAt`, `updatedBy`,

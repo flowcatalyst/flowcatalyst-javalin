@@ -223,6 +223,59 @@ class FunctionDomainApiTest {
         assertThat(r.body()).contains(f.address().render());
     }
 
+    // ── GET /api/function-domains/{hostname} (S3) ────────────────────────────
+
+    private static String[] clientView(String clientId) {
+        return new String[]{Authenticator.TEST_PRINCIPAL, "usr_s3_" + UUID.randomUUID().toString().substring(0, 8),
+                Authenticator.TEST_SCOPE, "CLIENT", Authenticator.TEST_CLIENTS, clientId,
+                Authenticator.TEST_PERMISSIONS, "platform:function:function:view"};
+    }
+
+    /// S3a: reachable ⇒ 200 with the claim's own shape; a domain owned by a
+    /// DIFFERENT client the caller cannot reach ⇒ 404, never 403 (spec §2's
+    /// "never confirm what exists" reach discipline, shared with every other
+    /// by-resource read through [Access#byHostname]).
+    @Test
+    void s3aGetDomainByHostnameReachableIs200OutOfReachIs404NeverA403() {
+        String clientA = "clt_s3a_" + RUN;
+        String clientB = "clt_s3b_" + RUN;
+        String h = host("s3reach");
+        var claimed = http.post("/api/function-domains",
+                "{\"hostname\":\"" + h + "\",\"clientId\":\"" + clientA + "\"}", MANAGE);
+        assertThat(claimed.statusCode()).as(claimed.body()).isEqualTo(201);
+        JsonNode claimedBody = json(claimed);
+
+        // Reachable: the SAME shape claim() returned, read back through the new route.
+        var reachable = http.get("/api/function-domains/" + h, clientView(clientA));
+        assertThat(reachable.statusCode()).as(reachable.body()).isEqualTo(200);
+        JsonNode reachableBody = json(reachable);
+        assertThat(reachableBody.get("id").asString()).isEqualTo(claimedBody.get("id").asString());
+        assertThat(reachableBody.get("hostname").asString()).isEqualTo(h);
+        assertThat(reachableBody.get("owner").asString()).isEqualTo(clientA);
+        assertThat(reachableBody.get("verification").get("state").asString()).isEqualTo("PENDING");
+
+        // Out of reach (a DIFFERENT client's domain): 404, never 403 — pins "skip the
+        // reach check", which would answer 200 with clientA's domain to clientB's caller.
+        var outOfReach = http.get("/api/function-domains/" + h, clientView(clientB));
+        assertThat(outOfReach.statusCode()).as("mutant: skip the reach check — clientB should not see clientA's domain")
+                .isEqualTo(404);
+        assertThat(json(outOfReach).get("error").asString()).isEqualTo("FunctionDomain_NOT_FOUND");
+    }
+
+    /// An unknown hostname (never claimed) is the same 404, and an invalid
+    /// hostname is the same 400 `HOSTNAME_INVALID` the claim route gives —
+    /// [Hostname#parse] is the one parser both routes share.
+    @Test
+    void s3getDomainUnknownIs404AndInvalidHostnameIs400() {
+        var unknown = http.get("/api/function-domains/" + host("s3unknown"), MANAGE);
+        assertThat(unknown.statusCode()).isEqualTo(404);
+        assertThat(json(unknown).get("error").asString()).isEqualTo("FunctionDomain_NOT_FOUND");
+
+        var invalid = http.get("/api/function-domains/not-a-hostname", MANAGE);
+        assertThat(invalid.statusCode()).isEqualTo(400);
+        assertThat(json(invalid).get("error").asString()).isEqualTo("HOSTNAME_INVALID");
+    }
+
     // ── GET /api/function-routes ──────────────────────────────────────────
 
     @Test

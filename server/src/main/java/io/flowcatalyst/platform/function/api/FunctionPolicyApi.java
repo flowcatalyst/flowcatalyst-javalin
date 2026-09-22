@@ -18,19 +18,21 @@ import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
 import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_POLICY_MANAGE;
 
-/// `/api/function-policies/{owner}` (spec `function-api.md` §4.3). Java-first,
+/// `/api/function-policies…` (spec `function-api.md` §4.3). Java-first,
 /// outside the lockfile (spec §0). `{owner}` is a client id or the literal
-/// `platform`. Both routes: `requireAnchor` + `FUNCTION_POLICY_MANAGE` (spec
+/// `platform`. Every route: `requireAnchor` + `FUNCTION_POLICY_MANAGE` (spec
 /// §2) — a coarse handler-level gate, no per-resource reach (a policy has no
 /// narrower audience than its owner).
 ///
 /// | Method | Path | Status |
 /// |---|---|---|
+/// | GET | `/api/function-policies` | 200 [PolicyListResponse] (S2) |
 /// | GET | `/api/function-policies/{owner}` | 200 [PolicyResponse] |
 /// | PUT | `/api/function-policies/{owner}` | 200 [PolicyResponse] |
 public final class FunctionPolicyApi {
@@ -50,11 +52,22 @@ public final class FunctionPolicyApi {
 
     public static void register(Routes routes, State s) {
         Routes write = routes.in(Group.API_WRITE);
+        routes.get("/api/function-policies", Auth.scoped(ctx -> list(ctx, s)));
         routes.get("/api/function-policies/{owner}", Auth.scoped(ctx -> get(ctx, s)));
         write.put("/api/function-policies/{owner}", Auth.scoped(ctx -> put(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────
+
+    /// spec §4.3 (S2): every STORED policy row, platform first then client
+    /// ids ascending ([ClientPolicyRepository#listAll]'s own ordering) — no
+    /// paging, at most one row per client.
+    private static void list(Exchange ctx, State s) {
+        gate();
+        List<PolicyResponse> out = s.policies().listAll().stream()
+                .map(p -> PolicyResponse.from(p, s.defaults())).toList();
+        ctx.json(new PolicyListResponse(out));
+    }
 
     private static void get(Exchange ctx, State s) {
         gate();
@@ -110,9 +123,12 @@ public final class FunctionPolicyApi {
         }
     }
 
-    /// `{owner, signers, ceilings, stored}` (spec §4.3): `ceilings` is
-    /// always the EFFECTIVE resolved values, whether or not a row exists.
-    public record PolicyResponse(String owner, List<SignerResponse> signers, CeilingsResponse ceilings, boolean stored) {
+    /// `{owner, signers, ceilings, stored, updatedAt}` (spec §4.3): `ceilings`
+    /// is always the EFFECTIVE resolved values, whether or not a row exists;
+    /// `updatedAt` (S2) is `null` on the [#effectiveDefault] shape, which has
+    /// no row to carry one.
+    public record PolicyResponse(String owner, List<SignerResponse> signers, CeilingsResponse ceilings, boolean stored,
+                                 Instant updatedAt) {
 
         static PolicyResponse from(ClientPolicy p, FunctionLimits defaults) {
             return new PolicyResponse(p.owner().toWire(),
@@ -120,13 +136,14 @@ public final class FunctionPolicyApi {
                             .map(r -> new SignerResponse(r.issuer(), r.subject(),
                                     r.runtimes().stream().map(Runtime::wireValue).toList()))
                             .toList(),
-                    CeilingsResponse.from(p.ceilings(defaults)), true);
+                    CeilingsResponse.from(p.ceilings(defaults)), true, p.updatedAt());
         }
 
         /// No stored row — the effective default (spec §4.3): `signers: []`,
-        /// `ceilings` = the platform defaults, `stored: false`.
+        /// `ceilings` = the platform defaults, `stored: false`, `updatedAt: null`.
         static PolicyResponse effectiveDefault(FunctionOwner owner, FunctionLimits defaults) {
-            return new PolicyResponse(owner.toWire(), List.of(), CeilingsResponse.from(ClientCeilings.of(defaults)), false);
+            return new PolicyResponse(owner.toWire(), List.of(), CeilingsResponse.from(ClientCeilings.of(defaults)),
+                    false, null);
         }
 
         public record SignerResponse(String issuer, String subject, List<String> runtimes) {
@@ -137,5 +154,9 @@ public final class FunctionPolicyApi {
                 return new CeilingsResponse(c.maxDurationMs(), c.maxConcurrency(), c.wasmMemoryMb(), c.dbPoolSize());
             }
         }
+    }
+
+    /// `GET /api/function-policies` (spec §4.3, S2): `{policies: [...]}`.
+    public record PolicyListResponse(List<PolicyResponse> policies) {
     }
 }

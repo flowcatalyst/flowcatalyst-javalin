@@ -5,12 +5,17 @@ import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ApplicationType;
 import io.flowcatalyst.platform.client.ClientRepository;
+import io.flowcatalyst.platform.function.ClientCeilings;
 import io.flowcatalyst.platform.function.ClientPolicyRepository;
+import io.flowcatalyst.platform.function.Function;
 import io.flowcatalyst.platform.function.FunctionHostRepository;
 import io.flowcatalyst.platform.function.FunctionLimits;
 import io.flowcatalyst.platform.function.FunctionRepository;
 import io.flowcatalyst.platform.function.FunctionSettingsRepository;
+import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
+import io.flowcatalyst.platform.function.Manifest;
+import io.flowcatalyst.platform.function.Runtime;
 import io.flowcatalyst.platform.function.TriggerObjectRepository;
 import io.flowcatalyst.platform.function.artifact.Signatures;
 import io.flowcatalyst.platform.function.operations.TriggerSync;
@@ -41,6 +46,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.net.http.HttpResponse;
+import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -154,6 +160,67 @@ class FunctionSettingsApiTest {
     private static String functionIdOf(String address) {
         return functions.findByAddress(io.flowcatalyst.platform.function.FunctionAddress.parse(address))
                 .orElseThrow().id();
+    }
+
+    // ── S1d: the secrets route's declared/declaredBy (function-context.md §1) ──
+
+    private static final FunctionLimits DEFAULTS = FunctionLimits.defaults();
+    private static final ClientCeilings UNRESTRICTED = ClientCeilings.of(DEFAULTS);
+
+    /// Writes a `PUBLISHED` version straight through the repositories, then
+    /// promotes it to `live` directly through the aggregate (no operation,
+    /// no readiness gate) — `FunctionControlApiTest`'s own fixture pattern,
+    /// used here because this class needs a LIVE version with a manifest
+    /// that declares a secret key, and the operation-level promote gate
+    /// (`PromoteVersion`) is out of scope for an API-wiring test.
+    private static void publishAndPromote(String address, String secretKey) {
+        Function f = functions.findByAddress(io.flowcatalyst.platform.function.FunctionAddress.parse(address)).orElseThrow();
+        String json = "{\"runtime\":\"jvm\",\"entrypoint\":\"com.acme.Fn\",\"secrets\":[\"" + secretKey + "\"]}";
+        Manifest manifest = Manifest.parseStrict(Json.MAPPER.readTree(json), Runtime.JVM, DEFAULTS, UNRESTRICTED);
+        String hex = Integer.toHexString((f.id() + secretKey).hashCode()) + "0".repeat(64);
+        var digest = io.flowcatalyst.platform.function.Digest.parse("sha256:" + hex.substring(0, 64));
+        FunctionVersion v = FunctionVersion.publish(f.id(), 1, "oci://artifact", digest, null, null, null,
+                manifest, "prn_publisher", Instant.now());
+        uow.inTransaction(tx -> {
+            versions.persist(v, tx.dbTx());
+            return null;
+        });
+        Function.Promoted p = f.promote(Function.LIVE, v, "prn_promoter", Instant.now());
+        uow.inTransaction(tx -> {
+            functions.persist(p.function(), tx.dbTx());
+            return null;
+        });
+    }
+
+    /// S1d: the secrets route carries `declared`/`declaredBy` from the live
+    /// manifest's `secrets` keys, honours `?version=` the same way config
+    /// does, and — as X1 already proves exhaustively for VALUES — never
+    /// puts one in the body; this test additionally proves the KEY itself
+    /// (the marker) reaches `declared`, which X1 does not check.
+    @Test
+    void s1dSecretsRouteDeclaredMatchesConfigsBehaviourAndNeverAValue() {
+        String address = createFunction("s1d");
+        publishAndPromote(address, "S1D_SECRET_MARKER");
+
+        var r = http.get("/api/functions/" + address + "/secrets", ANCHOR);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        var body = json(r);
+        assertThat(body.get("declared")).as("mutant: declared stays empty / ignores the live manifest's secrets")
+                .extracting(JsonNode::asString).containsExactly("S1D_SECRET_MARKER");
+        assertThat(body.get("declaredBy")).hasSize(1);
+        assertThat(body.get("declaredBy").get(0).get("version").asInt()).isEqualTo(1);
+        assertThat(body.get("declaredBy").get(0).get("keys")).extracting(JsonNode::asString)
+                .containsExactly("S1D_SECRET_MARKER");
+        assertThat(r.body()).as("mutant: add a value field to SecretKeyResponse/SecretListResponse")
+                .doesNotContain("\"value\"");
+
+        var unknownVersion = http.get("/api/functions/" + address + "/secrets?version=9", ANCHOR);
+        assertThat(unknownVersion.statusCode()).isEqualTo(404);
+        assertThat(json(unknownVersion).get("error").asString()).isEqualTo("FunctionVersion_NOT_FOUND");
+
+        var nonInteger = http.get("/api/functions/" + address + "/secrets?version=x", ANCHOR);
+        assertThat(nonInteger.statusCode()).isEqualTo(400);
+        assertThat(json(nonInteger).get("error").asString()).isEqualTo("VERSION_INVALID");
     }
 
     // ── The literal search: every HTTP response, every row, every log line ──

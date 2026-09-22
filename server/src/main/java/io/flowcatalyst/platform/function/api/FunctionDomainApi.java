@@ -47,6 +47,7 @@ import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_VIEW;
 /// |---|---|---|
 /// | POST | `/api/function-domains` | `FUNCTION_DOMAIN_MANAGE` |
 /// | GET | `/api/function-domains?clientId=` | `FUNCTION_VIEW` |
+/// | GET | `/api/function-domains/{hostname}` | `FUNCTION_VIEW` (S3) |
 /// | POST | `/api/function-domains/{hostname}/verify` | `FUNCTION_DOMAIN_MANAGE` |
 /// | DELETE | `/api/function-domains/{hostname}` | `FUNCTION_DOMAIN_MANAGE` |
 /// | GET | `/api/function-routes?hostname=&address=` | `FUNCTION_VIEW` |
@@ -75,6 +76,7 @@ public final class FunctionDomainApi {
         Routes write = routes.in(Group.API_WRITE);
         write.post("/api/function-domains", Auth.scoped(ctx -> claim(ctx, s)));
         routes.get("/api/function-domains", Auth.scoped(ctx -> list(ctx, s)));
+        routes.get("/api/function-domains/{hostname}", Auth.scoped(ctx -> getDomain(ctx, s)));
         write.post("/api/function-domains/{hostname}/verify", Auth.scoped(ctx -> verify(ctx, s)));
         write.delete("/api/function-domains/{hostname}", Auth.scoped(ctx -> release(ctx, s)));
         routes.get("/api/function-routes", Auth.scoped(ctx -> listRoutes(ctx, s)));
@@ -114,6 +116,18 @@ public final class FunctionDomainApi {
                 ? s.domains().listByOwner(owner).stream().map(DomainResponse::from).toList()
                 : List.of();
         ctx.json(out);
+    }
+
+    /// spec §1 (S3): `GET /api/function-domains/{hostname}` — reach-or-404
+    /// through [Access#byHostname] (already written for verify/release; not
+    /// duplicated here), `FUNCTION_VIEW`. An invalid hostname is the same
+    /// `400 HOSTNAME_INVALID` the claim route gives, since [Hostname#parse]
+    /// is the one parser both routes share.
+    private static void getDomain(Exchange ctx, State s) {
+        Checks.require(Auth.current(), FUNCTION_VIEW);
+        Hostname hostname = Hostname.parse(ctx.pathParam("hostname"));
+        FunctionDomain d = Access.byHostname(s.domains(), hostname, Auth.current());
+        ctx.json(DomainResponse.from(d));
     }
 
     /// spec §1: `POST /api/function-domains/{hostname}/verify`. A

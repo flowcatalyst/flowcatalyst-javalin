@@ -7,12 +7,17 @@ import io.flowcatalyst.platform.application.ApplicationType;
 import io.flowcatalyst.platform.client.Client;
 import io.flowcatalyst.platform.client.ClientIdentifier;
 import io.flowcatalyst.platform.client.ClientRepository;
+import io.flowcatalyst.platform.function.ClientCeilings;
 import io.flowcatalyst.platform.function.ClientPolicyRepository;
+import io.flowcatalyst.platform.function.Function;
 import io.flowcatalyst.platform.function.FunctionHostRepository;
 import io.flowcatalyst.platform.function.FunctionLimits;
 import io.flowcatalyst.platform.function.FunctionRepository;
 import io.flowcatalyst.platform.function.FunctionSettingsRepository;
+import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
+import io.flowcatalyst.platform.function.Manifest;
+import io.flowcatalyst.platform.function.Runtime;
 import io.flowcatalyst.platform.function.TriggerObjectRepository;
 import io.flowcatalyst.platform.function.artifact.Signatures;
 import io.flowcatalyst.platform.function.operations.TriggerSync;
@@ -34,6 +39,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.net.http.HttpResponse;
+import java.time.Instant;
 import java.util.Locale;
 import java.util.UUID;
 
@@ -781,6 +787,124 @@ class FunctionApiTest {
         assertThat(r.statusCode()).as(r.body()).isEqualTo(400);
         assertThat(json(r).get("error").asString()).isEqualTo("SETTING_TOO_LARGE");
     }
+
+    // ── S1: declared over the candidate, not only live ──────────────────────
+
+    private static final FunctionLimits DEFAULTS = FunctionLimits.defaults();
+    private static final ClientCeilings UNRESTRICTED = ClientCeilings.of(DEFAULTS);
+
+    private static Manifest manifestDeclaring(String configKey, String secretKey) {
+        String json = "{\"runtime\":\"jvm\",\"entrypoint\":\"com.acme.Fn\""
+                + (configKey == null ? "" : ",\"config\":[\"" + configKey + "\"]")
+                + (secretKey == null ? "" : ",\"secrets\":[\"" + secretKey + "\"]")
+                + "}";
+        return Manifest.parseStrict(Json.MAPPER.readTree(json), Runtime.JVM, DEFAULTS, UNRESTRICTED);
+    }
+
+    /// Writes a `PUBLISHED` version straight through the repositories — no
+    /// HTTP publish, no promote gate — so a test can set up "candidate not
+    /// yet live" fixtures directly (`FunctionControlApiTest`'s own pattern).
+    private static FunctionVersion publishVersionDirect(String address, int version, String configKey, String secretKey) {
+        Function f = functions.findByAddress(io.flowcatalyst.platform.function.FunctionAddress.parse(address)).orElseThrow();
+        String hex = Integer.toHexString((f.id() + version + configKey + secretKey).hashCode()) + "0".repeat(64);
+        var digest = io.flowcatalyst.platform.function.Digest.parse("sha256:" + hex.substring(0, 64));
+        FunctionVersion v = FunctionVersion.publish(f.id(), version, "oci://artifact", digest, null, null, null,
+                manifestDeclaring(configKey, secretKey), "prn_publisher", Instant.now());
+        uow.inTransaction(tx -> {
+            versions.persist(v, tx.dbTx());
+            return null;
+        });
+        return v;
+    }
+
+    private static void promoteDirect(String address, FunctionVersion v) {
+        Function f = functions.findByAddress(io.flowcatalyst.platform.function.FunctionAddress.parse(address)).orElseThrow();
+        Function.Promoted p = f.promote(Function.LIVE, v, "prn_promoter", Instant.now());
+        uow.inTransaction(tx -> {
+            functions.persist(p.function(), tx.dbTx());
+            return null;
+        });
+    }
+
+    /// S1a: no live version, one `PUBLISHED` version declaring `A` — the
+    /// GET must pull `declared`/`declaredBy` from that candidate, not only
+    /// from `live` (which does not exist yet). Pins the mutant "declared
+    /// stays live-only": the OLD code answered `declared: []` here because
+    /// there was no live version at all.
+    @Test
+    void s1aDeclaredComesFromTheCandidateBeforeAnyPromote() {
+        testApplication("s1a", "s1a-" + RUN);
+        create("s1a-" + RUN, "svc", "fn", null);
+        String address = "s1a-" + RUN + ".svc.fn";
+        publishVersionDirect(address, 1, "A", null);
+
+        var body = json(http.get("/api/functions/" + address + "/config", ANCHOR));
+        assertThat(body.get("declared")).as("mutant: declared stays live-only (empty before any promote)")
+                .extracting(tools.jackson.databind.JsonNode::asString).containsExactly("A");
+        assertThat(body.get("missing")).extracting(tools.jackson.databind.JsonNode::asString).containsExactly("A");
+        assertThat(body.get("declaredBy")).hasSize(1);
+        assertThat(body.get("declaredBy").get(0).get("version").asInt()).isEqualTo(1);
+        assertThat(body.get("declaredBy").get(0).get("keys")).extracting(tools.jackson.databind.JsonNode::asString)
+                .containsExactly("A");
+    }
+
+    /// S1b: live declares `A`, a newer `PUBLISHED` candidate declares `B` —
+    /// `declared` is the union with no param; `?version=1` narrows to just
+    /// live's own keys. Pins "drop the union" (declared would stay `[A]`
+    /// with no param) and "ignore the parameter" (`?version=1` would still
+    /// answer `[A, B]`).
+    @Test
+    void s1bDeclaredUnionsLiveAndTheCandidateVersionParamNarrows() {
+        testApplication("s1b", "s1b-" + RUN);
+        create("s1b-" + RUN, "svc", "fn", null);
+        String address = "s1b-" + RUN + ".svc.fn";
+        FunctionVersion v1 = publishVersionDirect(address, 1, "A", null);
+        promoteDirect(address, v1);
+        publishVersionDirect(address, 2, "B", null);
+
+        var noParam = json(http.get("/api/functions/" + address + "/config", ANCHOR));
+        assertThat(noParam.get("declared")).as("mutant: drop the union — live's key alone")
+                .extracting(tools.jackson.databind.JsonNode::asString).containsExactly("A", "B");
+        assertThat(noParam.get("declaredBy")).hasSize(2);
+        assertThat(noParam.get("declaredBy").get(1).get("version").asInt()).isEqualTo(2);
+
+        var scoped = json(http.get("/api/functions/" + address + "/config?version=1", ANCHOR));
+        assertThat(scoped.get("declared")).as("mutant: ignore the parameter — still [A, B]")
+                .extracting(tools.jackson.databind.JsonNode::asString).containsExactly("A");
+        assertThat(scoped.get("declaredBy")).as("live IS version 1 here — one entry, not two").hasSize(1);
+
+        // A newer candidate that re-declares live's key: the union holds it ONCE
+        // (mutant: drop the dedup — declared would be [A, A]), while declaredBy
+        // still lists both manifests with their own full key lists.
+        publishVersionDirect(address, 3, "A", null);
+        var shared = json(http.get("/api/functions/" + address + "/config", ANCHOR));
+        assertThat(shared.get("declared")).as("mutant: drop the dedup — [A, A]")
+                .extracting(tools.jackson.databind.JsonNode::asString).containsExactly("A");
+        assertThat(shared.get("declaredBy")).hasSize(2);
+        assertThat(shared.get("declaredBy").get(1).get("version").asInt()).isEqualTo(3);
+    }
+
+    /// S1c: an unknown `?version=` is 404 `FunctionVersion_NOT_FOUND`; a
+    /// non-integer is 400 `VERSION_INVALID`.
+    @Test
+    void s1cVersionParamUnknownIs404NonIntegerIs400() {
+        testApplication("s1c", "s1c-" + RUN);
+        create("s1c-" + RUN, "svc", "fn", null);
+        String address = "s1c-" + RUN + ".svc.fn";
+
+        var unknown = http.get("/api/functions/" + address + "/config?version=9", ANCHOR);
+        assertThat(unknown.statusCode()).isEqualTo(404);
+        assertThat(json(unknown).get("error").asString()).isEqualTo("FunctionVersion_NOT_FOUND");
+
+        var nonInteger = http.get("/api/functions/" + address + "/config?version=x", ANCHOR);
+        assertThat(nonInteger.statusCode()).isEqualTo(400);
+        assertThat(json(nonInteger).get("error").asString()).isEqualTo("VERSION_INVALID");
+    }
+
+    /// S1d (values, never `declared`/`declaredBy`) lives in
+    /// `FunctionSettingsApiTest`, which is the harness with `FLOWCATALYST_APP_KEY`
+    /// actually configured — this class's `settings`/`encryption` are
+    /// `Optional.empty()` throughout (X4), so `/secrets` always 503s here.
 
     // ── X4 (function-context.md §1): no app key ⇒ secret routes 503, nothing stored ──
     // `encryption` is `Optional.empty()` for this whole test class (see `start()` above) —

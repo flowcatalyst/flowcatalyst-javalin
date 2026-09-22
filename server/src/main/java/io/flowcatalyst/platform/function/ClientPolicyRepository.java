@@ -54,6 +54,19 @@ public final class ClientPolicyRepository implements Persist<ClientPolicy> {
                 .map(ClientPolicyRepository::toEntity);
     }
 
+    /// Every STORED policy row (spec `function-api.md` §4.3, S2) — owners
+    /// with no row are absent, never [ClientPolicy#effectiveDefault]-shaped
+    /// (the caller knows the client list and renders defaults for the
+    /// rest). Ordered the platform row ([FunctionOwner#PLATFORM_KEY]) first,
+    /// then client ids ascending — a `CASE` on the primary key itself rather
+    /// than a second column, so the ordering can never drift from what
+    /// [FunctionOwner#key] spells.
+    public List<ClientPolicy> listAll() {
+        return List.copyOf(dsl.selectFrom(T)
+                .orderBy(DSL.when(T.CLIENT_ID.eq(FunctionOwner.PLATFORM_KEY), 0).otherwise(1), T.CLIENT_ID.asc())
+                .fetch().map(ClientPolicyRepository::toEntity));
+    }
+
     // ── Writes (inside the unit of work's transaction only) ────────────────
 
     @Override

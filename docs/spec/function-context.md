@@ -25,14 +25,35 @@ Routes (`FunctionApi`; reach as every by-address route; outside the lockfile; `p
 
 | Route | Permission | Behaviour |
 |---|---|---|
-| `GET /api/functions/{address}/config` | `FUNCTION_VIEW` | `{values: {k: v}, declared: [keys the live manifest declares], missing: [declared and unset]}` |
-| `PUT /api/functions/{address}/config` | `FUNCTION_MANAGE` | full replacement `{values: {k: v}}`; ≤ 100 keys, value ≤ 8 KiB (`SETTING_TOO_LARGE`); 200 with the GET shape. `SetFunctionConfig`; event `platform:function:config:updated` with **keys only** |
-| `GET /api/functions/{address}/secrets` | `FUNCTION_VIEW` | `{keys: [{key, updatedAt, updatedBy}], declared, missing}` — **never a value, in any response, log, event, audit row or `toString`** |
+| `GET /api/functions/{address}/config` | `FUNCTION_VIEW` | `{values: {k: v}, declared, missing, declaredBy}` — see "declared over the candidate" below |
+| `PUT /api/functions/{address}/config` | `FUNCTION_MANAGE` | full replacement `{values: {k: v}}`; ≤ 100 keys, value ≤ 8 KiB (`SETTING_TOO_LARGE`); 200 with the GET shape (same `?version=` handling). `SetFunctionConfig`; event `platform:function:config:updated` with **keys only** |
+| `GET /api/functions/{address}/secrets` | `FUNCTION_VIEW` | `{keys: [{key, updatedAt, updatedBy}], declared, missing, declaredBy}` — **never a value, in any response, log, event, audit row or `toString`** |
 | `PUT /api/functions/{address}/secrets/{key}` | `FUNCTION_SECRET_MANAGE` (`platform:function:secret:manage`, new; to `messaging-admin` and `function-publisher`) | `{value}`; value ≤ 8 KiB, non-empty; 204. `SetFunctionSecret`; event `…:secret:set` (key only). The audit command's `toString`/JSON masks `value` — check how `aud_logs` serialises the command and prove the value is not in the row |
 | `DELETE …/secrets/{key}` | same | 204; `…:secret:deleted`. 404 when absent |
 
 `FLOWCATALYST_APP_KEY` unconfigured ⇒ the secret routes are `503 ENCRYPTION_UNCONFIGURED` and
 desired state carries no secrets (and says so: see `missingSecrets` below) — never plaintext at rest.
+
+**`declared` over the candidate, not only live** (2026-09-22, backlog unit S1 — the settings routes
+used to compute `declared`/`missing` from the LIVE manifest alone, so before the first promote they
+said nothing was declared while `PromoteVersion.requireSettingsPresent` refused with
+`SETTINGS_MISSING`). Both `GET` routes, and `PUT config`'s response, accept an optional `?version=<n>`
+query parameter (`400 VERSION_INVALID` when not a positive integer):
+
+- **Absent**: `declared` is the ordered union of the live manifest's keys and the keys of the
+  **newest non-retired version** — the highest `version` whose state is `PUBLISHED` or `READY`
+  (`FunctionVersionRepository#findNewestNonRetired`); live's keys first, then the candidate's not
+  already listed. Since the live version can never be retired (`RetireVersion`'s own guard), this
+  is always at least the live version itself once nothing newer is `PUBLISHED`/`READY`.
+- **Present**: `declared` is live's keys ∪ that EXACT version's keys; a version that does not exist
+  for this function ⇒ `404 FunctionVersion_NOT_FOUND` (the same error `getVersion` gives). A
+  `RETIRED` version named explicitly is still honoured — its keys are historical, but the caller
+  asked for them by number.
+- `missing` is `declared` minus the present keys, unchanged.
+- The response carries `declaredBy: [{version, keys}]` — one entry per manifest that contributed
+  (live first, then the candidate if it is a different version), each with that manifest's OWN full
+  key list (not just the keys it added beyond another entry), so a caller can say which version(s)
+  want a given key.
 
 **Promote** gains a check: every key the version's manifest declares (`config`, `secrets`, each
 `db[].secretRef`) must have a value ⇒ else conflict `SETTINGS_MISSING` naming the keys. Failing at
