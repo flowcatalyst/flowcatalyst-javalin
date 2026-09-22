@@ -60,11 +60,15 @@ few tens of MB, not the ≈170 MB it would be with every platform's archive
 inside it). That jar is the GitHub-Releases fallback:
 
 ```sh
-java -jar fcdev/target/flowcatalyst-fcdev-0.0.1-SNAPSHOT.jar            # = start
-java -jar fcdev/target/flowcatalyst-fcdev-0.0.1-SNAPSHOT.jar version
+java --enable-preview -jar fcdev/target/flowcatalyst-fcdev-0.0.1-SNAPSHOT.jar   # = start
+java --enable-preview -jar fcdev/target/flowcatalyst-fcdev-0.0.1-SNAPSHOT.jar version
 ```
 
-Java 25 is required (virtual threads, the server's language level).
+Java 25 is required (virtual threads, the server's language level), and so is
+`--enable-preview`: the reactor compiles with preview features on, and a JVM
+without the flag refuses the first preview-compiled class it meets
+(`UnsupportedClassVersionError … Try running with '--enable-preview'`).
+`make run` passes it for you.
 
 ---
 

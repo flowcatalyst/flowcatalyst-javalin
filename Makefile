@@ -77,7 +77,11 @@ native-server: ## Build fc-server as a native binary (GraalVM)
 
 # The shade plugin names it flowcatalyst-fcdev-<version>.jar and leaves an
 # `original-` twin beside it, so resolve at recipe time rather than guessing.
-FCDEV = java -jar "$$(ls fcdev/target/flowcatalyst-fcdev-*.jar 2>/dev/null | grep -v original | head -1)"
+# --enable-preview: the whole reactor compiles with preview features on (root
+# pom), so the JVM that runs the jar needs the flag too — without it the first
+# preview-compiled class fails to load with UnsupportedClassVersionError. The
+# Docker entrypoints and the native build pass it the same way.
+FCDEV = java --enable-preview -jar "$$(ls fcdev/target/flowcatalyst-fcdev-*.jar 2>/dev/null | grep -v original | head -1)"
 NEED_JAR = @ls fcdev/target/flowcatalyst-fcdev-*.jar >/dev/null 2>&1 \
 	  || { echo "no fcdev jar — run: make jar"; exit 2; }
 
