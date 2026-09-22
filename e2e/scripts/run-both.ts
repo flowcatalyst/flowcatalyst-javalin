@@ -34,7 +34,18 @@ function buildRows(go: TestOutcome[], java: TestOutcome[]): Row[] {
             title,
             go: goStatus,
             java: javaStatus,
-            mismatch: pass(goStatus) !== pass(javaStatus),
+            // A Go "skipped" status is a flow that conditionally skips
+            // itself on Go — e.g. tests/functions.spec.ts's
+            // `test.skip(process.env.E2E_SIDE === "go", …)`, the function
+            // service having no Go counterpart at all
+            // (docs/function-service-overview.md §9). That is "not
+            // applicable to this side", not "differs from Java" — spec
+            // §5's own triage vocabulary ("Java defect / Go defect /
+            // deliberate ruling") doesn't have a fourth bucket for it, so
+            // it must not surface as a MISMATCH. A genuine Java failure on
+            // such a flow still fails the run via `anyJavaFailure` below,
+            // independent of this.
+            mismatch: goStatus !== "skipped" && pass(goStatus) !== pass(javaStatus),
             goTrace: g?.tracePath ?? null,
             javaTrace: j?.tracePath ?? null,
         });

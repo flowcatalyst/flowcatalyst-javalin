@@ -500,6 +500,47 @@ configure and observe it — `/api/functions…`, `/api/function-pools`, `/api/f
 generate a lockfile entry from: `GET /api/openapi-functions.json` serves that OpenAPI 3.1 document,
 unauthenticated, alongside the platform's main `/api/openapi.json`.
 
+## 12. From the admin UI
+
+Everything above is the CLI/API path. The admin SPA (`docs/spec/function-ui.md`, packages H1–H3,
+merged) covers most of the same ground with a browser instead:
+
+- **List** — `/functions`: address, owner, runtime, live version, status; filters by application,
+  client (anchor only) and status. A **Function Pools** card underneath (`GET /api/function-pools`)
+  shows each pool's host count, read-only.
+- **Publish drawer** — open a function's detail page (`/functions/{address}`) → **Versions** →
+  **Publish Version**: pick the jar and `manifest.json` (a Sigstore bundle is optional), submit. The
+  drawer sha256s the jar in the browser, uploads it (`PUT …/artifacts/{digest}`), then publishes with
+  the ref the upload returned — never a locally-built one. Errors from the platform (`DIGEST_MISMATCH`,
+  `MANIFEST_INVALID` and its field detail, `SIGNATURE_*`, `ARTIFACT_STORE_NOT_CONFIGURED`) surface
+  verbatim in the drawer.
+- **Promote** — the Versions tab's row action, enabled once a version reaches `READY` (a host has
+  proven it loadable); confirms before applying the manifest.
+- **Config & secrets** — the detail page's **Config & Secrets** tab: config values are inline-editable;
+  secrets are set/replaced through a one-time input and the tab never displays a stored value again,
+  only "set"/"not set". A banner warns when a declared key has no value (promote refuses with
+  `SETTINGS_MISSING` until every one does).
+- **Domains** — `/function-domains`: **Claim Domain** takes a hostname (+ client, for an anchor); a
+  hostname ending in `.localhost` auto-verifies immediately, no DNS record needed (dev mode). The
+  detail drawer shows the TXT record to create for anything else, a **Verify** button, and **Release**.
+
+**Two gaps found while writing `e2e/tests/functions.spec.ts` (H4), plain rather than rounded off**
+(see that file and `e2e/fixtures/functions.ts` for the exact citations):
+
+1. **There is no "Create Function" action anywhere in the SPA.** The list page has no create button,
+   the router has no `/functions/new`, and the detail drawer for an address that doesn't exist yet
+   just reads "Function not found" with nothing further to do. A function must exist before its
+   detail page — and therefore its Publish drawer — is reachable at all; today only
+   `POST /api/functions` (CLI `fn publish`, or a direct call) can create one.
+2. **The Config & Secrets tab cannot set a key before the function has a live version.** The tab's
+   rows come from `GET …/config`/`…/secrets`, whose `declared` list is the *live* manifest's keys —
+   empty until the first promote. Promote's own missing-settings check looks at the version being
+   promoted, not the live one, so the one time a key most needs setting (before a function's first
+   promote) is the one time the tab offers no way to set it. `fn config set`/`fn secret set` (or a
+   direct `PUT`) between publish and promote — the sequence
+   `examples/function-subscription-test/README.md` already walks through for exactly this reason —
+   is the only way in today.
+
 ## Sources
 
 - §1, §5, §6 — `docs/spec/function-invocation.md` §1–§4, §6
