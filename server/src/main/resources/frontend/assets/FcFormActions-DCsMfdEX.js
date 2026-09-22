@@ -1,1 +1,0 @@
-import{i as r,o as s,g as t,ai as a,X as n,_ as c}from"./index-CZ4wI8dp.js";const _=r({__name:"FcFormActions",props:{bordered:{type:Boolean,default:!0}},setup(e){return(o,d)=>(s(),t("div",{class:n(["fc-form-actions",{bordered:e.bordered}])},[a(o.$slots,"default",{},void 0,!0)],2))}}),p=c(_,[["__scopeId","data-v-44f65076"]]);export{p as _};

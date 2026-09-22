@@ -1,1 +1,0 @@
-import{c as l,r as i}from"./index-CZ4wI8dp.js";function o(e){const n=i(null),r=l(()=>n.value!==null&&JSON.stringify(e())!==n.value);function u(){n.value=JSON.stringify(e())}function t(){n.value=null}return{dirty:r,markClean:u,reset:t}}export{o as u};
