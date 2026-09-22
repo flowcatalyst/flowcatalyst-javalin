@@ -1,5 +1,10 @@
 # Go fix: remove the stale-`QUEUED` sweep; reaper redrives `PROCESSING` at 15 minutes
 
+**Owner ruling 2026-09-22 (evening), on the conflict with Go `bbd5488`/`b60d75c`:** Go raised the
+sweep to 75 minutes the same day; the owner rules **Java's way** — no sweep at all, reaper at 15
+minutes — for both platforms. Go's router-side dedup of a republished copy (`bbd5488`) is kept and
+mirrored in Java; it remains useful because the reaper's redrive can still republish.
+
 Owner rulings 2026-09-22, found while landing the router head-of-line deferral
 (`java-handoff-2026-09-22-router-hol-deferral.md`). Java: commit "scheduler: no stale-QUEUED
 recovery …" on `main`.

@@ -86,6 +86,7 @@ public final class HelloFunction implements Function {
     /// `docs/spec/function-caller-claims.md` §4.
     private Result handleHello(Request in, FunctionContext ctx) {
         if (!(in.caller() instanceof Caller.Principal principal) || !principal.hasPermission(GREET_PERMISSION)) {
+            ObjectMapper
             return Result.json(403, "{\"error\":\"PERMISSION_REQUIRED\"}");
         }
         // Observable-from-outside marker (spec §5 P4) that the handler body itself
