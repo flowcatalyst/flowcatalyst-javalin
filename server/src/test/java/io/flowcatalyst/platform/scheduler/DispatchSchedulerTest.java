@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.scheduler;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobStatus;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.RUN;
@@ -47,6 +48,30 @@ class DispatchSchedulerTest {
             }
             assertThat(status).as("the started scheduler claimed the row on its own, not via a direct pollOnce() call")
                     .isEqualTo(DispatchJobStatus.QUEUED);
+        }
+    }
+
+    /// Owner ruling 2026-09-22 (`docs/spec/router-hol-deferral.md`): there is
+    /// no stale-`QUEUED` recovery any more. A row the broker has held for an
+    /// hour — a message the router deferred for a full pool, or one the broker
+    /// expired — stays `QUEUED`; nothing re-publishes it. (Before: reverted to
+    /// `PENDING` after 5 minutes and re-published, a second copy every 5
+    /// minutes for the whole deferral.)
+    @Test
+    void aRowQueuedForAnHourIsNeverRevertedOrRePublished() throws InterruptedException {
+        String jobId = seedWriteRow(Seed.of(code("scheduler-stale-" + RUN))
+                .withStatus("QUEUED")
+                .withUpdatedAt(java.time.Instant.now().minus(java.time.Duration.ofHours(1))));
+        var publisher = FakeDispatchPublisher.succeeding();
+
+        try (var scheduler = DispatchScheduler.start("test-app-key-" + RUN, PROCESSING_ENDPOINT, DATA_SOURCE,
+                publisher, () -> true, 5000)) {
+            assertThat(scheduler).isNotNull();
+            Thread.sleep(1500); // more than one poll tick
+            assertThat(REPO.findById(jobId).orElseThrow().status())
+                    .as("mutant: a stale-QUEUED sweep reverts it").isEqualTo(DispatchJobStatus.QUEUED);
+            assertThat(publisher.batches().stream().flatMap(List::stream).map(PublishedMessage::jobId).toList())
+                    .as("never re-published").doesNotContain(jobId);
         }
     }
 }

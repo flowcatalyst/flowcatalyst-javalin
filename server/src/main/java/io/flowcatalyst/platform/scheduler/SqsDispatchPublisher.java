@@ -352,8 +352,8 @@ public final class SqsDispatchPublisher implements DispatchPublisher, AutoClosea
 
     /// **Ruling R2 — the whole point of this method.** Never the bare job id:
     /// SQS FIFO deduplicates identical `MessageDeduplicationId`s sent within a
-    /// 5-minute window, and `StaleQueuedJobPoller` can revert a stranded
-    /// `QUEUED` job back to `PENDING`, which the ordinary claim/publish path
+    /// 5-minute window, and the reaper can revert an abandoned `PROCESSING`
+    /// job back to `PENDING`, which the ordinary claim/publish path
     /// then republishes — a SECOND, genuinely-intended delivery. If that
     /// republish reused the job id as its dedup id, SQS would silently drop
     /// it as a duplicate of the first (never-delivered, or already-consumed)

@@ -475,20 +475,6 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 .fetch(T.ID);
     }
 
-    /// [io.flowcatalyst.platform.scheduler.StaleQueuedJobPoller]'s sweep
-    /// (spec §3 timing table `StaleAfter`, §4): every row stuck `QUEUED`
-    /// with `updated_at` older than `olderThan` reverts to `PENDING` —
-    /// recovers a crash between mark-QUEUED and a successful publish, or a
-    /// broker drop. Returns the ids reverted.
-    public List<String> reclaimStaleQueued(Instant olderThan) {
-        return dsl.update(T)
-                .set(T.STATUS, DispatchJobStatus.PENDING.name())
-                .set(T.UPDATED_AT, utc(Instant.now()))
-                .where(T.STATUS.eq(DispatchJobStatus.QUEUED.name()))
-                .and(T.UPDATED_AT.lt(utc(olderThan)))
-                .returning(T.ID)
-                .fetch(T.ID);
-    }
 
     /// Atomically claims a job for one delivery (dispatch-seam spec §5): the
     /// same `PROCESSING` flip [#markInProgress] used to do, but guarded on the

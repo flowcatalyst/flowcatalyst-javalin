@@ -27,15 +27,17 @@ import java.util.concurrent.TimeUnit;
 /// Cadence and liveness cutoff are the Go defaults (spec §3's timing table):
 /// [#DEFAULT_INTERVAL] 2 minutes (double the purger's 1-minute cadence,
 /// since this sweep self-joins across partitions), [#DEFAULT_PROCESSING_LIVE_AFTER]
-/// 45 minutes (sized above the router's documented 15-min-per-attempt ×
-/// up-to-3-attempts callback contract so the reaper never races a delivery
-/// legitimately still in flight).
+/// **15 minutes** (owner ruling 2026-09-22, the old system's value — was 45,
+/// sized above the mediator's 15-min-per-attempt × 3 attempts; the owner
+/// accepts that a delivery still hanging on its second attempt is redriven —
+/// a duplicate to a target that is already broken). With the stale-`QUEUED`
+/// sweep gone, this is the platform's only automatic redrive.
 public final class DispatchJobReaper implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(DispatchJobReaper.class);
 
     public static final Duration DEFAULT_INTERVAL = Duration.ofMinutes(2);
-    public static final Duration DEFAULT_PROCESSING_LIVE_AFTER = Duration.ofMinutes(45);
+    public static final Duration DEFAULT_PROCESSING_LIVE_AFTER = Duration.ofMinutes(15);
 
     /// Recorded in `last_error` on every row this reaper resets — carries the
     /// literal substring `"reaper"` so an operator can distinguish a reaper

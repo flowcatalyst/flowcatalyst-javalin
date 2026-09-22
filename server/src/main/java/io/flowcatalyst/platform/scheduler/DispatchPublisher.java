@@ -50,7 +50,7 @@ import java.util.Objects;
 /// requires a dedup id anyway, the id supplied MUST be unique to that one
 /// publish attempt (job id + a value never reused across attempts), so the
 /// broker can never actually deduplicate a genuine re-publish (e.g.
-/// `StaleQueuedJobPoller` reclaiming a stranded `QUEUED` row) inside its own
+/// the reaper redriving an abandoned `PROCESSING` row) inside its own
 /// dedup window — see [SqsDispatchPublisher] for where this is load-bearing.
 public interface DispatchPublisher {
 

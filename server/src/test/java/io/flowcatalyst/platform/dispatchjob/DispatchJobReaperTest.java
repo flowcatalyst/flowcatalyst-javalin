@@ -71,4 +71,13 @@ class DispatchJobReaperTest {
                     .isEqualTo(DispatchJobStatus.PENDING);
         }
     }
+
+    /// Owner ruling 2026-09-22: the default liveness cutoff is 15 minutes (the
+    /// old system's value), not the 45 the mediator's 3 × 15-minute worst case
+    /// suggested — with the stale-QUEUED sweep gone this is the only automatic
+    /// redrive, and the owner accepts redriving a second attempt still in flight.
+    @Test
+    void theDefaultProcessingCutoffIsFifteenMinutes() {
+        assertThat(DispatchJobReaper.DEFAULT_PROCESSING_LIVE_AFTER).isEqualTo(Duration.ofMinutes(15));
+    }
 }

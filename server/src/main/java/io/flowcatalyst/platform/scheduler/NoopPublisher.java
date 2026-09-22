@@ -7,10 +7,10 @@ import java.util.List;
 
 /// The degraded-mode [DispatchPublisher]: claimed jobs are marked `QUEUED`
 /// and then simply drop — never delivered, and never reverted, since this
-/// implementation never fails. [PendingJobPoller] still runs, and a claimed
-/// row is only recovered by
-/// [StaleQueuedJobPoller] once it has sat `QUEUED` past the stale-recovery
-/// window. `Server` wires this in only when no real broker is configured
+/// implementation never fails. [PendingJobPoller] still runs; nothing
+/// recovers a claimed row (the stale-`QUEUED` sweep was removed, owner
+/// ruling 2026-09-22 — a broker-held job is the broker's). `Server` wires
+/// this in only when no real broker is configured
 /// (`FC_DEFAULT_BROKER != "postgres"`, or no database URL) — matching Go's
 /// `schedulerPublisher` fallback (`internal/server/subsystems.go:85-117`),
 /// "explicitly called out as unsafe for production."

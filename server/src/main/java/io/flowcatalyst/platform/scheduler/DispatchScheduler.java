@@ -16,8 +16,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
 /// The dispatch-job scheduler (dispatch-seam spec §3, §11, §12): owns
-/// [PendingJobPoller]'s claim/publish loop and [StaleQueuedJobPoller]'s
-/// recovery loop, ticking on independent [ScheduledExecutorService] tasks —
+/// [PendingJobPoller]'s claim/publish loop, ticking on a
+/// [ScheduledExecutorService] task —
 /// the same daemon-thread, `scheduleWithFixedDelay` pattern
 /// [io.flowcatalyst.platform.dispatchjob.DispatchJobReaper] already
 /// established for this codebase's background subsystems. [#close] stops
@@ -38,13 +38,20 @@ public final class DispatchScheduler implements AutoCloseable {
     static final Duration POLL_INTERVAL = Duration.ofSeconds(1);
 
     private final PendingJobPoller poller;
-    private final StaleQueuedJobPoller stale;
     private final ScheduledExecutorService executor;
 
-    DispatchScheduler(PendingJobPoller poller, StaleQueuedJobPoller stale) {
+    /// No stale-`QUEUED` recovery loop (owner ruling 2026-09-22,
+    /// `docs/spec/router-hol-deferral.md` §Owner rulings): a job the broker
+    /// holds is the broker's until the router delivers it. The 5-minute revert
+    /// that used to run here re-published every message the router had
+    /// deferred for a full pool — a second copy every 5 minutes for up to an
+    /// hour — and the old PHP mediator it was written for is gone. A message
+    /// the broker expires is simply gone; the reaper still redrives
+    /// `PROCESSING` rows the mediator abandoned
+    /// ([io.flowcatalyst.platform.dispatchjob.DispatchJobReaper], 15 min).
+    DispatchScheduler(PendingJobPoller poller) {
         this.poller = Objects.requireNonNull(poller, "poller");
-        this.stale = Objects.requireNonNull(stale, "stale");
-        this.executor = Executors.newScheduledThreadPool(2, DispatchScheduler::daemonThread);
+        this.executor = Executors.newScheduledThreadPool(1, DispatchScheduler::daemonThread);
     }
 
     private static final AtomicInteger THREAD_COUNT = new AtomicInteger();
@@ -90,20 +97,16 @@ public final class DispatchScheduler implements AutoCloseable {
         var poolCodes = new PoolCodeResolver(pool);
         var poller = new PendingJobPoller(pool, repository, pausedCache, poolCodes, publisher, authVerifier,
                 processingEndpoint, leader, batchSize);
-        var stale = new StaleQueuedJobPoller(repository, leader);
-        var scheduler = new DispatchScheduler(poller, stale);
+        var scheduler = new DispatchScheduler(poller);
         scheduler.startLoops();
         LOG.atInfo().setMessage("dispatch scheduler started")
                 .addKeyValue("interval", POLL_INTERVAL)
-                .addKeyValue("stale_after", StaleQueuedJobPoller.STALE_AFTER)
                 .log();
         return scheduler;
     }
 
     private void startLoops() {
         executor.scheduleWithFixedDelay(this::pollSafely, 0, POLL_INTERVAL.toMillis(), TimeUnit.MILLISECONDS);
-        executor.scheduleWithFixedDelay(this::recoverSafely, 0,
-                StaleQueuedJobPoller.SCAN_INTERVAL.toMillis(), TimeUnit.MILLISECONDS);
     }
 
     private void pollSafely() {
@@ -114,26 +117,12 @@ public final class DispatchScheduler implements AutoCloseable {
         }
     }
 
-    private void recoverSafely() {
-        try {
-            List<String> reverted = stale.recoverOnce();
-            if (!reverted.isEmpty()) {
-                LOG.debug("stale-queued recovery reverted {} job(s)", reverted.size());
-            }
-        } catch (RuntimeException e) {
-            LOG.warn("stale-queued recovery failed; will retry next tick", e);
-        }
-    }
 
     /// Exposed for tests: one poll tick, synchronous.
     PendingJobPoller poller() {
         return poller;
     }
 
-    /// Exposed for tests: one stale-recovery sweep, synchronous.
-    StaleQueuedJobPoller staleQueuedJobPoller() {
-        return stale;
-    }
 
     @Override
     public void close() {
