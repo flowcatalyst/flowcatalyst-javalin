@@ -149,8 +149,16 @@ final class TestJwks implements AutoCloseable {
     /// discovered issuer (never {@link #issuer}, the address — see the class doc).
     String mint(String subject, String type, String tier, String scope, List<String> clients,
                 List<String> applications, boolean allApplications, Instant expiresAt) {
-        return mint(currentPrivate, currentKid, discoveryIssuer, subject, type, tier, scope, clients, applications,
-                allApplications, expiresAt);
+        return mint(subject, type, tier, scope, clients, List.of(), applications, allApplications, expiresAt);
+    }
+
+    /// Same as {@link #mint(String, String, String, String, List, List, boolean, Instant)}
+    /// but with an explicit `roles` claim (P2, `docs/spec/function-caller-claims.md` §5) —
+    /// the plain overload above always mints an empty `roles` list.
+    String mint(String subject, String type, String tier, String scope, List<String> clients,
+                List<String> roles, List<String> applications, boolean allApplications, Instant expiresAt) {
+        return mint(currentPrivate, currentKid, discoveryIssuer, subject, type, tier, scope, clients, roles,
+                applications, allApplications, expiresAt);
     }
 
     /// Same current (known) key/kid, but a DIFFERENT `iss` claim — isolates
@@ -158,13 +166,20 @@ final class TestJwks implements AutoCloseable {
     String mintWithIssuer(String issuer, String subject, String type, String tier, String scope,
                           List<String> clients, List<String> applications, boolean allApplications,
                           Instant expiresAt) {
-        return mint(currentPrivate, currentKid, issuer, subject, type, tier, scope, clients, applications,
+        return mint(currentPrivate, currentKid, issuer, subject, type, tier, scope, clients, List.of(), applications,
                 allApplications, expiresAt);
     }
 
     static String mint(RSAPrivateKey key, String kid, String issuer, String subject, String type, String tier,
                         String scope, List<String> clients, List<String> applications, boolean allApplications,
                         Instant expiresAt) {
+        return mint(key, kid, issuer, subject, type, tier, scope, clients, List.of(), applications, allApplications,
+                expiresAt);
+    }
+
+    static String mint(RSAPrivateKey key, String kid, String issuer, String subject, String type, String tier,
+                        String scope, List<String> clients, List<String> roles, List<String> applications,
+                        boolean allApplications, Instant expiresAt) {
         try {
             JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder()
                     .subject(subject)
@@ -175,6 +190,7 @@ final class TestJwks implements AutoCloseable {
                     .claim("tier", tier)
                     .claim("scope", scope)
                     .claim("clients", clients)
+                    .claim("roles", roles)
                     .claim("applications", applications)
                     .claim("all_applications", allApplications);
             SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(kid).build(), claims.build());

@@ -97,7 +97,21 @@ class FnHttpServerTest {
                         if (in.caller() instanceof Caller.Principal p) {
                             sb.append(",\\"principalId\\":\\"").append(esc(p.id())).append('"');
                             sb.append(",\\"principalType\\":\\"").append(esc(p.type())).append('"');
-                            sb.append(",\\"principalClientId\\":").append(p.clientId() == null ? "null" : "\\"" + esc(p.clientId()) + "\\"");
+                            sb.append(",\\"principalTier\\":").append(p.tier() == null ? "null" : "\\"" + esc(p.tier()) + "\\"");
+                            sb.append(",\\"principalClientId\\":").append(p.clientId().map(cid -> "\\"" + esc(cid) + "\\"").orElse("null"));
+                            sb.append(",\\"principalClients\\":[");
+                            boolean fc = true;
+                            for (String c : p.clients()) { if (!fc) sb.append(','); fc = false; sb.append('"').append(esc(c)).append('"'); }
+                            sb.append(']');
+                            sb.append(",\\"principalRoles\\":[");
+                            boolean fr = true;
+                            for (String role : p.roles()) { if (!fr) sb.append(','); fr = false; sb.append('"').append(esc(role)).append('"'); }
+                            sb.append(']');
+                            sb.append(",\\"principalApplications\\":[");
+                            boolean fa = true;
+                            for (String app : p.applications()) { if (!fa) sb.append(','); fa = false; sb.append('"').append(esc(app)).append('"'); }
+                            sb.append(']');
+                            sb.append(",\\"principalAllApplications\\":").append(p.allApplications());
                             sb.append(",\\"principalPermissions\\":[");
                             boolean fp = true;
                             for (String perm : p.permissions()) { if (!fp) sb.append(','); fp = false; sb.append('"').append(esc(perm)).append('"'); }
@@ -471,6 +485,50 @@ class FnHttpServerTest {
                 var afterRotation = h.get("/functions/" + ADDR.render() + "/api/x", "Authorization", "Bearer " + postRotation);
                 assertThat(afterRotation.statusCode()).isEqualTo(200);
                 assertThat(jwks.jwksRequestCount()).isEqualTo(2);
+            }
+        }
+    }
+
+    /// P2 (`docs/spec/function-caller-claims.md` §5): the host maps EVERY
+    /// claim onto [io.flowcatalyst.function.Caller.Principal] — not just the
+    /// four `h4_platformBearerToken` already covers. A token with tier
+    /// `CLIENT`, two clients, two roles, one application and
+    /// `all_applications=false` reaches the function with exactly those.
+    /// Mutant: drop `roles` from `principalFrom`'s mapping — `principalRoles`
+    /// would then be empty instead of the two minted roles.
+    @Test
+    void h4_platformBearerTokenMapsEveryClaim(@TempDir Path dir) throws Exception {
+        try (TestJwks jwks = new TestJwks()) {
+            Path counter = dir.resolve("counter-claims");
+            Path jar = FnHttpTestSupport.functionJar(dir, "echo-claims", "fixture.http.EchoFn", echoSource(counter));
+            var manifest = FnHttpTestSupport.manifest("p", false, 10, 5000, "fixture.http.EchoFn",
+                    """
+                    [{"path":"/api/*","auth":"platform"}]
+                    """);
+            var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_claims", "v1", 1, jar, manifest, null, null, null);
+            var options = new FnHttpServer.Options("0.0.0.0", 0, 512, jwks.issuer, Clock.systemUTC());
+            try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options)) {
+                String token = jwks.mint("prn_claims", "SERVICE", "CLIENT", "platform:function:function:view",
+                        List.of("clt_1", "clt_2"), List.of("role-a", "role-b"), List.of("app_1"), false,
+                        Instant.now().plusSeconds(300));
+                var ok = h.get("/functions/" + ADDR.render() + "/api/x", "Authorization", "Bearer " + token);
+                assertThat(ok.statusCode()).as(new String(ok.body(), StandardCharsets.UTF_8)).isEqualTo(200);
+                JsonNode body = FnHttpTestSupport.json(ok.body());
+                assertThat(body.path("principalId").asString()).isEqualTo("prn_claims");
+                assertThat(body.path("principalType").asString()).isEqualTo("SERVICE");
+                assertThat(body.path("principalTier").asString()).isEqualTo("CLIENT");
+                // Two real clients: neither is unambiguous, so clientId() is empty/null.
+                assertThat(body.path("principalClientId").isNull()).isTrue();
+                assertThat(body.path("principalClients").valueStream().map(JsonNode::asString).toList())
+                        .containsExactly("clt_1", "clt_2");
+                assertThat(body.path("principalRoles").valueStream().map(JsonNode::asString).toList())
+                        .as("mutant: drop roles from principalFrom's mapping")
+                        .containsExactly("role-a", "role-b");
+                assertThat(body.path("principalApplications").valueStream().map(JsonNode::asString).toList())
+                        .containsExactly("app_1");
+                assertThat(body.path("principalAllApplications").asBoolean()).isFalse();
+                assertThat(body.path("principalPermissions").valueStream().map(JsonNode::asString).toList())
+                        .contains("platform:function:function:view");
             }
         }
     }

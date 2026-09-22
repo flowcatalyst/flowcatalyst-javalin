@@ -22,6 +22,16 @@
       <artifactId>flowcatalyst-usecase</artifactId>
     </dependency>
 
+    <!-- Test-only: the agreement test (docs/spec/function-caller-claims.md §2) pins
+         function-api's Caller.Principal authorisation copy equal to this module's own
+         Permission/AuthContext rules — server never depends on function-api at runtime,
+         only its test sources see both. -->
+    <dependency>
+      <groupId>io.flowcatalyst</groupId>
+      <artifactId>flowcatalyst-function-api</artifactId>
+      <scope>test</scope>
+    </dependency>
+
     <!-- HTTP: Vert.x is the API/metrics listener (docs/spec/vertx-listener.md) —
          core + web, ever; HTTP/2 (h2c on the plain API listener, h2 over TLS with
          ALPN via Vert.x's own ALPN support) needs nothing beyond these two.

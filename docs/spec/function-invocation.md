@@ -193,7 +193,9 @@ its `code`'s first segment is the function's application code (`dispatch-deliver
 - `Invocation` stops being sealed over three kinds: it **is** the HTTP request value —
   `Request(address, version, invocationId, method, path, originalHost, originalPath, pathParams,
   query, headers, body, remoteAddress, Caller caller)`; `sealed Caller = Platform /* verified webhook:
-  subscription, dispatch job or schedule */ | Principal(id, type, clientId, permissions) | Anonymous`.
+  subscription, dispatch job or schedule */ | Principal(id, type, tier, clients, roles, applications,
+  allApplications, permissions) /* every claim off the verified token except email/name — widened,
+  `function-caller-claims.md` §1 */ | Anonymous`.
 - `Result` is a single HTTP-response record (`status`, `headers`, `body`), not a sealed taxonomy, with
   helpers that spell the dispatch contract so authors do not memorise status codes: `Result.ack()`,
   `Result.retry(Duration)`, `Result.fail(String reason)`, `Result.http(status, headers, body)`, plus

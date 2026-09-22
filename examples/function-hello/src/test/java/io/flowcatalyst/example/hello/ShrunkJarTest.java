@@ -145,12 +145,15 @@ class ShrunkJarTest {
             assertThat(health.status()).isEqualTo(200);
             assertThat(bodyOf(health)).contains("\"ok\"");
 
-            // `platform` — the caller's principal id reaches the function.
-            Caller.Principal principal = new Caller.Principal("usr_ada", "user", null, Set.of());
+            // `platform` — a caller WITH the `hello:greeting:greet` permission reaches
+            // the function and its principal id comes back in the body.
+            Caller.Principal principal = new Caller.Principal("usr_ada", "user", "CLIENT", List.of(), List.of(),
+                    List.of(), false, Set.of("hello:greeting:greet"));
             Result hello = fn.invoke(
                     request("GET", "/api/hello/ada", principal, new byte[0], Map.of("name", "ada")), ctx);
             assertThat(hello.status()).isEqualTo(200);
             assertThat(bodyOf(hello)).contains("ada").contains("usr_ada");
+            assertThat(ctx.capturingLogger().lines()).anyMatch(l -> l.contains("hello handled"));
 
             // `webhook` — parses the envelope, reads config+secret, emits, acks.
             Result ack = fn.invoke(
@@ -172,6 +175,38 @@ class ShrunkJarTest {
             // line ... search every captured artefact for the literal").
             assertThat(ctx.capturingLogger().lines()).noneMatch(l -> l.contains("sekret-value-do-not-log"));
             assertThat(ctx.capturingLogger().lines()).anyMatch(l -> l.contains("apiKeyPresent=true"));
+        } finally {
+            fn.close();
+        }
+    }
+
+    /// P4 (`docs/spec/function-caller-claims.md` §5): a caller without
+    /// `hello:greeting:greet` gets 403 `PERMISSION_REQUIRED`, and the
+    /// handler body itself never ran — asserted through the sample's own
+    /// logger, exactly as it already does for the secret-presence check
+    /// (`everyEndpointWorksThroughTheRealLoader` above), since `handleHello`
+    /// logs "hello handled" only once past the permission check. Mutant:
+    /// drop the check in `HelloFunction#handleHello` ⇒ this returns 200 and
+    /// the log line appears.
+    @Test
+    void permissionRequiredForHelloWhenCallerLacksIt() throws Exception {
+        LoadedFunction fn = loadOrFail();
+        try {
+            RecordingEvents events = new RecordingEvents();
+            FakeFunctionContext ctx = new FakeFunctionContext(API_ADDRESS, 1,
+                    Map.of("GREETING", "Howdy"), Map.of("API_KEY", "k"), events);
+            fn.init(ctx);
+
+            Caller.Principal noPermission = new Caller.Principal("usr_bob", "user", "CLIENT", List.of(), List.of(),
+                    List.of(), false, Set.of());
+            Result denied = fn.invoke(
+                    request("GET", "/api/hello/bob", noPermission, new byte[0], Map.of("name", "bob")), ctx);
+
+            assertThat(denied.status()).isEqualTo(403);
+            assertThat(bodyOf(denied)).contains("PERMISSION_REQUIRED");
+            assertThat(ctx.capturingLogger().lines())
+                    .as("the handler body must not have run")
+                    .noneMatch(l -> l.contains("hello handled"));
         } finally {
             fn.close();
         }

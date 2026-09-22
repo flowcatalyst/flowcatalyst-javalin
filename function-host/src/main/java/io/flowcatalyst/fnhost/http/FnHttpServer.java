@@ -861,19 +861,18 @@ public final class FnHttpServer implements AutoCloseable {
         };
     }
 
-    /// A [Caller.Principal] can only truthfully carry ONE `clientId` (spec
-    /// `function-invocation.md` §7's `Principal(id, type, clientId,
-    /// permissions)`), while a token's `clients` claim is a LIST (an anchor
-    /// carries `["*"]`, a partner principal may carry several real ids) — see
-    /// the slice's handback report for the full finding. This host reports
-    /// the client only when it is unambiguous: exactly one real (non-`*`)
-    /// client on the token; otherwise `null`, same as an anchor or an
-    /// unscoped principal.
+    /// Maps every claim the verified token carries onto [Caller.Principal]
+    /// (`docs/spec/function-caller-claims.md` §3) — `email`/`name` excepted,
+    /// deliberately: a function has no business with them. `clients`,
+    /// `roles` and `applications` are passed through verbatim (a token's
+    /// `clients` claim is a LIST — an anchor carries `["*"]`, a partner
+    /// principal may carry several real ids — so [Caller.Principal#clientId]
+    /// derives the single unambiguous one, rather than this method
+    /// collapsing the list itself).
     private static Caller.Principal principalFrom(TokenClaims claims) {
         String type = claims.principalType() == null ? "unknown" : claims.principalType();
-        List<String> clients = claims.clients();
-        String clientId = (clients.size() == 1 && !"*".equals(clients.get(0))) ? clients.get(0) : null;
-        return new Caller.Principal(claims.subject(), type, clientId, Set.copyOf(claims.permissions()));
+        return new Caller.Principal(claims.subject(), type, claims.tier(), claims.clients(), claims.roles(),
+                claims.applications(), claims.allApplications(), Set.copyOf(claims.permissions()));
     }
 
     // ── building the Request value (spec §2) ────────────────────────────────

@@ -178,11 +178,35 @@ Every endpoint names exactly one, and the host checks it *before your function e
 | `auth` | `Caller` your function sees | When to use it |
 |---|---|---|
 | `webhook` | `Caller.Platform` | subscription deliveries, direct dispatch jobs, scheduled jobs — the platform's own signature (`X-FlowCatalyst-Signature`/`-Timestamp`, HMAC-SHA256 under your application's signing secret) is verified for you |
-| `platform` | `Caller.Principal(id, type, clientId, permissions)` | an ordinary platform API endpoint — the host verifies the bearer JWT locally against the platform's JWKS; **your function still decides what the principal may do**, the host only proves who it is |
+| `platform` | `Caller.Principal` | an ordinary platform API endpoint — the host verifies the bearer JWT locally against the platform's JWKS; **your function still decides what the principal may do**, the host only proves who it is |
 | `none` | `Caller.Anonymous` | the host checks nothing — your own inbound webhooks (from a third party), your own sessions |
 
 `auth` has no default — an endpoint that forgets it is rejected at publish, not silently treated as
 open or closed.
+
+### Authorising the caller
+
+On a `platform` endpoint, `Caller.Principal` carries every claim the verified token holds —
+`id`, `type`, `tier`, `clients`, `roles`, `applications`, `allApplications` and `permissions` —
+except `email`/`name`: a function has no business with them, and they are PII the token happens to
+hold. Each method restates one of the platform's own authorisation rules exactly, so your check
+answers precisely as the platform's own would:
+
+| Method | Semantics |
+|---|---|
+| `hasPermission(String required)` | exact match, or a held code whose segments match `required`'s segment for segment with `*` as a wildcard, same segment count |
+| `hasAnyPermission(String…)` / `hasAllPermissions(String…)` | over `hasPermission` |
+| `hasRole(String code)` | `roles.contains(code)` |
+| `isAnchor()` | `tier` is the anchor tier |
+| `canAccessClient(String clientId)` | anchor, or `clientId` is in `clients` |
+| `canAccessApplication(String applicationId)` | `allApplications`, or `applicationId` is in `applications` (by **id**, not name) |
+| `clientId()` | `Optional<String>`: the one client, when `clients` has exactly one entry that is not the anchor wildcard `*`, else empty |
+
+```java
+if (!(in.caller() instanceof Caller.Principal principal) || !principal.hasPermission("hello:greeting:greet")) {
+    return Result.json(403, "{\"error\":\"PERMISSION_REQUIRED\"}");
+}
+```
 
 ## 6a. Public routes, domains, and CORS
 
