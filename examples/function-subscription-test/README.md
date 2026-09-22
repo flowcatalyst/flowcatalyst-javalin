@@ -18,12 +18,17 @@ examples/function-subscription-test/scripts/setup-db.sh
 printf '%s' 'postgres://subscriptiontest:subscriptiontest@127.0.0.1:15432/subscriptiontest' \
   | fcdev fn secret set platform.test.subscription-test EVENTS_DSN
 
-# 4. build, upload, publish, wait for READY, promote
+# 4. once, on a fresh platform: the function's application needs a service account with a signing
+#    secret — its subscription's deliveries are signed with it. Admin UI (http://localhost:8080)
+#    → Applications → platform → "Provision service account". Otherwise deploy refuses with
+#    APPLICATION_SIGNING_SECRET_REQUIRED.
+
+# 5. build, upload, publish, wait for READY, promote
 make examples
 fcdev fn deploy examples/function-subscription-test/target/function-subscription-test-0.0.1-SNAPSHOT-shrunk.jar \
   platform.test.subscription-test --manifest examples/function-subscription-test/manifest.json
 
-# 5. trigger a delivery: restart fcdev, or "sync platform" on the Event Types page — then look
+# 6. trigger a delivery: restart fcdev, or "sync platform" on the Event Types page — then look
 psql -h 127.0.0.1 -p 15432 -U subscriptiontest subscriptiontest \
   -c 'select id, event_id, event_type, subject, received_at from received_events order by received_at desc'
 ```
