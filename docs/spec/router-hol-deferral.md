@@ -54,3 +54,23 @@ pause warning.
 
 The router conformance suite (`MediationConformanceTest`, the `router-completion.md` ledger) must
 stay green; the 2026-09-17 deferral tests must stay green unmodified.
+
+## Owner rulings 2026-09-22, on the questions the hand-off left open
+
+- **SQS redrive:** the FC queues have no redrive policy and no DLQ, so a deferral's redeliveries
+  can dead-letter nothing. Closed.
+- **SQS retention:** an expired message is acceptable — set retention to **4 days** (IaC, owner's
+  side); jobs longer than a day are not a real case.
+- **Buffer:** the hand-off's doubling stands; a global buffer budget is **not** pursued now.
+- **The platform's stale sweep fought the deferral** (found here, both platforms): a job stays
+  `QUEUED` until the router delivers it, and `StaleQueuedJobPoller` reverted any `QUEUED` row older
+  than 5 minutes to `PENDING` for re-publish — so a message deferred toward the 1 h horizon got a
+  second copy every 5 minutes (a 10k backlog ⇒ ~120k in flight against SQS FIFO's 20k ceiling).
+  **Ruling: no automatic resend of a `QUEUED` job at all** — `StaleQueuedJobPoller` is removed; a
+  message the broker holds is the broker's until delivered, and an expired one is simply gone (the
+  old PHP mediator needed the resend; this one does not). **The reaper redrives `PROCESSING` rows
+  older than 15 minutes** (`DispatchJobReaper.DEFAULT_PROCESSING_LIVE_AFTER` 45 → 15 min, the old
+  system's value). Accepted: a delivery still hanging on its second 15-minute attempt can be
+  redriven — a duplicate to a target that is already broken. Same change in Go
+  (`internal/platform/scheduler` stale recovery removed; `reaper.go` 45 → 15) — hand-off owed.
+  Lands as its own unit after this one; `docs/spec/dispatch-seam.md` §3/§7 amended then.
