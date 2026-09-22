@@ -34,7 +34,7 @@ class DispatchJobTest {
                 "orders", "shipment-1", "https://hook.example/in", Protocol.HTTP_WEBHOOK, "{\"a\":1}",
                 "application/json", true, "evt1", "corr-1", "cli_1", "sub_1", "sa_1", "dpl_1", "group-1",
                 DispatchMode.BLOCK_ON_ERROR, 3, 30, null, 3, RetryStrategy.EXPONENTIAL, status,
-                3, "boom", List.of(new DispatchJob.Metadata("k", "v")), "idem-1", "HIGH_PRIORITY", CREATED,
+                3, "boom", List.of(new DispatchJob.Metadata("k", "v")), "idem-1", "Notify orders of shipment", "HIGH_PRIORITY", CREATED,
                 CREATED.plusSeconds(60), CREATED.plusSeconds(30), CREATED.plusSeconds(3600), CREATED.plusSeconds(50),
                 CREATED.plusSeconds(60), 1234L);
     }
@@ -108,7 +108,7 @@ class DispatchJobTest {
         DispatchJob j = failedJob();
         DispatchJob none = new DispatchJob(j.id(), null, j.kind(), j.code(), null, null, j.targetUrl(), j.protocol(),
                 null, j.payloadContentType(), false, null, null, null, null, null, null, null, DispatchMode.IMMEDIATE,
-                99, 30, null, 3, RetryStrategy.EXPONENTIAL, DispatchJobStatus.PENDING, 0, null, null, null, null,
+                99, 30, null, 3, RetryStrategy.EXPONENTIAL, DispatchJobStatus.PENDING, 0, null, null, null, null, null,
                 CREATED, CREATED, null, null, null, null, null);
         assertThat(none.metadata()).isEmpty();
         assertThat(none.isTerminal()).isFalse();

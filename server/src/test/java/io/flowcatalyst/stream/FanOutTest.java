@@ -418,6 +418,99 @@ class FanOutTest {
         }
     }
 
+    // ── T11 (catch-up-2026-09-22.md C1): descriptor + metadata at fan-out ──
+
+    /// The raised job's `descriptor` is the raising subscription's NAME
+    /// (never its code), trimmed. Mutant: use the subscription's code
+    /// instead of its name — this must fail under it, since [StreamFixture#subscription]
+    /// gives the two different values (`fanout-<tag>-<RUN>` vs `<tag>`).
+    @Test
+    @DisplayName("descriptor is the raising subscription's name")
+    void descriptorIsTheRaisingSubscriptionsName() {
+        String type = StreamFixture.type("descriptor");
+        String subId = StreamFixture.subscription("Notify Value of user logins", "https://example.test/descriptor-hook",
+                DispatchMode.IMMEDIATE, null, type);
+
+        String eventId = StreamFixture.event(type, "test://descriptor-source", null, "{}", null, null, null,
+                Instant.now().truncatedTo(ChronoUnit.MICROS));
+
+        int claimed = fanOut(fixed(subId)).step(BIG_BATCH);
+        assertThat(claimed).isGreaterThanOrEqualTo(1);
+
+        var job = jobFor(eventId);
+        assertThat(job.getDescriptor()).as("the subscription's NAME, not its code")
+                .isEqualTo("Notify Value of user logins");
+    }
+
+    /// A subscription whose name is blank/whitespace-only raises a job with
+    /// `descriptor = NULL` — absent, not an empty string (spec: "nil is the
+    /// legacy state"). Mutant: store the blank string verbatim.
+    @Test
+    @DisplayName("a blank subscription name raises a job with no descriptor")
+    void blankSubscriptionNameRaisesNoDescriptor() {
+        String type = StreamFixture.type("blankdescriptor");
+        String subId = StreamFixture.subscription("blankdescriptor", "https://example.test/blankdescriptor-hook",
+                DispatchMode.IMMEDIATE, null, type);
+        DB.update(MSG_SUBSCRIPTIONS).set(MSG_SUBSCRIPTIONS.NAME, "   ").where(MSG_SUBSCRIPTIONS.ID.eq(subId)).execute();
+
+        String eventId = StreamFixture.event(type, "test://blankdescriptor-source", null, "{}", null, null, null,
+                Instant.now().truncatedTo(ChronoUnit.MICROS));
+
+        int claimed = fanOut(fixed(subId)).step(BIG_BATCH);
+        assertThat(claimed).isGreaterThanOrEqualTo(1);
+
+        assertThat(jobFor(eventId).getDescriptor()).isNull();
+    }
+
+    /// The raised job's `metadata` is the raising event's `context_data`,
+    /// copied VERBATIM — same `[{key,value}]` shape. Mutant: drop the copy
+    /// (job metadata stays `[]` even though the event carries entries).
+    @Test
+    @DisplayName("metadata copies the event's context_data verbatim")
+    void metadataCopiesTheEventsContextDataVerbatim() {
+        String type = StreamFixture.type("metadata");
+        String subId = StreamFixture.subscription("metadata", "https://example.test/metadata-hook",
+                DispatchMode.IMMEDIATE, null, type);
+        String id = Tsid.generate();
+        Instant createdAt = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        DB.insertInto(MSG_EVENTS)
+                .set(MSG_EVENTS.ID, id)
+                .set(MSG_EVENTS.TYPE, type)
+                .set(MSG_EVENTS.SOURCE, "test://metadata-source")
+                .set(MSG_EVENTS.TIME, createdAt.atOffset(ZoneOffset.UTC))
+                .set(MSG_EVENTS.DATA, org.jooq.JSONB.valueOf("{}"))
+                .set(MSG_EVENTS.CONTEXT_DATA, org.jooq.JSONB.valueOf("[{\"key\":\"tenant\",\"value\":\"acme\"}]"))
+                .set(MSG_EVENTS.CREATED_AT, createdAt.atOffset(ZoneOffset.UTC))
+                .execute();
+
+        int claimed = fanOut(fixed(subId)).step(BIG_BATCH);
+        assertThat(claimed).isGreaterThanOrEqualTo(1);
+
+        var job = jobFor(id);
+        assertThat(job.getMetadata().data()).as("the event's context_data, verbatim")
+                .isEqualTo("[{\"key\": \"tenant\", \"value\": \"acme\"}]");
+    }
+
+    /// An event with no `context_data` raises a job with `metadata = []`,
+    /// never `NULL` (the column is `NOT NULL DEFAULT '[]'`). Mutant: leave
+    /// the column unset / write literal `NULL`.
+    @Test
+    @DisplayName("metadata is an empty array when the event carries no context_data")
+    void metadataIsEmptyArrayWhenEventHasNoContextData() {
+        String type = StreamFixture.type("nometadata");
+        String subId = StreamFixture.subscription("nometadata", "https://example.test/nometadata-hook",
+                DispatchMode.IMMEDIATE, null, type);
+        String eventId = StreamFixture.event(type, "test://nometadata-source", null, "{}", null, null, null,
+                Instant.now().truncatedTo(ChronoUnit.MICROS));
+
+        int claimed = fanOut(fixed(subId)).step(BIG_BATCH);
+        assertThat(claimed).isGreaterThanOrEqualTo(1);
+
+        var job = jobFor(eventId);
+        assertThat(job.getMetadata()).isNotNull();
+        assertThat(job.getMetadata().data()).isEqualTo("[]");
+    }
+
     private static final class TestClock extends Clock {
         private volatile Instant now;
 

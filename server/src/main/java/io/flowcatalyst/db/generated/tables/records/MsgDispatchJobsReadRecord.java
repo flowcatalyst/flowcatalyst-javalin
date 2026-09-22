@@ -8,6 +8,7 @@ import io.flowcatalyst.db.generated.tables.MsgDispatchJobsRead;
 
 import java.time.OffsetDateTime;
 
+import org.jooq.JSONB;
 import org.jooq.Record2;
 import org.jooq.impl.UpdatableRecordImpl;
 
@@ -538,6 +539,34 @@ public class MsgDispatchJobsReadRecord extends UpdatableRecordImpl<MsgDispatchJo
         return (OffsetDateTime) get(36);
     }
 
+    /**
+     * Setter for <code>public.msg_dispatch_jobs_read.descriptor</code>.
+     */
+    public void setDescriptor(String value) {
+        set(37, value);
+    }
+
+    /**
+     * Getter for <code>public.msg_dispatch_jobs_read.descriptor</code>.
+     */
+    public String getDescriptor() {
+        return (String) get(37);
+    }
+
+    /**
+     * Setter for <code>public.msg_dispatch_jobs_read.metadata</code>.
+     */
+    public void setMetadata(JSONB value) {
+        set(38, value);
+    }
+
+    /**
+     * Getter for <code>public.msg_dispatch_jobs_read.metadata</code>.
+     */
+    public JSONB getMetadata() {
+        return (JSONB) get(38);
+    }
+
     // -------------------------------------------------------------------------
     // Primary key information
     // -------------------------------------------------------------------------
@@ -561,7 +590,7 @@ public class MsgDispatchJobsReadRecord extends UpdatableRecordImpl<MsgDispatchJo
     /**
      * Create a detached, initialised MsgDispatchJobsReadRecord
      */
-    public MsgDispatchJobsReadRecord(String id, String externalId, String source, String kind, String code, String subject, String eventId, String correlationId, String targetUrl, String protocol, String serviceAccountId, String clientId, String subscriptionId, String dispatchPoolId, String mode, String messageGroup, Integer sequence, Integer timeoutSeconds, String status, Integer maxRetries, String retryStrategy, OffsetDateTime scheduledFor, OffsetDateTime expiresAt, Integer attemptCount, OffsetDateTime lastAttemptAt, OffsetDateTime completedAt, Long durationMillis, String lastError, String idempotencyKey, Boolean isCompleted, Boolean isTerminal, String application, String subdomain, String aggregate, OffsetDateTime updatedAt, OffsetDateTime projectedAt, OffsetDateTime createdAt) {
+    public MsgDispatchJobsReadRecord(String id, String externalId, String source, String kind, String code, String subject, String eventId, String correlationId, String targetUrl, String protocol, String serviceAccountId, String clientId, String subscriptionId, String dispatchPoolId, String mode, String messageGroup, Integer sequence, Integer timeoutSeconds, String status, Integer maxRetries, String retryStrategy, OffsetDateTime scheduledFor, OffsetDateTime expiresAt, Integer attemptCount, OffsetDateTime lastAttemptAt, OffsetDateTime completedAt, Long durationMillis, String lastError, String idempotencyKey, Boolean isCompleted, Boolean isTerminal, String application, String subdomain, String aggregate, OffsetDateTime updatedAt, OffsetDateTime projectedAt, OffsetDateTime createdAt, String descriptor, JSONB metadata) {
         super(MsgDispatchJobsRead.MSG_DISPATCH_JOBS_READ);
 
         setId(id);
@@ -601,6 +630,8 @@ public class MsgDispatchJobsReadRecord extends UpdatableRecordImpl<MsgDispatchJo
         setUpdatedAt(updatedAt);
         setProjectedAt(projectedAt);
         setCreatedAt(createdAt);
+        setDescriptor(descriptor);
+        setMetadata(metadata);
         resetTouchedOnNotNull();
     }
 }

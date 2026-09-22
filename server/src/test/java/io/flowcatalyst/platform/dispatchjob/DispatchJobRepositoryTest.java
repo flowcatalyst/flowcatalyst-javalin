@@ -57,7 +57,7 @@ class DispatchJobRepositoryTest {
     }
 
     private static ListFilter filter(Visibility visibility, List<String> codes, List<String> clientIds) {
-        return new ListFilter(null, null, null, null, null, null, null, null, false, 0, 0,
+        return new ListFilter(null, null, null, null, null, null, null, null, null, false, 0, 0,
                 clientIds, null, codes, null, null, null, visibility);
     }
 
@@ -96,36 +96,57 @@ class DispatchJobRepositoryTest {
     @Test
     void filtersNarrowByEveryColumnAndSortFlipsTheOrder() {
         var unscoped = Visibility.Everything.INSTANCE;
-        assertThat(ids(repo.findWithFilters(new ListFilter("COMPLETED", null, null, null, SCOPE_CODE, null, null, null,
+        assertThat(ids(repo.findWithFilters(new ListFilter("COMPLETED", null, null, null, SCOPE_CODE, null, null, null, null,
                 false, 0, 0, null, null, null, null, null, null, unscoped)))).containsExactly(jobB);
-        assertThat(ids(repo.findWithFilters(new ListFilter(null, CLIENT_A, null, null, null, null, null, null,
+        assertThat(ids(repo.findWithFilters(new ListFilter(null, CLIENT_A, null, null, null, null, null, null, null,
                 false, 0, 0, null, null, List.of(SCOPE_CODE), null, null, null, unscoped)))).containsExactly(jobA);
-        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, "src" + RUN, null, null,
+        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, "src" + RUN, null, null, null,
                 false, 0, 0, null, null, null, null, null, null, unscoped)))).containsExactly(jobPlatform);
-        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null,
+        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null, null,
                 false, 0, 0, null, List.of("PENDING", "COMPLETED"), List.of(SCOPE_CODE), null, null, null, unscoped))))
                 .containsExactly(jobA, jobB, jobPlatform);
-        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null,
+        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null, null,
                 false, 0, 0, null, null, null, List.of("scope" + RUN), List.of("orders"), List.of("order"), unscoped))))
                 .containsExactly(jobA, jobB, jobPlatform);
-        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, BASE.plusSeconds(2), BASE.plusSeconds(2),
+        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, BASE.plusSeconds(2), BASE.plusSeconds(2),
                 false, 0, 0, null, null, List.of(SCOPE_CODE), null, null, null, unscoped)))).containsExactly(jobB);
-        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null,
+        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null, null,
                 true, 0, 0, null, null, List.of(SCOPE_CODE), null, null, null, unscoped)))).containsExactly(jobPlatform, jobB, jobA);
+    }
+
+    /// T11 (catch-up-2026-09-22.md C1): `messageGroup` is an EXACT filter —
+    /// pinned against two rows sharing this test's scope code but differing
+    /// only in `messageGroup`, so a `LIKE`/substring mutant would over-match.
+    @Test
+    void messageGroupFilterIsExact() {
+        String group = "mg-" + RUN;
+        String withGroup = seed(Seed.of(SCOPE_CODE).withMessageGroup(group).withCreatedAt(BASE.plusSeconds(4)));
+        String otherGroup = seed(Seed.of(SCOPE_CODE).withMessageGroup(group + "-other").withCreatedAt(BASE.plusSeconds(5)));
+        try {
+            var unscoped = Visibility.Everything.INSTANCE;
+            var rows = repo.findWithFilters(new ListFilter(null, null, null, null, null, null, group, null, null,
+                    false, 0, 0, null, null, List.of(SCOPE_CODE), null, null, null, unscoped));
+            assertThat(ids(rows)).as("exact match only — not the group sharing this one as a prefix")
+                    .containsExactly(withGroup);
+            assertThat(ids(rows)).doesNotContain(otherGroup);
+        } finally {
+            DB.deleteFrom(MSG_DISPATCH_JOBS_READ).where(MSG_DISPATCH_JOBS_READ.ID.in(withGroup, otherGroup)).execute();
+            DB.deleteFrom(MSG_DISPATCH_JOBS).where(MSG_DISPATCH_JOBS.ID.in(withGroup, otherGroup)).execute();
+        }
     }
 
     @Test
     void limitAndOffsetWindowTheListAndOutOfRangeLimitsFallBack() {
         var unscoped = Visibility.Everything.INSTANCE;
-        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null,
+        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null, null,
                 false, 1, 1, null, null, List.of(SCOPE_CODE), null, null, null, unscoped)))).containsExactly(jobB);
-        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null,
+        assertThat(ids(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null, null,
                 false, 5000, 0, null, null, List.of(SCOPE_CODE), null, null, null, unscoped)))).hasSize(3);
     }
 
     @Test
     void aFilterMustStateWhoseViewItIs() {
-        assertThatThrownBy(() -> new ListFilter(null, null, null, null, null, null, null, null,
+        assertThatThrownBy(() -> new ListFilter(null, null, null, null, null, null, null, null, null,
                 false, 0, 0, null, null, null, null, null, null, null))
                 .as("visibility never defaults open").isInstanceOf(NullPointerException.class).hasMessage("visibility");
     }

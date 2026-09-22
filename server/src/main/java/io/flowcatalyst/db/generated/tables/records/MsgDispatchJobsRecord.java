@@ -567,6 +567,20 @@ public class MsgDispatchJobsRecord extends UpdatableRecordImpl<MsgDispatchJobsRe
         return (String) get(38);
     }
 
+    /**
+     * Setter for <code>public.msg_dispatch_jobs.descriptor</code>.
+     */
+    public void setDescriptor(String value) {
+        set(39, value);
+    }
+
+    /**
+     * Getter for <code>public.msg_dispatch_jobs.descriptor</code>.
+     */
+    public String getDescriptor() {
+        return (String) get(39);
+    }
+
     // -------------------------------------------------------------------------
     // Primary key information
     // -------------------------------------------------------------------------
@@ -590,7 +604,7 @@ public class MsgDispatchJobsRecord extends UpdatableRecordImpl<MsgDispatchJobsRe
     /**
      * Create a detached, initialised MsgDispatchJobsRecord
      */
-    public MsgDispatchJobsRecord(String id, String externalId, String source, String kind, String code, String subject, String eventId, String correlationId, JSONB metadata, String targetUrl, String protocol, String payload, String payloadContentType, Boolean dataOnly, String serviceAccountId, String clientId, String subscriptionId, String mode, String dispatchPoolId, String messageGroup, Integer sequence, Integer timeoutSeconds, String schemaId, String status, Integer maxRetries, String retryStrategy, OffsetDateTime scheduledFor, OffsetDateTime expiresAt, Integer attemptCount, OffsetDateTime lastAttemptAt, OffsetDateTime completedAt, Long durationMillis, String lastError, String idempotencyKey, OffsetDateTime queuedAt, OffsetDateTime projectedAt, OffsetDateTime createdAt, OffsetDateTime updatedAt, String queue) {
+    public MsgDispatchJobsRecord(String id, String externalId, String source, String kind, String code, String subject, String eventId, String correlationId, JSONB metadata, String targetUrl, String protocol, String payload, String payloadContentType, Boolean dataOnly, String serviceAccountId, String clientId, String subscriptionId, String mode, String dispatchPoolId, String messageGroup, Integer sequence, Integer timeoutSeconds, String schemaId, String status, Integer maxRetries, String retryStrategy, OffsetDateTime scheduledFor, OffsetDateTime expiresAt, Integer attemptCount, OffsetDateTime lastAttemptAt, OffsetDateTime completedAt, Long durationMillis, String lastError, String idempotencyKey, OffsetDateTime queuedAt, OffsetDateTime projectedAt, OffsetDateTime createdAt, OffsetDateTime updatedAt, String queue, String descriptor) {
         super(MsgDispatchJobs.MSG_DISPATCH_JOBS);
 
         setId(id);
@@ -632,6 +646,7 @@ public class MsgDispatchJobsRecord extends UpdatableRecordImpl<MsgDispatchJobsRe
         setCreatedAt(createdAt);
         setUpdatedAt(updatedAt);
         setQueue(queue);
+        setDescriptor(descriptor);
         resetTouchedOnNotNull();
     }
 }

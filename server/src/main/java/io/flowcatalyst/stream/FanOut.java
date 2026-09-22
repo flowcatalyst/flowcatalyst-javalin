@@ -7,6 +7,7 @@ import io.flowcatalyst.sdk.tsid.Tsid;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
 import io.flowcatalyst.stream.jfr.FanOutBatchEvent;
 import org.jooq.DSLContext;
+import org.jooq.JSONB;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
 import org.slf4j.Logger;
@@ -54,7 +55,7 @@ public final class FanOut implements Projector.Step {
             ) claim
             WHERE e.id = claim.id AND e.created_at = claim.created_at
             RETURNING e.id, e.type, e.source, e.subject, e.data::text AS data, e.correlation_id,
-                      e.message_group, e.client_id, e.created_at
+                      e.message_group, e.client_id, e.context_data::text AS context_data, e.created_at
             """;
 
     private final DataSource dataSource;
@@ -170,7 +171,7 @@ public final class FanOut implements Projector.Step {
         var insert = txDsl.insertInto(D, D.ID, D.CODE, D.SOURCE, D.SUBJECT, D.EVENT_ID, D.CORRELATION_ID,
                 D.CLIENT_ID, D.MESSAGE_GROUP, D.PAYLOAD, D.TARGET_URL, D.DATA_ONLY, D.SERVICE_ACCOUNT_ID,
                 D.SUBSCRIPTION_ID, D.DISPATCH_POOL_ID, D.SEQUENCE, D.TIMEOUT_SECONDS, D.MAX_RETRIES, D.MODE,
-                D.PROTOCOL, D.STATUS, D.IDEMPOTENCY_KEY, D.QUEUE, D.CREATED_AT, D.UPDATED_AT);
+                D.PROTOCOL, D.STATUS, D.IDEMPOTENCY_KEY, D.QUEUE, D.DESCRIPTOR, D.METADATA, D.CREATED_AT, D.UPDATED_AT);
         int jobCount = 0;
         for (ClaimedEvent event : claimed) {
             for (Subscription sub : subs) {
@@ -181,11 +182,16 @@ public final class FanOut implements Projector.Step {
                 // The raising subscription's queue is copied verbatim onto the job
                 // (dispatch-job-priority spec R2) — including `null`, and including
                 // legacy text the read side alone tolerates (spec R4).
+                // descriptor is the raising subscription's name (catch-up-2026-09-22.md
+                // C1, Go fan_out.go `descriptorFor`); metadata is the raising event's
+                // context_data, copied verbatim — same `[{key,value}]` shape (spec §3,
+                // Go `newJob.Metadata`).
                 insert = insert.values(Tsid.generate(), event.type(), event.source(), event.subject(), event.id(),
                         event.correlationId(), event.clientId(), event.messageGroup(), payloadOf(event.data()),
                         sub.endpoint(), sub.dataOnly(), sub.serviceAccountId(), sub.id(), sub.dispatchPoolId(),
                         sub.sequence(), sub.timeoutSeconds(), sub.maxRetries(), sub.mode().name(), "HTTP_WEBHOOK",
-                        "PENDING", event.id() + ":" + sub.id(), sub.queue(), createdAt, createdAt);
+                        "PENDING", event.id() + ":" + sub.id(), sub.queue(), descriptorFor(sub.name()),
+                        JSONB.jsonb(metadataOf(event.contextData())), createdAt, createdAt);
                 jobCount++;
             }
         }
@@ -201,6 +207,25 @@ public final class FanOut implements Projector.Step {
         return data == null ? "null" : data;
     }
 
+    /// The raised job's `descriptor`: the raising subscription's name,
+    /// trimmed, `null` when blank (the column is nullable — absent is the
+    /// legacy state, not an empty string), clipped to the `VARCHAR(255)`
+    /// column (Go `fan_out.go` `descriptorFor`).
+    private static String descriptorFor(String name) {
+        if (name == null) return null;
+        String trimmed = name.strip();
+        if (trimmed.isEmpty()) return null;
+        return trimmed.length() > 255 ? trimmed.substring(0, 255) : trimmed;
+    }
+
+    /// The raised job's `metadata`: the raising event's `context_data`,
+    /// copied verbatim (`[{key,value}]`, the same shape) — `[]` when the
+    /// event carries none (Go `fan_out.go`: `Metadata: e.ContextData`,
+    /// `COALESCE($23::jsonb, '[]'::jsonb)`).
+    private static String metadataOf(String contextData) {
+        return contextData == null || contextData.isEmpty() || "null".equals(contextData) ? "[]" : contextData;
+    }
+
     private static List<ClaimedEvent> claim(DSLContext txDsl, int batchSize) {
         return txDsl.fetch(CLAIM_SQL, batchSize).stream()
                 .map(r -> new ClaimedEvent(
@@ -212,11 +237,13 @@ public final class FanOut implements Projector.Step {
                         r.get("correlation_id", String.class),
                         r.get("message_group", String.class),
                         r.get("client_id", String.class),
+                        r.get("context_data", String.class),
                         r.get("created_at", OffsetDateTime.class).toInstant()))
                 .toList();
     }
 
     private record ClaimedEvent(String id, String type, String source, String subject, String data,
-                                 String correlationId, String messageGroup, String clientId, Instant createdAt) {
+                                 String correlationId, String messageGroup, String clientId, String contextData,
+                                 Instant createdAt) {
     }
 }

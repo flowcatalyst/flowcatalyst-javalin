@@ -26,14 +26,16 @@ class GoAdoptionTest {
         DataSource ds = TestPg.newDatabase("go_adoption");
         GoSchema.load(ds);
         // go-schema.sql contains the (empty) goose_db_version table; give it the
-        // rows goose would have written for the migrations up to 056 (a Go
+        // rows goose would have written for the migrations up to 057 (a Go
         // database at HEAD, including 054_dispatch_job_queue.sql — the same
-        // column V10 adds — and 056_connection_application_scope.sql — the
-        // same schema change V12 adds). There is no 023 or 050 in
+        // column V10 adds — 056_connection_application_scope.sql — the
+        // same schema change V12 adds — and
+        // 057_dispatch_job_descriptor_and_read_metadata.sql — the same
+        // schema change V14 adds). There is no 023 or 050 in
         // flowcatalyst-go/internal/migrate/sql.
         try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
             st.execute("INSERT INTO public.goose_db_version (version_id, is_applied) VALUES (0, true)");
-            for (int v = 1; v <= 56; v++) {
+            for (int v = 1; v <= 57; v++) {
                 if (v == 23 || v == 50) {
                     continue;
                 }
@@ -44,7 +46,7 @@ class GoAdoptionTest {
 
         MigrateResult result = Migrator.migrate(ds);
         assertThat(result.success).isTrue();
-        // Flyway baselines at V1 (not executed) then MUST apply V2..V13 even
+        // Flyway baselines at V1 (not executed) then MUST apply V2..V14 even
         // though the Go database already has V2..V7, V9's effect (053
         // portal_apps, spec `portal-apps.md`) AND V10's effect (054
         // dispatch_job_queue, spec `dispatch-job-priority.md`): each of those
@@ -56,14 +58,15 @@ class GoAdoptionTest {
         // at all, spec §0).
         // V11 (Go 055, seeded schema versions v1 -> 1.0) is data-only and
         // changes no schema; V12 (Go 056, connection application scope, spec
-        // `code-first-connections.md`) is idempotent and a no-op on this
-        // goose-56 database.
-        assertThat(result.migrationsExecuted).isEqualTo(12);
+        // `code-first-connections.md`) and V14 (Go 057, dispatch-job
+        // descriptor/read-metadata/request_info, catch-up-2026-09-22.md) are
+        // each idempotent and a no-op on this goose-57 database.
+        assertThat(result.migrationsExecuted).isEqualTo(13);
         assertThat(result.migrations).extracting(m -> m.version)
-                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13");
+                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14");
 
         MigrationInfo[] applied = Migrator.flyway(ds).info().applied();
-        assertThat(applied).hasSize(13);
+        assertThat(applied).hasSize(14);
         assertThat(applied[0].getVersion().getVersion()).isEqualTo("1");
         assertThat(applied[0].getState()).isEqualTo(MigrationState.BASELINE);
         for (int i = 1; i < applied.length; i++) {
@@ -74,8 +77,8 @@ class GoAdoptionTest {
         try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
             try (ResultSet rs = st.executeQuery("SELECT count(*), max(version_id) FROM public.goose_db_version")) {
                 rs.next();
-                assertThat(rs.getInt(1)).isEqualTo(55);
-                assertThat(rs.getInt(2)).isEqualTo(56);
+                assertThat(rs.getInt(1)).isEqualTo(56);
+                assertThat(rs.getInt(2)).isEqualTo(57);
             }
             try (ResultSet rs = st.executeQuery(
                     "SELECT type, version, success FROM public.flyway_schema_history ORDER BY installed_rank")) {
@@ -83,7 +86,7 @@ class GoAdoptionTest {
                 assertThat(rs.getString(1)).isEqualTo("BASELINE");
                 assertThat(rs.getString(2)).isEqualTo("1");
                 assertThat(rs.getBoolean(3)).isTrue();
-                for (int v = 2; v <= 13; v++) {
+                for (int v = 2; v <= 14; v++) {
                     assertThat(rs.next()).isTrue();
                     assertThat(rs.getString(2)).isEqualTo(String.valueOf(v));
                     assertThat(rs.getBoolean(3)).isTrue();
@@ -168,6 +171,22 @@ class GoAdoptionTest {
                 assertThat(rs.getInt(7)).as("the old idx_msg_subscriptions_code_client index stays gone").isEqualTo(0);
             }
             try (ResultSet rs = st.executeQuery("""
+                    SELECT
+                        (SELECT count(*) FROM information_schema.columns
+                          WHERE table_schema = 'public' AND table_name = 'msg_dispatch_jobs' AND column_name = 'descriptor'),
+                        (SELECT count(*) FROM information_schema.columns
+                          WHERE table_schema = 'public' AND table_name = 'msg_dispatch_jobs_read' AND column_name = 'descriptor'),
+                        (SELECT count(*) FROM information_schema.columns
+                          WHERE table_schema = 'public' AND table_name = 'msg_dispatch_jobs_read' AND column_name = 'metadata'),
+                        (SELECT count(*) FROM information_schema.columns
+                          WHERE table_schema = 'public' AND table_name = 'msg_dispatch_job_attempts' AND column_name = 'request_info')""")) {
+                rs.next();
+                assertThat(rs.getInt(1)).as("V14 (msg_dispatch_jobs.descriptor) is a no-op: the column already exists exactly once").isEqualTo(1);
+                assertThat(rs.getInt(2)).as("V14 (msg_dispatch_jobs_read.descriptor) is a no-op: the column already exists exactly once").isEqualTo(1);
+                assertThat(rs.getInt(3)).as("V14 (msg_dispatch_jobs_read.metadata) is a no-op: the column already exists exactly once").isEqualTo(1);
+                assertThat(rs.getInt(4)).as("V14 (msg_dispatch_job_attempts.request_info) is a no-op: the column already exists exactly once").isEqualTo(1);
+            }
+            try (ResultSet rs = st.executeQuery("""
                     SELECT EXISTS (
                         SELECT 1 FROM pg_partitioned_table pt
                         JOIN pg_class c ON c.oid = pt.partrelid
@@ -200,7 +219,7 @@ class GoAdoptionTest {
                 assertThat(rs.getInt(4)).as("chk_msg_dispatch_jobs_kind on the parent").isEqualTo(1);
             }
         }
-        // V2..V7, V9, V10 and V12 still change nothing (flyway_schema_history is
+        // V2..V7, V9, V10, V12 and V14 still change nothing (flyway_schema_history is
         // ignored by the fingerprint); V8 (`mail_outbox`) and V13 (the eight
         // fn_ tables) are the genuine additions — assert the only lines the
         // fingerprint gained are theirs, plus V13's one named, exact widening
@@ -234,7 +253,7 @@ class GoAdoptionTest {
                 .filter(l -> !SchemaFingerprintTest.isDivergentConstraintLine(l))
                 .toList();
         assertThat(afterWithoutNewLines)
-                .as("V2..V7, V9, V10 and V12 change nothing beyond V8's/V13's new Java-only tables and the one named divergent constraint")
+                .as("V2..V7, V9, V10, V12 and V14 change nothing beyond V8's/V13's new Java-only tables and the one named divergent constraint")
                 .containsExactlyInAnyOrderElementsOf(beforeWithoutDivergent);
         assertThat(javaOnlyTableLines).as("V8 adds mail_outbox and V13 adds the fn_ tables").isNotEmpty();
 
@@ -300,6 +319,58 @@ class GoAdoptionTest {
                 assertThat(rs.getInt(5)).as("V12 adds uq_msg_subscriptions_app_client_code").isEqualTo(1);
                 assertThat(rs.getInt(6)).as("V12 drops the old idx_msg_connections_code_client").isEqualTo(0);
                 assertThat(rs.getInt(7)).as("V12 drops the old idx_msg_subscriptions_code_client").isEqualTo(0);
+            }
+        }
+
+        assertThat(Migrator.migrate(ds).migrationsExecuted).isZero();
+    }
+
+    /// A Go database at goose 56 (one migration behind 057) has genuine work
+    /// for V14: the fixture (`go-schema.sql`) is captured at goose 57, so this
+    /// test synthesises 56 by undoing 057's Up exactly as its own Down section
+    /// specifies (Go mirror: `internal/migrate/sql/057_dispatch_job_descriptor_and_read_metadata.sql`)
+    /// before baselining — catch-up-2026-09-22.md slice C1, T14.
+    @Test
+    void goDatabaseAtGoose56CompletesV14() throws Exception {
+        DataSource ds = TestPg.newDatabase("go_adoption_56");
+        GoSchema.load(ds);
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            st.execute("ALTER TABLE msg_dispatch_job_attempts DROP COLUMN IF EXISTS request_info");
+            st.execute("ALTER TABLE msg_dispatch_jobs_read DROP COLUMN IF EXISTS metadata");
+            st.execute("ALTER TABLE msg_dispatch_jobs_read DROP COLUMN IF EXISTS descriptor");
+            st.execute("ALTER TABLE msg_dispatch_jobs DROP COLUMN IF EXISTS descriptor");
+
+            st.execute("INSERT INTO public.goose_db_version (version_id, is_applied) VALUES (0, true)");
+            for (int v = 1; v <= 56; v++) {
+                if (v == 23 || v == 50) {
+                    continue;
+                }
+                st.execute("INSERT INTO public.goose_db_version (version_id, is_applied) VALUES (" + v + ", true)");
+            }
+        }
+
+        MigrateResult result = Migrator.migrate(ds);
+        assertThat(result.success).isTrue();
+        assertThat(result.migrations).extracting(m -> m.version)
+                .as("V14 is among the applied migrations")
+                .contains("14");
+
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            try (ResultSet rs = st.executeQuery("""
+                    SELECT
+                        (SELECT count(*) FROM information_schema.columns
+                          WHERE table_schema = 'public' AND table_name = 'msg_dispatch_jobs' AND column_name = 'descriptor'),
+                        (SELECT count(*) FROM information_schema.columns
+                          WHERE table_schema = 'public' AND table_name = 'msg_dispatch_jobs_read' AND column_name = 'descriptor'),
+                        (SELECT count(*) FROM information_schema.columns
+                          WHERE table_schema = 'public' AND table_name = 'msg_dispatch_jobs_read' AND column_name = 'metadata'),
+                        (SELECT count(*) FROM information_schema.columns
+                          WHERE table_schema = 'public' AND table_name = 'msg_dispatch_job_attempts' AND column_name = 'request_info')""")) {
+                rs.next();
+                assertThat(rs.getInt(1)).as("V14 adds msg_dispatch_jobs.descriptor").isEqualTo(1);
+                assertThat(rs.getInt(2)).as("V14 adds msg_dispatch_jobs_read.descriptor").isEqualTo(1);
+                assertThat(rs.getInt(3)).as("V14 adds msg_dispatch_jobs_read.metadata").isEqualTo(1);
+                assertThat(rs.getInt(4)).as("V14 adds msg_dispatch_job_attempts.request_info").isEqualTo(1);
             }
         }
 

@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.dispatchjob;
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 
 /// A row of the read projection `msg_dispatch_jobs_read` (spec §1.3): the
@@ -45,6 +46,8 @@ public record DispatchJobProjection(
         Long durationMillis,
         String lastError,
         String idempotencyKey,
+        String descriptor,
+        List<DispatchJob.Metadata> metadata,
         Instant createdAt,
         Instant updatedAt) {
 
@@ -57,6 +60,7 @@ public record DispatchJobProjection(
         Objects.requireNonNull(mode, "mode");
         Objects.requireNonNull(status, "status");
         Objects.requireNonNull(retryStrategy, "retryStrategy");
+        metadata = metadata == null ? List.of() : List.copyOf(metadata);
         Objects.requireNonNull(createdAt, "createdAt");
         Objects.requireNonNull(updatedAt, "updatedAt");
     }

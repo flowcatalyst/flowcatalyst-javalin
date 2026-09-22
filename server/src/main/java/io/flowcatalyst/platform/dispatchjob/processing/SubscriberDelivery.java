@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.dispatchjob.processing;
 
+import io.flowcatalyst.platform.dispatchjob.Attempt;
 import io.flowcatalyst.platform.dispatchjob.AttemptErrorType;
 import io.flowcatalyst.platform.dispatchjob.DispatchJob;
 import io.flowcatalyst.platform.shared.json.Json;
@@ -18,6 +19,8 @@ import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -80,36 +83,65 @@ public final class SubscriberDelivery {
         // this job's client resolved (webhook-client-code spec R1/R2).
         String clientCode = clientCodes.identifierFor(job.clientId());
         byte[] body = DeliveryPayload.build(job, clientCode);
-        HttpRequest request;
+        BuiltRequest built;
         try {
-            request = buildRequest(job, body, credentials, at, clientCode);
+            built = buildRequest(job, body, credentials, at, clientCode);
         } catch (RuntimeException e) {
-            return new DeliveryResult.Failed(AttemptErrorType.CONNECTION, null, "could not build request: " + e.getMessage());
+            return new DeliveryResult.Failed(AttemptErrorType.CONNECTION, null, "could not build request: " + e.getMessage(),
+                    null, null);
         }
         try {
-            var response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            var response = client.send(built.request(), HttpResponse.BodyHandlers.ofInputStream());
             byte[] cappedBody = readCapped(response.body());
-            return classify(response, cappedBody);
+            return withRequestInfo(classify(response, cappedBody), built.info());
         } catch (HttpTimeoutException e) {
-            return new DeliveryResult.Failed(AttemptErrorType.TIMEOUT, null, "request timeout");
+            return withRequestInfo(new DeliveryResult.Failed(AttemptErrorType.TIMEOUT, null, "request timeout", null, null),
+                    built.info());
         } catch (IOException e) {
             // DNS, refused, TLS, reset — nothing was learned about the
             // message, so this is unavailability, not a rejection.
-            return new DeliveryResult.Failed(AttemptErrorType.CONNECTION, null, "request failed: " + e.getMessage());
+            return withRequestInfo(new DeliveryResult.Failed(AttemptErrorType.CONNECTION, null,
+                    "request failed: " + e.getMessage(), null, null), built.info());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return new DeliveryResult.Failed(AttemptErrorType.CONNECTION, null, "interrupted");
+            return withRequestInfo(new DeliveryResult.Failed(AttemptErrorType.CONNECTION, null, "interrupted", null, null),
+                    built.info());
         }
     }
 
-    private HttpRequest buildRequest(DispatchJob job, byte[] body, DeliveryCredentials.Resolved credentials,
-                                      Instant at, String clientCode) {
+    /// Stamps `info` on `result` and — on a [DeliveryResult.Failed] only,
+    /// never [DeliveryResult.Delivered]/[DeliveryResult.Deferred] — appends
+    /// `" (delivered unsigned: <reason>)"` to the error message when the
+    /// delivery went out bare (hand-off 2026-09-22: "so the job page says
+    /// why the 401 happened instead of just that it happened").
+    private static DeliveryResult withRequestInfo(DeliveryResult result, Attempt.RequestInfo info) {
+        return switch (result) {
+            case DeliveryResult.Delivered d -> new DeliveryResult.Delivered(d.status(), d.body(), info);
+            case DeliveryResult.Deferred d -> new DeliveryResult.Deferred(d.status(), d.delaySeconds(), info);
+            case DeliveryResult.Failed f -> new DeliveryResult.Failed(f.errorType(), f.status(),
+                    appendUnsignedSuffix(f.message(), info), f.body(), info);
+        };
+    }
+
+    private static String appendUnsignedSuffix(String message, Attempt.RequestInfo info) {
+        if (info != null && info.unsignedReason() != null && !info.unsignedReason().isEmpty()) {
+            return message + " (delivered unsigned: " + info.unsignedReason() + ")";
+        }
+        return message;
+    }
+
+    private record BuiltRequest(HttpRequest request, Attempt.RequestInfo info) {
+    }
+
+    private BuiltRequest buildRequest(DispatchJob job, byte[] body, DeliveryCredentials.Resolved credentials,
+                                       Instant at, String clientCode) {
         var builder = HttpRequest.newBuilder(URI.create(job.targetUrl()))
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body))
                 .timeout(attemptTimeout(job.timeoutSeconds()))
                 .header("Content-Type", "application/json")
                 .header("X-Dispatch-Job-Id", job.id())
                 .header("X-Event-Type", job.code());
+        List<String> headerNames = new ArrayList<>(List.of("Content-Type", "X-Dispatch-Job-Id", "X-Event-Type"));
 
         if (job.clientId() != null && clientCode != null) {
             // Sent for dataOnly deliveries too — that is the case the envelope body
@@ -117,19 +149,38 @@ public final class SubscriberDelivery {
             // field (webhook-client-code spec R2). Never a half pair: a platform-scoped
             // job (no clientId) or an unresolved client omits the header entirely.
             builder.header("X-FlowCatalyst-Client", job.clientId() + ":" + clientCode);
+            headerNames.add("X-FlowCatalyst-Client");
         }
 
+        boolean bearerSent = false;
+        boolean signatureSent = false;
+        String timestamp = null;
         if (credentials.bearerToken() != null && !credentials.bearerToken().isEmpty()) {
             builder.header("Authorization", "Bearer " + credentials.bearerToken());
+            headerNames.add("Authorization");
+            bearerSent = true;
         }
         if (credentials.signingSecret() != null && !credentials.signingSecret().isEmpty()) {
             // Byte-identical to the router's own outbound signing (spec §4.1
             // of the router spec, reused verbatim here via WebhookSigner).
-            String timestamp = WebhookSigner.timestamp(at);
+            timestamp = WebhookSigner.timestamp(at);
             builder.header("X-FlowCatalyst-Timestamp", timestamp);
             builder.header("X-FlowCatalyst-Signature", WebhookSigner.sign(credentials.signingSecret(), timestamp, body));
+            headerNames.add("X-FlowCatalyst-Timestamp");
+            headerNames.add("X-FlowCatalyst-Signature");
+            signatureSent = true;
         }
-        return builder.build();
+        // unsignedReason only when genuinely bare (neither header pair sent) — never
+        // when only ONE of the two is configured (S5's "exactly one header" case is
+        // not "unsigned").
+        String unsignedReason = (!bearerSent && !signatureSent) ? blankToNull(credentials.reason()) : null;
+        var info = new Attempt.RequestInfo(credentials.signedBy(), signatureSent, bearerSent, timestamp,
+                headerNames.stream().sorted().toList(), unsignedReason, job.targetUrl());
+        return new BuiltRequest(builder.build(), info);
+    }
+
+    private static String blankToNull(String s) {
+        return s == null || s.isEmpty() ? null : s;
     }
 
     /// The per-attempt timeout (spec §3's timing table): the job's own
@@ -159,16 +210,18 @@ public final class SubscriberDelivery {
         if (status >= 200 && status < 300) {
             Optional<Integer> deferralDelay = parseDeferral(cappedBody);
             if (deferralDelay.isPresent()) {
-                return new DeliveryResult.Deferred(status, deferralDelay.get());
+                return new DeliveryResult.Deferred(status, deferralDelay.get(), null);
             }
-            return new DeliveryResult.Delivered(status, bodyStr);
+            return new DeliveryResult.Delivered(status, bodyStr, null);
         }
         if (status == 429) {
-            return new DeliveryResult.Deferred(status, retryAfterSeconds(response));
+            return new DeliveryResult.Deferred(status, retryAfterSeconds(response), null);
         }
         // 3xx / 4xx / 5xx: a delivery failure, retried on the fixed ladder
-        // (spec §5) until the job's own retry budget is spent.
-        return new DeliveryResult.Failed(AttemptErrorType.HTTP_ERROR, status, "HTTP " + status);
+        // (spec §5) until the job's own retry budget is spent. The response
+        // body is kept — 2026-09-22: the subscriber's stated reason, not just
+        // the status that earned it.
+        return new DeliveryResult.Failed(AttemptErrorType.HTTP_ERROR, status, "HTTP " + status, bodyStr, null);
     }
 
     /// `{"ack": false[, "delaySeconds": N]}` on a 2xx body — the delay

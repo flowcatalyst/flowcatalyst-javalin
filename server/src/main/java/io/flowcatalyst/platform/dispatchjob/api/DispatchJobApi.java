@@ -15,6 +15,7 @@ import io.flowcatalyst.platform.dispatchjob.operations.CompleteCommand;
 import io.flowcatalyst.platform.dispatchjob.operations.CompleteDispatchJob;
 import io.flowcatalyst.platform.dispatchjob.operations.RequeueCommand;
 import io.flowcatalyst.platform.dispatchjob.operations.RequeueDispatchJobs;
+import io.flowcatalyst.platform.dispatchjob.processing.ClientCodeResolver;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
@@ -74,11 +75,25 @@ public final class DispatchJobApi {
     private DispatchJobApi() {
     }
 
-    /// The handlers' dependencies.
-    public record State(DispatchJobRepository repo, UnitOfWork uow) {
+    /// The handlers' dependencies. `clientCodes` resolves a list row's
+    /// `clientId` to the client's `identifier` for [DispatchJobRead#clientIdentifier]
+    /// (catch-up-2026-09-22.md C1: "a UI field that nothing reads is a
+    /// defect" — the schema has carried `clientIdentifier` since before this
+    /// slice, never populated); [ClientCodeResolver#none] for a caller that
+    /// does not need it (matches [io.flowcatalyst.platform.dispatchjob.processing.SubscriberDelivery]'s
+    /// own default-free-but-required-at-the-call-site reasoning is NOT
+    /// repeated here — unlike that class, a missing resolver here is simply
+    /// "never populated", not a silently wrong delivery, so a convenience
+    /// default is safe).
+    public record State(DispatchJobRepository repo, UnitOfWork uow, ClientCodeResolver clientCodes) {
         public State {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(uow, "uow");
+            Objects.requireNonNull(clientCodes, "clientCodes");
+        }
+
+        public State(DispatchJobRepository repo, UnitOfWork uow) {
+            this(repo, uow, ClientCodeResolver.none());
         }
     }
 
@@ -127,7 +142,9 @@ public final class DispatchJobApi {
     private static void list(Exchange ctx, State s, Permission gate) {
         AuthContext ac = Auth.current();
         Checks.require(ac, gate);
-        ctx.json(s.repo().findWithFilters(listFilter(ctx, ac)).stream().map(DispatchJobRead::from).toList());
+        ctx.json(s.repo().findWithFilters(listFilter(ctx, ac)).stream()
+                .map(p -> DispatchJobRead.from(p, s.clientCodes()))
+                .toList());
     }
 
     /// Detail and raw detail share one handler; only the gate differs (spec §3).
@@ -153,7 +170,8 @@ public final class DispatchJobApi {
         Checks.require(ac, DISPATCH_JOB_VIEW);
         ctx.json(s.repo().findByEventId(ctx.pathParam("eventId")).stream()
                 .filter(p -> Checks.canAccessScope(ac, p.clientId()))
-                .map(DispatchJobRead::from).toList());
+                .map(p -> DispatchJobRead.from(p, s.clientCodes()))
+                .toList());
     }
 
     private static void filterOptions(Exchange ctx, State s) {
@@ -204,6 +222,7 @@ public final class DispatchJobApi {
                 queryParam(ctx, "subscriptionId"),
                 queryParam(ctx, "code"),
                 queryParam(ctx, "source"),
+                queryParam(ctx, "messageGroup"),
                 timestamp(queryParam(ctx, "since")),
                 timestamp(queryParam(ctx, "until")),
                 "createdAt.asc".equals(queryParam(ctx, "sort")),
@@ -276,13 +295,19 @@ public final class DispatchJobApi {
 
     /// The slim list shape, one per projection row. `dispatchMode` always
     /// equals `mode` (legacy duplicate); `application / subdomain / aggregate`
-    /// are derived from the code; the schema's `clientIdentifier` and
-    /// `priority` are never emitted (spec §3).
+    /// are derived from the code; the schema's `priority` is never emitted
+    /// (spec §3). `clientIdentifier` is resolved through the caller's
+    /// [ClientCodeResolver] (catch-up-2026-09-22.md C1) — `null` when the row
+    /// has no `clientId`, the resolver has none configured, or the lookup
+    /// cannot resolve it, exactly like [io.flowcatalyst.platform.dispatchjob.processing.SubscriberDelivery]'s
+    /// own use of the same class. `descriptor`/`metadata` are the job's own
+    /// (added 2026-09-22), `metadata` omitted when empty like [DispatchJobResponse]'s.
     public record DispatchJobRead(
             String id,
             String eventId,
             String subscriptionId,
             String clientId,
+            String clientIdentifier,
             String application,
             String subdomain,
             String aggregate,
@@ -295,6 +320,9 @@ public final class DispatchJobApi {
             String mode,
             String dispatchMode,
             String correlationId,
+            String messageGroup,
+            String descriptor,
+            @JsonInclude(JsonInclude.Include.NON_EMPTY) List<MetadataDTO> metadata,
             Instant scheduledFor,
             Instant createdAt,
             Instant updatedAt,
@@ -302,13 +330,15 @@ public final class DispatchJobApi {
             Instant lastAttemptAt,
             int attemptCount) {
 
-        public static DispatchJobRead from(DispatchJobProjection p) {
+        public static DispatchJobRead from(DispatchJobProjection p, ClientCodeResolver clientCodes) {
             CodeFacets facets = p.facets();
-            return new DispatchJobRead(p.id(), p.eventId(), p.subscriptionId(), p.clientId(),
+            String clientIdentifier = p.clientId() == null ? null : clientCodes.identifierFor(p.clientId());
+            return new DispatchJobRead(p.id(), p.eventId(), p.subscriptionId(), p.clientId(), clientIdentifier,
                     facets.application(), facets.subdomain(), facets.aggregate(), p.code(), p.source(), p.subject(),
                     p.status().name(), p.kind().name(), p.targetUrl(), p.mode().name(), p.mode().name(),
-                    p.correlationId(), p.scheduledFor(), p.createdAt(), p.updatedAt(), p.completedAt(),
-                    p.lastAttemptAt(), p.attemptCount());
+                    p.correlationId(), p.messageGroup(), p.descriptor(),
+                    p.metadata().stream().map(MetadataDTO::from).toList(), p.scheduledFor(), p.createdAt(),
+                    p.updatedAt(), p.completedAt(), p.lastAttemptAt(), p.attemptCount());
         }
     }
 
@@ -345,6 +375,7 @@ public final class DispatchJobApi {
             @JsonInclude(JsonInclude.Include.NON_EMPTY) List<AttemptDTO> attempts,
             @JsonInclude(JsonInclude.Include.NON_EMPTY) List<MetadataDTO> metadata,
             String idempotencyKey,
+            String descriptor,
             Instant createdAt,
             Instant updatedAt,
             Instant scheduledFor,
@@ -359,13 +390,17 @@ public final class DispatchJobApi {
                     j.correlationId(), j.clientId(), j.subscriptionId(), j.serviceAccountId(), j.dispatchPoolId(),
                     j.messageGroup(), j.mode().name(), j.sequence(), j.timeoutSeconds(), j.schemaId(), j.maxRetries(),
                     j.retryStrategy().wire(), j.status().name(), j.attemptCount(), j.lastError(), List.of(),
-                    j.metadata().stream().map(MetadataDTO::from).toList(), j.idempotencyKey(), j.createdAt(),
-                    j.updatedAt(), j.scheduledFor(), j.expiresAt(), j.lastAttemptAt(), j.completedAt(),
+                    j.metadata().stream().map(MetadataDTO::from).toList(), j.idempotencyKey(), j.descriptor(),
+                    j.createdAt(), j.updatedAt(), j.scheduledFor(), j.expiresAt(), j.lastAttemptAt(), j.completedAt(),
                     j.durationMillis());
         }
     }
 
-    /// One attempt on the wire.
+    /// One attempt on the wire. `request` is what the platform SENT
+    /// ([Attempt.RequestInfo], `null` on an attempt recorded before
+    /// 2026-09-22) — its wire shape already matches the lockfile's
+    /// `RequestSummary` component for component, so it rides straight
+    /// through with no separate DTO.
     public record AttemptDTO(
             int attemptNumber,
             Instant attemptedAt,
@@ -375,12 +410,13 @@ public final class DispatchJobApi {
             String responseBody,
             boolean success,
             String errorMessage,
-            String errorType) {
+            String errorType,
+            Attempt.RequestInfo request) {
 
         public static AttemptDTO from(Attempt a) {
             return new AttemptDTO(a.attemptNumber(), a.attemptedAt(), a.completedAt(), a.durationMillis(),
                     a.responseCode(), a.responseBody(), a.success(), a.errorMessage(),
-                    a.errorType() == null ? null : a.errorType().name());
+                    a.errorType() == null ? null : a.errorType().name(), a.request());
         }
     }
 

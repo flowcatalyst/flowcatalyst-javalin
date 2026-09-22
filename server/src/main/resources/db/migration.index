@@ -11,3 +11,4 @@ V10__dispatch_job_queue.sql
 V11__platform_event_schema_version.sql
 V12__connection_application_scope.sql
 V13__functions.sql
+V14__dispatch_job_descriptor_and_read_metadata.sql

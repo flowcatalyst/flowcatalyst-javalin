@@ -84,9 +84,11 @@ class LockfileCoverageTest {
     /// and pinned exactly (below) so the gap can never silently grow to more
     /// than this one route.
     ///
-    /// Empty since `code-first-connections.md` slice K2: `connections/sync`
-    /// is routed (`SdkSyncApi#syncConnections`).
-    private static final Set<String> KNOWN_MISSING = Set.of();
+    /// `POST /api/dispatch-jobs/{id}/sign` (catch-up-2026-09-22.md slice C3,
+    /// not this slice): builds the delivery exactly as `/api/dispatch/process`
+    /// would and returns it unsent, gated on `dispatch-job:view-raw`. Owed to
+    /// C3, which brings the resolvers this route needs to share.
+    private static final Set<String> KNOWN_MISSING = Set.of("POST /api/dispatch-jobs/{id}/sign");
 
     @Test
     void registeredApiRoutesAreInTheLockfileAndCoverageIsReported() {

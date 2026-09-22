@@ -263,9 +263,9 @@ class PendingJobPollerTest {
         String idLow = "a" + RUN + "order1";
         String idHigh = "z" + RUN + "order2";
         seedWriteRow(new Seed(idHigh, code("orderhigh"), null, "PENDING", t, null, null, null, group,
-                0, null, null, null, null, null, null, null, "IMMEDIATE", 7, t, "EVENT", "exponential"));
+                0, null, null, null, null, null, null, null, "IMMEDIATE", 7, t, "EVENT", "exponential", null));
         seedWriteRow(new Seed(idLow, code("orderlow"), null, "PENDING", t, null, null, null, group,
-                0, null, null, null, null, null, null, null, "IMMEDIATE", 7, t, "EVENT", "exponential"));
+                0, null, null, null, null, null, null, null, "IMMEDIATE", 7, t, "EVENT", "exponential", null));
 
         try (Connection conn = DATA_SOURCE.getConnection()) {
             conn.setAutoCommit(false);

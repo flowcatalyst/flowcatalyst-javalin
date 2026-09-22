@@ -53,7 +53,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// load-bearing behaviour (S1–S7) is pinned against `ProcessingApi.State`
 /// directly in `ProcessingApiTest`/`DeliveryCredentialsTest`; this class
 /// exists ONLY to prove `Platform` wires the real
-/// `DeliveryCredentials.forApplications` resolver instead of leaving
+/// `DeliveryCredentials.resolve` resolver instead of leaving
 /// `DeliveryCredentials.none()` in place (the exact regression the spec's
 /// defect section describes).
 ///

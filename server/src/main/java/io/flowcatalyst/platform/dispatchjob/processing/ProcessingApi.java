@@ -255,18 +255,39 @@ public final class ProcessingApi {
     }
 
     private static DeliveryCredentials.Resolved resolveCredentials(State s, DispatchJob job) {
+        DeliveryCredentials.Resolved resolved;
         try {
-            var resolved = s.credentials().resolve(job);
-            return resolved == null ? DeliveryCredentials.Resolved.NONE : resolved;
+            resolved = s.credentials().resolve(job);
+            if (resolved == null) {
+                resolved = DeliveryCredentials.Resolved.NONE;
+            }
         } catch (RuntimeException e) {
             // Resolver failure degrades to bare delivery with a warning, not
-            // a hard failure (spec §5).
+            // a hard failure (spec §3) — a distinct log line from the "bare
+            // with a reason" WARN below: this one means the lookup itself
+            // never answered, that one means it answered "no credentials".
             LOG.atWarn().setMessage("dispatch process: delivery-creds lookup failed; delivering unsigned")
                     .addKeyValue("job_id", job.id())
                     .setCause(e)
                     .log();
-            return DeliveryCredentials.Resolved.NONE;
+            return DeliveryCredentials.Resolved.bare("credential lookup failed: " + e.getMessage());
         }
+        // Never unsigned silently (hand-off 2026-09-22): a resolver that
+        // actually explained why it is bare (a non-empty reason — every real
+        // resolution path sets one) gets a WARN naming it, so an operator
+        // sees why a delivery is about to go out unsigned instead of finding
+        // out from the subscriber's 401 three retries later. [DeliveryCredentials#none]'s
+        // deliberate "no lookups at all" sentinel carries no reason and is
+        // NOT this case — a test fixture that wants no credentials at all is
+        // not "a resolver found nothing".
+        if (resolved.isBare() && resolved.reason() != null && !resolved.reason().isEmpty()) {
+            LOG.atWarn().setMessage("dispatch process: delivering unsigned")
+                    .addKeyValue("job_id", job.id())
+                    .addKeyValue("subscription_id", job.subscriptionId())
+                    .addKeyValue("reason", resolved.reason())
+                    .log();
+        }
+        return resolved;
     }
 
     private static void recordAttempt(State s, String jobId, int attemptNumber, DeliveryResult result,
@@ -274,12 +295,16 @@ public final class ProcessingApi {
         try {
             switch (result) {
                 case DeliveryResult.Delivered delivered -> s.repo().recordAttempt(jobId, attemptNumber, true,
-                        delivered.status(), delivered.body(), null, null, attemptedAt, completedAt, durationMillis);
+                        delivered.status(), delivered.body(), null, null, delivered.request(), attemptedAt,
+                        completedAt, durationMillis);
                 case DeliveryResult.Deferred deferred -> s.repo().recordAttempt(jobId, attemptNumber, false,
-                        deferred.status(), null, "subscriber deferred delivery", null, attemptedAt, completedAt,
-                        durationMillis);
+                        deferred.status(), null, "subscriber deferred delivery", null, deferred.request(),
+                        attemptedAt, completedAt, durationMillis);
+                // The response body is kept on a failed attempt too (2026-09-22 addendum):
+                // the subscriber's stated reason, not just the status that earned it.
                 case DeliveryResult.Failed failed -> s.repo().recordAttempt(jobId, attemptNumber, false,
-                        failed.status(), null, failed.message(), failed.errorType(), attemptedAt, completedAt, durationMillis);
+                        failed.status(), failed.body(), failed.message(), failed.errorType(), failed.request(),
+                        attemptedAt, completedAt, durationMillis);
             }
         } catch (RuntimeException e) {
             // Best-effort, same as MarkInProgress above — a recording
@@ -318,7 +343,27 @@ public final class ProcessingApi {
                 }
             }
             case DeliveryResult.Failed failed -> {
-                if (attemptNumber >= job.maxRetries()) {
+                if (failed.status() != null && (failed.status() == 401 || failed.status() == 403)) {
+                    // Fail fast (hand-off 2026-09-22 addendum): a retry sends the SAME
+                    // credentials, so three attempts only delay the same answer — this is
+                    // terminal on the FIRST attempt, never subject to the retry ladder or
+                    // maxRetries below. attempt_count is left as the ordinary Failed path
+                    // would leave it (not bumped by markFailed) — a requeue does not reset
+                    // it, so bumping here would make a requeued job fail immediately.
+                    try {
+                        s.repo().markFailed(job.id(), job.createdAt(), failed.message());
+                    } catch (RuntimeException e) {
+                        LOG.atWarn().setMessage("dispatch process: mark failed failed")
+                                .addKeyValue("job_id", job.id())
+                                .setCause(e)
+                                .log();
+                    }
+                    LOG.atWarn().setMessage("dispatch failed (subscriber refused credentials; not retried)")
+                            .addKeyValue("job_id", job.id())
+                            .addKeyValue("status", failed.status())
+                            .addKeyValue("attempt", attemptNumber)
+                            .log();
+                } else if (attemptNumber >= job.maxRetries()) {
                     try {
                         s.repo().markFailed(job.id(), job.createdAt(), failed.message());
                     } catch (RuntimeException e) {

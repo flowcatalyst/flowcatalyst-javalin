@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict eOHt7xtG85gR3etO6NCuM6pZeybwjREWWazHWdd63iCFKUZTfVkztZvd5f02WtR
+\restrict p8GGcWoyrXBQJXSTYsSZG0rJpiYEG4NVBgOjMjzWWMO5HTjgB8dm8qh5eahpuNG
 
 -- Dumped from database version 18.4 (Debian 18.4-1.pgdg13+1)
 -- Dumped by pg_dump version 18.4 (Debian 18.4-1.pgdg13+1)
@@ -621,6 +621,7 @@ CREATE TABLE public.msg_dispatch_job_attempts (
     attempted_at timestamp with time zone,
     completed_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    request_info jsonb,
     CONSTRAINT chk_msg_dispatch_job_attempts_error_type CHECK (((error_type IS NULL) OR ((error_type)::text = ANY ((ARRAY['CONNECTION'::character varying, 'TIMEOUT'::character varying, 'HTTP_ERROR'::character varying, 'VALIDATION'::character varying, 'UNKNOWN'::character varying])::text[]))))
 )
 PARTITION BY RANGE (created_at);
@@ -644,6 +645,7 @@ CREATE TABLE public.msg_dispatch_job_attempts_2026_08 (
     attempted_at timestamp with time zone,
     completed_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_job_attempts_created_at_not_null NOT NULL,
+    request_info jsonb,
     CONSTRAINT chk_msg_dispatch_job_attempts_error_type CHECK (((error_type IS NULL) OR ((error_type)::text = ANY ((ARRAY['CONNECTION'::character varying, 'TIMEOUT'::character varying, 'HTTP_ERROR'::character varying, 'VALIDATION'::character varying, 'UNKNOWN'::character varying])::text[]))))
 );
 
@@ -666,6 +668,7 @@ CREATE TABLE public.msg_dispatch_job_attempts_2026_09 (
     attempted_at timestamp with time zone,
     completed_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_job_attempts_created_at_not_null NOT NULL,
+    request_info jsonb,
     CONSTRAINT chk_msg_dispatch_job_attempts_error_type CHECK (((error_type IS NULL) OR ((error_type)::text = ANY ((ARRAY['CONNECTION'::character varying, 'TIMEOUT'::character varying, 'HTTP_ERROR'::character varying, 'VALIDATION'::character varying, 'UNKNOWN'::character varying])::text[]))))
 );
 
@@ -688,6 +691,7 @@ CREATE TABLE public.msg_dispatch_job_attempts_2026_10 (
     attempted_at timestamp with time zone,
     completed_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_job_attempts_created_at_not_null NOT NULL,
+    request_info jsonb,
     CONSTRAINT chk_msg_dispatch_job_attempts_error_type CHECK (((error_type IS NULL) OR ((error_type)::text = ANY ((ARRAY['CONNECTION'::character varying, 'TIMEOUT'::character varying, 'HTTP_ERROR'::character varying, 'VALIDATION'::character varying, 'UNKNOWN'::character varying])::text[]))))
 );
 
@@ -710,6 +714,7 @@ CREATE TABLE public.msg_dispatch_job_attempts_2026_11 (
     attempted_at timestamp with time zone,
     completed_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_job_attempts_created_at_not_null NOT NULL,
+    request_info jsonb,
     CONSTRAINT chk_msg_dispatch_job_attempts_error_type CHECK (((error_type IS NULL) OR ((error_type)::text = ANY ((ARRAY['CONNECTION'::character varying, 'TIMEOUT'::character varying, 'HTTP_ERROR'::character varying, 'VALIDATION'::character varying, 'UNKNOWN'::character varying])::text[]))))
 );
 
@@ -732,6 +737,7 @@ CREATE TABLE public.msg_dispatch_job_attempts_2026_12 (
     attempted_at timestamp with time zone,
     completed_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_job_attempts_created_at_not_null NOT NULL,
+    request_info jsonb,
     CONSTRAINT chk_msg_dispatch_job_attempts_error_type CHECK (((error_type IS NULL) OR ((error_type)::text = ANY ((ARRAY['CONNECTION'::character varying, 'TIMEOUT'::character varying, 'HTTP_ERROR'::character varying, 'VALIDATION'::character varying, 'UNKNOWN'::character varying])::text[]))))
 );
 
@@ -815,6 +821,7 @@ CREATE TABLE public.msg_dispatch_jobs (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     queue character varying(255),
+    descriptor character varying(255),
     CONSTRAINT chk_msg_dispatch_jobs_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
     CONSTRAINT chk_msg_dispatch_jobs_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
     CONSTRAINT chk_msg_dispatch_jobs_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
@@ -866,6 +873,7 @@ CREATE TABLE public.msg_dispatch_jobs_2026_08 (
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_created_at_not_null NOT NULL,
     updated_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_updated_at_not_null NOT NULL,
     queue character varying(255),
+    descriptor character varying(255),
     CONSTRAINT chk_msg_dispatch_jobs_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
     CONSTRAINT chk_msg_dispatch_jobs_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
     CONSTRAINT chk_msg_dispatch_jobs_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
@@ -916,6 +924,7 @@ CREATE TABLE public.msg_dispatch_jobs_2026_09 (
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_created_at_not_null NOT NULL,
     updated_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_updated_at_not_null NOT NULL,
     queue character varying(255),
+    descriptor character varying(255),
     CONSTRAINT chk_msg_dispatch_jobs_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
     CONSTRAINT chk_msg_dispatch_jobs_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
     CONSTRAINT chk_msg_dispatch_jobs_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
@@ -966,6 +975,7 @@ CREATE TABLE public.msg_dispatch_jobs_2026_10 (
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_created_at_not_null NOT NULL,
     updated_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_updated_at_not_null NOT NULL,
     queue character varying(255),
+    descriptor character varying(255),
     CONSTRAINT chk_msg_dispatch_jobs_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
     CONSTRAINT chk_msg_dispatch_jobs_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
     CONSTRAINT chk_msg_dispatch_jobs_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
@@ -1016,6 +1026,7 @@ CREATE TABLE public.msg_dispatch_jobs_2026_11 (
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_created_at_not_null NOT NULL,
     updated_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_updated_at_not_null NOT NULL,
     queue character varying(255),
+    descriptor character varying(255),
     CONSTRAINT chk_msg_dispatch_jobs_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
     CONSTRAINT chk_msg_dispatch_jobs_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
     CONSTRAINT chk_msg_dispatch_jobs_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
@@ -1066,6 +1077,7 @@ CREATE TABLE public.msg_dispatch_jobs_2026_12 (
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_created_at_not_null NOT NULL,
     updated_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_updated_at_not_null NOT NULL,
     queue character varying(255),
+    descriptor character varying(255),
     CONSTRAINT chk_msg_dispatch_jobs_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
     CONSTRAINT chk_msg_dispatch_jobs_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
     CONSTRAINT chk_msg_dispatch_jobs_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
@@ -1114,6 +1126,8 @@ CREATE TABLE public.msg_dispatch_jobs_read (
     updated_at timestamp with time zone NOT NULL,
     projected_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    descriptor character varying(255),
+    metadata jsonb DEFAULT '[]'::jsonb NOT NULL,
     CONSTRAINT chk_msg_dispatch_jobs_read_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
     CONSTRAINT chk_msg_dispatch_jobs_read_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
     CONSTRAINT chk_msg_dispatch_jobs_read_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
@@ -1163,6 +1177,8 @@ CREATE TABLE public.msg_dispatch_jobs_read_2026_08 (
     updated_at timestamp with time zone CONSTRAINT msg_dispatch_jobs_read_updated_at_not_null NOT NULL,
     projected_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_read_created_at_not_null NOT NULL,
+    descriptor character varying(255),
+    metadata jsonb DEFAULT '[]'::jsonb CONSTRAINT msg_dispatch_jobs_read_metadata_not_null NOT NULL,
     CONSTRAINT chk_msg_dispatch_jobs_read_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
     CONSTRAINT chk_msg_dispatch_jobs_read_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
     CONSTRAINT chk_msg_dispatch_jobs_read_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
@@ -1211,6 +1227,8 @@ CREATE TABLE public.msg_dispatch_jobs_read_2026_09 (
     updated_at timestamp with time zone CONSTRAINT msg_dispatch_jobs_read_updated_at_not_null NOT NULL,
     projected_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_read_created_at_not_null NOT NULL,
+    descriptor character varying(255),
+    metadata jsonb DEFAULT '[]'::jsonb CONSTRAINT msg_dispatch_jobs_read_metadata_not_null NOT NULL,
     CONSTRAINT chk_msg_dispatch_jobs_read_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
     CONSTRAINT chk_msg_dispatch_jobs_read_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
     CONSTRAINT chk_msg_dispatch_jobs_read_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
@@ -1259,6 +1277,8 @@ CREATE TABLE public.msg_dispatch_jobs_read_2026_10 (
     updated_at timestamp with time zone CONSTRAINT msg_dispatch_jobs_read_updated_at_not_null NOT NULL,
     projected_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_read_created_at_not_null NOT NULL,
+    descriptor character varying(255),
+    metadata jsonb DEFAULT '[]'::jsonb CONSTRAINT msg_dispatch_jobs_read_metadata_not_null NOT NULL,
     CONSTRAINT chk_msg_dispatch_jobs_read_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
     CONSTRAINT chk_msg_dispatch_jobs_read_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
     CONSTRAINT chk_msg_dispatch_jobs_read_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
@@ -1307,6 +1327,8 @@ CREATE TABLE public.msg_dispatch_jobs_read_2026_11 (
     updated_at timestamp with time zone CONSTRAINT msg_dispatch_jobs_read_updated_at_not_null NOT NULL,
     projected_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_read_created_at_not_null NOT NULL,
+    descriptor character varying(255),
+    metadata jsonb DEFAULT '[]'::jsonb CONSTRAINT msg_dispatch_jobs_read_metadata_not_null NOT NULL,
     CONSTRAINT chk_msg_dispatch_jobs_read_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
     CONSTRAINT chk_msg_dispatch_jobs_read_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
     CONSTRAINT chk_msg_dispatch_jobs_read_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
@@ -1355,6 +1377,8 @@ CREATE TABLE public.msg_dispatch_jobs_read_2026_12 (
     updated_at timestamp with time zone CONSTRAINT msg_dispatch_jobs_read_updated_at_not_null NOT NULL,
     projected_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() CONSTRAINT msg_dispatch_jobs_read_created_at_not_null NOT NULL,
+    descriptor character varying(255),
+    metadata jsonb DEFAULT '[]'::jsonb CONSTRAINT msg_dispatch_jobs_read_metadata_not_null NOT NULL,
     CONSTRAINT chk_msg_dispatch_jobs_read_kind CHECK (((kind)::text = ANY ((ARRAY['EVENT'::character varying, 'TASK'::character varying])::text[]))),
     CONSTRAINT chk_msg_dispatch_jobs_read_retry_strategy CHECK (((retry_strategy IS NULL) OR ((retry_strategy)::text = ANY ((ARRAY['immediate'::character varying, 'IMMEDIATE'::character varying, 'fixed'::character varying, 'FIXED_DELAY'::character varying, 'exponential'::character varying])::text[])))),
     CONSTRAINT chk_msg_dispatch_jobs_read_status CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'QUEUED'::character varying, 'PROCESSING'::character varying, 'IN_PROGRESS'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'ERROR'::character varying, 'CANCELLED'::character varying, 'EXPIRED'::character varying])::text[])))
@@ -8359,5 +8383,5 @@ ALTER TABLE ONLY public.webauthn_credentials
 -- PostgreSQL database dump complete
 --
 
-\unrestrict eOHt7xtG85gR3etO6NCuM6pZeybwjREWWazHWdd63iCFKUZTfVkztZvd5f02WtR
+\unrestrict p8GGcWoyrXBQJXSTYsSZG0rJpiYEG4NVBgOjMjzWWMO5HTjgB8dm8qh5eahpuNG
 

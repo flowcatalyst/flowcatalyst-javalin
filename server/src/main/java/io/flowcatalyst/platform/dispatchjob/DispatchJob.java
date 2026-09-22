@@ -46,6 +46,10 @@ import java.util.Objects;
 /// @param lastError          last failure message, `null` when none
 /// @param metadata           SDK key/value tags, never `null`
 /// @param idempotencyKey     optional dedup key
+/// @param descriptor         optional human-readable label — the raising
+///                            subscription's name at fan-out, or the caller's
+///                            own value on a direct create; `null` is the
+///                            legacy state (catch-up-2026-09-22.md C1)
 /// @param queue              the job's OWN dispatch priority claim — `DEFAULT` /
 ///                            `HIGH_PRIORITY` / unrecognised legacy text, or
 ///                            `null` for the legacy state (dispatch-job-priority
@@ -91,6 +95,7 @@ public record DispatchJob(
         String lastError,
         List<Metadata> metadata,
         String idempotencyKey,
+        String descriptor,
         String queue,
         Instant createdAt,
         Instant updatedAt,
@@ -142,7 +147,7 @@ public record DispatchJob(
         return new DispatchJob(id, externalId, kind, code, source, subject, targetUrl, protocol, payload,
                 payloadContentType, dataOnly, eventId, correlationId, clientId, subscriptionId, serviceAccountId,
                 dispatchPoolId, messageGroup, mode, sequence, timeoutSeconds, schemaId, maxRetries, retryStrategy,
-                DispatchJobStatus.PENDING, 0, null, metadata, idempotencyKey, queue, createdAt, Instant.now(),
+                DispatchJobStatus.PENDING, 0, null, metadata, idempotencyKey, descriptor, queue, createdAt, Instant.now(),
                 null, expiresAt, lastAttemptAt, null, null);
     }
 
@@ -166,7 +171,7 @@ public record DispatchJob(
         return new DispatchJob(id, externalId, kind, code, source, subject, targetUrl, protocol, payload,
                 payloadContentType, dataOnly, eventId, correlationId, clientId, subscriptionId, serviceAccountId,
                 dispatchPoolId, messageGroup, mode, sequence, timeoutSeconds, schemaId, maxRetries, retryStrategy,
-                newStatus, attemptCount, lastError, metadata, idempotencyKey, queue, createdAt, now,
+                newStatus, attemptCount, lastError, metadata, idempotencyKey, descriptor, queue, createdAt, now,
                 scheduledFor, expiresAt, lastAttemptAt, now, durationMillis);
     }
 }

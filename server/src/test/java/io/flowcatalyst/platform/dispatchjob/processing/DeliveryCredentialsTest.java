@@ -3,6 +3,9 @@ package io.flowcatalyst.platform.dispatchjob.processing;
 import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ApplicationType;
+import io.flowcatalyst.platform.connection.Connection;
+import io.flowcatalyst.platform.connection.ConnectionCode;
+import io.flowcatalyst.platform.connection.ConnectionRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJob;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobKind;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobStatus;
@@ -26,7 +29,6 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 
 import javax.sql.DataSource;
-import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Instant;
@@ -42,15 +44,20 @@ import java.util.function.Function;
 
 import static io.flowcatalyst.db.generated.Tables.APP_APPLICATIONS;
 import static io.flowcatalyst.db.generated.Tables.IAM_SERVICE_ACCOUNTS;
+import static io.flowcatalyst.db.generated.Tables.MSG_CONNECTIONS;
 import static io.flowcatalyst.db.generated.Tables.MSG_SUBSCRIPTIONS;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/// [DeliveryCredentials#forApplications] against real, TestPg-backed
-/// `ApplicationRepository` / `SubscriptionRepository` / `ServiceAccountRepository`
-/// rows (`docs/spec/dispatch-delivery-credentials.md` §2, load-bearing
-/// behaviours S2–S6). S1 (end to end through a real HTTP delivery) and S7
-/// (a throwing resolver) live in [ProcessingApiTest], which already owns the
-/// loopback-subscriber fixture; S8 (the `Platform` composition root) lives in
+/// [DeliveryCredentials#resolve] against real, TestPg-backed
+/// `ApplicationRepository` / `SubscriptionRepository` / `ConnectionRepository`
+/// / `ServiceAccountRepository` rows
+/// (`docs/go-mirror/2026-09-22-delivery-credentials-handoff.md`, the
+/// resolution-order reversal; `docs/spec/dispatch-delivery-credentials.md`
+/// §2, S2-S6 kept and re-read under the new order). S1 (end to end through a
+/// real HTTP delivery) and S7 (a throwing resolver) live in
+/// [ProcessingApiTest], which already owns the loopback-subscriber fixture;
+/// S8 (the `Platform` composition root) lives in
 /// `io.flowcatalyst.server.DispatchDeliveryCredentialsWiringTest`.
 class DeliveryCredentialsTest {
 
@@ -58,16 +65,20 @@ class DeliveryCredentialsTest {
     private static final DSLContext DB = DSL.using(DS, SQLDialect.POSTGRES);
     private static final ApplicationRepository APPLICATIONS = new ApplicationRepository(DS);
     private static final SubscriptionRepository SUBSCRIPTIONS = new SubscriptionRepository(DS);
+    private static final ConnectionRepository CONNECTIONS = new ConnectionRepository(DS);
+    private static final ServiceAccountRepository SERVICE_ACCOUNTS = new ServiceAccountRepository(DS, Optional.empty());
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 8).toLowerCase(Locale.ROOT);
     private static final List<String> APPLICATION_IDS = new ArrayList<>();
     private static final List<String> SUBSCRIPTION_IDS = new ArrayList<>();
+    private static final List<String> CONNECTION_IDS = new ArrayList<>();
     private static final List<String> SERVICE_ACCOUNT_IDS = new ArrayList<>();
     private static int seq = 0;
 
     @AfterAll
     static void cleanup() {
         DB.deleteFrom(IAM_SERVICE_ACCOUNTS).where(IAM_SERVICE_ACCOUNTS.ID.in(SERVICE_ACCOUNT_IDS)).execute();
+        DB.deleteFrom(MSG_CONNECTIONS).where(MSG_CONNECTIONS.ID.in(CONNECTION_IDS)).execute();
         DB.deleteFrom(MSG_SUBSCRIPTIONS).where(MSG_SUBSCRIPTIONS.ID.in(SUBSCRIPTION_IDS)).execute();
         DB.deleteFrom(APP_APPLICATIONS).where(APP_APPLICATIONS.ID.in(APPLICATION_IDS)).execute();
     }
@@ -91,8 +102,33 @@ class DeliveryCredentialsTest {
         return sub.id();
     }
 
+    /// A subscription naming `serviceAccountId` directly (step 1) and/or
+    /// `connectionId` (step 2's route to a connection).
+    private static String persistSubscription(String code, String serviceAccountId, String connectionId) {
+        Subscription sub = Subscription.create(code, code, "https://hook.example/" + code);
+        if (serviceAccountId != null) {
+            sub = sub.withServiceAccountId(serviceAccountId);
+        }
+        if (connectionId != null) {
+            sub = sub.withConnectionId(connectionId);
+        }
+        persist(sub, SUBSCRIPTIONS);
+        SUBSCRIPTION_IDS.add(sub.id());
+        return sub.id();
+    }
+
+    /// A connection naming `serviceAccountId` — `""` (never `null`, the
+    /// aggregate requires non-null) represents "names no account" the same
+    /// way Go's plain `string` does (hand-off: `strings.TrimSpace(...) != ""`).
+    private static String persistConnection(String code, String serviceAccountId) {
+        Connection conn = Connection.create(ConnectionCode.parse(code), code, serviceAccountId == null ? "" : serviceAccountId);
+        persist(conn, CONNECTIONS);
+        CONNECTION_IDS.add(conn.id());
+        return conn.id();
+    }
+
     private static <T extends HasId> void persist(T entity, Persist<T> repo) {
-        try (Connection conn = DS.getConnection()) {
+        try (var conn = DS.getConnection()) {
             conn.setAutoCommit(false);
             repo.persist(entity, DbTx.wrapForBootstrap(conn));
             conn.commit();
@@ -122,6 +158,27 @@ class DeliveryCredentialsTest {
         return id;
     }
 
+    /// A named account with an explicit code — `named()`'s reasons quote the
+    /// account's CODE, not its id (hand-off's table), so several tests need
+    /// to control it.
+    private static String serviceAccountWithCode(String applicationId, String code, String token, String signingSecret,
+                                                  boolean active) {
+        String id = EntityType.SERVICE_ACCOUNT.generate();
+        DB.insertInto(IAM_SERVICE_ACCOUNTS)
+                .set(IAM_SERVICE_ACCOUNTS.ID, id)
+                .set(IAM_SERVICE_ACCOUNTS.CODE, code)
+                .set(IAM_SERVICE_ACCOUNTS.NAME, "delivery-credentials test service account")
+                .set(IAM_SERVICE_ACCOUNTS.APPLICATION_ID, applicationId)
+                .set(IAM_SERVICE_ACCOUNTS.ACTIVE, active)
+                .set(IAM_SERVICE_ACCOUNTS.WH_AUTH_TYPE, "BEARER_TOKEN")
+                .set(IAM_SERVICE_ACCOUNTS.WH_AUTH_TOKEN_REF, token)
+                .set(IAM_SERVICE_ACCOUNTS.WH_SIGNING_SECRET_REF, signingSecret)
+                .set(IAM_SERVICE_ACCOUNTS.CREATED_AT, Instant.now().atOffset(ZoneOffset.UTC))
+                .execute();
+        SERVICE_ACCOUNT_IDS.add(id);
+        return id;
+    }
+
     /// A minimal, otherwise-irrelevant [DispatchJob] varying only
     /// `subscriptionId`/`code` — [DeliveryCredentials] never touches any
     /// other field, and no dispatch-job row needs to exist in the database
@@ -132,20 +189,263 @@ class DeliveryCredentialsTest {
                 "https://hook.example/x", Protocol.HTTP_WEBHOOK, null, "application/json", true,
                 null, null, null, subscriptionId, null, null, null, DispatchMode.IMMEDIATE, 0, 30,
                 null, 3, RetryStrategy.EXPONENTIAL, DispatchJobStatus.PENDING, 0, null, List.of(),
-                null, null, now, now, null, null, null, null, null);
+                null, null, null, now, now, null, null, null, null, null);
     }
 
-    /// No cache wrapper here — S6 pins the cache in isolation, and every
-    /// other scenario resolves at most once per test, so the un-cached
-    /// resolver (still `OutboundCredentials.resolve`, the same call the
-    /// cache wraps) is what keeps S2–S5 independent of cache TTL timing.
+    private static Function<String, OutboundCredentials.ById> byId() {
+        return id -> OutboundCredentials.resolveById(SERVICE_ACCOUNTS, id);
+    }
+
+    private static Function<String, Optional<OutboundCredentials>> byApplication() {
+        return applicationId -> OutboundCredentials.resolve(SERVICE_ACCOUNTS, applicationId);
+    }
+
+    /// No cache wrapper — S6 pins the cache in isolation, and every other
+    /// scenario resolves at most once per test, so the un-cached resolver
+    /// (still the same `OutboundCredentials` calls the cache wraps) is what
+    /// keeps every other scenario independent of cache TTL timing.
     private static DeliveryCredentials resolver() {
-        var serviceAccounts = new ServiceAccountRepository(DS, Optional.empty());
-        return DeliveryCredentials.forApplications(SUBSCRIPTIONS::findById, APPLICATIONS::findByCode,
-                applicationId -> OutboundCredentials.resolve(serviceAccounts, applicationId));
+        return DeliveryCredentials.resolve(SUBSCRIPTIONS::findById, CONNECTIONS::findById, APPLICATIONS::findByCode,
+                byId(), byApplication());
+    }
+
+    /// An [DeliveryCredentials.ApplicationLookup] that counts calls, so a
+    /// test can assert the application fallback is NOT consulted (T1, T3).
+    private static final class CountingApplicationLookup implements DeliveryCredentials.ApplicationLookup {
+        final AtomicInteger calls = new AtomicInteger();
+
+        @Override
+        public Optional<Application> findByCode(String code) {
+            calls.incrementAndGet();
+            return APPLICATIONS.findByCode(code);
+        }
+    }
+
+    // ── T1: the connection's account signs; the application is never consulted ──
+
+    /// Mutant: the old application-first rule (prefer step 3 over the
+    /// connection's account).
+    @Test
+    void t1_theConnectionsServiceAccountSignsAndTheApplicationIsNeverConsulted() {
+        String appId = persistApplication("dc-t1-app-" + RUN);
+        String appToken = "t1-app-token-" + RUN;
+        serviceAccount(appId, appToken, "t1-app-secret-" + RUN, true, Instant.now());
+        String connSecret = "t1-conn-secret-" + RUN;
+        String connSaId = serviceAccountWithCode(appId, "dc-t1-conn-sa-" + RUN, "t1-conn-token-" + RUN, connSecret, true);
+        String connId = persistConnection("dc-t1-conn-" + RUN, connSaId);
+        String subId = persistSubscription("dc-t1-sub-" + RUN, null, connId);
+        // The job's own code names the SAME application whose SA has a DIFFERENT
+        // secret — proves resolution never fell through to it.
+        persistSubscriptionApplicationCode(subId, "dc-t1-app-" + RUN);
+
+        var appLookup = new CountingApplicationLookup();
+        DeliveryCredentials creds = DeliveryCredentials.resolve(SUBSCRIPTIONS::findById, CONNECTIONS::findById,
+                appLookup, byId(), byApplication());
+
+        DeliveryCredentials.Resolved resolved = creds.resolve(job(subId, "dc-t1-app-" + RUN + ":x:y"));
+
+        assertThat(resolved.signingSecret()).as("the connection's account signs, not the application's").isEqualTo(connSecret);
+        assertThat(resolved.reason()).isEmpty();
+        assertThat(appLookup.calls.get()).as("the application lookup must not even be consulted").isZero();
+    }
+
+    // ── T2: the subscription's own account overrides its connection's ──────
+
+    /// Mutant: drop step 1 (always use the connection's account).
+    @Test
+    void t2_theSubscriptionsOwnAccountOverridesItsConnection() {
+        String appId = persistApplication("dc-t2-app-" + RUN);
+        String connSaId = serviceAccountWithCode(appId, "dc-t2-conn-sa-" + RUN, "conn-token", "conn-secret", true);
+        String connId = persistConnection("dc-t2-conn-" + RUN, connSaId);
+        String subSecret = "t2-sub-secret-" + RUN;
+        String subSaId = serviceAccountWithCode(appId, "dc-t2-sub-sa-" + RUN, "t2-sub-token-" + RUN, subSecret, true);
+        String subId = persistSubscription("dc-t2-sub-" + RUN, subSaId, connId);
+
+        DeliveryCredentials.Resolved resolved = resolver().resolve(job(subId, "irrelevant:code"));
+
+        assertThat(resolved.signingSecret()).isEqualTo(subSecret);
+        assertThat(resolved.signedBy()).isEqualTo("dc-t2-sub-sa-" + RUN);
+    }
+
+    // ── T3: a named account that cannot sign is declined, never replaced ───
+
+    /// Mutant (×3): fall through to the application instead of declining —
+    /// each of inactive / no-credentials / missing.
+    @Test
+    void t3_aNamedConnectionAccountThatIsInactiveIsDeclinedNotReplaced() {
+        String appId = persistApplication("dc-t3a-app-" + RUN);
+        String appSecret = "t3a-app-secret-" + RUN;
+        serviceAccount(appId, "t3a-app-token-" + RUN, appSecret, true, Instant.now());
+        String connSaId = serviceAccountWithCode(appId, "dc-t3a-conn-sa-" + RUN, "t3a-conn-token", "t3a-conn-secret", false);
+        String connCode = "dc-t3a-conn-" + RUN;
+        String connId = persistConnection(connCode, connSaId);
+        String subId = persistSubscription("dc-t3a-sub-" + RUN, null, connId);
+        persistSubscriptionApplicationCode(subId, "dc-t3a-app-" + RUN);
+
+        var appLookup = new CountingApplicationLookup();
+        DeliveryCredentials creds = DeliveryCredentials.resolve(SUBSCRIPTIONS::findById, CONNECTIONS::findById,
+                appLookup, byId(), byApplication());
+        DeliveryCredentials.Resolved resolved = creds.resolve(job(subId, "dc-t3a-app-" + RUN + ":x:y"));
+
+        assertThat(resolved.isBare()).as("declined, never silently signed by the application").isTrue();
+        assertThat(resolved.reason()).contains("connection " + connCode).contains("is inactive");
+        assertThat(appLookup.calls.get()).isZero();
+    }
+
+    /// The same rule one step up: a SUBSCRIPTION that names an inactive account
+    /// is declined with `subscription <code>` — never quietly signed by the
+    /// connection's account, which is active and would otherwise "work".
+    @Test
+    void t3_aNamedSubscriptionAccountThatIsInactiveIsNotReplacedByTheConnections() {
+        String appId = persistApplication("dc-t3s-app-" + RUN);
+        String connSaId = serviceAccountWithCode(appId, "dc-t3s-conn-sa-" + RUN, "t3s-conn-token", "t3s-conn-secret", true);
+        String subSaId = serviceAccountWithCode(appId, "dc-t3s-sub-sa-" + RUN, "t3s-sub-token", "t3s-sub-secret", false);
+        String connId = persistConnection("dc-t3s-conn-" + RUN, connSaId);
+        String subCode = "dc-t3s-sub-" + RUN;
+        String subId = persistSubscription(subCode, subSaId, connId);
+        persistSubscriptionApplicationCode(subId, "dc-t3s-app-" + RUN);
+
+        var appLookup = new CountingApplicationLookup();
+        DeliveryCredentials creds = DeliveryCredentials.resolve(SUBSCRIPTIONS::findById, CONNECTIONS::findById,
+                appLookup, byId(), byApplication());
+        DeliveryCredentials.Resolved resolved = creds.resolve(job(subId, "dc-t3s-app-" + RUN + ":x:y"));
+
+        assertThat(resolved.isBare()).as("mutant: fall through to the connection's active account").isTrue();
+        assertThat(resolved.reason()).contains("subscription " + subCode).contains("is inactive");
+        assertThat(appLookup.calls.get()).isZero();
+    }
+
+    @Test
+    void t3_aNamedConnectionAccountWithNoCredentialsIsDeclinedNotReplaced() {
+        String appId = persistApplication("dc-t3b-app-" + RUN);
+        serviceAccount(appId, "t3b-app-token-" + RUN, "t3b-app-secret-" + RUN, true, Instant.now());
+        String connSaId = serviceAccountWithCode(appId, "dc-t3b-conn-sa-" + RUN, null, null, true);
+        String connCode = "dc-t3b-conn-" + RUN;
+        String connId = persistConnection(connCode, connSaId);
+        String subId = persistSubscription("dc-t3b-sub-" + RUN, null, connId);
+        persistSubscriptionApplicationCode(subId, "dc-t3b-app-" + RUN);
+
+        var appLookup = new CountingApplicationLookup();
+        DeliveryCredentials creds = DeliveryCredentials.resolve(SUBSCRIPTIONS::findById, CONNECTIONS::findById,
+                appLookup, byId(), byApplication());
+        DeliveryCredentials.Resolved resolved = creds.resolve(job(subId, "dc-t3b-app-" + RUN + ":x:y"));
+
+        assertThat(resolved.isBare()).isTrue();
+        assertThat(resolved.reason()).contains("connection " + connCode).contains("has no webhook credentials");
+        assertThat(appLookup.calls.get()).isZero();
+    }
+
+    @Test
+    void t3_aNamedConnectionAccountThatDoesNotExistIsDeclinedNotReplaced() {
+        String appId = persistApplication("dc-t3c-app-" + RUN);
+        serviceAccount(appId, "t3c-app-token-" + RUN, "t3c-app-secret-" + RUN, true, Instant.now());
+        String connCode = "dc-t3c-conn-" + RUN;
+        String connId = persistConnection(connCode, "sac_0000000000000");
+        String subId = persistSubscription("dc-t3c-sub-" + RUN, null, connId);
+        persistSubscriptionApplicationCode(subId, "dc-t3c-app-" + RUN);
+
+        var appLookup = new CountingApplicationLookup();
+        DeliveryCredentials creds = DeliveryCredentials.resolve(SUBSCRIPTIONS::findById, CONNECTIONS::findById,
+                appLookup, byId(), byApplication());
+        DeliveryCredentials.Resolved resolved = creds.resolve(job(subId, "dc-t3c-app-" + RUN + ":x:y"));
+
+        assertThat(resolved.isBare()).isTrue();
+        assertThat(resolved.reason()).contains("connection " + connCode).contains("sac_0000000000000").contains("does not exist");
+        assertThat(appLookup.calls.get()).isZero();
+    }
+
+    // ── T4: no connection account, or no connection ⇒ application fallback ──
+
+    @Test
+    void t4_noConnectionAccountFallsBackToTheApplication() {
+        String appId = persistApplication("dc-t4a-app-" + RUN);
+        String appSecret = "t4a-app-secret-" + RUN;
+        serviceAccount(appId, "t4a-app-token-" + RUN, appSecret, true, Instant.now());
+        String connId = persistConnection("dc-t4a-conn-" + RUN, null); // names no account
+        String subId = persistSubscription("dc-t4a-sub-" + RUN, null, connId);
+        persistSubscriptionApplicationCode(subId, "dc-t4a-app-" + RUN);
+
+        DeliveryCredentials.Resolved resolved = resolver().resolve(job(subId, "irrelevant:code"));
+
+        assertThat(resolved.signingSecret()).isEqualTo(appSecret);
+    }
+
+    @Test
+    void t4_noConnectionAtAllFallsBackToTheApplication() {
+        String appId = persistApplication("dc-t4b-app-" + RUN);
+        String appSecret = "t4b-app-secret-" + RUN;
+        serviceAccount(appId, "t4b-app-token-" + RUN, appSecret, true, Instant.now());
+        String subId = persistSubscription("dc-t4b-sub-" + RUN, "dc-t4b-app-" + RUN);
+
+        DeliveryCredentials.Resolved resolved = resolver().resolve(job(subId, "irrelevant:code"));
+
+        assertThat(resolved.signingSecret()).isEqualTo(appSecret);
+    }
+
+    @Test
+    void t4_directJobWithQualifiedCodeResolvesTheApplication() {
+        String appId = persistApplication("value-" + RUN);
+        String secret = "t4-direct-secret-" + RUN;
+        serviceAccount(appId, "t4-direct-token-" + RUN, secret, true, Instant.now());
+
+        DeliveryCredentials.Resolved resolved = resolver().resolve(job(null, "value-" + RUN + ":invoice:created"));
+
+        assertThat(resolved.signingSecret()).isEqualTo(secret);
+    }
+
+    @Test
+    void t4_directJobWithNoColonNamesNothing() {
+        DeliveryCredentials.Resolved resolved = resolver().resolve(job(null, "legacy-" + RUN));
+
+        assertThat(resolved.isBare()).isTrue();
+        assertThat(resolved.reason()).isEqualTo("no subscription, connection or application names a service account");
+    }
+
+    @Test
+    void t4_directJobNamingAnUnknownApplicationIsDeclined() {
+        DeliveryCredentials.Resolved resolved = resolver().resolve(job(null, "nosuchapp-" + RUN + ":x"));
+
+        assertThat(resolved.isBare()).isTrue();
+        assertThat(resolved.reason()).isEqualTo("application nosuchapp-" + RUN + " does not exist");
+    }
+
+    // ── T5: a lookup error propagates — the caller degrades it, not the resolver ──
+
+    /// Mutant: swallow the connection lookup's error inside the resolver
+    /// (turn it into a bare `Resolved` instead of letting it propagate).
+    @Test
+    void t5_aConnectionLookupErrorPropagatesUncaught() {
+        String subId = persistSubscription("dc-t5-sub-" + RUN, null, "cnn_doesnotmatter");
+        DeliveryCredentials.ConnectionLookup throwing = id -> {
+            throw new RuntimeException("simulated connection lookup failure");
+        };
+        DeliveryCredentials creds = DeliveryCredentials.resolve(SUBSCRIPTIONS::findById, throwing,
+                APPLICATIONS::findByCode, byId(), byApplication());
+
+        assertThatThrownBy(() -> creds.resolve(job(subId, "irrelevant:code")))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessage("simulated connection lookup failure");
+    }
+
+    /// Same guarantee for the by-id credential lookup itself (a named
+    /// account, step 1) — `named()` must not catch it either.
+    @Test
+    void t5_aByServiceAccountIdLookupErrorPropagatesUncaught() {
+        String subId = persistSubscription("dc-t5b-sub-" + RUN, "sac_whatever", null);
+        Function<String, OutboundCredentials.ById> throwing = id -> {
+            throw new RuntimeException("simulated by-id lookup failure");
+        };
+        DeliveryCredentials creds = DeliveryCredentials.resolve(SUBSCRIPTIONS::findById, CONNECTIONS::findById,
+                APPLICATIONS::findByCode, throwing, byApplication());
+
+        assertThatThrownBy(() -> creds.resolve(job(subId, "irrelevant:code")))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessage("simulated by-id lookup failure");
     }
 
     // ── S2: subscription applicationCode wins over the job code's segment ──
+    // (Step 3, unchanged by the 2026-09-22 resolution-order rewrite — reached
+    // only when neither the subscription nor its connection names an account.)
 
     /// Mutant: prefer the job code's own leading segment over the
     /// subscription's `applicationCode` when both exist and differ.
@@ -198,10 +498,9 @@ class DeliveryCredentialsTest {
         String secret = "s3-fallback-secret-" + RUN;
         serviceAccount(appId, "s3-fallback-token-" + RUN, secret, true, Instant.now());
 
-        DeliveryCredentials blankCode = DeliveryCredentials.forApplications(
+        DeliveryCredentials blankCode = DeliveryCredentials.resolve(
                 id -> Optional.of(Subscription.create("s", "s", "https://hook.example/s").withApplicationCode("  ")),
-                APPLICATIONS::findByCode,
-                applicationId -> OutboundCredentials.resolve(new ServiceAccountRepository(DS, Optional.empty()), applicationId));
+                CONNECTIONS::findById, APPLICATIONS::findByCode, byId(), byApplication());
         String nullCodeSubscription = persistSubscription("s3-nullcode-" + RUN, null);
 
         assertThat(blankCode.resolve(job("sub_any", "fallback-" + RUN + ":thing:happened")).signingSecret())
@@ -239,8 +538,7 @@ class DeliveryCredentialsTest {
 
         DeliveryCredentials.Resolved resolved = resolver().resolve(j);
 
-        assertThat(resolved).as("no colon in the code — bare, not a lookup on the whole code")
-                .isEqualTo(DeliveryCredentials.Resolved.NONE);
+        assertThat(resolved.isBare()).as("no colon in the code — bare, not a lookup on the whole code").isTrue();
     }
 
     /// Mutant: accept an empty leading segment (`:x`) as a valid, empty
@@ -254,19 +552,19 @@ class DeliveryCredentialsTest {
     /// either way) without actually exercising the empty-segment guard.
     @Test
     void s3_directJobWithEmptyLeadingSegmentIsBare() {
-        DeliveryCredentials creds = DeliveryCredentials.forApplications(id -> Optional.empty(),
+        DeliveryCredentials creds = DeliveryCredentials.resolve(id -> Optional.empty(), CONNECTIONS::findById,
                 code -> code.isEmpty()
                         ? Optional.of(new Application("app_s3empty", ApplicationType.APPLICATION, "whatever", "n",
                                 null, null, null, null, null, null, null, true, Instant.now(), Instant.now()))
                         : Optional.empty(),
+                byId(),
                 applicationId -> Optional.of(new OutboundCredentials("should-never-be-returned", "should-never-be-returned")));
 
         DispatchJob j = job(null, ":x");
 
         DeliveryCredentials.Resolved resolved = creds.resolve(j);
 
-        assertThat(resolved).as("empty leading segment — bare, never looked up as an empty-string application code")
-                .isEqualTo(DeliveryCredentials.Resolved.NONE);
+        assertThat(resolved.isBare()).as("empty leading segment — bare, never looked up as an empty-string application code").isTrue();
     }
 
     // ── S4: unknown code, no active account, oldest wins, status matters ──
@@ -278,7 +576,7 @@ class DeliveryCredentialsTest {
 
         DeliveryCredentials.Resolved resolved = resolver().resolve(j);
 
-        assertThat(resolved).isEqualTo(DeliveryCredentials.Resolved.NONE);
+        assertThat(resolved.isBare()).isTrue();
     }
 
     @Test
@@ -290,7 +588,7 @@ class DeliveryCredentialsTest {
 
         DeliveryCredentials.Resolved resolved = resolver().resolve(j);
 
-        assertThat(resolved).as("only account is INACTIVE — bare").isEqualTo(DeliveryCredentials.Resolved.NONE);
+        assertThat(resolved.isBare()).as("only account is INACTIVE — bare").isTrue();
     }
 
     /// Mutant: pick the newest active account instead of the oldest.
@@ -367,7 +665,7 @@ class DeliveryCredentialsTest {
         assertThat(resolved.signingSecret()).isEqualTo(secret);
     }
 
-    // ── S6: the shared one-minute cache ─────────────────────────────────
+    // ── S6: the shared one-minute cache (step 3, unchanged) ─────────────
 
     /// Mutant: no cache at all (every resolve hits the repository again) —
     /// the fake clock never advances, so a correct cache must show exactly
@@ -381,9 +679,10 @@ class DeliveryCredentialsTest {
             return Optional.of(new OutboundCredentials("cached-token", "cached-secret"));
         };
         Function<String, Optional<OutboundCredentials>> cached = OutboundCredentials.cached(counting, fixed);
-        DeliveryCredentials creds = DeliveryCredentials.forApplications(id -> Optional.empty(), code -> Optional.of(
-                new Application("app_s6", ApplicationType.APPLICATION, "dc-s6-" + RUN, "n", null, null, null, null,
-                        null, null, null, true, Instant.now(), Instant.now())), cached);
+        DeliveryCredentials creds = DeliveryCredentials.resolve(id -> Optional.empty(), CONNECTIONS::findById,
+                code -> Optional.of(new Application("app_s6", ApplicationType.APPLICATION, "dc-s6-" + RUN, "n", null,
+                        null, null, null, null, null, null, true, Instant.now(), Instant.now())),
+                byId(), cached);
 
         DispatchJob j1 = job(null, "dc-s6-" + RUN + ":x:y");
         DispatchJob j2 = job(null, "dc-s6-" + RUN + ":x:z");
@@ -423,9 +722,10 @@ class DeliveryCredentialsTest {
             return Optional.of(new OutboundCredentials("driven-token", "driven-secret"));
         };
         Function<String, Optional<OutboundCredentials>> cached = OutboundCredentials.cached(counting, driven);
-        DeliveryCredentials creds = DeliveryCredentials.forApplications(id -> Optional.empty(), code -> Optional.of(
-                new Application("app_s6b", ApplicationType.APPLICATION, "dc-s6b-" + RUN, "n", null, null, null, null,
-                        null, null, null, true, Instant.now(), Instant.now())), cached);
+        DeliveryCredentials creds = DeliveryCredentials.resolve(id -> Optional.empty(), CONNECTIONS::findById,
+                code -> Optional.of(new Application("app_s6b", ApplicationType.APPLICATION, "dc-s6b-" + RUN, "n", null,
+                        null, null, null, null, null, null, true, Instant.now(), Instant.now())),
+                byId(), cached);
 
         DispatchJob j = job(null, "dc-s6b-" + RUN + ":x:y");
         creds.resolve(j);
@@ -440,5 +740,12 @@ class DeliveryCredentialsTest {
         mutableNow.at = mutableNow.at.plusSeconds(31);
         creds.resolve(j);
         assertThat(calls.get()).as("TTL expired — resolved again").isEqualTo(2);
+    }
+
+    // ── helpers ──────────────────────────────────────────────────────────
+
+    private static void persistSubscriptionApplicationCode(String subscriptionId, String applicationCode) {
+        DB.update(MSG_SUBSCRIPTIONS).set(MSG_SUBSCRIPTIONS.APPLICATION_CODE, applicationCode)
+                .where(MSG_SUBSCRIPTIONS.ID.eq(subscriptionId)).execute();
     }
 }

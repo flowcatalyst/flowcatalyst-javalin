@@ -80,6 +80,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
             String subscriptionId,
             String code,
             String source,
+            String messageGroup,
             Instant since,
             Instant until,
             boolean sortAscending,
@@ -187,6 +188,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
         if (f.code() != null) where = where.and(R.CODE.eq(f.code()));
         if (!f.codes().isEmpty()) where = where.and(R.CODE.in(f.codes()));
         if (f.source() != null) where = where.and(R.SOURCE.eq(f.source()));
+        if (f.messageGroup() != null) where = where.and(R.MESSAGE_GROUP.eq(f.messageGroup()));
         if (!f.applications().isEmpty()) where = where.and(R.APPLICATION.in(f.applications()));
         if (!f.subdomains().isEmpty()) where = where.and(R.SUBDOMAIN.in(f.subdomains()));
         if (!f.aggregates().isEmpty()) where = where.and(R.AGGREGATE.in(f.aggregates()));
@@ -268,6 +270,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
         row.put(T.DURATION_MILLIS, j.durationMillis());
         row.put(T.LAST_ERROR, j.lastError());
         row.put(T.IDEMPOTENCY_KEY, j.idempotencyKey());
+        row.put(T.DESCRIPTOR, j.descriptor());
         row.put(T.QUEUE, j.queue());
         row.put(T.UPDATED_AT, utc(Instant.now()));
         txDsl.insertInto(T)
@@ -337,6 +340,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 .set(T.DURATION_MILLIS, j.durationMillis())
                 .set(T.LAST_ERROR, j.lastError())
                 .set(T.IDEMPOTENCY_KEY, j.idempotencyKey())
+                .set(T.DESCRIPTOR, j.descriptor())
                 .set(T.QUEUE, j.queue())
                 .set(T.CREATED_AT, utc(j.createdAt()))
                 .set(T.UPDATED_AT, utc(j.updatedAt()))
@@ -558,7 +562,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
     /// (`TestCompleteFailure_EmptyErrorTypeLeavesItNil`, spec §13).
     public void recordAttempt(String jobId, int attemptNumber, boolean success, Integer responseCode,
                                String responseBody, String errorMessage, AttemptErrorType errorType,
-                               Instant attemptedAt, Instant completedAt, Long durationMillis) {
+                               Attempt.RequestInfo requestInfo, Instant attemptedAt, Instant completedAt, Long durationMillis) {
         dsl.insertInto(A)
                 .set(A.ID, Tsid.generate())
                 .set(A.DISPATCH_JOB_ID, jobId)
@@ -568,6 +572,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 .set(A.RESPONSE_BODY, responseBody)
                 .set(A.ERROR_MESSAGE, errorMessage)
                 .set(A.ERROR_TYPE, errorType == null ? null : errorType.name())
+                .set(A.REQUEST_INFO, requestInfo == null ? null : JSONB.jsonb(Json.write(requestInfo)))
                 .set(A.DURATION_MILLIS, durationMillis)
                 .set(A.ATTEMPTED_AT, utc(attemptedAt))
                 .set(A.COMPLETED_AT, utc(completedAt))
@@ -678,6 +683,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 row.getLastError(),
                 fromJsonb(row.getMetadata()),
                 row.getIdempotencyKey(),
+                row.getDescriptor(),
                 row.getQueue(),
                 row.getCreatedAt().toInstant(),
                 row.getUpdatedAt().toInstant(),
@@ -719,12 +725,16 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 row.getDurationMillis(),
                 row.getLastError(),
                 row.getIdempotencyKey(),
+                row.getDescriptor(),
+                fromJsonb(row.getMetadata()),
                 row.getCreatedAt().toInstant(),
                 row.getUpdatedAt().toInstant());
     }
 
     /// `success` is derived from the `status` column; a `NULL` `error_type`
-    /// is "none", not `UNKNOWN` (spec §1.2).
+    /// is "none", not `UNKNOWN` (spec §1.2). `request_info` (added 2026-09-22)
+    /// is `NULL` on any attempt recorded before that date — reads as `null`,
+    /// not a malformed-JSON error.
     private static Attempt toAttempt(MsgDispatchJobAttemptsRecord row) {
         return new Attempt(
                 row.getAttemptNumber() == null ? 0 : row.getAttemptNumber(),
@@ -735,7 +745,21 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 row.getResponseBody(),
                 "SUCCESS".equals(row.getStatus()),
                 row.getErrorMessage(),
-                row.getErrorType() == null ? null : attemptErrorType(row.getDispatchJobId(), row.getErrorType()));
+                row.getErrorType() == null ? null : attemptErrorType(row.getDispatchJobId(), row.getErrorType()),
+                requestInfoFromJsonb(row.getRequestInfo()));
+    }
+
+    /// `NULL`, empty, or a document that fails to parse reads as no recorded
+    /// request — never fails the read (a `request_info` shape mismatch must
+    /// not make a job's attempt history unreadable, the same reasoning as
+    /// [#fromJsonb(JSONB)]'s metadata guard).
+    private static Attempt.RequestInfo requestInfoFromJsonb(JSONB jsonb) {
+        if (jsonb == null || jsonb.data() == null || jsonb.data().isEmpty()) return null;
+        try {
+            return Json.MAPPER.readValue(jsonb.data(), Attempt.RequestInfo.class);
+        } catch (JacksonException e) {
+            return null;
+        }
     }
 
     /// The metadata list as the SDK's JSON array of `{key, value}` pairs; `[]` when empty.

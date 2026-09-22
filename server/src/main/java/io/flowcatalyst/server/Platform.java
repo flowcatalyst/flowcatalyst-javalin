@@ -422,7 +422,10 @@ public final class Platform {
                 ClientSecretEncryption.of(Encryption.fromKeys(env.appKey(), env.appKeyPrevious())), oidcClients::invalidate));
         LoginAttemptApi.register(routes, new LoginAttemptApi.State(new LoginAttemptRepository(pool)));
         var dispatchJobRepo = new DispatchJobRepository(pool);
-        DispatchJobApi.register(routes, new DispatchJobApi.State(dispatchJobRepo, uow));
+        // ClientCodeResolver over `clientRepo` (already built above for ClientApi) — the same
+        // seam ProcessingApi's own SubscriberDelivery uses, wired here so the list DTOs'
+        // `clientIdentifier` (catch-up-2026-09-22.md C1) is never a second implementation.
+        DispatchJobApi.register(routes, new DispatchJobApi.State(dispatchJobRepo, uow, new ClientCodeResolver(clientRepo::findById)));
         // The reaper (dispatch-seam spec §7) is not leader-gated — every sweep is one
         // idempotent, status-guarded UPDATE — so it starts unconditionally here, unlike the
         // leader-gated loops Server starts. Returned below so Server.Running#stop() can
@@ -449,17 +452,21 @@ public final class Platform {
         if (env.appKey() != null && !env.appKey().isBlank()) {
             var dispatchAuthVerifier = HmacTokenVerifier.fromAppKey(env.appKey());
             SettledApi.register(routes.in(Group.DISPATCH), new SettledApi.State(dispatchJobRepo, dispatchAuthVerifier));
-            // DeliveryCredentials.forApplications (docs/spec/dispatch-delivery-credentials.md):
-            // job -> subscription (when it has one) -> application code -> application -> the
-            // application's oldest active service account's webhook credentials, behind the
-            // SAME one-minute-per-application cache the scheduled-job dispatcher uses
-            // (OutboundCredentials.cached) — reused here, not reimplemented. `subscriptionRepo`
-            // and `applicationRepo` are already built above (for SubscriptionApi/ApplicationApi);
-            // the service-account repository is stateless over the pool like every other
-            // repository instance built more than once in this file.
+            // DeliveryCredentials.resolve (docs/go-mirror/2026-09-22-delivery-credentials-handoff.md):
+            // subscription.serviceAccountId -> subscription.connectionId -> connection.serviceAccountId
+            // -> the application's oldest active service account's webhook credentials -> bare with a
+            // reason. `subscriptionRepo`, `connectionRepo` and `applicationRepo` are already built
+            // above (for SubscriptionApi/ConnectionApi/ApplicationApi); the service-account repository
+            // is stateless over the pool like every other repository instance built more than once in
+            // this file. The by-id (steps 1-2) and by-application (step 3, unchanged) resolvers share
+            // `deliveryCredentialServiceAccounts`/`Clock.systemUTC()` but are two cache instances, each
+            // behind its own one-minute memo (OutboundCredentials.cachedById / .cached).
             var deliveryCredentialServiceAccounts = new ServiceAccountRepository(pool,
                     Encryption.fromKeys(env.appKey(), env.appKeyPrevious()));
-            var deliveryCredentials = DeliveryCredentials.forApplications(subscriptionRepo::findById, applicationRepo::findByCode,
+            var deliveryCredentials = DeliveryCredentials.resolve(subscriptionRepo::findById, connectionRepo::findById,
+                    applicationRepo::findByCode,
+                    OutboundCredentials.cachedById(serviceAccountId ->
+                            OutboundCredentials.resolveById(deliveryCredentialServiceAccounts, serviceAccountId), Clock.systemUTC()),
                     OutboundCredentials.cached(applicationId ->
                             OutboundCredentials.resolve(deliveryCredentialServiceAccounts, applicationId), Clock.systemUTC()));
             // ClientCodeResolver over `clientRepo` (already built above for ClientApi):
@@ -719,7 +726,8 @@ public final class Platform {
         MeApi.register(routes, new MeApi.State(principalRepo, applicationRepo, clientRepo, new ClientConfigRepository(pool)));
         EventApi.registerAt(bff, "/bff/events", eventApiState);
         IngestApi.registerEventsBatchAt(bff, "/bff/events/batch", ingestState);
-        DispatchJobApi.registerAt(bff, "/bff/dispatch-jobs", new DispatchJobApi.State(dispatchJobRepo, uow));
+        DispatchJobApi.registerAt(bff, "/bff/dispatch-jobs",
+                new DispatchJobApi.State(dispatchJobRepo, uow, new ClientCodeResolver(clientRepo::findById)));
         ProcessApi.registerAt(bff, "/bff/processes", new ProcessApi.State(processRepo, uow));
         DebugBff.register(bff, new DebugBff.State(eventRepo, dispatchJobRepo));
 

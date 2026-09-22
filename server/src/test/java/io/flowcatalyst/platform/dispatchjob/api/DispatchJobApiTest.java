@@ -1,9 +1,12 @@
 package io.flowcatalyst.platform.dispatchjob.api;
 
 import tools.jackson.databind.JsonNode;
+import io.flowcatalyst.db.generated.Tables;
+import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
+import io.flowcatalyst.platform.dispatchjob.processing.ClientCodeResolver;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
 import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
@@ -64,6 +67,7 @@ class DispatchJobApiTest {
     private static final String CODE = code("api");
     private static final Instant BASE = Instant.now().minusSeconds(120);
     private static TestHttp http;
+    private static Authenticator auth;
     private static String jobA;      // tenant A, PENDING
     private static String jobB;      // tenant B, FAILED
     private static String jobP;      // platform-scoped, COMPLETED
@@ -73,7 +77,7 @@ class DispatchJobApiTest {
     static void start() {
         var keys = SigningKeys.generateEphemeral();
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
-        var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
+        auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
         var state = new DispatchJobApi.State(new DispatchJobRepository(DispatchJobFixture.DS),
                 new UnitOfWork(DispatchJobFixture.DS, new PlatformSink(Json.MAPPER)));
         http = TestHttp.routes(routes -> {
@@ -152,6 +156,51 @@ class DispatchJobApiTest {
         assertThat(first.has("clientIdentifier")).isFalse();
         assertThat(first.has("priority")).isFalse();
         assertThat(first.has("payload")).isFalse();
+    }
+
+    /// T11 (catch-up-2026-09-22.md C1): a list row carries `descriptor`,
+    /// `messageGroup` and `metadata` (the job's own) and `clientIdentifier`
+    /// resolved through the wired [ClientCodeResolver] — UNLIKE
+    /// [#listIsABareArrayOfTheReadShapeNewestFirst], whose `state` wires no
+    /// resolver at all (the 2-arg convenience constructor,
+    /// `ClientCodeResolver.none()`) and so correctly sees no `clientIdentifier`.
+    /// Mutant: drop any of the four fields from `DispatchJobRead#from`.
+    @Test
+    void listRowsCarryDescriptorMessageGroupMetadataAndTheResolvedClientIdentifier() {
+        String identifier = "acme-t11-" + RUN;
+        String clientId = EntityType.CLIENT.generate();
+        DispatchJobFixture.DB.insertInto(Tables.TNT_CLIENTS)
+                .set(Tables.TNT_CLIENTS.ID, clientId)
+                .set(Tables.TNT_CLIENTS.NAME, "T11 client")
+                .set(Tables.TNT_CLIENTS.IDENTIFIER, identifier)
+                .set(Tables.TNT_CLIENTS.STATUS, "ACTIVE")
+                .execute();
+        var resolverState = new DispatchJobApi.State(new DispatchJobRepository(DispatchJobFixture.DS),
+                new UnitOfWork(DispatchJobFixture.DS, new PlatformSink(Json.MAPPER)),
+                new ClientCodeResolver(new ClientRepository(DispatchJobFixture.DS)::findById));
+        try (var resolverHttp = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/api/*", auth);
+            DispatchJobApi.register(routes, resolverState);
+        })) {
+            String t11Code = code("t11-descmeta");
+            String t11Job = seed(Seed.of(t11Code).withClientId(clientId).withMessageGroup("t11-group-" + RUN)
+                    .withDescriptor("Notify T11 of things").withMetadataJson("[{\"key\":\"k\",\"value\":\"v\"}]"));
+
+            var r = resolverHttp.get("/api/dispatch-jobs?codes=" + t11Code, ANCHOR);
+            assertThat(r.statusCode()).isEqualTo(200);
+            JsonNode row = json(r).get(0);
+            assertThat(row.get("id").asText()).isEqualTo(t11Job);
+            assertThat(row.get("descriptor").asText()).isEqualTo("Notify T11 of things");
+            assertThat(row.get("messageGroup").asText()).isEqualTo("t11-group-" + RUN);
+            assertThat(row.get("metadata").get(0).get("key").asText()).isEqualTo("k");
+            assertThat(row.get("metadata").get(0).get("value").asText()).isEqualTo("v");
+            assertThat(row.get("clientIdentifier").asText())
+                    .as("resolved through the wired ClientCodeResolver, unlike the no-resolver test above")
+                    .isEqualTo(identifier);
+        } finally {
+            DispatchJobFixture.DB.deleteFrom(Tables.TNT_CLIENTS).where(Tables.TNT_CLIENTS.ID.eq(clientId)).execute();
+        }
     }
 
     @Test

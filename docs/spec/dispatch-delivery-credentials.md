@@ -3,6 +3,24 @@
 Owner ruling 2026-09-19: lands on `main` ahead of the function service. Closes `docs/backlog.md`
 "Subscriber deliveries go out unsigned" and `dispatch-seam.md` §5 "Credentials", §15.
 
+**Reversed 2026-09-22** (`docs/go-mirror/2026-09-22-delivery-credentials-handoff.md`,
+`docs/spec/catch-up-2026-09-22.md` slice C2): §2 below — "credentials belong to the
+application" — is no longer the resolution rule. The connection form REQUIRES a service
+account and the subscription form asks for no application, so keying on the application alone
+described a credential nothing configured; a Laravel subscriber holding the connection
+account's secret rejected every delivery as unsigned-by-the-wrong-key. The new order is the
+hand-off's: `subscription.serviceAccountId` → `subscription.connectionId → connection.serviceAccountId`
+→ the application's oldest active account (§2 below, now step 3's fallback only, otherwise
+unchanged) → bare with a reason. §2's numbered steps are kept below **as historical record of
+what step 3 alone still does** — read "the resolution" throughout as "step 3, reached only when
+neither the subscription nor its connection names an account." `DeliveryCredentials.forApplications`
+is renamed `DeliveryCredentials.resolve` and gains the `connections`/`byServiceAccountId`
+parameters; `Resolved` gains `reason`/`signedBy`. S2 and S4 below are re-read the same way (still
+valid, now pinning step 3's inner behaviour specifically) — S1, S3, S5–S8 are unaffected in
+substance. New load-bearing behaviours (the resolution order itself, the never-silent reason,
+`request_info`, the 401/403 fail-fast) are T1–T9 in `docs/spec/catch-up-2026-09-22.md`, not
+renumbered into this file's S-series.
+
 ## 1. The defect
 
 `SubscriberDelivery` already stamps `Authorization: Bearer …` and `X-FlowCatalyst-Signature` /

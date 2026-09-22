@@ -42,7 +42,8 @@ public final class DispatchJobProjection implements Projector.Step {
                 service_account_id, client_id, subscription_id, dispatch_pool_id, mode, message_group, sequence,
                 timeout_seconds, status, max_retries, retry_strategy, scheduled_for, expires_at, attempt_count,
                 last_attempt_at, completed_at, duration_millis, last_error, idempotency_key, is_completed,
-                is_terminal, application, subdomain, aggregate, updated_at, projected_at, created_at)
+                is_terminal, application, subdomain, aggregate, descriptor, metadata, updated_at, projected_at,
+                created_at)
             SELECT id, external_id, source, kind, code, subject, event_id, correlation_id, target_url, protocol,
                 service_account_id, client_id, subscription_id, dispatch_pool_id, mode, message_group, sequence,
                 timeout_seconds, status, max_retries, retry_strategy, scheduled_for, expires_at, attempt_count,
@@ -52,6 +53,8 @@ public final class DispatchJobProjection implements Projector.Step {
                 split_part(code, ':', 1),
                 NULLIF(split_part(code, ':', 2), ''),
                 NULLIF(split_part(code, ':', 3), ''),
+                descriptor,
+                COALESCE(metadata, '[]'::jsonb),
                 updated_at, now(), created_at
             FROM msg_dispatch_jobs
             WHERE id = ANY(?) AND created_at BETWEEN ? AND ?
@@ -64,6 +67,8 @@ public final class DispatchJobProjection implements Projector.Step {
                 last_error = EXCLUDED.last_error,
                 is_completed = EXCLUDED.is_completed,
                 is_terminal = EXCLUDED.is_terminal,
+                descriptor = EXCLUDED.descriptor,
+                metadata = EXCLUDED.metadata,
                 updated_at = EXCLUDED.updated_at,
                 projected_at = EXCLUDED.projected_at
             """;

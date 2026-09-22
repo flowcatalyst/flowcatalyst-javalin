@@ -252,6 +252,11 @@ public class MsgDispatchJobs extends TableImpl<MsgDispatchJobsRecord> {
      */
     public final TableField<MsgDispatchJobsRecord, String> QUEUE = createField(DSL.name("queue"), SQLDataType.VARCHAR(255), this, "");
 
+    /**
+     * The column <code>public.msg_dispatch_jobs.descriptor</code>.
+     */
+    public final TableField<MsgDispatchJobsRecord, String> DESCRIPTOR = createField(DSL.name("descriptor"), SQLDataType.VARCHAR(255), this, "");
+
     private MsgDispatchJobs(Name alias, Table<MsgDispatchJobsRecord> aliased) {
         this(alias, aliased, (Field<?>[]) null, null);
     }

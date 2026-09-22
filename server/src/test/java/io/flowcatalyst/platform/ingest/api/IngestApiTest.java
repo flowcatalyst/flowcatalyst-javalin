@@ -535,7 +535,7 @@ class IngestApiTest {
         return new DispatchJob(id, null, DispatchJobKind.EVENT, code, null, null, "https://target.test/hook",
                 Protocol.HTTP_WEBHOOK, null, "application/json", false, null, null, null, null, null, null,
                 null, DispatchMode.NEXT_ON_ERROR, 99, 30, null, 3, RetryStrategy.EXPONENTIAL,
-                DispatchJobStatus.PENDING, 0, null, List.of(), null, null, createdAt, createdAt, null, null, null, null, null);
+                DispatchJobStatus.PENDING, 0, null, List.of(), null, null, null, createdAt, createdAt, null, null, null, null, null);
     }
 
     // ── Dispatch jobs: singular ──────────────────────────────────────────

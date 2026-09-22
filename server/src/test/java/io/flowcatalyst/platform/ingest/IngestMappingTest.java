@@ -188,7 +188,7 @@ class IngestMappingTest {
         return new DispatchJobIngestMapper.RawItem(raw.id, null, raw.kind, "it:dispatch:job:created", null, null,
                 "https://target.test/hook", null, raw.payloadContentType, false, null, null, null, null, null, null,
                 null, raw.mode, raw.sequence, raw.sequenceOverride, raw.timeoutSeconds, raw.maxRetries,
-                raw.retryStrategy, List.of(), null, raw.queue);
+                raw.retryStrategy, List.of(), null, null, raw.queue);
     }
 
     /// A small builder so each defaulting test only names the one field it varies.

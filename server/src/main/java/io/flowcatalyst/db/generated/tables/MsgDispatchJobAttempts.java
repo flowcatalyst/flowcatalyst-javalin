@@ -18,6 +18,7 @@ import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
+import org.jooq.JSONB;
 import org.jooq.Name;
 import org.jooq.PlainSQL;
 import org.jooq.QueryPart;
@@ -121,6 +122,11 @@ public class MsgDispatchJobAttempts extends TableImpl<MsgDispatchJobAttemptsReco
      * The column <code>public.msg_dispatch_job_attempts.created_at</code>.
      */
     public final TableField<MsgDispatchJobAttemptsRecord, OffsetDateTime> CREATED_AT = createField(DSL.name("created_at"), SQLDataType.TIMESTAMPWITHTIMEZONE(6).nullable(false).defaultValue(DSL.field(DSL.raw("now()"), SQLDataType.TIMESTAMPWITHTIMEZONE)), this, "");
+
+    /**
+     * The column <code>public.msg_dispatch_job_attempts.request_info</code>.
+     */
+    public final TableField<MsgDispatchJobAttemptsRecord, JSONB> REQUEST_INFO = createField(DSL.name("request_info"), SQLDataType.JSONB, this, "");
 
     private MsgDispatchJobAttempts(Name alias, Table<MsgDispatchJobAttemptsRecord> aliased) {
         this(alias, aliased, (Field<?>[]) null, null);

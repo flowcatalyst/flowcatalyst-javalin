@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.dispatchjob.processing;
 
+import io.flowcatalyst.platform.dispatchjob.Attempt;
 import io.flowcatalyst.platform.dispatchjob.AttemptErrorType;
 import io.flowcatalyst.platform.dispatchjob.DispatchJob;
 
@@ -29,7 +30,7 @@ public interface ProcessingRepository {
 
     void recordAttempt(String jobId, int attemptNumber, boolean success, Integer responseCode,
                         String responseBody, String errorMessage, AttemptErrorType errorType,
-                        Instant attemptedAt, Instant completedAt, Long durationMillis);
+                        Attempt.RequestInfo requestInfo, Instant attemptedAt, Instant completedAt, Long durationMillis);
 
     void markCompleted(String id, Instant createdAt, Instant completedAt, Long durationMillis);
 

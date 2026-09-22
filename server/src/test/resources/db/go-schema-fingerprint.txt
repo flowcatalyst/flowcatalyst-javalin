@@ -260,6 +260,7 @@ COLUMN	msg_dispatch_job_attempts	error_message	7	text			YES		NO
 COLUMN	msg_dispatch_job_attempts	error_stack_trace	8	text			YES		NO
 COLUMN	msg_dispatch_job_attempts	error_type	9	character varying	20		YES		NO
 COLUMN	msg_dispatch_job_attempts	id	1	character varying	13		NO		NO
+COLUMN	msg_dispatch_job_attempts	request_info	14	jsonb			YES		NO
 COLUMN	msg_dispatch_job_attempts	response_body	6	text			YES		NO
 COLUMN	msg_dispatch_job_attempts	response_code	5	integer		32	YES		NO
 COLUMN	msg_dispatch_job_attempts	status	4	character varying	20		YES		NO
@@ -278,6 +279,7 @@ COLUMN	msg_dispatch_jobs	completed_at	31	timestamp with time zone			YES		NO
 COLUMN	msg_dispatch_jobs	correlation_id	8	character varying	100		YES		NO
 COLUMN	msg_dispatch_jobs	created_at	37	timestamp with time zone			NO	now()	NO
 COLUMN	msg_dispatch_jobs	data_only	14	boolean			NO	true	NO
+COLUMN	msg_dispatch_jobs	descriptor	40	character varying	255		YES		NO
 COLUMN	msg_dispatch_jobs	dispatch_pool_id	19	character varying	17		YES		NO
 COLUMN	msg_dispatch_jobs	duration_millis	32	bigint		64	YES		NO
 COLUMN	msg_dispatch_jobs	event_id	7	character varying	13		YES		NO
@@ -318,6 +320,7 @@ COLUMN	msg_dispatch_jobs_read	code	5	character varying	200		NO		NO
 COLUMN	msg_dispatch_jobs_read	completed_at	26	timestamp with time zone			YES		NO
 COLUMN	msg_dispatch_jobs_read	correlation_id	8	character varying	100		YES		NO
 COLUMN	msg_dispatch_jobs_read	created_at	37	timestamp with time zone			NO	now()	NO
+COLUMN	msg_dispatch_jobs_read	descriptor	38	character varying	255		YES		NO
 COLUMN	msg_dispatch_jobs_read	dispatch_pool_id	14	character varying	17		YES		NO
 COLUMN	msg_dispatch_jobs_read	duration_millis	27	bigint		64	YES		NO
 COLUMN	msg_dispatch_jobs_read	event_id	7	character varying	13		YES		NO
@@ -332,6 +335,7 @@ COLUMN	msg_dispatch_jobs_read	last_attempt_at	25	timestamp with time zone			YES	
 COLUMN	msg_dispatch_jobs_read	last_error	28	text			YES		NO
 COLUMN	msg_dispatch_jobs_read	max_retries	20	integer		32	NO		NO
 COLUMN	msg_dispatch_jobs_read	message_group	16	character varying	200		YES		NO
+COLUMN	msg_dispatch_jobs_read	metadata	39	jsonb			NO	'[]'::jsonb	NO
 COLUMN	msg_dispatch_jobs_read	mode	15	character varying	30		NO		NO
 COLUMN	msg_dispatch_jobs_read	projected_at	36	timestamp with time zone			YES		NO
 COLUMN	msg_dispatch_jobs_read	protocol	10	character varying	30		NO		NO

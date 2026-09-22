@@ -56,6 +56,7 @@ public final class DispatchJobIngestMapper {
             String retryStrategy,
             List<DispatchJob.Metadata> metadata,
             String idempotencyKey,
+            String descriptor,
             String queue) {
     }
 
@@ -90,11 +91,26 @@ public final class DispatchJobIngestMapper {
                 Protocol.HTTP_WEBHOOK, it.payload(), payloadContentType, it.dataOnly(), it.eventId(),
                 it.correlationId(), it.clientId(), it.subscriptionId(), it.serviceAccountId(), it.dispatchPoolId(),
                 it.messageGroup(), mode, sequence, timeoutSeconds, null, maxRetries, retryStrategy,
-                DispatchJobStatus.PENDING, 0, null, it.metadata(), it.idempotencyKey(), queue, now, now,
-                null, null, null, null, null);
+                DispatchJobStatus.PENDING, 0, null, it.metadata(), it.idempotencyKey(), descriptor(it.descriptor()),
+                queue, now, now, null, null, null, null, null);
     }
 
     private static String blank(String s) {
         return s == null || s.isBlank() ? null : s;
+    }
+
+    /// A caller-supplied descriptor (spec catch-up-2026-09-22.md C1: optional
+    /// on `POST /api/dispatch-jobs`(`/batch`)), same rule as fan-out's
+    /// `descriptorFor` — trimmed, `null` when blank, clipped to the
+    /// `VARCHAR(255)` column.
+    private static String descriptor(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String trimmed = raw.strip();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        return trimmed.length() > 255 ? trimmed.substring(0, 255) : trimmed;
     }
 }

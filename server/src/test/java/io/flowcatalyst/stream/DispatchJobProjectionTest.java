@@ -55,6 +55,29 @@ class DispatchJobProjectionTest {
         assertThat(sourceProjectedAt).isNotNull();
     }
 
+    /// T11 (catch-up-2026-09-22.md C1): the read projection carries the
+    /// write row's `descriptor` and `metadata` verbatim. Mutant: drop either
+    /// column from the UPSERT's SELECT list.
+    @Test
+    @DisplayName("descriptor and metadata are copied onto the read projection")
+    void descriptorAndMetadataAreCopiedOntoTheProjection() {
+        String code = StreamFixture.type("djp-descmeta");
+        Instant createdAt = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        String id = StreamFixture.dispatchJob(code, "PENDING", createdAt, createdAt);
+        DB.update(MSG_DISPATCH_JOBS)
+                .set(MSG_DISPATCH_JOBS.DESCRIPTOR, "Notify Value of user logins")
+                .set(MSG_DISPATCH_JOBS.METADATA, org.jooq.JSONB.valueOf("[{\"key\":\"tenant\",\"value\":\"acme\"}]"))
+                .where(MSG_DISPATCH_JOBS.ID.eq(id))
+                .execute();
+
+        int claimed = PROJECTION.step(BIG_BATCH);
+        assertThat(claimed).isGreaterThanOrEqualTo(1);
+
+        var row = DB.selectFrom(MSG_DISPATCH_JOBS_READ).where(MSG_DISPATCH_JOBS_READ.ID.eq(id)).fetchOne();
+        assertThat(row.getDescriptor()).isEqualTo("Notify Value of user logins");
+        assertThat(row.getMetadata().data()).isEqualTo("[{\"key\": \"tenant\", \"value\": \"acme\"}]");
+    }
+
     @ParameterizedTest(name = "{0} -> completed={1} terminal={2}")
     @CsvSource({
             "PENDING,    false, false",

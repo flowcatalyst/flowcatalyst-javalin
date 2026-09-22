@@ -758,6 +758,9 @@
           "errorType": {
             "type": "string"
           },
+          "request": {
+            "$ref": "#/components/schemas/RequestSummary"
+          },
           "responseBody": {
             "type": "string"
           },
@@ -3240,6 +3243,38 @@
         ],
         "type": "object"
       },
+      "DeliveryPlan": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/DeliveryPlan.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "request": {
+            "$ref": "#/components/schemas/RequestSummary"
+          }
+        },
+        "required": [
+          "request",
+          "headers",
+          "body"
+        ],
+        "type": "object"
+      },
       "DeveloperUserListResponse": {
         "additionalProperties": false,
         "properties": {
@@ -3361,6 +3396,9 @@
             "format": "date-time",
             "type": "string"
           },
+          "descriptor": {
+            "type": "string"
+          },
           "dispatchMode": {
             "type": "string"
           },
@@ -3376,6 +3414,15 @@
           "lastAttemptAt": {
             "format": "date-time",
             "type": "string"
+          },
+          "messageGroup": {
+            "type": "string"
+          },
+          "metadata": {
+            "items": {
+              "$ref": "#/components/schemas/MetadataDTO"
+            },
+            "type": "array"
           },
           "mode": {
             "type": "string"
@@ -3465,6 +3512,9 @@
           },
           "dataOnly": {
             "type": "boolean"
+          },
+          "descriptor": {
+            "type": "string"
           },
           "dispatchPoolId": {
             "type": "string"
@@ -6209,6 +6259,40 @@
           "name",
           "expiresAt",
           "createdAt"
+        ],
+        "type": "object"
+      },
+      "RequestSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "bearer": {
+            "type": "boolean"
+          },
+          "headers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "signature": {
+            "type": "boolean"
+          },
+          "signedBy": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "unsignedReason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "signature",
+          "bearer"
         ],
         "type": "object"
       },
@@ -12280,6 +12364,16 @@
             }
           },
           {
+            "description": "Exact message group",
+            "explode": false,
+            "in": "query",
+            "name": "messageGroup",
+            "schema": {
+              "description": "Exact message group",
+              "type": "string"
+            }
+          },
+          {
             "explode": false,
             "in": "query",
             "name": "limit",
@@ -12604,6 +12698,16 @@
             }
           },
           {
+            "description": "Exact message group",
+            "explode": false,
+            "in": "query",
+            "name": "messageGroup",
+            "schema": {
+              "description": "Exact message group",
+              "type": "string"
+            }
+          },
+          {
             "explode": false,
             "in": "query",
             "name": "limit",
@@ -12805,6 +12909,16 @@
             "name": "until",
             "schema": {
               "description": "RFC3339 timestamp",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Exact message group",
+            "explode": false,
+            "in": "query",
+            "name": "messageGroup",
+            "schema": {
+              "description": "Exact message group",
               "type": "string"
             }
           },
@@ -13193,6 +13307,47 @@
           }
         },
         "summary": "Get a dispatch job (raw)",
+        "tags": [
+          "dispatch-jobs"
+        ]
+      }
+    },
+    "/api/dispatch-jobs/{id}/sign": {
+      "post": {
+        "operationId": "signDispatchJob",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliveryPlan"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Build the job's delivery (signing account, headers, signature) without sending it",
         "tags": [
           "dispatch-jobs"
         ]

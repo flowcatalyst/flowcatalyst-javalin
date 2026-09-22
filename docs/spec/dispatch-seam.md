@@ -1164,3 +1164,19 @@ one-minute-per-application cache the scheduled-job dispatcher uses
 it) — wired into `Platform`'s `ProcessingApi.State` in place of
 `DeliveryCredentials.none()`. §5 "Credentials" above is otherwise accurate
 as written.
+
+**Update 2026-09-22 (`docs/go-mirror/2026-09-22-delivery-credentials-handoff.md`,
+`docs/spec/catch-up-2026-09-22.md` slice C2) — reverses the 2026-09-19 update
+directly above.** `DeliveryCredentials.forApplications` is replaced by
+`DeliveryCredentials.resolve`: the first of `subscription.serviceAccountId`,
+`subscription.connectionId → connection.serviceAccountId`, or the
+application's oldest active account (the old rule, now step 3's fallback
+only) that **names** an account decides, with no fall-through past a named
+account — an inactive/missing/credential-less named account is declined with
+a reason, never silently signed by a different account. `Resolved` gains
+`reason` (non-empty exactly when bare) and `signedBy`; a failed attempt's
+`errorMessage` gains `" (delivered unsigned: <reason>)"`; `request_info` on
+every attempt records what was sent (never a secret); a 401/403 is terminal
+on the first attempt (`ProcessingApi#advance`). §5 "Credentials" above still
+describes the wire-level mechanics (the header set, the WARN-and-degrade
+failure mode) correctly — only the resolution order changed.

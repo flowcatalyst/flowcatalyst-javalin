@@ -8,6 +8,7 @@ import io.flowcatalyst.db.generated.tables.MsgDispatchJobAttempts;
 
 import java.time.OffsetDateTime;
 
+import org.jooq.JSONB;
 import org.jooq.Record2;
 import org.jooq.impl.UpdatableRecordImpl;
 
@@ -204,6 +205,20 @@ public class MsgDispatchJobAttemptsRecord extends UpdatableRecordImpl<MsgDispatc
         return (OffsetDateTime) get(12);
     }
 
+    /**
+     * Setter for <code>public.msg_dispatch_job_attempts.request_info</code>.
+     */
+    public void setRequestInfo(JSONB value) {
+        set(13, value);
+    }
+
+    /**
+     * Getter for <code>public.msg_dispatch_job_attempts.request_info</code>.
+     */
+    public JSONB getRequestInfo() {
+        return (JSONB) get(13);
+    }
+
     // -------------------------------------------------------------------------
     // Primary key information
     // -------------------------------------------------------------------------
@@ -227,7 +242,7 @@ public class MsgDispatchJobAttemptsRecord extends UpdatableRecordImpl<MsgDispatc
     /**
      * Create a detached, initialised MsgDispatchJobAttemptsRecord
      */
-    public MsgDispatchJobAttemptsRecord(String id, String dispatchJobId, Integer attemptNumber, String status, Integer responseCode, String responseBody, String errorMessage, String errorStackTrace, String errorType, Long durationMillis, OffsetDateTime attemptedAt, OffsetDateTime completedAt, OffsetDateTime createdAt) {
+    public MsgDispatchJobAttemptsRecord(String id, String dispatchJobId, Integer attemptNumber, String status, Integer responseCode, String responseBody, String errorMessage, String errorStackTrace, String errorType, Long durationMillis, OffsetDateTime attemptedAt, OffsetDateTime completedAt, OffsetDateTime createdAt, JSONB requestInfo) {
         super(MsgDispatchJobAttempts.MSG_DISPATCH_JOB_ATTEMPTS);
 
         setId(id);
@@ -243,6 +258,7 @@ public class MsgDispatchJobAttemptsRecord extends UpdatableRecordImpl<MsgDispatc
         setAttemptedAt(attemptedAt);
         setCompletedAt(completedAt);
         setCreatedAt(createdAt);
+        setRequestInfo(requestInfo);
         resetTouchedOnNotNull();
     }
 }

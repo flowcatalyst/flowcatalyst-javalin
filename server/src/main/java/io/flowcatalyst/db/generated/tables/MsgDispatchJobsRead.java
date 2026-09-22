@@ -18,6 +18,7 @@ import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Index;
+import org.jooq.JSONB;
 import org.jooq.Name;
 import org.jooq.PlainSQL;
 import org.jooq.QueryPart;
@@ -240,6 +241,16 @@ public class MsgDispatchJobsRead extends TableImpl<MsgDispatchJobsReadRecord> {
      * The column <code>public.msg_dispatch_jobs_read.created_at</code>.
      */
     public final TableField<MsgDispatchJobsReadRecord, OffsetDateTime> CREATED_AT = createField(DSL.name("created_at"), SQLDataType.TIMESTAMPWITHTIMEZONE(6).nullable(false).defaultValue(DSL.field(DSL.raw("now()"), SQLDataType.TIMESTAMPWITHTIMEZONE)), this, "");
+
+    /**
+     * The column <code>public.msg_dispatch_jobs_read.descriptor</code>.
+     */
+    public final TableField<MsgDispatchJobsReadRecord, String> DESCRIPTOR = createField(DSL.name("descriptor"), SQLDataType.VARCHAR(255), this, "");
+
+    /**
+     * The column <code>public.msg_dispatch_jobs_read.metadata</code>.
+     */
+    public final TableField<MsgDispatchJobsReadRecord, JSONB> METADATA = createField(DSL.name("metadata"), SQLDataType.JSONB.nullable(false).defaultValue(DSL.field(DSL.raw("'[]'::jsonb"), SQLDataType.JSONB)), this, "");
 
     private MsgDispatchJobsRead(Name alias, Table<MsgDispatchJobsReadRecord> aliased) {
         this(alias, aliased, (Field<?>[]) null, null);

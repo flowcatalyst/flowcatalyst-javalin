@@ -94,6 +94,7 @@ class ProcessingApiTest {
     // ── dispatch-delivery-credentials.md S1/S7 fixtures ─────────────────
     private static ApplicationRepository applicationRepo;
     private static SubscriptionRepository subscriptionRepo;
+    private static io.flowcatalyst.platform.connection.ConnectionRepository connectionRepo;
     private static final List<String> insertedApplications = new ArrayList<>();
     private static final List<String> insertedSubscriptions = new ArrayList<>();
     private static final List<String> insertedServiceAccounts = new ArrayList<>();
@@ -118,6 +119,7 @@ class ProcessingApiTest {
         clientRepo = new ClientRepository(DS);
         applicationRepo = new ApplicationRepository(DS);
         subscriptionRepo = new SubscriptionRepository(DS);
+        connectionRepo = new io.flowcatalyst.platform.connection.ConnectionRepository(DS);
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
             ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier, new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none())));
@@ -302,13 +304,17 @@ class ProcessingApiTest {
         return id;
     }
 
-    /// The real resolver chain (spec §2): subscription → applicationCode →
-    /// application → oldest active service account, un-cached (no TTL
-    /// interference between S1/S7's independent applications/tests — S6 in
-    /// `DeliveryCredentialsTest` pins the cache itself).
+    /// The real resolver chain (hand-off 2026-09-22): subscription →
+    /// connection → application → oldest active service account, un-cached
+    /// (no TTL interference between S1/S7's independent applications/tests —
+    /// S6 in `DeliveryCredentialsTest` pins the cache itself). S1/S7 seed no
+    /// connection, so this always falls through to the application step —
+    /// `DeliveryCredentialsTest` T1-T5 pin the connection/subscription steps
+    /// directly.
     private static DeliveryCredentials realDeliveryCredentials() {
         var serviceAccounts = new ServiceAccountRepository(DS, Optional.empty());
-        return DeliveryCredentials.forApplications(subscriptionRepo::findById, applicationRepo::findByCode,
+        return DeliveryCredentials.resolve(subscriptionRepo::findById, connectionRepo::findById, applicationRepo::findByCode,
+                serviceAccountId -> OutboundCredentials.resolveById(serviceAccounts, serviceAccountId),
                 applicationId -> OutboundCredentials.resolve(serviceAccounts, applicationId));
     }
 
@@ -863,6 +869,197 @@ class ProcessingApiTest {
         }
     }
 
+    // ── catch-up-2026-09-22.md C2: T6-T9 ────────────────────────────────
+
+    /// T6 (first half): a FAILED attempt's error message gains
+    /// `" (delivered unsigned: <reason>)"`, and the response body is kept on
+    /// failure too (2026-09-22 addendum — before, only success stored it).
+    /// Mutant: drop the suffix; drop the body.
+    @Test
+    void t6_failedAttemptCarriesTheUnsignedSuffixAndKeepsTheResponseBody() {
+        String id = seedJob(Seed.of(code("proc-t6-unsigned-fail")));
+        status.set(500);
+        responseBody.set("Invalid webhook signature.");
+        DeliveryCredentials bare = job -> DeliveryCredentials.Resolved.bare("test reason for t6");
+        try (TestHttp t6Http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+                    new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()), bare, Clock.systemUTC()));
+        })) {
+            var r = process(t6Http, id);
+            assertThat(r.statusCode()).isEqualTo(200);
+
+            var attempts = repo.attemptsByJob(id);
+            assertThat(attempts).hasSize(1);
+            var attempt = attempts.getFirst();
+            assertThat(attempt.success()).isFalse();
+            assertThat(attempt.errorMessage()).as("the reason is appended to the failure message")
+                    .contains("(delivered unsigned: test reason for t6)");
+            assertThat(attempt.responseBody()).as("the subscriber's stated reason is kept on failure too")
+                    .isEqualTo("Invalid webhook signature.");
+        }
+    }
+
+    /// T6 (second half): a SUCCESSFUL attempt carries no error message at
+    /// all — unsigned or not, success has nothing to append the reason to.
+    @Test
+    void t6_successfulAttemptCarriesNoErrorMessageEvenWhenUnsigned() {
+        String id = seedJob(Seed.of(code("proc-t6-unsigned-success")));
+        status.set(200);
+        DeliveryCredentials bare = job -> DeliveryCredentials.Resolved.bare("test reason for t6 success");
+        try (TestHttp t6Http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+                    new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()), bare, Clock.systemUTC()));
+        })) {
+            var r = process(t6Http, id);
+            assertThat(r.statusCode()).isEqualTo(200);
+
+            var attempts = repo.attemptsByJob(id);
+            assertThat(attempts).hasSize(1);
+            var attempt = attempts.getFirst();
+            assertThat(attempt.success()).isTrue();
+            assertThat(attempt.errorMessage()).as("a success carries no error message, unsigned or not").isNull();
+        }
+    }
+
+    /// T7: `request_info` records the documented keys and no secret — the
+    /// header list carries NAMES only (never `X-FlowCatalyst-Signature`'s or
+    /// `Authorization`'s VALUE). Mutant: put header values in the list, or
+    /// omit `signedBy`/the header names.
+    @Test
+    void t7_requestInfoRecordsWhatWasSentAndNeverASecret() {
+        String secret = "t7-request-info-secret-" + RUN;
+        String bearer = "t7-request-info-bearer-" + RUN;
+        DeliveryCredentials creds = job -> DeliveryCredentials.Resolved.signed(bearer, secret, "t7-sa-code");
+        String id = seedJob(Seed.of(code("proc-t7-requestinfo")));
+        status.set(200);
+        try (TestHttp t7Http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+                    new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()), creds, Clock.systemUTC()));
+        })) {
+            var r = process(t7Http, id);
+            assertThat(r.statusCode()).isEqualTo(200);
+
+            var attempts = repo.attemptsByJob(id);
+            assertThat(attempts).hasSize(1);
+            var request = attempts.getFirst().request();
+            assertThat(request).as("recorded on every attempt").isNotNull();
+            assertThat(request.signedBy()).isEqualTo("t7-sa-code");
+            assertThat(request.signature()).isTrue();
+            assertThat(request.bearer()).isTrue();
+            assertThat(request.timestamp()).isNotNull();
+            assertThat(request.headers()).as("sorted header NAMES")
+                    .contains("Authorization", "X-FlowCatalyst-Signature", "X-FlowCatalyst-Timestamp")
+                    .isSorted();
+            assertThat(request.headers()).as("names only — never the signature or bearer VALUE")
+                    .noneMatch(h -> h.equals(secret) || h.equals(bearer) || h.contains(secret) || h.contains(bearer));
+            assertThat(request.unsignedReason()).isNull();
+            assertThat(request.target()).isEqualTo(subscriberUrl);
+
+            String rawJson = rawRequestInfoJson(id);
+            assertThat(rawJson).as("the stored JSON itself never carries the secret or the bearer value")
+                    .doesNotContain(secret).doesNotContain(bearer);
+        }
+    }
+
+    private static String rawRequestInfoJson(String jobId) {
+        var row = DispatchJobFixture.DB.select(Tables.MSG_DISPATCH_JOB_ATTEMPTS.REQUEST_INFO)
+                .from(Tables.MSG_DISPATCH_JOB_ATTEMPTS)
+                .where(Tables.MSG_DISPATCH_JOB_ATTEMPTS.DISPATCH_JOB_ID.eq(jobId))
+                .fetchOne(Tables.MSG_DISPATCH_JOB_ATTEMPTS.REQUEST_INFO);
+        return row == null ? null : row.data();
+    }
+
+    /// T8: 401/403 are terminal on the FIRST attempt (a retry would send the
+    /// identical credentials), with the documented log line; a 500 still
+    /// retries. Mutant: retry a 401/403 like any other failure.
+    @Test
+    void t8_401FailsOnTheFirstAttemptWithoutRetrying() {
+        String id = seedJob(Seed.of(code("proc-t8-401")));
+        status.set(401);
+        responseBody.set("Invalid webhook signature.");
+
+        var log = (Logger) LoggerFactory.getLogger(ProcessingApi.class);
+        var captured = new ListAppender<ILoggingEvent>();
+        captured.start();
+        log.addAppender(captured);
+        try {
+            var r = process(id);
+            assertThat(r.statusCode()).isEqualTo(200);
+            assertThat(hits.get()).as("exactly one delivery attempt — never retried").isEqualTo(1);
+
+            DispatchJob after = reload(id);
+            assertThat(after.status()).as("terminal on the FIRST 401, not after the retry ladder")
+                    .isEqualTo(DispatchJobStatus.FAILED);
+
+            assertThat(captured.list).anySatisfy(e -> {
+                assertThat(e.getLevel()).isEqualTo(Level.WARN);
+                assertThat(e.getFormattedMessage()).contains("dispatch failed (subscriber refused credentials; not retried)");
+            });
+        } finally {
+            log.detachAppender(captured);
+        }
+    }
+
+    @Test
+    void t8_403FailsOnTheFirstAttemptTheSameWayAs401() {
+        String id = seedJob(Seed.of(code("proc-t8-403")));
+        status.set(403);
+
+        var r = process(id);
+
+        assertThat(r.statusCode()).isEqualTo(200);
+        assertThat(hits.get()).isEqualTo(1);
+        assertThat(reload(id).status()).isEqualTo(DispatchJobStatus.FAILED);
+    }
+
+    @Test
+    void t8_500StillRetriesUnlike401Or403() {
+        String id = seedJob(Seed.of(code("proc-t8-500")));
+        status.set(500);
+
+        var r = process(id);
+
+        assertThat(r.statusCode()).isEqualTo(200);
+        assertThat(hits.get()).isEqualTo(1);
+        DispatchJob after = reload(id);
+        assertThat(after.status()).as("a 500 still retries — only 401/403 fail fast").isEqualTo(DispatchJobStatus.PENDING);
+        assertThat(after.scheduledFor()).as("a retry is scheduled, not a terminal failure").isNotNull();
+    }
+
+    /// T9: the delivery signature is `HMAC-SHA256(secret, timestamp ‖ body)`,
+    /// hex — pinned against an INDEPENDENTLY computed vector (python's
+    /// `hmac`/`hashlib`, not `WebhookSigner` itself), so a change to the byte
+    /// format (order, encoding, or the timestamp's shape) is caught. Mutant:
+    /// change the timestamp format (e.g. drop the milliseconds, or use
+    /// RFC 3339's 6-digit form) — the signature would no longer match this
+    /// fixed vector.
+    @Test
+    void t9_signatureVectorMatchesAnIndependentlyComputedHmac() {
+        String secret = "catchup-2026-09-22-vector-secret";
+        String id = seedJob(Seed.of(code("proc-t9-vector")).withPayload("{\"hello\":\"world\"}"));
+        setDataOnly(id, true); // the fixture default, made explicit: the raw payload is the exact signed body
+        status.set(200);
+        Clock fixedClock = Clock.fixed(Instant.parse("2026-09-22T16:07:13Z"), ZoneOffset.UTC);
+        DeliveryCredentials creds = job -> DeliveryCredentials.Resolved.signed(null, secret, "t9-sa");
+        try (TestHttp t9Http = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+                    new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()), creds, fixedClock));
+        })) {
+            lastHeaders.clear();
+            var r = process(t9Http, id);
+
+            assertThat(r.statusCode()).isEqualTo(200);
+            assertThat(lastHeaders.get("x-flowcatalyst-timestamp")).isEqualTo("2026-09-22T16:07:13.000Z");
+            assertThat(lastHeaders.get("x-flowcatalyst-signature"))
+                    .as("HMAC-SHA256(secret, timestamp + body), hex — independently computed vector")
+                    .isEqualTo("65bfec50c89a7c4a9db269dcb5bd910371b1e6ecb705bbdfcd5aae33cb87d965");
+        }
+    }
+
     // ── oversized subscriber response is capped at the network read, not just on write ──
 
     /// Audit finding: `SubscriberDelivery` used to read the WHOLE response
@@ -1035,9 +1232,10 @@ class ProcessingApiTest {
         @Override
         public void recordAttempt(String jobId, int attemptNumber, boolean success, Integer responseCode,
                                    String responseBody, String errorMessage, AttemptErrorType errorType,
+                                   io.flowcatalyst.platform.dispatchjob.Attempt.RequestInfo requestInfo,
                                    Instant attemptedAt, Instant completedAt, Long durationMillis) {
             delegate.recordAttempt(jobId, attemptNumber, success, responseCode, responseBody, errorMessage,
-                    errorType, attemptedAt, completedAt, durationMillis);
+                    errorType, requestInfo, attemptedAt, completedAt, durationMillis);
         }
 
         @Override
