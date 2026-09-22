@@ -36,7 +36,7 @@ There is no Go for this. The function service is Java-first; nothing here is che
 |---|---|
 | `DnsLabel`, `FunctionAddress`, `FunctionAddressPattern` | parser records (§3) |
 | `Hostname`, `RoutePattern`, `HttpMethod` | parser records / enum (§5) |
-| `Runtime`, `FunctionStatus`, `AuthMode` | enums with `parse` / `parseStrict` |
+| `Runtime`, `FunctionStatus`, `EndpointAuth` | enums with `parse` / `parseStrict` |
 | `FunctionLimits`, `ClientCeilings` | limit policy (§4.6) |
 | `Manifest` (+ nested `Trigger`, `HttpRoute`, `Cors`, `DbRef`, `Limits`) | parsed manifest (§4) |
 | `Function` (+ nested `FunctionAlias`), `FunctionRepository` | aggregate: function + its aliases (§6.1) |
@@ -256,22 +256,28 @@ of §4.1 with `Json.MAPPER`; `readStored(parseStrict(x).toJson())` round-trips t
 | `LIMIT_INVALID` | a limit present and not a positive integer that fits an `int` (zero, negative, fractional, string, `5000000000`); message names the limit. The same "fits an `int`" rule holds for every integer in the manifest |
 | `LIMIT_OVER_CEILING` | a limit above the client's ceiling; message names the limit, the value and the ceiling |
 | `LIMIT_NOT_APPLICABLE` | `wasmMemoryMb` on a JVM function |
-| `TRIGGER_INVALID` | `type` absent/unknown; `event` without `eventType`; `schedule` without `cron`; `http` with no routes |
-| `TRIGGER_DUPLICATE` | two `event` triggers with the same `eventType`; more than one `http` trigger |
-| `ROUTE_INVALID` | no methods; an unknown method; a method or a hostname listed twice in one route (each pair becomes an `fn_routes` row, and a duplicate would be a unique violation at publish, not a validation error); `path` not a `RoutePattern` (§5.2); a hostname not a `Hostname` (§5.1); `auth` not `bearer`/`none`; `maxBodyBytes`/`timeoutMs` not positive |
-| `ROUTE_AMBIGUOUS` | two routes in this manifest that share a method and whose patterns are ambiguous (§5.3); message names both patterns. **Hostnames do not separate routes within one function**: the private entry (`/fn/{address}/…`, design §4a) reaches a function by address with no hostname, so every route of the function is a candidate there. A path served on two hostnames is one route listing both |
+| `ENDPOINT_INVALID` | an `endpoints` entry with no `path`, a `path` not a `RoutePattern` (§5.2), no methods / an unknown method / a method listed twice, `maxBodyBytes`/`timeoutMs` not positive, a `webhook` endpoint allowing a method other than `POST`; message names the path |
+| `ENDPOINT_AUTH_REQUIRED` | an endpoint without `auth`, or `auth` not `webhook`/`platform`/`none` — no default (`function-invocation.md` §3) |
+| `ROUTE_AMBIGUOUS` | two endpoints in this manifest that share a method and whose patterns are ambiguous (§5.3); message names both patterns |
+| `SUBSCRIPTION_INVALID` / `SUBSCRIPTION_DUPLICATE` / `SUBSCRIPTION_PATH_NOT_WEBHOOK` | a `subscriptions` entry without `eventType` or `path`, or with a bad `mode`/`maxRetries`/`timeoutSeconds`; two entries for one `eventType`; a `path` that is not a literal `webhook` endpoint of this manifest |
+| `SCHEDULE_INVALID` / `SCHEDULE_DUPLICATE` / `SCHEDULE_PATH_NOT_WEBHOOK` | the same three for `schedules` (`cron`, `timezone`, `path`); two entries for one (cron, timezone) |
+| `PUBLIC_ROUTE_INVALID` / `PUBLIC_ROUTE_DUPLICATE` | a `public` entry whose `hostname` is not a `Hostname` (§5.1) or whose `pathPrefix` is not a literal path; two entries for one (hostname, pathPrefix). **Hostnames do not separate endpoints within one function**: the private entry (`/fn/{address}/…`, design §4a) reaches a function by address with no hostname, so every endpoint of the function is a candidate there |
 | `DB_INVALID` | `name` not a `DnsLabel`, blank `secretRef`, duplicate `name` |
 | `CONFIG_INVALID` | blank or duplicate entries in `config`, `secrets` or `httpAllow` |
 
 `eventType` and `cron` are carried as strings here. Whether the event type exists and whether the
 cron parses are TriggerSync's checks (package B), against the aggregates that own those formats.
+(This table was reconciled with `Manifest.parseStrict` on 2026-09-22 — the `trigger`/`routes` shape
+it first described became `endpoints`/`subscriptions`/`schedules`/`public` in
+`function-invocation.md` §3, and the codes followed. The OpenAPI document's `publishFunctionVersion`
+400 description is generated from the same reading and the conformance test drives two of them.)
 
 `timeoutMs` on a route is also held to the `maxDurationMs` ceiling (`LIMIT_OVER_CEILING`).
 `db[].poolSize` is held to the `dbPoolSize` ceiling; absent ⇒ the default.
 
 ### 4.4 Enums
 
-`Runtime { JVM, WASM }`, `AuthMode { BEARER, NONE }`, `HttpMethod { GET, HEAD, POST, PUT, PATCH,
+`Runtime { JVM, WASM }`, `EndpointAuth { WEBHOOK, PLATFORM, NONE }`, `HttpMethod { GET, HEAD, POST, PUT, PATCH,
 DELETE, OPTIONS }`: `parseStrict(String)` is case-insensitive and throws the code above;
 `parse(String)` is the stored reader (constant name, exact). JSON is written lower-case for
 `runtime` and `auth`, upper-case for methods — the spellings of §4.1.
