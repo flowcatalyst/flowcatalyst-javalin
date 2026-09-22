@@ -87,6 +87,17 @@ public final class ConfigCommand implements Callable<Integer> {
         @Parameters(index = "1..*", paramLabel = "<KEY=VALUE>", description = "one or more key=value pairs to set")
         List<String> assignments;
 
+        @Option(names = "--manifest", paramLabel = "<file>",
+                description = "the manifest JSON file, to create the function from if it does not exist yet "
+                        + "(default: manifest.json in the working directory, when present)")
+        String manifestFile;
+
+        @Option(names = "--client", paramLabel = "<id>", description = "owning client id, when creating a client-owned function")
+        String client;
+
+        @Option(names = "--no-create", description = "fail (exit 1) instead of creating the function when its address is unknown")
+        boolean noCreate;
+
         @Mixin
         AddressOptions addressOpts;
 
@@ -100,6 +111,8 @@ public final class ConfigCommand implements Callable<Integer> {
                 String addr = addressOpts.resolve(address);
                 Map<String, String> updates = parseAssignments();
                 FnClient platform = root.client();
+                JsonNode manifest = Publisher.resolveOptionalManifest(spec, manifestFile);
+                Publisher.ensureFunctionExists(platform, addr, manifest, client, noCreate);
                 JsonNode current = platform.get("/api/functions/" + addr + "/config");
                 var existing = Json.MAPPER.convertValue(current, FunctionApi.ConfigResponse.class);
                 var merged = new LinkedHashMap<>(existing.values());

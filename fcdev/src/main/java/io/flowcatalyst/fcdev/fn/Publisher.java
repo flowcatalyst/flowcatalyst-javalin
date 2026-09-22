@@ -83,18 +83,33 @@ final class Publisher {
         return parsed.artifactRef();
     }
 
+    /// Shared by `fn publish`/`fn deploy` and, for the create-on-set behaviour
+    /// (`function-backlog-2026-09-22.md` Unit F), `fn config set`/`fn secret
+    /// set`: a GET for `address`, and — on a 404 only — creates the function
+    /// from `manifest`'s `runtime` (`client` as the owner) before returning.
+    ///
+    /// @param manifest may be `null` (no `--manifest` given and no default
+    ///                 `manifest.json` found) — fine when the function
+    ///                 already exists, but on a 404 with a `null` manifest
+    ///                 this throws instead of creating.
     /// @throws FnClientException the GET failed for any reason OTHER than the
     ///                           function not existing yet — including a 404
     ///                           under `--no-create` ("exit 1 with the
     ///                           platform's 404 message", uniformly handled
     ///                           by [FnCommand#runSafely])
-    private static void ensureFunctionExists(FnClient platform, String address, JsonNode manifest, String client,
-                                              boolean noCreate) {
+    /// @throws IOException a 404 with no manifest to create from — the exact
+    ///                     message [FnCommand#runSafely] prints on exit 1
+    static void ensureFunctionExists(FnClient platform, String address, JsonNode manifest, String client,
+                                      boolean noCreate) throws IOException {
         try {
             platform.get("/api/functions/" + address);
         } catch (FnClientException e) {
             if (e.status() != 404 || noCreate) {
                 throw e;
+            }
+            if (manifest == null) {
+                throw new IOException("function " + address + " does not exist and no manifest.json was found to "
+                        + "create it from — pass --manifest, or run fn publish first");
             }
             String[] parts = address.split("\\.", -1);
             String runtime = manifest.path("runtime").asString(null);
@@ -104,7 +119,7 @@ final class Publisher {
         }
     }
 
-    private static JsonNode readManifest(CommandSpec spec, String manifestFile) throws IOException {
+    static JsonNode readManifest(CommandSpec spec, String manifestFile) throws IOException {
         String raw = Files.readString(Path.of(manifestFile));
         try {
             return Json.MAPPER.readTree(raw);
@@ -112,6 +127,23 @@ final class Publisher {
             throw new CommandLine.ParameterException(spec.commandLine(),
                     "invalid JSON in manifest file " + manifestFile + ": " + e.getMessage());
         }
+    }
+
+    /// `fn config set`/`fn secret set`'s `--manifest` (spec Unit F): unlike
+    /// `publish`'s (required), theirs is optional — an explicit path is
+    /// always read (and a bad one still fails loudly), but with no
+    /// `--manifest` this looks for `manifest.json` in the working directory
+    /// and returns `null`, not an error, when it is not there. A `null`
+    /// result tells [#ensureFunctionExists] there is nothing to create from.
+    static JsonNode resolveOptionalManifest(CommandSpec spec, String manifestFile) throws IOException {
+        String file = manifestFile;
+        if (file == null || file.isBlank()) {
+            if (!Files.exists(Path.of("manifest.json"))) {
+                return null;
+            }
+            file = "manifest.json";
+        }
+        return readManifest(spec, file);
     }
 
     static String sha256(Path file) throws IOException {

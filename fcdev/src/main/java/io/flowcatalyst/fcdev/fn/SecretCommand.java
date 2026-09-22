@@ -54,6 +54,17 @@ public final class SecretCommand implements Callable<Integer> {
         @Option(names = "--from-file", paramLabel = "<file>", description = "read the value from this file instead of stdin")
         String fromFile;
 
+        @Option(names = "--manifest", paramLabel = "<file>",
+                description = "the manifest JSON file, to create the function from if it does not exist yet "
+                        + "(default: manifest.json in the working directory, when present)")
+        String manifestFile;
+
+        @Option(names = "--client", paramLabel = "<id>", description = "owning client id, when creating a client-owned function")
+        String client;
+
+        @Option(names = "--no-create", description = "fail (exit 1) instead of creating the function when its address is unknown")
+        boolean noCreate;
+
         @Mixin
         AddressOptions addressOpts;
 
@@ -75,8 +86,13 @@ public final class SecretCommand implements Callable<Integer> {
                 if (value.isEmpty()) {
                     throw new CommandLine.ParameterException(spec.commandLine(), "secret value must not be empty");
                 }
+                FnClient platform = root.client();
+                JsonNode manifest = Publisher.resolveOptionalManifest(spec, manifestFile);
+                // `secret set` PUTs one key directly, with no GET of its own — the
+                // existence check below is what catches a 404 and creates.
+                Publisher.ensureFunctionExists(platform, addr, manifest, client, noCreate);
                 var body = new FunctionApi.SetSecretRequest(value);
-                root.client().put("/api/functions/" + addr + "/secrets/" + key, Json.MAPPER.valueToTree(body));
+                platform.put("/api/functions/" + addr + "/secrets/" + key, Json.MAPPER.valueToTree(body));
                 print(root, addr);
                 return 0;
             });
