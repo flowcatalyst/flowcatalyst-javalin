@@ -61,6 +61,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// 3-arg convenience constructor (`DeliveryCredentials.none()` default) —
 /// the subscriber would receive neither `Authorization` nor
 /// `X-FlowCatalyst-Signature`, failing this test's header assertions.
+@SuppressWarnings("deprecation") // JsonNode#asText() — see DispatchJobRepository's own class doc
 class DispatchDeliveryCredentialsWiringTest {
 
     private static final DataSource DS = TestPg.dataSource();
@@ -88,7 +89,11 @@ class DispatchDeliveryCredentialsWiringTest {
                 "FC_API_PORT", "0",
                 "FC_METRICS_PORT", "0",
                 "FC_PLATFORM_ENABLED", "true",
-                "FLOWCATALYST_APP_KEY", appKey));
+                "FLOWCATALYST_APP_KEY", appKey,
+                // T10 (catch-up-2026-09-22.md slice C3): lets #signSharesTheSameResolverProcessUses
+                // call `/api/dispatch-jobs/{id}/sign` as an authenticated anchor without minting a
+                // real JWT — the dev-only `X-FC-Test-*` bypass every other Platform wiring test uses.
+                "FC_AUTH_ALLOW_TEST_HEADERS", "true"));
         running = new Server(env, new Server.Mode.Platform(Pools.ofSingle(DS)), Server.Spa.none(),
                 new PrometheusRegistry()).start();
 
@@ -140,7 +145,10 @@ class DispatchDeliveryCredentialsWiringTest {
         String id = EntityType.SERVICE_ACCOUNT.generate();
         DB.insertInto(Tables.IAM_SERVICE_ACCOUNTS)
                 .set(Tables.IAM_SERVICE_ACCOUNTS.ID, id)
-                .set(Tables.IAM_SERVICE_ACCOUNTS.CODE, "wiring-svc-" + RUN)
+                // Suffixed with the account's own id, not just RUN: two test methods in one JVM
+                // run share RUN, and a bare "wiring-svc-" + RUN collided on the unique code
+                // constraint the moment a second test called this (T10 companion).
+                .set(Tables.IAM_SERVICE_ACCOUNTS.CODE, "wiring-svc-" + RUN + "-" + id)
                 .set(Tables.IAM_SERVICE_ACCOUNTS.NAME, "wiring test service account")
                 .set(Tables.IAM_SERVICE_ACCOUNTS.APPLICATION_ID, applicationId)
                 .set(Tables.IAM_SERVICE_ACCOUNTS.ACTIVE, true)
@@ -199,6 +207,57 @@ class DispatchDeliveryCredentialsWiringTest {
         String expected = WebhookSigner.sign(secret, lastHeaders.get("x-flowcatalyst-timestamp"), lastBody.get());
         assertThat(lastHeaders.get("x-flowcatalyst-signature"))
                 .as("signed with the resolved application's own secret, over the body actually delivered")
+                .isEqualTo(expected);
+    }
+
+    /// T10 companion (catch-up-2026-09-22.md slice C3): `sign`, reached
+    /// through the SAME real composed server, resolves the SAME application's
+    /// REAL service account — the `sign` counterpart of this class's own
+    /// mutant (reverting `Platform`'s wiring to `DeliveryCredentials.none()`)
+    /// applied to `SignState` instead of `ProcessingApi.State`. A second,
+    /// independently-built `DeliveryCredentials.resolve(...)` for `sign`
+    /// (rather than reusing the one instance) answers identically here —
+    /// both are pure, deterministic reads over the same fresh DB rows — so
+    /// that specific sharing is a code-review property (`Platform`'s own
+    /// comment), not one this test can tell apart from two correct copies.
+    @Test
+    void signResolvesTheSameApplicationsRealCredentialsThroughTheComposedServer() throws Exception {
+        String appCode = "wiring-sign-app-" + RUN;
+        String token = "wiring-sign-token-" + RUN;
+        String secret = "wiring-sign-secret-" + RUN;
+        String appId = persistApplication(appCode);
+        activeServiceAccount(appId, token, secret);
+
+        String jobId = DispatchJobFixture.seedWriteRow(Seed.of(appCode + ":orders:order:created"));
+        insertedJobs.add(jobId);
+        DB.update(Tables.MSG_DISPATCH_JOBS)
+                .set(Tables.MSG_DISPATCH_JOBS.TARGET_URL, subscriberUrl)
+                .where(Tables.MSG_DISPATCH_JOBS.ID.eq(jobId))
+                .execute();
+
+        var request = HttpRequest.newBuilder(
+                        URI.create("http://localhost:" + running.apiPort() + "/api/dispatch-jobs/" + jobId + "/sign"))
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .header(io.flowcatalyst.platform.shared.auth.Authenticator.TEST_PRINCIPAL,
+                        io.flowcatalyst.platform.shared.tsid.EntityType.PRINCIPAL.generate())
+                .header(io.flowcatalyst.platform.shared.auth.Authenticator.TEST_SCOPE, "ANCHOR")
+                .header(io.flowcatalyst.platform.shared.auth.Authenticator.TEST_PERMISSIONS, "platform:*:*:*")
+                .build();
+        var response = http.send(request, HttpResponse.BodyHandlers.ofString());
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        assertThat(hits.get()).as("sign never reaches the subscriber").isZero();
+        JsonNode plan = json(response);
+
+        assertThat(plan.get("headers").get("Authorization").asText())
+                .as("the real bearer is never on the wire, even in the plan")
+                .isEqualTo("Bearer ••••••")
+                .doesNotContain(token);
+        String timestamp = plan.get("headers").get("X-FlowCatalyst-Timestamp").asText();
+        String expected = WebhookSigner.sign(secret, timestamp,
+                plan.get("body").asText().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertThat(plan.get("headers").get("X-FlowCatalyst-Signature").asText())
+                .as("signed with the SAME real application's secret /api/dispatch/process would use")
                 .isEqualTo(expected);
     }
 }

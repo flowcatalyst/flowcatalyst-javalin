@@ -320,9 +320,13 @@ class ConsumerLoopTest {
         start(manager);
 
         await(() -> !warnings.raised.isEmpty());
+        // Names the budget and the remedy verbatim (Go's wording, owner
+        // ruling 2026-09-22, docs/spec/router-hol-deferral.md §Addendum) —
+        // not just that a pause happened, but what an operator does about it.
         assertThat(warnings.raised.getFirst())
                 .contains("POOL_CAPACITY").contains("destination pools at capacity")
-                .contains("1 deferrals outstanding").contains("queue-1");
+                .contains("1 deferrals outstanding").contains("budget 1").contains("queue-1")
+                .contains("FC_ROUTER_DEFERRAL_BUDGET").contains("its own queue");
         assertThat(consumer.polls.get()).as("no poll while there is nowhere to put the result").isZero();
     }
 

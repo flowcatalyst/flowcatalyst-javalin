@@ -7,8 +7,11 @@
 
 import { apiFetch } from "./client";
 import type {
+	DeliveryPlan as GenDeliveryPlan,
 	DispatchJobFilterOptionsResponse,
 	DispatchJobRead as GenDispatchJobRead,
+	DispatchJobResponse as GenDispatchJobResponse,
+	RequestSummary as GenRequestSummary,
 	RequeueResponse,
 } from "./generated";
 
@@ -21,6 +24,13 @@ import type {
 // under statuses/codes/clientIds/dispatchPoolIds/subscriptionIds/kinds.
 export type DispatchJobRead = GenDispatchJobRead;
 export type DispatchJobFilterOptions = DispatchJobFilterOptionsResponse;
+/** The full job (write-side row): payload, metadata, attempts. */
+export type DispatchJobDetail = GenDispatchJobResponse;
+export type DispatchJobAttempt = NonNullable<GenDispatchJobResponse["attempts"]>[number];
+/** What the platform sent on an attempt — see the lockfile's RequestSummary. */
+export type DeliveryRequestSummary = GenRequestSummary;
+/** The "sign" action's answer: the delivery as it would go out right now. */
+export type DeliveryPlan = GenDeliveryPlan;
 
 export interface DispatchJobsListParams {
 	size?: number;
@@ -31,6 +41,8 @@ export interface DispatchJobsListParams {
 	aggregates?: string[] | undefined;
 	codes?: string[] | undefined;
 	source?: string | undefined;
+	/** Exact message group. */
+	messageGroup?: string | undefined;
 	/** RFC3339 lower bound on createdAt. */
 	since?: string | undefined;
 	/** RFC3339 upper bound on createdAt. */
@@ -49,6 +61,7 @@ function buildQuery(params: DispatchJobsListParams): string {
 	if (params.aggregates?.length) qp.set("aggregates", params.aggregates.join(","));
 	if (params.codes?.length) qp.set("codes", params.codes.join(","));
 	if (params.source) qp.set("source", params.source);
+	if (params.messageGroup) qp.set("messageGroup", params.messageGroup);
 	if (params.since) qp.set("since", params.since);
 	if (params.until) qp.set("until", params.until);
 	if (params.sort) qp.set("sort", params.sort);
@@ -59,6 +72,12 @@ function buildQuery(params: DispatchJobsListParams): string {
 export const dispatchJobsApi = {
 	list(params: DispatchJobsListParams): Promise<DispatchJobRead[]> {
 		return apiFetch(`/dispatch-jobs${buildQuery(params)}`);
+	},
+	get(id: string): Promise<DispatchJobDetail> {
+		return apiFetch(`/dispatch-jobs/${encodeURIComponent(id)}`);
+	},
+	attempts(id: string): Promise<DispatchJobAttempt[]> {
+		return apiFetch(`/dispatch-jobs/${encodeURIComponent(id)}/attempts`);
 	},
 	filterOptions(): Promise<DispatchJobFilterOptions> {
 		return apiFetch(`/dispatch-jobs/filter-options`);
@@ -71,5 +90,12 @@ export const dispatchJobsApi = {
 			method: "POST",
 			body: JSON.stringify({ ids }),
 		});
+	},
+	// Dry run: which service account would sign, every header, and a real
+	// signature over the real body — without delivering. Hand the timestamp,
+	// signature and body to the subscriber's verify command to see whether
+	// THEIR secret accepts it.
+	sign(id: string): Promise<DeliveryPlan> {
+		return apiFetch(`/dispatch-jobs/${encodeURIComponent(id)}/sign`, { method: "POST" });
 	},
 };

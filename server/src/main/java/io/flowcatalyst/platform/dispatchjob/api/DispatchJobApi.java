@@ -16,6 +16,8 @@ import io.flowcatalyst.platform.dispatchjob.operations.CompleteDispatchJob;
 import io.flowcatalyst.platform.dispatchjob.operations.RequeueCommand;
 import io.flowcatalyst.platform.dispatchjob.operations.RequeueDispatchJobs;
 import io.flowcatalyst.platform.dispatchjob.processing.ClientCodeResolver;
+import io.flowcatalyst.platform.dispatchjob.processing.DeliveryCredentials;
+import io.flowcatalyst.platform.dispatchjob.processing.SubscriberDelivery;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
@@ -28,6 +30,7 @@ import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Handler;
 import io.flowcatalyst.http.Routes;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
@@ -67,6 +70,7 @@ import static io.flowcatalyst.platform.shared.auth.Permission.DISPATCH_JOB_VIEW_
 /// | POST | `/api/dispatch-jobs/requeue` | view | 200 [RequeueResponse] |
 /// | POST | `/api/dispatch-jobs/{id}/cancel` | view | 200 [DispatchJobResponse]; 404 not-found (byte-identical for out-of-scope); 409 `NOT_FAILED` |
 /// | POST | `/api/dispatch-jobs/{id}/complete` | view | 200 [DispatchJobResponse]; 404 not-found (byte-identical for out-of-scope); 409 `NOT_FAILED` |
+/// | POST | `/api/dispatch-jobs/{id}/sign` | view-raw | 200 [io.flowcatalyst.platform.dispatchjob.processing.SubscriberDelivery.Plan] (lockfile `DeliveryPlan`); 404 not-found (byte-identical for out-of-scope); always registered — see [SignState] |
 public final class DispatchJobApi {
 
     /// Distinct values per facet on `filter-options` (spec §8).
@@ -94,6 +98,30 @@ public final class DispatchJobApi {
 
         public State(DispatchJobRepository repo, UnitOfWork uow) {
             this(repo, uow, ClientCodeResolver.none());
+        }
+    }
+
+    /// The `sign` action's dependencies (spec `catch-up-2026-09-22.md` slice
+    /// C3): `delivery` and `credentials` should be the exact SAME instances
+    /// `/api/dispatch/process` uses, WHEN that route is mounted
+    /// ([io.flowcatalyst.platform.dispatchjob.processing.ProcessingApi.State]'s
+    /// own fields) — the resolver's by-id/by-application caches and the
+    /// request builder must answer identically for both, or an operator
+    /// previewing a delivery could see a different signing account than the
+    /// one that will actually run. Unlike `/api/dispatch/process` itself,
+    /// `sign` needs no `FLOWCATALYST_APP_KEY` — it never verifies the
+    /// router's per-job HMAC bearer, only builds and signs a job's OWN
+    /// delivery, which needs no platform-wide key — so `Platform` builds
+    /// `delivery`/`credentials` unconditionally and this route is always
+    /// registered, keeping the lockfile's `sign` operation at 100% coverage
+    /// regardless of whether processing itself is configured.
+    public record SignState(DispatchJobRepository repo, SubscriberDelivery delivery, DeliveryCredentials credentials,
+                             Clock clock) {
+        public SignState {
+            Objects.requireNonNull(repo, "repo");
+            Objects.requireNonNull(delivery, "delivery");
+            Objects.requireNonNull(credentials, "credentials");
+            Objects.requireNonNull(clock, "clock");
         }
     }
 
@@ -136,6 +164,15 @@ public final class DispatchJobApi {
         write.post(prefix + "/{id}/cancel", Auth.scoped(ctx -> cancel(ctx, s)));
     }
 
+    /// Mounts `{id}/sign` under `prefix` (`/api/dispatch-jobs` or
+    /// `/bff/dispatch-jobs`) — separate from [#registerAt] because its
+    /// [SignState] carries dependencies (`delivery`, `credentials`) built
+    /// once, shared with `/api/dispatch/process` when that route exists (see
+    /// [SignState]'s doc), rather than [State]'s own `clientCodes`-only shape.
+    public static void registerSign(Routes routes, String prefix, SignState s) {
+        routes.post(prefix + "/{id}/sign", Auth.scoped(ctx -> sign(ctx, s)));
+    }
+
     // ── Handlers ───────────────────────────────────────────────────────────
 
     /// The three list routes share one handler; only the gate differs (spec §3).
@@ -162,6 +199,21 @@ public final class DispatchJobApi {
         Checks.require(Auth.current(), DISPATCH_JOB_VIEW);
         DispatchJob job = Access.loadOwn(s.repo(), ctx.pathParam("id")); // 404 + scope before exposing the history
         ctx.json(s.repo().attemptsByJob(job.id()).stream().map(AttemptDTO::from).toList());
+    }
+
+    /// `POST {id}/sign` (spec `catch-up-2026-09-22.md` slice C3): builds the
+    /// delivery exactly as `/api/dispatch/process` would — the SAME
+    /// [SubscriberDelivery] and the SAME [DeliveryCredentials] instance — and
+    /// returns it WITHOUT sending (mutant: send it). Gated on
+    /// `dispatch-job:view-raw`, the same permission `{id}/raw` uses, and the
+    /// same [Access#loadOwn] 404-for-out-of-scope shape as every other
+    /// id-addressed route here.
+    private static void sign(Exchange ctx, SignState s) {
+        Checks.require(Auth.current(), DISPATCH_JOB_VIEW_RAW);
+        DispatchJob job = Access.loadOwn(s.repo(), ctx.pathParam("id"));
+        var credentials = s.credentials().resolveOrBare(job);
+        var plan = s.delivery().plan(job, credentials, Instant.now(s.clock()));
+        ctx.json(plan);
     }
 
     /// Platform-scoped jobs (`null` client) are visible to anchors / super-admins only here.

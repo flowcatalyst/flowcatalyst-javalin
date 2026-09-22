@@ -28,7 +28,7 @@ defaults, the doubled buffer, and the dashboard field.
 | §4 NATS | `NatsQueueUri.DEFAULT_MAX_DELIVER` and `DEFAULT_MAX_ACK_PENDING` → `-1`; `Acknowledger.honoursDelayedReturn`'s Javadoc loses the `max-deliver` half of its rationale and gains the sentence the hand-off gives |
 | §5 buffer | `Pool.QUEUE_CAPACITY_MULTIPLIER` 20 → 40, `MIN_QUEUE_CAPACITY` 50 → 100 |
 | §6 dashboard | `totalDeferred` on the pool stats (camelCase dashboard DTO, `total_deferred` on `/monitoring/pools`); the **Deferred** column after Rate Limited in `dashboard.html` — row, totals, sort key, tooltip text as given; Prometheus counter beside the nack counter in `RouterPrometheusCollector` |
-| §7 config | `FC_ROUTER_DEFERRAL_MAX_DELAY_SECONDS` (3600), `FC_ROUTER_DEFERRAL_BUDGET` (5000) in `Env`, documented in `docs/spec/router-env.md` beside the other `FC_ROUTER_*` |
+| §7 config | `FC_ROUTER_DEFERRAL_MAX_DELAY_SECONDS` (3600), `FC_ROUTER_DEFERRAL_BUDGET` (15000, raised from 5000 — see the Addendum) in `Env`, documented in `docs/spec/router-env.md` beside the other `FC_ROUTER_*` |
 
 Logs are Go-shaped by ruling: mirror the field names of Go's log lines for a deferral and for the
 pause warning.
@@ -74,3 +74,44 @@ stay green; the 2026-09-17 deferral tests must stay green unmodified.
   redriven — a duplicate to a target that is already broken. Same change in Go
   (`internal/platform/scheduler` stale recovery removed; `reaper.go` 45 → 15) — hand-off owed.
   Lands as its own unit after this one; `docs/spec/dispatch-seam.md` §3/§7 amended then.
+
+## Addendum 2026-09-22 (catch-up slice C4): a deferred copy keeps its in-flight entry
+
+**Contract:** `docs/go-mirror/2026-09-22-catch-up-handoff.md` item A, `docs/go-mirror/2026-09-22-router-hol-deferral-handoff.md`
+§Addendum. Go: `bbd5488` (`internal/router/inflight.go`, `pool_admission.go`).
+
+Production after the HOL fix above: SQS and the router dashboard showed hundreds in flight for a
+fraction as many pending jobs. Cause: `QueueBroker.defer` **removed** the tracker entry for a
+deferred copy, so a duplicate published while the copy sat parked — from any source, not only the
+withdrawn `StaleQueuedJobPoller` above — was seen as brand new and deferred again alongside the
+original, forever.
+
+- `InFlightTracker.markDeferred(messageId, until)` stamps the entry's `deferredUntil` instead of
+  removing it; `QueueBroker.defer` calls it **before** the broker call (never after), so the mark
+  stands even when that call fails — the message then simply returns at its natural visibility
+  lapse, still as itself. Unregistered-queue defer (no consumer to hand back to) still removes the
+  entry, exactly as before.
+- `register()`: a deferred owner changes what "the same delivery again" means. A **different**,
+  non-blank broker id is still `ExternalRequeue` — a duplicate to ACK away, never delivered
+  alongside the parked original. The **same or a blank** broker id is the parked copy itself
+  returning: the mark is cleared, the fresh receipt adopted, and the outcome is `New` (not
+  `Redelivery`) — nothing else is holding the pipeline for it, so the caller must submit it.
+- `size()` excludes deferred entries (a drain must not wait for the broker's own redelivery
+  schedule); `deferredSize()` reports them. Go names these `Count()`/`DeferredCount()` — Java keeps
+  its existing `size()` name for the non-deferred count rather than renaming it, and adds
+  `deferredSize()` alongside for the same reason CONVENTIONS §8 prefers idiom over transliteration.
+- `reapIdle`'s idle rule skips a deferred entry until `deferredUntil + 5 min`
+  (`InFlightTracker.DEFERRED_REAP_GRACE`) — the broker's own redelivery is not to the second — but
+  never past `InFlightTracker.DEFERRED_ABSOLUTE_CEILING` (2 h, measured from `startedAt`): a copy
+  the broker never returns still ages out, so a later republish is admitted rather than deduped
+  against a phantom forever. This ceiling is new to Java — the pre-existing `reapIdle` had no
+  absolute bound at all (a genuinely retrying entry, `attempts > 0`, is still exempt without limit,
+  unchanged, a divergence from Go's `Reap` that predates this slice and is out of scope here).
+- Budget default **5000 → 15000** (hand-off, same day): the incident above showed the modest
+  headroom the old default gave against SQS FIFO's 20k in-flight ceiling was too easily spent by
+  ordinary backlog, not just a bug. The pause warning now states the budget and the remedy
+  verbatim from Go's wording (`ConsumerLoop.awaitCapacity`).
+
+Tests to mirror: Go `inflight_deferred_test.go` (tracker: mark/return/dedup/count/reap), Go
+`TestDeferredMessageRepublishedCopyIsDeletedNotDeferred` (end to end: first copy deferred, a second
+copy under a new broker id is ACKed not deferred, deferred count stays 1).

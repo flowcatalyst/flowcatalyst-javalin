@@ -126,14 +126,25 @@ public final class QueueBroker implements Broker {
 
     /// Hands the message back for capacity, on `message`'s own consumer —
     /// counted by that consumer as `totalDeferred`, never `totalNacked`
-    /// (owner ruling 2026-09-22, hand-off §2). Same ownership shape as
-    /// [#nack]: freshest handle substituted, tracker entry released first.
+    /// (owner ruling 2026-09-22, hand-off §2).
+    ///
+    /// Unlike [#ack]/[#nack], the tracker entry is **kept, marked deferred**
+    /// rather than removed (owner ruling 2026-09-22,
+    /// `docs/spec/router-hol-deferral.md` §Addendum) — the copy is parked on
+    /// the broker by this process's own choice and is coming back, so a
+    /// second copy of the same message id arriving meanwhile must be
+    /// recognised as a duplicate to delete rather than delivered and deferred
+    /// alongside it. The mark is set **before** the broker call and stands
+    /// even if that call fails — the message then simply returns at its
+    /// natural visibility lapse, still as itself — except when no consumer is
+    /// registered for the queue at all, in which case there is nothing to
+    /// defer to and the entry is released as it always was.
     @Override
     public void defer(QueuedMessage message, Duration delay) {
         var freshest = withFreshestHandle(message);
         var consumer = consumers.apply(message.queueId());
-        tracker.remove(message.id());
         if (consumer == null) {
+            tracker.remove(message.id());
             log.atWarn().setMessage("defer skipped: queue is no longer registered")
                     .addKeyValue("queue", message.queueId())
                     .addKeyValue("message_id", message.id())
@@ -141,6 +152,7 @@ public final class QueueBroker implements Broker {
             settled(message, "defer", "capacity", delay, false);
             return;
         }
+        tracker.markDeferred(message.id(), clock.instant().plus(delay));
         consumer.defer(freshest, delay);
         settled(message, "defer", "capacity", delay, true);
     }

@@ -49,6 +49,23 @@ public interface DeliveryCredentials {
     /// configured.
     Resolved resolve(DispatchJob job);
 
+    /// [#resolve], degraded to bare on a thrown exception or a `null`
+    /// return — the shared shape of "never unsigned silently, but never a
+    /// hard failure either" (spec §3) that both [ProcessingApi] (which also
+    /// WARN-logs the failure, a live-delivery diagnostic) and the `sign`
+    /// action (`docs/spec/catch-up-2026-09-22.md` slice C3, which has no
+    /// separate diagnostic to log — the returned reason IS the answer) build
+    /// on, so the degrade logic itself is not duplicated between them.
+    default Resolved resolveOrBare(DispatchJob job) {
+        Resolved resolved;
+        try {
+            resolved = resolve(job);
+        } catch (RuntimeException e) {
+            return new Resolved(null, null, "credential lookup failed: " + e.getMessage(), null);
+        }
+        return resolved == null ? Resolved.NONE : resolved;
+    }
+
     /// A bearer token and/or signing secret, either or both `null` when not
     /// configured; `reason` is non-empty exactly when both are absent
     /// (never signed — "why" for the operator, hand-off 2026-09-22);

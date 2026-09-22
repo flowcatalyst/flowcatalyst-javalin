@@ -483,6 +483,14 @@ const router = createRouter({
 					name: "dispatch-jobs",
 					component: () =>
 						import("@/pages/dispatch-jobs/DispatchJobListPage.vue"),
+					children: [
+						{
+							path: ":id",
+							name: "dispatch-job-detail",
+							component: () =>
+								import("@/pages/dispatch-jobs/DispatchJobDetailDrawer.vue"),
+						},
+					],
 				},
 				// Functions (docs/spec/function-ui.md): the function list/detail
 				// (H1/H2) plus domains and policies (H3).

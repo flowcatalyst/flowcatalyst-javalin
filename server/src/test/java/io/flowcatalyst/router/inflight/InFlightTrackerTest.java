@@ -266,6 +266,129 @@ class InFlightTrackerTest {
         assertThat(tracker.size()).isOne();
     }
 
+    // ── deferral (owner ruling 2026-09-22, docs/spec/router-hol-deferral.md
+    //    §Addendum, catch-up slice C4, T12) ─────────────────────────────
+
+    @Test
+    @DisplayName("markDeferred keeps the entry but excludes it from size(), and reports it in deferredSize()")
+    void markDeferredExcludesFromSizeButKeepsTheEntry() {
+        tracker.register(message("m1", "b1", "r1"));
+
+        tracker.markDeferred("m1", clock.instant().plus(Duration.ofMinutes(30)));
+
+        assertThat(tracker.size()).as("a parked copy is the broker's, not this process's").isZero();
+        assertThat(tracker.deferredSize()).isOne();
+        assertThat(tracker.freshestHandle("m1")).as("the entry itself is kept").contains("r1");
+    }
+
+    @Test
+    @DisplayName("markDeferred on an untracked message id is ignored")
+    void markDeferredOnUnknownMessageIsIgnored() {
+        tracker.markDeferred("no-such-message", clock.instant().plus(Duration.ofMinutes(30)));
+
+        assertThat(tracker.size()).isZero();
+        assertThat(tracker.deferredSize()).isZero();
+    }
+
+    @Test
+    @DisplayName("a different broker id for a deferred message is an external requeue, not a fresh deferral")
+    void differentBrokerIdForADeferredMessageIsExternalRequeue() {
+        tracker.register(message("m1", "b1", "r1"));
+        tracker.markDeferred("m1", clock.instant().plus(Duration.ofHours(1)));
+
+        // The platform republished the job under a new broker id while the
+        // original copy sat parked — the duplicate must be deleted, not
+        // delivered and deferred beside the original.
+        var outcome = tracker.register(message("m1", "b2", "r2"));
+
+        assertThat(outcome).isInstanceOf(Registration.ExternalRequeue.class);
+        // The parked original is untouched: still deferred, still on its own
+        // handle.
+        assertThat(tracker.deferredSize()).isOne();
+        assertThat(tracker.freshestHandle("m1")).contains("r1");
+    }
+
+    @Test
+    @DisplayName("the deferred copy itself returning under the SAME broker id is New, mark cleared, receipt adopted")
+    void deferredCopyReturningUnderTheSameBrokerIdIsNew() {
+        tracker.register(message("m1", "b1", "r1"));
+        tracker.markDeferred("m1", clock.instant().plus(Duration.ofHours(1)));
+
+        var outcome = tracker.register(message("m1", "b1", "r2"));
+
+        assertThat(outcome).as("nothing else is holding the pipeline for it; the caller must submit it")
+                .isEqualTo(Registration.NEW);
+        assertThat(tracker.size()).as("no longer deferred").isOne();
+        assertThat(tracker.deferredSize()).isZero();
+        assertThat(tracker.freshestHandle("m1")).as("the fresh receipt is adopted").contains("r2");
+    }
+
+    @Test
+    @DisplayName("the deferred copy returning under a BLANK broker id is also New, mark cleared, receipt adopted")
+    void deferredCopyReturningUnderABlankBrokerIdIsNew() {
+        tracker.register(message("m1", "b1", "r1"));
+        tracker.markDeferred("m1", clock.instant().plus(Duration.ofHours(1)));
+
+        var outcome = tracker.register(message("m1", "", "r2"));
+
+        assertThat(outcome).isEqualTo(Registration.NEW);
+        assertThat(tracker.size()).isOne();
+        assertThat(tracker.deferredSize()).isZero();
+        assertThat(tracker.freshestHandle("m1")).contains("r2");
+    }
+
+    @Test
+    @DisplayName("the reaper skips a deferred entry until deferredUntil + 5 minutes")
+    void reaperSkipsADeferredEntryUntilItsGracePeriodPasses() {
+        tracker.register(message("m1", "b1", "r1"));
+        tracker.markDeferred("m1", clock.instant().plus(Duration.ofMinutes(20)));
+
+        // Well past the ordinary 15-minute idle bound, and even past
+        // deferredUntil itself, but still inside the 5-minute grace after it.
+        clock.advance(Duration.ofMinutes(24));
+        assertThat(tracker.reapIdle(Duration.ofMinutes(15))).as("still within the grace period").isZero();
+        assertThat(tracker.deferredSize()).isOne();
+
+        // Past deferredUntil + 5 min: the idle rule applies again.
+        clock.advance(Duration.ofMinutes(2));
+        assertThat(tracker.reapIdle(Duration.ofMinutes(15))).as("grace period elapsed").isOne();
+        assertThat(tracker.deferredSize()).isZero();
+    }
+
+    @Test
+    @DisplayName("the deferred exemption itself expires at the absolute 2h ceiling, measured from startedAt, "
+            + "even while its own grace window is still open")
+    void deferredExemptionExpiresAtTheAbsoluteCeiling() {
+        // A message repeatedly re-deferred (redelivered into a pool that is
+        // still full, deferred again each time) keeps pushing its OWN grace
+        // window forward — the entry would otherwise never age out. The
+        // ceiling is anchored to startedAt, not to the rolling deferral, so
+        // it still binds.
+        tracker.register(message("m1", "b1", "r1")); // startedAt = t0
+        clock.advance(Duration.ofMinutes(90)); // t0+90m
+        tracker.markDeferred("m1", clock.instant().plus(Duration.ofMinutes(40))); // due t0+130m, grace to t0+135m
+
+        clock.advance(Duration.ofMinutes(35)); // now t0+125m: past the 2h(120m) ceiling, well before grace end
+
+        assertThat(tracker.reapIdle(Duration.ofMinutes(15)))
+                .as("past the 2h ceiling from startedAt: reaped despite an open grace window").isOne();
+        assertThat(tracker.deferredSize()).isZero();
+    }
+
+    @Test
+    @DisplayName("no consumer to defer to: the caller still removes the entry as before (no mark involved)")
+    void noConsumerMeansNoMarkJustRemoval() {
+        // markDeferred is never reached when there is no consumer to hand the
+        // message back to (QueueBroker#defer's own branch) — the tracker
+        // side of that is exactly the ordinary #remove.
+        tracker.register(message("m1", "b1", "r1"));
+
+        tracker.remove("m1");
+
+        assertThat(tracker.size()).isZero();
+        assertThat(tracker.deferredSize()).isZero();
+    }
+
     // ── countForQueue (R-26/X-11) ───────────────────────────────────────
 
     @Test

@@ -55,6 +55,17 @@ public final class InFlightTracker {
         String receiptHandle;
         int attempts;
 
+        /// Non-null while this copy has been handed back to the broker for
+        /// capacity ([#markDeferred]) — the reservation's due time. The entry
+        /// is kept, not removed, so a second copy of the same message id
+        /// arriving meanwhile (the platform's stale-recovery republishing a
+        /// job it thinks is stranded) is recognised as a duplicate to delete
+        /// rather than delivered and deferred alongside the parked original
+        /// (owner ruling 2026-09-22, `docs/spec/router-hol-deferral.md` §Addendum
+        /// "500 in flight but only 200 pending — use the messageId, not the
+        /// SQS id"). `null` while the copy is in the pipeline.
+        Instant deferredUntil;
+
         Entry(InFlightMessage message) {
             this.messageId = message.messageId();
             this.brokerMessageId = message.brokerMessageId();
@@ -112,18 +123,34 @@ public final class InFlightTracker {
     /// The three-way decision, in order:
     ///
     /// 1. **Known broker id on the same queue** → the very same delivery
-    ///    again. Swap the handle and refresh liveness; it is a redelivery.
+    ///    again. Swap the handle and refresh liveness; it is a redelivery —
+    ///    unless the owner is [#markDeferred], in which case this is the
+    ///    parked copy coming back on its own schedule: see below.
     ///    The lookup is scoped to `(queueIdentifier, brokerMessageId)`: the
     ///    broker id alone is not unique across queues (see the class doc).
     /// 2. **Known application id.** Now the broker ids decide: two non-empty
     ///    ids that *differ* mean two distinct deliveries of one message —
     ///    an external requeue. Anything else (either id blank, or equal) is
     ///    treated as a redelivery, because we cannot prove otherwise and
-    ///    dropping a copy is safe where acking one is not.
+    ///    dropping a copy is safe where acking one is not — again, unless
+    ///    the owner is deferred (below).
     /// 3. Otherwise it is new.
     ///
     /// Step 2's fallback is deliberately the cautious one: mis-classifying a
     /// redelivery as an external requeue would ACK a live delivery.
+    ///
+    /// **A deferred owner changes what "the same delivery again" means**
+    /// (owner ruling 2026-09-22, `docs/spec/router-hol-deferral.md`
+    /// §Addendum). While an entry is [#markDeferred], it is parked on the
+    /// broker by this process's own choice, not delivering:
+    /// - a copy under a **different**, non-empty broker id is still an
+    ///   external requeue — the platform's stale-recovery republished the
+    ///   job while the original sat deferred, and the republished copy must
+    ///   be deleted, not delivered alongside the parked one.
+    /// - a copy under the **same** broker id, or a blank one, is the parked
+    ///   copy actually returning: it re-enters the pipeline as itself — the
+    ///   mark is cleared, the fresh receipt adopted — and reports [New],
+    ///   never [Redelivery], so the caller submits it for delivery.
     public Registration register(InFlightMessage message) {
         lock.lock();
         try {
@@ -131,6 +158,9 @@ public final class InFlightTracker {
             if (!message.brokerMessageId().isEmpty()) {
                 var byBroker = byBrokerId.get(new BrokerKey(message.queueIdentifier(), message.brokerMessageId()));
                 if (byBroker != null) {
+                    if (byBroker.deferredUntil != null) {
+                        return returnFromDeferral(byBroker, message, now);
+                    }
                     refresh(byBroker, message.receiptHandle(), now);
                     return new Registration.Redelivery(byBroker.snapshot());
                 }
@@ -143,11 +173,47 @@ public final class InFlightTracker {
                 if (distinctDeliveries) {
                     return new Registration.ExternalRequeue(owner.snapshot());
                 }
+                if (owner.deferredUntil != null) {
+                    return returnFromDeferral(owner, message, now);
+                }
                 refresh(owner, message.receiptHandle(), now);
                 return new Registration.Redelivery(owner.snapshot());
             }
             insert(new Entry(message));
             return Registration.NEW;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /// The parked copy has come back: clears the mark and adopts the fresh
+    /// receipt, exactly as a redelivery would, but reports [Registration.New]
+    /// rather than [Registration.Redelivery] — the caller must submit this
+    /// copy for delivery, not drop it, because nothing else is holding the
+    /// pipeline for it (the deferral is what let go of it).
+    private Registration returnFromDeferral(Entry entry, InFlightMessage message, Instant now) {
+        entry.deferredUntil = null;
+        refresh(entry, message.receiptHandle(), now);
+        return Registration.NEW;
+    }
+
+    /// Marks `messageId`'s entry as handed back to the broker for capacity,
+    /// due at `until` — kept, not removed, so [#register] can recognise a
+    /// duplicate republished while it sits parked (see the class-level
+    /// deferral note on [#register]). A message the tracker does not know is
+    /// ignored: nothing is deferred if nothing was ever registered.
+    ///
+    /// Set even when the broker's own defer call subsequently fails — the
+    /// message then simply returns at its natural visibility lapse, still as
+    /// itself, and the mark cost nothing extra.
+    public void markDeferred(String messageId, Instant until) {
+        lock.lock();
+        try {
+            var entry = byMessageId.get(messageId);
+            if (entry != null) {
+                entry.deferredUntil = until;
+                entry.lastSeenAt = clock.instant();
+            }
         } finally {
             lock.unlock();
         }
@@ -224,13 +290,30 @@ public final class InFlightTracker {
         }
     }
 
+    /// How long past its scheduled return a deferred entry is kept before the
+    /// idle rule may reap it (owner ruling 2026-09-22,
+    /// `docs/spec/router-hol-deferral.md` §Addendum): the broker's own
+    /// redelivery is not to the second.
+    static final Duration DEFERRED_REAP_GRACE = Duration.ofMinutes(5);
+
+    /// The absolute bound on how long the deferred exemption can hold an
+    /// entry open, measured from [InFlightMessage#startedAt] — a copy the
+    /// broker never returns must still age out eventually, so a later
+    /// republish is admitted rather than deduped against a phantom forever.
+    static final Duration DEFERRED_ABSOLUTE_CEILING = Duration.ofHours(2);
+
     /// Drops entries nothing has touched for `maxAge`, as a backstop against
     /// a backend that loses a message without telling us.
     ///
     /// Ages on `lastSeenAt`, not `startedAt` — a message being redelivered is
     /// alive however long ago it started. **Retrying entries are skipped
     /// entirely**: they are slow on purpose, and reaping one would let a
-    /// duplicate through while the original is still being worked.
+    /// duplicate through while the original is still being worked. **A
+    /// deferred entry is skipped** until [#DEFERRED_REAP_GRACE] past its
+    /// scheduled return, because it is parked on the broker by design for up
+    /// to the deferral horizon — well past the ordinary idle bound; past
+    /// [#DEFERRED_ABSOLUTE_CEILING] the exemption itself expires, so a copy
+    /// the broker never returns is judged like any other idle entry.
     ///
     /// @return how many were released
     public int reapIdle(Duration maxAge) {
@@ -239,10 +322,13 @@ public final class InFlightTracker {
         }
         lock.lock();
         try {
-            var cutoff = clock.instant().minus(maxAge);
+            var now = clock.instant();
+            var cutoff = now.minus(maxAge);
             var stale = new ArrayList<String>();
             byMessageId.values().stream()
-                    .filter(entry -> entry.attempts == 0 && entry.lastSeenAt.isBefore(cutoff))
+                    .filter(entry -> entry.attempts == 0)
+                    .filter(entry -> !deferredWithinGrace(entry, now))
+                    .filter(entry -> entry.lastSeenAt.isBefore(cutoff))
                     .forEach(entry -> stale.add(entry.messageId));
             stale.forEach(this::removeLocked);
             return stale.size();
@@ -261,10 +347,28 @@ public final class InFlightTracker {
         }
     }
 
+    /// Entries this process is actually working on — **excludes** a deferred
+    /// entry (owner ruling 2026-09-22, `docs/spec/router-hol-deferral.md`
+    /// §Addendum): a parked copy is the broker's to hold, not this process's
+    /// to finish, and a drain waiting for it to disappear would wait out the
+    /// broker's own redelivery schedule for nothing. See [#deferredSize] for
+    /// the parked count.
     public int size() {
         lock.lock();
         try {
-            return byMessageId.size();
+            return (int) byMessageId.values().stream().filter(entry -> entry.deferredUntil == null).count();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /// How many tracked entries are currently parked on the broker by a
+    /// capacity deferral, awaiting their scheduled return — the complement
+    /// [#size] excludes.
+    public int deferredSize() {
+        lock.lock();
+        try {
+            return (int) byMessageId.values().stream().filter(entry -> entry.deferredUntil != null).count();
         } finally {
             lock.unlock();
         }
@@ -311,5 +415,19 @@ public final class InFlightTracker {
     private void refresh(Entry entry, String freshHandle, Instant now) {
         entry.receiptHandle = freshHandle;
         entry.lastSeenAt = now;
+    }
+
+    /// Whether [#reapIdle] must leave `entry` alone because it is deferred
+    /// and neither past its grace period nor the absolute ceiling.
+    private static boolean deferredWithinGrace(Entry entry, Instant now) {
+        if (entry.deferredUntil == null) {
+            return false;
+        }
+        if (!now.isBefore(entry.startedAt.plus(DEFERRED_ABSOLUTE_CEILING))) {
+            // Past the ceiling nothing exempts an entry: something upstream
+            // failed to clear the mark, or the broker never returned it.
+            return false;
+        }
+        return now.isBefore(entry.deferredUntil.plus(DEFERRED_REAP_GRACE));
     }
 }

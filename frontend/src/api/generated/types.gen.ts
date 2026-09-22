@@ -265,6 +265,7 @@ export type AttemptDto = {
     durationMillis?: number;
     errorMessage?: string;
     errorType?: string;
+    request?: RequestSummary;
     responseBody?: string;
     responseCode?: number;
     success: boolean;
@@ -1229,6 +1230,18 @@ export type CreatedResponse = {
     id: string;
 };
 
+export type DeliveryPlan = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    body: string;
+    headers: {
+        [key: string]: string;
+    };
+    request: RequestSummary;
+};
+
 export type DeveloperUserListResponse = {
     /**
      * A URL to the JSON Schema for this object.
@@ -1261,11 +1274,14 @@ export type DispatchJobRead = {
     completedAt?: string;
     correlationId?: string;
     createdAt: string;
+    descriptor?: string;
     dispatchMode?: string;
     eventId?: string;
     id: string;
     kind: string;
     lastAttemptAt?: string;
+    messageGroup?: string;
+    metadata?: Array<MetadataDto>;
     mode: string;
     priority?: number;
     scheduledFor?: string;
@@ -1291,6 +1307,7 @@ export type DispatchJobResponse = {
     correlationId?: string;
     createdAt: string;
     dataOnly: boolean;
+    descriptor?: string;
     dispatchPoolId?: string;
     durationMillis?: number;
     eventId?: string;
@@ -2127,6 +2144,16 @@ export type RequestDto = {
     id: string;
     name: string;
     principalId: string;
+};
+
+export type RequestSummary = {
+    bearer: boolean;
+    headers?: Array<string>;
+    signature: boolean;
+    signedBy?: string;
+    target?: string;
+    timestamp?: string;
+    unsignedReason?: string;
 };
 
 export type RequeueRequest = {
@@ -3915,6 +3942,14 @@ export type CreatedResponseWritable = {
     id: string;
 };
 
+export type DeliveryPlanWritable = {
+    body: string;
+    headers: {
+        [key: string]: string;
+    };
+    request: RequestSummary;
+};
+
 export type DeveloperUserListResponseWritable = {
     principals: Array<PrincipalResponseWritable>;
     total: number;
@@ -3938,6 +3973,7 @@ export type DispatchJobResponseWritable = {
     correlationId?: string;
     createdAt: string;
     dataOnly: boolean;
+    descriptor?: string;
     dispatchPoolId?: string;
     durationMillis?: number;
     eventId?: string;
@@ -6927,6 +6963,10 @@ export type ListDispatchJobsData = {
          * RFC3339 timestamp
          */
         until?: string;
+        /**
+         * Exact message group
+         */
+        messageGroup?: string;
         limit?: number;
         offset?: number;
         /**
@@ -7083,6 +7123,10 @@ export type ListDispatchJobsRawData = {
          * RFC3339 timestamp
          */
         until?: string;
+        /**
+         * Exact message group
+         */
+        messageGroup?: string;
         limit?: number;
         offset?: number;
         /**
@@ -7160,6 +7204,10 @@ export type ListDispatchJobsRawAliasData = {
          * RFC3339 timestamp
          */
         until?: string;
+        /**
+         * Exact message group
+         */
+        messageGroup?: string;
         limit?: number;
         offset?: number;
         /**
@@ -7379,6 +7427,33 @@ export type GetDispatchJobRawResponses = {
 };
 
 export type GetDispatchJobRawResponse = GetDispatchJobRawResponses[keyof GetDispatchJobRawResponses];
+
+export type SignDispatchJobData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/dispatch-jobs/{id}/sign';
+};
+
+export type SignDispatchJobErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type SignDispatchJobError = SignDispatchJobErrors[keyof SignDispatchJobErrors];
+
+export type SignDispatchJobResponses = {
+    /**
+     * OK
+     */
+    200: DeliveryPlan;
+};
+
+export type SignDispatchJobResponse = SignDispatchJobResponses[keyof SignDispatchJobResponses];
 
 export type ListDispatchPoolsData = {
     body?: never;

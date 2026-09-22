@@ -243,9 +243,16 @@ public final class ConsumerLoop implements Runnable {
         var ledger = manager.deferralLedger(queueId());
         if (!pausedForCapacity) {
             pausedForCapacity = true;
+            // Names the budget and the remedy (Go's wording, owner ruling
+            // 2026-09-22, `docs/spec/router-hol-deferral.md` §Addendum): an
+            // operator staring at a paused queue needs to know this is the
+            // deferral budget, not a wedged pool, and what to do about it.
             warnings.raise(Warnings.Severity.WARNING, "POOL_CAPACITY",
                     "destination pools at capacity and " + ledger.outstanding(clock.instant())
-                            + " deferrals outstanding; pausing " + queueId());
+                            + " deferrals outstanding (budget " + manager.deferralBudget() + "); pausing "
+                            + queueId() + " — a slow pool's backlog larger than the budget blocks the rest of "
+                            + "this queue: raise FC_ROUTER_DEFERRAL_BUDGET (SQS FIFO allows 20k in flight) or "
+                            + "give that job its own queue");
         }
         lastCapacityPause.set(clock.instant());
         if (manager.pools().isEmpty()) {

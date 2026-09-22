@@ -307,6 +307,54 @@ class RouterManagerTest {
         assertThat(manager.poolsHaveCapacity(Set.of("anything"))).isFalse();
     }
 
+    // ── T13: deferred copies dedup, end to end (owner ruling 2026-09-22,
+    //    docs/spec/router-hol-deferral.md §Addendum) ─────────────────────
+
+    @Test
+    @DisplayName("T13: end to end — a deferred message's republished duplicate (new broker id) is "
+            + "ACKed, not delivered or deferred beside the parked original (mutant: treat the copy as new)")
+    void deferredMessagesRepublishedDuplicateIsAckedNotDeferredBesideIt() throws InterruptedException {
+        // A REAL Pool + QueueBroker + the shared tracker — this is the only
+        // way `Pool.submit`'s defer branch actually reaches
+        // `InFlightTracker#markDeferred`, which is what this test pins.
+        var realBroker = new QueueBroker(Map.of("queue-1", source), tracker, clock);
+        var block = new java.util.concurrent.CountDownLatch(1);
+        Mediator blocking = (message, recordFailure) -> {
+            block.await();
+            return MediationOutcome.Success.of(200);
+        };
+        var slowPool = new Pool(new Pool.Config("SLOW", 1, 0), blocking, realBroker, PoolMetrics.NO_OP, clock);
+        manager.registerPool("SLOW", slowPool);
+        manager.registerConsumer(source);
+        try {
+            int capacity = slowPool.config().queueCapacity();
+            // Batch 1: fills SLOW's buffer well past capacity, "job-dup" last
+            // — it arrives once the pool is already full and is itself
+            // deferred, exactly like Go's incident.
+            var fillBatch = new ArrayList<QueuedMessage>();
+            for (int i = 0; i < capacity + 20; i++) {
+                fillBatch.add(message("filler-" + i, "filler-b" + i, "SLOW"));
+            }
+            fillBatch.add(message("job-dup", "sqs-1", "SLOW"));
+            manager.route(fillBatch, source);
+
+            await(() -> source.deferred.containsKey("job-dup"));
+            assertThat(tracker.deferredSize()).as("at least job-dup is parked").isGreaterThanOrEqualTo(1);
+
+            // Batch 2: the platform republished the job under a NEW broker id
+            // while the original sat deferred.
+            manager.route(List.of(message("job-dup", "sqs-2", "SLOW")), source);
+
+            assertThat(source.acked).as("the republished duplicate is deleted from the broker")
+                    .contains("job-dup");
+            assertThat(source.deferredCalls.stream().filter("job-dup"::equals).count())
+                    .as("NOT deferred a second time beside the parked original").isOne();
+        } finally {
+            block.countDown();
+            slowPool.close();
+        }
+    }
+
     // ── R-13/R-16: strict routing gate ──────────────────────────────────
 
     @Test
@@ -755,6 +803,11 @@ class RouterManagerTest {
         private final String id;
         final List<String> acked = new CopyOnWriteArrayList<>();
         final Map<String, Duration> nacked = new ConcurrentHashMap<>();
+        /// Every id `defer` was actually called with, in call order — a `Map`
+        /// alone cannot tell "deferred once" from "deferred twice", and T13
+        /// needs exactly that (`docs/spec/router-hol-deferral.md` §Addendum).
+        final List<String> deferredCalls = new CopyOnWriteArrayList<>();
+        final Map<String, Duration> deferred = new ConcurrentHashMap<>();
 
         RecordingConsumer(String id) {
             this.id = id;
@@ -778,7 +831,8 @@ class RouterManagerTest {
 
         @Override
         public void defer(QueuedMessage message, Duration delay) {
-            nack(message, delay);
+            deferredCalls.add(message.id());
+            deferred.put(message.id(), delay);
         }
 
         @Override

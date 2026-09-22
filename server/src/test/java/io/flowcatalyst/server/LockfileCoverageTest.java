@@ -84,11 +84,12 @@ class LockfileCoverageTest {
     /// and pinned exactly (below) so the gap can never silently grow to more
     /// than this one route.
     ///
-    /// `POST /api/dispatch-jobs/{id}/sign` (catch-up-2026-09-22.md slice C3,
-    /// not this slice): builds the delivery exactly as `/api/dispatch/process`
-    /// would and returns it unsent, gated on `dispatch-job:view-raw`. Owed to
-    /// C3, which brings the resolvers this route needs to share.
-    private static final Set<String> KNOWN_MISSING = Set.of("POST /api/dispatch-jobs/{id}/sign");
+    /// Empty since catch-up-2026-09-22.md slice C3 landed
+    /// `POST /api/dispatch-jobs/{id}/sign` (it was the one entry here) —
+    /// coverage is 100% and this set stays empty rather than being deleted,
+    /// so the NEXT unrouted operation has somewhere to be named rather than
+    /// silently widening [#REQUIRED_COVERAGE]'s slack.
+    private static final Set<String> KNOWN_MISSING = Set.of();
 
     @Test
     void registeredApiRoutesAreInTheLockfileAndCoverageIsReported() {

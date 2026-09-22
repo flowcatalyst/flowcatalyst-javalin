@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { useListState } from "@/composables/useListState";
 import { useTableFilters } from "@/composables/useTableFilters";
 import ClientFilter from "@/components/ClientFilter.vue";
@@ -16,6 +17,8 @@ interface FilterOption {
 }
 
 const sizeOptions = [50, 100, 200, 500, 1000];
+const route = useRoute();
+const router = useRouter();
 
 // MANUAL loading: the cascading handlers below clear child refs under
 // withSuppressed and call load() themselves. Do NOT pass an onChange
@@ -30,6 +33,8 @@ const listState = useListState({
 		codes: { type: "array", key: "codes" },
 		statuses: { type: "array", key: "statuses" },
 		search: { type: "string", key: "q" },
+		// Exact message group — follow one aggregate's jobs in order.
+		messageGroup: { type: "string", key: "group" },
 		// Created-at range, URL-synced as YYYY-MM-DD.
 		from: { type: "string", key: "from" },
 		to: { type: "string", key: "to" },
@@ -124,6 +129,7 @@ function buildParams(): DispatchJobsListParams {
 		aggregates: filters.aggregates.value.length ? filters.aggregates.value : undefined,
 		codes: filters.codes.value.length ? filters.codes.value : undefined,
 		source: filters.search.value || undefined,
+		messageGroup: filters.messageGroup.value || undefined,
 		since,
 		until,
 		sort: sortOrder.value === "asc" ? "createdAt.asc" : "createdAt.desc",
@@ -183,12 +189,29 @@ function requeueOne(job: DispatchJob) {
 	if (job.id) requeueIds([job.id]);
 }
 
-// Search reload: debounced, replacing the old Enter-to-search.
+// Search / group reload: debounced, replacing the old Enter-to-search.
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
-watch(filters.search, () => {
+watch([filters.search, filters.messageGroup], () => {
 	clearTimeout(searchTimer);
 	searchTimer = setTimeout(load, 400);
 });
+
+// Row click opens the detail drawer (child route); the list stays mounted
+// underneath with its filters intact.
+function viewJob(job: DispatchJob) {
+	if (job.id) void router.push({ path: `/dispatch-jobs/${job.id}`, query: route.query });
+}
+
+// "Additional data" on the grid: the job's key/value metadata, clipped.
+function metadataPreview(job: DispatchJob, max = 20): string {
+	const meta = job.metadata ?? [];
+	if (!meta.length) return "";
+	const s = meta.map((m) => `${m.key}=${m.value}`).join(", ");
+	return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+function metadataFull(job: DispatchJob): string {
+	return (job.metadata ?? []).map((m) => `${m.key}: ${m.value}`).join("\n");
+}
 
 // Filter options
 const applicationOptions = ref<FilterOption[]>([]);
@@ -347,7 +370,7 @@ function formatCode(code: string | undefined): {
           <FcTableToolbar
             v-model:search="filters.search.value"
             search-placeholder="Search by source..."
-            :active-filter-count="activeFilterCount + (filters.from.value ? 1 : 0) + (filters.to.value ? 1 : 0)"
+            :active-filter-count="activeFilterCount + (filters.from.value ? 1 : 0) + (filters.to.value ? 1 : 0) + (filters.messageGroup.value ? 1 : 0)"
             :has-active-filters="hasActiveFilters"
             show-refresh
             @refresh="load"
@@ -454,6 +477,15 @@ function formatCode(code: string | undefined): {
                   />
                 </template>
               </FcFormField>
+              <FcFormField label="Message group">
+                <template #default="{ id: fieldId }">
+                  <InputText
+                    :id="fieldId"
+                    v-model="filters.messageGroup.value"
+                    placeholder="Exact message group"
+                  />
+                </template>
+              </FcFormField>
               <FcFormField label="Created from">
                 <template #default="{ id: fieldId }">
                   <DatePicker
@@ -489,9 +521,15 @@ function formatCode(code: string | undefined): {
         </template>
 
         <Column selectionMode="multiple" headerStyle="width: 3rem" />
-        <Column field="id" header="Job ID" style="width: 10rem">
+        <Column field="id" header="Job ID" style="width: 11rem">
           <template #body="{ data }">
-            <span class="font-mono text-sm">{{ data.id?.slice(0, 8) }}...</span>
+            <a class="font-mono text-sm row-link" @click.prevent="viewJob(data)">{{ data.id }}</a>
+          </template>
+        </Column>
+        <Column field="descriptor" header="Descriptor">
+          <template #body="{ data }">
+            <span v-if="data.descriptor" class="text-sm">{{ data.descriptor }}</span>
+            <span v-else class="text-sm text-muted">-</span>
           </template>
         </Column>
         <Column field="code" header="Code">
@@ -507,17 +545,34 @@ function formatCode(code: string | undefined): {
             </span>
           </template>
         </Column>
-        <Column field="source" header="Source" />
+        <Column field="clientIdentifier" header="Client" style="width: 10rem">
+          <template #body="{ data }">
+            <span v-if="data.clientIdentifier" class="text-sm">{{ data.clientIdentifier }}</span>
+            <span v-else-if="data.clientId" class="font-mono text-sm" v-tooltip="'Client id (identifier not resolved)'">{{ data.clientId }}</span>
+            <span v-else class="text-sm text-muted">platform</span>
+          </template>
+        </Column>
+        <Column field="messageGroup" header="Group" style="width: 9rem">
+          <template #body="{ data }">
+            <a
+              v-if="data.messageGroup"
+              class="font-mono text-sm row-link truncate"
+              style="max-width: 8rem; display: inline-block"
+              v-tooltip="`Filter by group ${data.messageGroup}`"
+              @click.prevent="filters.messageGroup.value = data.messageGroup"
+            >{{ data.messageGroup }}</a>
+            <span v-else class="text-sm text-muted">-</span>
+          </template>
+        </Column>
         <Column field="status" header="Status" style="width: 8rem">
           <template #body="{ data }">
             <Tag :value="data.status" :severity="getSeverity(data.status)" />
           </template>
         </Column>
-        <Column field="targetUrl" header="Target URL">
+        <Column header="Additional data" style="width: 12rem">
           <template #body="{ data }">
-            <span class="text-sm truncate" style="max-width: 200px; display: inline-block">
-              {{ data.targetUrl }}
-            </span>
+            <span v-if="metadataPreview(data)" class="text-sm font-mono" v-tooltip="metadataFull(data)">{{ metadataPreview(data) }}</span>
+            <span v-else class="text-sm text-muted">-</span>
           </template>
         </Column>
         <Column field="createdAt" header="Created" sortable style="width: 10rem">
@@ -525,9 +580,17 @@ function formatCode(code: string | undefined): {
             <span class="text-sm">{{ formatDate(data.createdAt) }}</span>
           </template>
         </Column>
-        <Column header="Actions" style="width: 6rem">
+        <Column header="Actions" style="width: 7rem">
           <template #body="{ data }">
             <div class="action-buttons">
+              <Button
+                icon="pi pi-eye"
+                text
+                rounded
+                size="small"
+                v-tooltip="'View payload and attempts'"
+                @click="viewJob(data)"
+              />
               <Button
                 icon="pi pi-replay"
                 text
@@ -550,6 +613,9 @@ function formatCode(code: string | undefined): {
         <span v-if="dispatchJobs.length === pageSize"> (size limit reached — narrow filters or increase size)</span>
       </div>
     </div>
+
+    <!-- Detail drawer (child route /dispatch-jobs/:id) -->
+    <RouterView />
   </div>
 </template>
 
@@ -583,5 +649,17 @@ function formatCode(code: string | undefined): {
   display: flex;
   gap: 0.25rem;
   align-items: center;
+}
+
+.row-link {
+  cursor: pointer;
+  color: var(--primary-color);
+}
+.row-link:hover {
+  text-decoration: underline;
+}
+
+.text-muted {
+  color: var(--text-color-secondary);
 }
 </style>

@@ -17,6 +17,7 @@ import java.time.Instant;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /// [QueueBroker]'s layer-2 dedup backstop — `owns` (`docs/spec/router.md`
 /// §2.1 `EnsureTracked`, `docs/spec/router-completion.md` unit 3).
@@ -147,9 +148,24 @@ class QueueBrokerTest {
     // ── §2: defer reaches the consumer's own defer, not nack ────────────
 
     @Test
+    @DisplayName("T12: no consumer registered for the queue: the entry is REMOVED, not marked deferred "
+            + "— there is nothing to defer to")
+    void deferWithNoRegisteredConsumerRemovesRatherThanMarks() {
+        var localBroker = new QueueBroker(Map.<String, Acknowledger>of(), tracker, clock);
+        var message = message("m1", "b1");
+        tracker.register(RouterManager.inFlight(message, "1", clock.instant()));
+
+        localBroker.defer(message, Duration.ofSeconds(45));
+
+        assertThat(tracker.size()).isZero();
+        assertThat(tracker.deferredSize()).as("nothing to come back — removed, exactly as before").isZero();
+        assertThat(tracker.freshestHandle("m1")).as("truly gone, not just excluded from size()").isEmpty();
+    }
+
+    @Test
     @DisplayName("owner ruling 2026-09-22: defer reaches the message's own consumer's defer "
-            + "(freshest handle substituted), and releases ownership first")
-    void deferReachesTheConsumersOwnDeferAndReleasesOwnership() {
+            + "(freshest handle substituted), and MARKS the entry deferred rather than releasing it")
+    void deferReachesTheConsumersOwnDeferAndMarksTheEntryDeferred() {
         var message = message("m1", "b1");
         tracker.register(RouterManager.inFlight(message, "1", clock.instant()));
 
@@ -157,7 +173,56 @@ class QueueBrokerTest {
 
         assertThat(queue.deferredReceipts).as("reached defer, not nack").containsEntry("receipt-b1",
                 Duration.ofSeconds(45));
-        assertThat(tracker.size()).as("ownership released before the broker call settles").isZero();
+        // T12 (catch-up slice C4, docs/spec/router-hol-deferral.md §Addendum):
+        // the entry is KEPT, marked deferred — size() (non-deferred count)
+        // drops to zero, but the entry has not actually been released; a
+        // second broker copy of "m1" must still be recognised as a duplicate
+        // rather than delivered as new, which freshestHandle proves the
+        // entry is still there to answer.
+        assertThat(tracker.size()).as("a deferred entry does not count as owned work").isZero();
+        assertThat(tracker.deferredSize()).as("but it is not gone").isOne();
+        assertThat(tracker.freshestHandle("m1")).as("the entry itself is kept, not removed")
+                .contains("receipt-b1");
+    }
+
+    @Test
+    @DisplayName("T12: the mark stands even when the broker's own defer call fails "
+            + "(mutant: mark only after a successful broker call)")
+    void deferMarksTheEntryEvenWhenTheBrokersOwnCallFails() {
+        Acknowledger throwing = new Acknowledger() {
+            @Override
+            public String identifier() {
+                return "queue-1";
+            }
+
+            @Override
+            public boolean ack(QueuedMessage message) {
+                return true;
+            }
+
+            @Override
+            public void nack(QueuedMessage message, Duration delay) {
+            }
+
+            @Override
+            public void defer(QueuedMessage message, Duration delay) {
+                throw new RuntimeException("broker unreachable");
+            }
+
+            @Override
+            public boolean honoursDelayedReturn() {
+                return true;
+            }
+        };
+        var localBroker = new QueueBroker(Map.of("queue-1", throwing), tracker, clock);
+        var message = message("m1", "b1");
+        tracker.register(RouterManager.inFlight(message, "1", clock.instant()));
+
+        assertThatCode(() -> localBroker.defer(message, Duration.ofSeconds(45)))
+                .as("Acknowledger#defer is documented best-effort/must-not-throw, but the mark must not "
+                        + "depend on that promise holding")
+                .isInstanceOf(RuntimeException.class);
+        assertThat(tracker.deferredSize()).as("marked before the broker call, not after").isOne();
     }
 
     // ── R-26/X-11: lingering consumers ─────────────────────────────────

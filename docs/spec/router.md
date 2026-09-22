@@ -880,6 +880,20 @@ never occur there; on NATS the broker id includes the consumer sequence,
 which **changes on every redelivery**, so a NATS redelivery is classified as
 `ExternalRequeue` (§7.4, §13).
 
+**Addendum 2026-09-22 (catch-up slice C4, `docs/spec/router-hol-deferral.md`
+§Addendum):** the table above is unchanged for an entry that is not deferred.
+While `Pool.submit`'s at-capacity branch (§3a of the HOL-deferral spec) has
+handed a copy back to the broker via `Acknowledger#defer`, the entry is
+`InFlightTracker#markDeferred` — **kept**, not removed — and the outcomes
+above are read differently for its owner: a different, non-blank broker id is
+still `ExternalRequeue` (a duplicate published while the original sits
+parked), but the same-or-blank-broker-id row becomes `New`, not `Redelivery`
+— the parked copy returning re-enters the pipeline as itself, mark cleared,
+fresh receipt adopted, and must be submitted rather than dropped. `size()`
+excludes a deferred entry; `deferredSize()` reports it; the reaper's idle
+rule exempts a deferred entry until `deferredUntil + 5 min`, bounded by a 2 h
+absolute ceiling from `startedAt`.
+
 ### 4.3 Circuit breaker — `router/circuit_breaker.go`
 
 Config defaults: failure-rate threshold 0.5, min calls 10, success threshold

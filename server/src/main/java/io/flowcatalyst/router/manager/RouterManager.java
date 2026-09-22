@@ -66,9 +66,10 @@ public final class RouterManager implements AutoCloseable {
 
     /// Per-queue outstanding-deferral budget when none is configured
     /// (`FC_ROUTER_DEFERRAL_BUDGET`, owner ruling 2026-09-22, hand-off §1,
-    /// §7): sized against SQS FIFO's 20,000 in-flight ceiling, which a
-    /// deferred message counts toward.
-    public static final int DEFAULT_DEFERRAL_BUDGET = 5000;
+    /// §7, raised 5000 → 15000 the same day in the catch-up addendum):
+    /// sized against SQS FIFO's 20,000 in-flight ceiling, which a deferred
+    /// message counts toward.
+    public static final int DEFAULT_DEFERRAL_BUDGET = 15000;
 
     /// How long a reconfigure will spend building consumers before carrying
     /// on without the stragglers. They are reported as failures and retried

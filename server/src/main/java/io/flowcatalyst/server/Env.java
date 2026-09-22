@@ -274,10 +274,12 @@ public record Env(
         // ([io.flowcatalyst.router.pool.Pool]'s `PoolAdmission#DEFAULT_HORIZON]`,
         // same value), never "no horizon".
         int routerDeferralMaxDelaySeconds,
-        // `FC_ROUTER_DEFERRAL_BUDGET`, default 5000 (§7): how many deferred
-        // messages one queue's consumer may have outstanding before it stops
-        // polling into pools that are all full. Sized against SQS FIFO's
-        // 20,000 in-flight ceiling, which a deferred message counts toward.
+        // `FC_ROUTER_DEFERRAL_BUDGET`, default 15000 (owner ruling 2026-09-22,
+        // `docs/spec/router-hol-deferral.md` §Addendum, raised from 5000): how
+        // many deferred messages one queue's consumer may have outstanding
+        // before it stops polling into pools that are all full. Sized against
+        // SQS FIFO's 20,000 in-flight ceiling, which a deferred message counts
+        // toward.
         int routerDeferralBudget,
         // Raw `AUTH_MODE` (trimmed); `NONE` (case-insensitive) forces router BasicAuth off.
         String routerAuthMode,

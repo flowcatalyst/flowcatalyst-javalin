@@ -74,6 +74,45 @@ public final class SubscriberDelivery {
                 .build();
     }
 
+    /// `Authorization`'s masked wire value (`docs/spec/catch-up-2026-09-22.md`
+    /// slice C3): the `sign` action shows that credentials WOULD be sent,
+    /// never the bearer itself.
+    private static final String MASKED_BEARER = "Bearer ••••••";
+
+    /// Builds the delivery exactly as [#deliver] would — same header and
+    /// signature logic, the same [Attempt.RequestInfo] — but never sends it
+    /// (`docs/spec/catch-up-2026-09-22.md` slice C3, the `sign` action): an
+    /// operator can see exactly what a delivery would look like, with a REAL
+    /// signature verifiable against the returned timestamp and body, without
+    /// spending a real attempt against the subscriber. `headers` carries
+    /// every header NAME **and value** — unlike [Attempt.RequestInfo], which
+    /// is names only — except `Authorization`, which is masked
+    /// ([#MASKED_BEARER]): this is the one place in the codebase that is
+    /// allowed to show header values at all, and it still never shows the
+    /// bearer (mutant: return the raw bearer).
+    public Plan plan(DispatchJob job, DeliveryCredentials.Resolved credentials, Instant at) {
+        String clientCode = clientCodes.identifierFor(job.clientId());
+        byte[] body = DeliveryPayload.build(job, clientCode);
+        BuiltRequest built = buildRequest(job, body, credentials, at, clientCode);
+        return new Plan(built.info(), maskedHeaders(built.request()), new String(body, StandardCharsets.UTF_8));
+    }
+
+    /// `{request, headers, body}` (lockfile `DeliveryPlan`) — never sent.
+    ///
+    /// @param request the same [Attempt.RequestInfo] a real attempt would record
+    /// @param headers every header actually built, `Authorization` masked
+    /// @param body    the request body, decoded as UTF-8 (it is always JSON)
+    public record Plan(Attempt.RequestInfo request, java.util.Map<String, String> headers, String body) {
+    }
+
+    private static java.util.Map<String, String> maskedHeaders(HttpRequest request) {
+        var headers = new java.util.LinkedHashMap<String, String>();
+        request.headers().map().forEach((name, values) -> headers.put(name,
+                "Authorization".equalsIgnoreCase(name) ? MASKED_BEARER
+                        : values.isEmpty() ? "" : values.getFirst()));
+        return headers;
+    }
+
     /// Delivers `job`'s payload to its `target_url` and classifies the
     /// result. `at` is the clock reading used for the signature timestamp
     /// (spec §5) — passed in so tests can pin it.

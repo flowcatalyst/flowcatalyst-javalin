@@ -449,33 +449,53 @@ public final class Platform {
         // above — already built over `pool` — is reused here rather than duplicated: one
         // repository instance correctly serves both its `/api/dispatch-jobs*` (API_READ,
         // via the default) and these DISPATCH mounts.
+        //
+        // `deliveryCredentials`/`subscriberDelivery` are built UNCONDITIONALLY, unlike
+        // `dispatchAuthVerifier` below: they need no app key of their own (a service
+        // account's stored secret simply fails to decrypt without one, same as every other
+        // `Encryption.fromKeys` consumer in this file — `ServiceAccountRepository` already
+        // takes `Optional<Encryption>` for exactly this). `sign` (catch-up-2026-09-22.md
+        // slice C3) is a lockfile-required, 100%-covered SDK route and must always be
+        // registered; only `/api/dispatch/process` itself has a real reason to be
+        // fail-closed on the app key (`dispatchAuthVerifier`, which verifies the router's
+        // per-job HMAC bearer and has no meaning without it). Reusing these same two
+        // instances for `ProcessingApi` below (rather than building a second copy) is what
+        // makes `sign`'s answer and processing's real behaviour provably the same resolver
+        // and the same request builder, not merely two implementations that happen to agree.
+        //
+        // DeliveryCredentials.resolve (docs/go-mirror/2026-09-22-delivery-credentials-handoff.md):
+        // subscription.serviceAccountId -> subscription.connectionId -> connection.serviceAccountId
+        // -> the application's oldest active service account's webhook credentials -> bare with a
+        // reason. `subscriptionRepo`, `connectionRepo` and `applicationRepo` are already built
+        // above (for SubscriptionApi/ConnectionApi/ApplicationApi); the service-account repository
+        // is stateless over the pool like every other repository instance built more than once in
+        // this file. The by-id (steps 1-2) and by-application (step 3, unchanged) resolvers share
+        // `deliveryCredentialServiceAccounts`/`Clock.systemUTC()` but are two cache instances, each
+        // behind its own one-minute memo (OutboundCredentials.cachedById / .cached).
+        var deliveryCredentialServiceAccounts = new ServiceAccountRepository(pool,
+                Encryption.fromKeys(env.appKey(), env.appKeyPrevious()));
+        DeliveryCredentials deliveryCredentials = DeliveryCredentials.resolve(subscriptionRepo::findById,
+                connectionRepo::findById, applicationRepo::findByCode,
+                OutboundCredentials.cachedById(serviceAccountId ->
+                        OutboundCredentials.resolveById(deliveryCredentialServiceAccounts, serviceAccountId), Clock.systemUTC()),
+                OutboundCredentials.cached(applicationId ->
+                        OutboundCredentials.resolve(deliveryCredentialServiceAccounts, applicationId), Clock.systemUTC()));
+        // ClientCodeResolver over `clientRepo` (already built above for ClientApi):
+        // webhook-client-code spec R3 — the resolver caches a resolved identifier for the
+        // process's life, so this shares the one repository instance rather than a second copy.
+        SubscriberDelivery subscriberDelivery = new SubscriberDelivery(SubscriberDelivery.defaultClient(),
+                new ClientCodeResolver(clientRepo::findById));
+        // `sign`: a normal authenticated /api route (permission-gated, not router-facing),
+        // so the default admission group — not Group.DISPATCH, reserved for the router's
+        // own callback routes below.
+        DispatchJobApi.registerSign(routes, "/api/dispatch-jobs",
+                new DispatchJobApi.SignState(dispatchJobRepo, subscriberDelivery, deliveryCredentials, Clock.systemUTC()));
+
         if (env.appKey() != null && !env.appKey().isBlank()) {
             var dispatchAuthVerifier = HmacTokenVerifier.fromAppKey(env.appKey());
             SettledApi.register(routes.in(Group.DISPATCH), new SettledApi.State(dispatchJobRepo, dispatchAuthVerifier));
-            // DeliveryCredentials.resolve (docs/go-mirror/2026-09-22-delivery-credentials-handoff.md):
-            // subscription.serviceAccountId -> subscription.connectionId -> connection.serviceAccountId
-            // -> the application's oldest active service account's webhook credentials -> bare with a
-            // reason. `subscriptionRepo`, `connectionRepo` and `applicationRepo` are already built
-            // above (for SubscriptionApi/ConnectionApi/ApplicationApi); the service-account repository
-            // is stateless over the pool like every other repository instance built more than once in
-            // this file. The by-id (steps 1-2) and by-application (step 3, unchanged) resolvers share
-            // `deliveryCredentialServiceAccounts`/`Clock.systemUTC()` but are two cache instances, each
-            // behind its own one-minute memo (OutboundCredentials.cachedById / .cached).
-            var deliveryCredentialServiceAccounts = new ServiceAccountRepository(pool,
-                    Encryption.fromKeys(env.appKey(), env.appKeyPrevious()));
-            var deliveryCredentials = DeliveryCredentials.resolve(subscriptionRepo::findById, connectionRepo::findById,
-                    applicationRepo::findByCode,
-                    OutboundCredentials.cachedById(serviceAccountId ->
-                            OutboundCredentials.resolveById(deliveryCredentialServiceAccounts, serviceAccountId), Clock.systemUTC()),
-                    OutboundCredentials.cached(applicationId ->
-                            OutboundCredentials.resolve(deliveryCredentialServiceAccounts, applicationId), Clock.systemUTC()));
-            // ClientCodeResolver over `clientRepo` (already built above for ClientApi):
-            // webhook-client-code spec R3 — the resolver caches a resolved identifier for
-            // the process's life, so this shares the one repository instance rather than a
-            // second copy.
             ProcessingApi.register(routes.in(Group.DISPATCH), new ProcessingApi.State(dispatchJobRepo, dispatchAuthVerifier,
-                    new SubscriberDelivery(SubscriberDelivery.defaultClient(), new ClientCodeResolver(clientRepo::findById)),
-                    deliveryCredentials, Clock.systemUTC()));
+                    subscriberDelivery, deliveryCredentials, Clock.systemUTC()));
         } else {
             LOG.warn("FLOWCATALYST_APP_KEY not configured; /api/dispatch/settled and /api/dispatch/process are not mounted");
         }
@@ -728,6 +748,11 @@ public final class Platform {
         IngestApi.registerEventsBatchAt(bff, "/bff/events/batch", ingestState);
         DispatchJobApi.registerAt(bff, "/bff/dispatch-jobs",
                 new DispatchJobApi.State(dispatchJobRepo, uow, new ClientCodeResolver(clientRepo::findById)));
+        // The `sign` twin (catch-up-2026-09-22.md slice C3) — the SAME `deliveryCredentials`/
+        // `subscriberDelivery` instances built above, unconditionally, reused here exactly as
+        // for `/api/dispatch-jobs/{id}/sign`.
+        DispatchJobApi.registerSign(bff, "/bff/dispatch-jobs",
+                new DispatchJobApi.SignState(dispatchJobRepo, subscriberDelivery, deliveryCredentials, Clock.systemUTC()));
         ProcessApi.registerAt(bff, "/bff/processes", new ProcessApi.State(processRepo, uow));
         DebugBff.register(bff, new DebugBff.State(eventRepo, dispatchJobRepo));
 
