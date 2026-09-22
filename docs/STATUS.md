@@ -6,6 +6,27 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## Function backlog units S/F/U landed; zone claims and alias prefixes ruled (2026-09-22, evening)
+
+On `main` (`82f91318` server, `8ff9270f` fcdev, `512101b2` + `0e253d55` SPA), spec
+`docs/spec/function-backlog-2026-09-22.md`: the settings routes declare over live ∪ the newest
+published version (`?version=`, `declaredBy`); `GET /api/function-policies` + `updatedAt`;
+`GET /api/function-domains/{hostname}`; the publish 400 codes documented (28) and two driven by the
+conformance test; stale hosts purged a day after their last heartbeat, from the heartbeat itself;
+`fn config set` / `fn secret set` create the function from `manifest.json`; the SPA's config tab
+reads `declaredBy` (N+1 gone), the policies page lists in one call, domain deep links resolve.
+Server 5135 · fcdev 210 · SPA vitest 41 · e2e 54/54 on the rebuilt jar.
+`function-registry.md` §4.3's error table was reconciled with the parser's codes (`5c04fb32`).
+
+**Owner rulings (backlog §"Function domains: zone claims and alias prefixes"):** a claim covers a
+zone; alias prefixes opt-in per route; aliases HTTP-only. Draft spec
+`docs/spec/function-zones-and-aliases.md` (package J: zones, named aliases, prefixes — only `live`
+is a real alias today). Manifest authoring aids (JSON Schema, dry-run route, SPA form + export,
+`fn init`) queued behind it. Not scheduled yet.
+
+**Owed:** the function-host intermittent (backlog: h2c and cold start ruled out, a connection
+closed early under a full class run remains); owner: push main, ECR vars, S3 perms, SQS retention.
+
 ## Test isolation: every test class has its own database; ports are asked for, not probed (2026-09-21)
 
 On `function-service` (`5892b152`, `369bc5b1`, `5c4bd7ac`). `TestPg.dataSource()` is a **router** to
