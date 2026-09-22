@@ -15,6 +15,11 @@ java --enable-preview -jar fcdev/target/flowcatalyst-fcdev-0.0.1-SNAPSHOT.jar st
 examples/function-subscription-test/scripts/setup-db.sh
 
 # 3. the DSN goes into the platform as the function's secret; the function never holds it.
+#    Config and secrets are stored per FUNCTION, so the function must exist first: `fn publish`
+#    (below, once) creates it and the version without promoting; then set the secret; then
+#    `fn deploy` promotes the version already published.
+fcdev fn publish examples/function-subscription-test/target/function-subscription-test-0.0.1-SNAPSHOT-shrunk.jar \
+  platform.test.subscription-test --manifest examples/function-subscription-test/manifest.json
 #    A secret value is a secret-manager reference (aws-sm://, vault://, …) unless it is
 #    prefixed "encrypt:", which stores the plaintext encrypted — the prefix is stripped,
 #    the function receives the plain DSN.

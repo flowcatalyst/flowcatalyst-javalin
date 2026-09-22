@@ -1632,3 +1632,12 @@ Found while building the function screens (`docs/spec/function-ui.md`):
    O4 to drive one manifest-validation refusal so the description must name it.
 
 Each is a small `main` unit; the SPA already handles the codes generically, so none blocks it.
+
+## `fn config set` / `fn secret set` on a function that does not exist yet (2026-09-22)
+
+They answer `Function_NOT_FOUND`, so the natural order — set the values, then `fn deploy` — fails,
+and the developer must `fn publish` first to create the function, set the values, then `deploy`
+to promote. Found walking `examples/function-hello` on a fresh platform. Fix: the two commands
+create the function the way `publish` does (`Publisher.ensureFunctionExists`, honouring
+`--no-create`), so values can be set before the first publish. Small `fcdev` unit; pin with a
+test that `config set` on an unknown address creates it and stores the value.
