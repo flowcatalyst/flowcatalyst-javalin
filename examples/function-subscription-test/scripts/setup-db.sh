@@ -33,5 +33,5 @@ fi
 DSN="postgres://$ROLE:$PASSWORD@127.0.0.1:$PORT/$DB"
 echo "database ready: $DB (owner $ROLE) on 127.0.0.1:$PORT"
 echo
-echo "The function's DSN (set it as the secret EVENTS_DSN):"
-echo "  printf '%s' '$DSN' | fcdev fn secret set platform.test.subscription-test EVENTS_DSN"
+echo "The function's DSN (set it as the secret EVENTS_DSN; the encrypt: prefix stores the plaintext encrypted):"
+echo "  printf '%s' 'encrypt:$DSN' | fcdev fn secret set platform.test.subscription-test EVENTS_DSN"

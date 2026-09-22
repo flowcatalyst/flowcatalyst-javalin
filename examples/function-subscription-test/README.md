@@ -14,8 +14,11 @@ java --enable-preview -jar fcdev/target/flowcatalyst-fcdev-0.0.1-SNAPSHOT.jar st
 # 2. in another terminal — a database and a role of its own on that Postgres (re-runnable)
 examples/function-subscription-test/scripts/setup-db.sh
 
-# 3. the DSN goes into the platform as the function's secret; the function never holds it
-printf '%s' 'postgres://subscriptiontest:subscriptiontest@127.0.0.1:15432/subscriptiontest' \
+# 3. the DSN goes into the platform as the function's secret; the function never holds it.
+#    A secret value is a secret-manager reference (aws-sm://, vault://, …) unless it is
+#    prefixed "encrypt:", which stores the plaintext encrypted — the prefix is stripped,
+#    the function receives the plain DSN.
+printf '%s' 'encrypt:postgres://subscriptiontest:subscriptiontest@127.0.0.1:15432/subscriptiontest' \
   | fcdev fn secret set platform.test.subscription-test EVENTS_DSN
 
 # 4. once, on a fresh platform: the function's application needs a service account with a signing
