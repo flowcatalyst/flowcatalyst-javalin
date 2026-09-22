@@ -445,7 +445,7 @@ two forms, or a two-part address, is a usage error (exit 2).
 | `fn status [<address>]` | versions, live alias, hosts (with per-host loaded state/error), wiring |
 | `fn versions [<address>]`, `fn retire [<address>] --version <n>` | list / retire a version (refuses the live one) |
 | `fn config get\|set [<address>] [KEY=VALUE…]` | `set` is read-modify-write of the whole map |
-| `fn secret set [<address>] <KEY> [--from-file <file>]`, `fn secret list\|delete` | the value is **never** a CLI argument — stdin (no echo at a TTY) or `--from-file` only |
+| `fn secret set [<address>] <KEY> [--from-file <file>]`, `fn secret list\|delete` | the value is **never** a CLI argument — stdin (no echo at a TTY) or `--from-file` only. The value is a secret-manager reference (`aws-sm://`, `aws-ps://`, `gcp-sm://`, `vault://`, `env://`) unless prefixed **`encrypt:`**, which stores the plaintext encrypted at rest (`INVALID_SECRET_REF` otherwise); the prefix is stripped and the function receives the plain value |
 | `fn invoke <address>[:<version>] [--path /x] [--method POST] [--body <file>\|-] [-H k:v…] [--host-url] [--webhook --signing-secret <secret>]` | calls the function **host** directly, never the platform |
 | `fn watch <dir> [<address>] [--jar <glob>] [--manifest manifest.json]` | debounced (500 ms) file watch; every change runs a deploy cycle; a failing cycle prints its error and the watch keeps going |
 | `fn domain claim <hostname> [--client <id>]` | claims a hostname (§6a); prints the TXT record to create, or nothing further if it auto-verified (`.localhost` under dev mode) |
