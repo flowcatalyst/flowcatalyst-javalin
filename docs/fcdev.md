@@ -70,6 +70,19 @@ without the flag refuses the first preview-compiled class it meets
 (`UnsupportedClassVersionError … Try running with '--enable-preview'`).
 `make run` passes it for you.
 
+**If a Go `fcdev` is on your PATH** (the ~60 MB native binary the Go repo releases, typically at
+`~/.local/bin/fcdev`), a bare `fcdev fn …` reaches it and fails with `unknown command "fn"` — the
+function service is Java-only. Put a wrapper ahead of it, or rename the Go binary:
+
+```sh
+printf '%s\n' '#!/usr/bin/env bash' \
+  'exec java --enable-preview -jar "$HOME/Developer/flowcatalyst-javalin/fcdev/target/flowcatalyst-fcdev-0.0.1-SNAPSHOT.jar" "$@"' \
+  > ~/.local/bin/fcdev-java && chmod +x ~/.local/bin/fcdev-java
+```
+
+It follows every `make jar`, since it points at the jar in `target/`. The `fn …` commands read the
+credentials the Java `start` wrote to `fn-cli.json`, so the running platform must be the Java one.
+
 ---
 
 ## 2. First run
