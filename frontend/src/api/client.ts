@@ -127,7 +127,12 @@ async function baseFetch<T>(
 	const headers: Record<string, string> = {
 		...(init.headers as Record<string, string>),
 	};
-	if (init.body) {
+	// Default to JSON only when the caller hasn't already set a Content-Type —
+	// every existing call site sends a JSON string body and never sets one, so
+	// this is unchanged for them. A caller sending a non-JSON body (e.g. the
+	// function artifact upload's raw `application/octet-stream` bytes) sets
+	// its own Content-Type and that is respected instead.
+	if (init.body && !headers["Content-Type"]) {
 		headers["Content-Type"] = "application/json";
 	}
 

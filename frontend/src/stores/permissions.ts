@@ -183,6 +183,11 @@ export const ROUTE_PERMISSIONS: Record<string, string> = {
 	"/scheduled-jobs": "platform:messaging:scheduled-job:view",
 	"/scheduled-jobs/create": "platform:messaging:scheduled-job:create",
 
+	// Functions (docs/spec/function-ui.md §4)
+	"/functions": "platform:function:function:view",
+	"/function-domains": "platform:function:domain:manage",
+	"/function-policies": "platform:function:policy:manage",
+
 	// Events (messaging events)
 	"/events": "platform:messaging:event:view",
 

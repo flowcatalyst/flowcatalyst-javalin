@@ -31,6 +31,7 @@ vi.mock("@/api/auth", () => ({
 
 import { checkSession } from "@/api/auth";
 import { authGuard, createRoutePermissionGuard } from "@/router/guards";
+import { ROUTE_PERMISSIONS } from "@/stores/permissions";
 
 function route(path: string, authenticated = true): RouteLocationNormalized {
 	return {
@@ -95,6 +96,49 @@ describe("createRoutePermissionGuard on a cold load", () => {
 		const next = vi.fn();
 		await createRoutePermissionGuard()(route("/portal/login", false), START_LOCATION, next);
 		expect(checkSession).not.toHaveBeenCalled();
+		expect(next).toHaveBeenCalledWith();
+	});
+});
+
+// U1 (docs/spec/function-ui.md §6, §4): the function service's three routes
+// map to the three permissions the spec names, and the guard actually
+// enforces the /functions mapping end to end.
+describe("the function service's route permissions", () => {
+	beforeEach(() => {
+		setActivePinia(createPinia());
+		vi.mocked(checkSession).mockClear();
+		mocks.sessionUser = null;
+	});
+
+	it("maps each of the three routes to the permission the spec calls for", () => {
+		expect(ROUTE_PERMISSIONS["/functions"]).toBe(
+			"platform:function:function:view",
+		);
+		expect(ROUTE_PERMISSIONS["/function-domains"]).toBe(
+			"platform:function:domain:manage",
+		);
+		expect(ROUTE_PERMISSIONS["/function-policies"]).toBe(
+			"platform:function:policy:manage",
+		);
+	});
+
+	it("refuses /functions to a user without platform:function:function:view", async () => {
+		mocks.sessionUser = user({
+			roles: ["some-role"],
+			permissions: ["platform:messaging:event:view"],
+		});
+		const next = vi.fn();
+		await createRoutePermissionGuard()(route("/functions"), START_LOCATION, next);
+		expect(next).toHaveBeenCalledWith({ path: "/profile", replace: true });
+	});
+
+	it("admits a user holding platform:function:function:view to /functions", async () => {
+		mocks.sessionUser = user({
+			roles: ["some-role"],
+			permissions: ["platform:function:function:view"],
+		});
+		const next = vi.fn();
+		await createRoutePermissionGuard()(route("/functions"), START_LOCATION, next);
 		expect(next).toHaveBeenCalledWith();
 	});
 });

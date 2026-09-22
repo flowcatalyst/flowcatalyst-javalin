@@ -21,15 +21,36 @@ const openApiInput =
 			? goLockfile
 			: javaLockfile;
 
-export default defineConfig({
-	input: openApiInput,
-	output: {
-		path: "src/api/generated",
+// The function service's API is a second, separate OpenAPI document (no Go
+// counterpart — Java-first, see docs/spec/function-ui.md §1). It is committed
+// only in this repo, so there is no Go-vs-Java existence-check pattern to
+// mirror; the Java path is the only one that can exist.
+const functionsOpenApiInput =
+	"../server/src/main/resources/openapi/functions.openapi.json";
+
+// `defineConfig` accepts a single UserConfig or a readonly array of them —
+// an array runs every entry through one `openapi-ts` invocation, so
+// `pnpm api:generate` regenerates both `src/api/generated` (unchanged) and
+// `src/api/generated-functions` (new) without a second script.
+export default defineConfig([
+	{
+		input: openApiInput,
+		output: {
+			path: "src/api/generated",
+		},
+		postProcess: [],
+		// Types only: the app's transport is the hand-rolled api/client.ts
+		// (toasts, 401 handling, field errors). The previously-generated fetch
+		// client + SDK were never imported by app code, and the retry layer
+		// attached to them never executed.
+		plugins: ["@hey-api/typescript"],
 	},
-	postProcess: [],
-	// Types only: the app's transport is the hand-rolled api/client.ts
-	// (toasts, 401 handling, field errors). The previously-generated fetch
-	// client + SDK were never imported by app code, and the retry layer
-	// attached to them never executed.
-	plugins: ["@hey-api/typescript"],
-});
+	{
+		input: functionsOpenApiInput,
+		output: {
+			path: "src/api/generated-functions",
+		},
+		postProcess: [],
+		plugins: ["@hey-api/typescript"],
+	},
+]);

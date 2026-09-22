@@ -484,6 +484,35 @@ const router = createRouter({
 					component: () =>
 						import("@/pages/dispatch-jobs/DispatchJobListPage.vue"),
 				},
+				// Functions (docs/spec/function-ui.md). Domains and Policies are
+				// placeholder pages until H3 — their routes exist now so nav +
+				// permission gating are complete.
+				{
+					path: "functions",
+					name: "functions",
+					component: () =>
+						import("@/pages/functions/FunctionListPage.vue"),
+					children: [
+						{
+							path: ":address",
+							name: "function-detail",
+							component: () =>
+								import("@/pages/functions/FunctionDetailDrawer.vue"),
+						},
+					],
+				},
+				{
+					path: "function-domains",
+					name: "function-domains",
+					component: () => import("@/pages/PlaceholderPage.vue"),
+					props: { title: "Domains" },
+				},
+				{
+					path: "function-policies",
+					name: "function-policies",
+					component: () => import("@/pages/PlaceholderPage.vue"),
+					props: { title: "Policies" },
+				},
 				// Events
 				{
 					path: "events",

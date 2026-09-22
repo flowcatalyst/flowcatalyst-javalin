@@ -649,6 +649,7 @@ export type ConnectionResponse = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
+    applicationCode?: string;
     clientId?: string;
     clientIdentifier?: string;
     code: string;
@@ -658,6 +659,7 @@ export type ConnectionResponse = {
     id: string;
     name: string;
     serviceAccountId: string;
+    source: string;
     status: string;
     updatedAt: string;
 };
@@ -748,6 +750,10 @@ export type CreateConnectionRequest = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
+    /**
+     * Optional application this connection belongs to. Omitted means shared (usable from any application).
+     */
+    applicationCode?: string;
     clientId?: string;
     /**
      * Connection code (lowercase, alphanumeric, hyphens)
@@ -2506,6 +2512,23 @@ export type SuspendClientRequest = {
     [key: string]: unknown;
 };
 
+export type SyncConnectionInputRequest = {
+    code: string;
+    description?: string;
+    externalId?: string;
+    name: string;
+};
+
+export type SyncConnectionsRequest = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    clientId?: string;
+    connections: Array<SyncConnectionInputRequest>;
+    [key: string]: unknown;
+};
+
 export type SyncDispatchPoolInputRequest = {
     code: string;
     concurrency?: number;
@@ -2735,6 +2758,10 @@ export type SyncSubscriptionEventTypeRequest = {
 
 export type SyncSubscriptionInputRequest = {
     code: string;
+    /**
+     * Connection code — stable across environments, unlike connectionId. By default resolves a connection owned by THIS application; set sharedConnection to resolve it among the shared (application-less) connections instead. Within either namespace, a client-scoped sync (clientId set) prefers its own client's connection, falling back to a global one; a client-less sync only resolves a global connection.
+     */
+    connectionCode?: string;
     connectionId?: string;
     dataOnly?: boolean;
     description?: string;
@@ -2743,6 +2770,10 @@ export type SyncSubscriptionInputRequest = {
     maxRetries?: number;
     mode?: string;
     name: string;
+    /**
+     * Resolve connectionCode among the shared (application-less) connections instead of this application's own. Requires connectionCode.
+     */
+    sharedConnection?: boolean;
     target: string;
     timeoutSeconds?: number;
 };
@@ -2752,6 +2783,7 @@ export type SyncSubscriptionsRequest = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
+    clientId?: string;
     subscriptions: Array<SyncSubscriptionInputRequest>;
     [key: string]: unknown;
 };
@@ -2863,6 +2895,7 @@ export type UpdateConnectionRequest = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
+    applicationCode?: string;
     description?: string;
     externalId?: string;
     name: string;
@@ -3432,6 +3465,7 @@ export type ConnectionListResponseWritable = {
 };
 
 export type ConnectionResponseWritable = {
+    applicationCode?: string;
     clientId?: string;
     clientIdentifier?: string;
     code: string;
@@ -3441,6 +3475,7 @@ export type ConnectionResponseWritable = {
     id: string;
     name: string;
     serviceAccountId: string;
+    source: string;
     status: string;
     updatedAt: string;
 };
@@ -3502,6 +3537,10 @@ export type CreateClientRequestWritable = {
 };
 
 export type CreateConnectionRequestWritable = {
+    /**
+     * Optional application this connection belongs to. Omitted means shared (usable from any application).
+     */
+    applicationCode?: string;
     clientId?: string;
     /**
      * Connection code (lowercase, alphanumeric, hyphens)
@@ -4594,6 +4633,12 @@ export type SuspendClientRequestWritable = {
     [key: string]: unknown;
 };
 
+export type SyncConnectionsRequestWritable = {
+    clientId?: string;
+    connections: Array<SyncConnectionInputRequest>;
+    [key: string]: unknown;
+};
+
 export type SyncDispatchPoolsRequestWritable = {
     pools: Array<SyncDispatchPoolInputRequest>;
     [key: string]: unknown;
@@ -4674,6 +4719,7 @@ export type SyncScheduledJobsResultResponseWritable = {
 };
 
 export type SyncSubscriptionsRequestWritable = {
+    clientId?: string;
     subscriptions: Array<SyncSubscriptionInputRequest>;
     [key: string]: unknown;
 };
@@ -4730,6 +4776,7 @@ export type UpdateClientRequestWritable = {
 };
 
 export type UpdateConnectionRequestWritable = {
+    applicationCode?: string;
     description?: string;
     externalId?: string;
     name: string;
@@ -5113,6 +5160,41 @@ export type ListApplicationRolesResponses = {
 };
 
 export type ListApplicationRolesResponse = ListApplicationRolesResponses[keyof ListApplicationRolesResponses];
+
+export type SyncConnectionsData = {
+    body: SyncConnectionsRequestWritable;
+    path: {
+        /**
+         * Application code
+         */
+        appCode: string;
+    };
+    query?: {
+        /**
+         * Remove API/CODE connections not in the list
+         */
+        removeUnlisted?: boolean;
+    };
+    url: '/api/applications/{appCode}/connections/sync';
+};
+
+export type SyncConnectionsErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type SyncConnectionsError = SyncConnectionsErrors[keyof SyncConnectionsErrors];
+
+export type SyncConnectionsResponses = {
+    /**
+     * OK
+     */
+    200: SyncResultResponse;
+};
+
+export type SyncConnectionsResponse = SyncConnectionsResponses[keyof SyncConnectionsResponses];
 
 export type SyncDispatchPoolsData = {
     body: SyncDispatchPoolsRequestWritable;

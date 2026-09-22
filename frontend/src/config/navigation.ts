@@ -17,6 +17,13 @@ export interface NavGroup {
 	items: NavItem[];
 }
 
+/** The minimal user shape the filtering below needs. */
+export interface NavUser {
+	permissions?: string[];
+	roles?: string[];
+	clientId?: string | null;
+}
+
 export const NAVIGATION_CONFIG: NavGroup[] = [
 	{
 		label: "Overview",
@@ -227,6 +234,29 @@ export const NAVIGATION_CONFIG: NavGroup[] = [
 		],
 	},
 	{
+		// The function service (docs/function-service-overview.md): functions,
+		// the domains their public routes are served on, and the per-owner
+		// signing/limit policy. Positioned after "Dispatch Jobs" (Messaging).
+		label: "Functions",
+		items: [
+			{
+				label: "Functions",
+				icon: "pi pi-bolt",
+				route: "/functions",
+			},
+			{
+				label: "Domains",
+				icon: "pi pi-globe",
+				route: "/function-domains",
+			},
+			{
+				label: "Policies",
+				icon: "pi pi-verified",
+				route: "/function-policies",
+			},
+		],
+	},
+	{
 		label: "Developer",
 		items: [
 			{
@@ -242,3 +272,53 @@ export const NAVIGATION_CONFIG: NavGroup[] = [
 		],
 	},
 ];
+
+/**
+ * Reduce a single item to what this user may see: dropped by scope, dropped
+ * by missing route permission (children filtered, parent dropped once empty).
+ * Extracted as a pure function (from AppSidebar.vue's inline `visibleItem`)
+ * so the filtering behaviour is unit-testable without mounting the sidebar.
+ */
+function visibleNavItem(
+	item: NavItem,
+	user: NavUser | null | undefined,
+	canSeeScope: (user: NavUser | null | undefined, scope: NavItem["scope"]) => boolean,
+	canAccessPath: (user: NavUser | null | undefined, path: string) => boolean,
+): NavItem | null {
+	if (!canSeeScope(user, item.scope)) return null;
+	if (item.children && item.children.length > 0) {
+		const children = item.children.filter(
+			(c) => canSeeScope(user, c.scope) && (!c.route || canAccessPath(user, c.route)),
+		);
+		return children.length > 0 ? { ...item, children } : null;
+	}
+	if (item.route && !canAccessPath(user, item.route)) return null;
+	return item;
+}
+
+/**
+ * Pure navigation filter: the groups and items a given user may see, given
+ * the platform's scope/permission predicates and whether messaging is
+ * enabled. The single source both AppSidebar.vue and its tests use, so a
+ * change to the filtering rule can't drift between what renders and what's
+ * tested.
+ */
+export function filterNavigation(
+	groups: NavGroup[],
+	user: NavUser | null | undefined,
+	options: {
+		messagingEnabled: boolean;
+		canSeeScope: (user: NavUser | null | undefined, scope: NavItem["scope"]) => boolean;
+		canAccessPath: (user: NavUser | null | undefined, path: string) => boolean;
+	},
+): NavGroup[] {
+	return groups
+		.filter((group) => group.label !== "Messaging" || options.messagingEnabled)
+		.map((group) => ({
+			...group,
+			items: group.items
+				.map((item) => visibleNavItem(item, user, options.canSeeScope, options.canAccessPath))
+				.filter((item): item is NavItem => item !== null),
+		}))
+		.filter((group) => group.items.length > 0);
+}

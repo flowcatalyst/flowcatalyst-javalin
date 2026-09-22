@@ -55,7 +55,13 @@ export type PlatformConfig = ConfigResponse;
 export type ConfigListResponse = GenConfigListResponse;
 export type AccessListResponse = GenAccessListResponse;
 
-export interface SetConfigRequest {
+// Named for the platform-config property this module owns, not the generic
+// "SetConfigRequest" — the function service's generated types (§H1) export a
+// same-named, differently-shaped type for its own /config route, and the
+// conventions test in tests/conventions/functions-generated-types.test.ts
+// (U8) refuses a hand-written type anywhere under src/api that shadows one
+// of those.
+export interface SetPlatformConfigRequest {
 	value: string;
 	valueType?: "PLAIN" | "SECRET";
 	description?: string;
@@ -100,7 +106,7 @@ export const configApi = {
 		appCode: string,
 		section: string,
 		property: string,
-		data: SetConfigRequest,
+		data: SetPlatformConfigRequest,
 		clientId?: string,
 	): Promise<PlatformConfig> {
 		return apiFetch(configUrl(appCode, section, property, clientId), {
