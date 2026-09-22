@@ -1615,7 +1615,7 @@ toolchain; full reactor from clean plus both native builds. After it the jar is 
 one release. Re-check JEP 543's status before then — if finalisation slipped past 28, the re-fit is
 the same but the flag stays.
 
-## Function API gaps the SPA exposed (2026-09-22, package H)
+## Function API gaps the SPA exposed (2026-09-22, package H) **DONE 2026-09-22 (`82f91318`, unit S of `docs/spec/function-backlog-2026-09-22.md`; SPA follow-up unit U).**
 
 Found while building the function screens (`docs/spec/function-ui.md`):
 
@@ -1633,7 +1633,7 @@ Found while building the function screens (`docs/spec/function-ui.md`):
 
 Each is a small `main` unit; the SPA already handles the codes generically, so none blocks it.
 
-## `fn config set` / `fn secret set` on a function that does not exist yet (2026-09-22)
+## `fn config set` / `fn secret set` on a function that does not exist yet (2026-09-22) **DONE 2026-09-22 (`8ff9270f`).**
 
 They answer `Function_NOT_FOUND`, so the natural order — set the values, then `fn deploy` — fails,
 and the developer must `fn publish` first to create the function, set the values, then `deploy`
@@ -1642,7 +1642,7 @@ create the function the way `publish` does (`Publisher.ensureFunctionExists`, ho
 `--no-create`), so values can be set before the first publish. Small `fcdev` unit; pin with a
 test that `config set` on an unknown address creates it and stores the value.
 
-## Function hosts that stopped without deregistering accumulate (2026-09-22)
+## Function hosts that stopped without deregistering accumulate (2026-09-22) **DONE 2026-09-22 (`82f91318`: purged after a day from the heartbeat).**
 
 A host's id is its process (`fcdev-<pid>` locally; a task id in ECS), and a host that stops
 without deregistering — every `fcdev` restart, every ECS task replacement — leaves its row with its
@@ -1650,7 +1650,7 @@ last heartbeat, shown `stale` after the live window. Inert (desired state and ro
 hosts) but the list grows for ever. Purge rows stale for more than a day, from the reaper or the
 heartbeat handler.
 
-## The function settings routes should expose the CANDIDATE version's declared keys (2026-09-22)
+## The function settings routes should expose the CANDIDATE version's declared keys (2026-09-22) **DONE 2026-09-22 (`82f91318`: `?version=`, `declaredBy`).**
 
 `GET /api/functions/{address}/config` and `…/secrets` compute `declared`/`missing` from the LIVE
 manifest, but `PromoteVersion.requireSettingsPresent` checks the candidate's, so before a
