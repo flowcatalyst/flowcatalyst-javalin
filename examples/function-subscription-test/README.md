@@ -35,6 +35,12 @@ declared secret has no value (`SETTINGS_MISSING`).
 
 Step 3 is what the setup script prints at the end, so you can paste it.
 
+**`fcdev start` must be running for every step after 1.** It writes the CLI's credentials to
+`fn-cli.json` on start and removes the file when it stops, so `fn …` commands answer "no
+FlowCatalyst credentials found" against a stopped platform — start it again in another terminal.
+If a Go `fcdev` is on your PATH, use the `fcdev-java` wrapper from `docs/fcdev.md` for every
+command here; the function service is Java-only.
+
 ## What to look at
 
 - `manifest.json` — one `webhook` endpoint, one subscription pointing at it, one `db` entry whose
