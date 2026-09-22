@@ -38,6 +38,18 @@ public interface Broker {
         nack(message, delay);
     }
 
+    /// Hands a message back for capacity, not failure — the head-of-line
+    /// backpressure deferral (owner ruling 2026-09-22,
+    /// `docs/go-mirror/2026-09-22-router-hol-deferral-handoff.md` §1-§3):
+    /// [Pool#submit]'s at-capacity branch calls this instead of [#nack] so
+    /// the message is counted as deferred, never as rejected. `delay` is the
+    /// pool's own admission-schedule reservation, not a flat constant.
+    ///
+    /// Deliberately **abstract, no default**: a full pool always has an
+    /// admission decision to report, unlike [#retrying]'s notification-only
+    /// shape.
+    void defer(QueuedMessage message, Duration delay);
+
     /// Records that the message is being retried **in place**, so the
     /// in-flight entry's attempt count advances.
     ///

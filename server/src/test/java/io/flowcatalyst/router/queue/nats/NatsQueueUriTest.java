@@ -24,8 +24,13 @@ class NatsQueueUriTest {
         assertThat(cfg.maxMessagesPerPoll()).isEqualTo(10);
         assertThat(cfg.pollTimeout()).isEqualTo(Duration.ofSeconds(20));
         assertThat(cfg.ackWait()).isEqualTo(Duration.ofSeconds(120));
-        assertThat(cfg.maxDeliver()).isEqualTo(10);
-        assertThat(cfg.maxAckPending()).isEqualTo(1000);
+        // D12, owner ruling 2026-09-22 (`docs/spec/router-hol-deferral.md`
+        // §4): both unlimited by default now — the router owns give-up, and
+        // a NAK-delayed message holds an ack-pending slot for its whole
+        // delay, so a finite cap would recreate the head-of-line block on
+        // NATS this ruling removes.
+        assertThat(cfg.maxDeliver()).isEqualTo(-1);
+        assertThat(cfg.maxAckPending()).isEqualTo(-1);
         assertThat(cfg.storage()).isEqualTo("file");
         assertThat(cfg.replicas()).isEqualTo(1);
         assertThat(cfg.maxAge()).isEqualTo(Duration.ofDays(7));

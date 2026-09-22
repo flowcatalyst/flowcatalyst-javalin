@@ -34,6 +34,20 @@ public interface Acknowledger {
     /// the delay; none may treat a nack as an ack.
     void nack(QueuedMessage message, Duration delay);
 
+    /// Makes a delivery visible again after `delay` WITHOUT counting it as a
+    /// failure — backpressure, not rejection (owner ruling 2026-09-22,
+    /// `docs/go-mirror/2026-09-22-router-hol-deferral-handoff.md` §2). Same
+    /// ownership contract as [#nack]: the caller has already dropped the
+    /// in-flight tracker entry.
+    ///
+    /// Deliberately **abstract, no default** (CLAUDE.md: every backend has
+    /// an opinion): every implementation counts this against its own
+    /// `totalDeferred`, never `totalNacked` — the wire mechanism (SQS
+    /// `ChangeMessageVisibility`, Postgres `visible_at`, NATS
+    /// `nakWithDelay`) is the same call [#nack] makes, but a deferral has
+    /// not failed and must not be reported as though it had.
+    void defer(QueuedMessage message, Duration delay);
+
     /// Whether a [#nack]ed message's `delay` is actually honoured by this
     /// backend before it redelivers — R5 (owner ruling 2026-09-17,
     /// `docs/spec/router-deferral-handback.md`, second unit).

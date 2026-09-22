@@ -306,6 +306,41 @@ class PoolMetricsCollectorTest {
         assertThat(collector.histogramSnapshot().count()).isZero();
     }
 
+    // ── D5: completionRate (`docs/spec/router-hol-deferral.md` §3) ───────
+
+    @Test
+    @DisplayName("D5: completionRate divides by the span SINCE THE OLDEST completion, not by the window "
+            + "(mutant: divide by the window instead)")
+    void completionRateUsesTheSpanOfTheSamplesNotTheWindow() {
+        var collector = new PoolMetricsCollector(clock);
+        // Ten completions spread over the last ten seconds, ending at "now".
+        for (int i = 0; i < 10; i++) {
+            collector.recordSuccess(Duration.ofMillis(1));
+            clock.advance(Duration.ofSeconds(1));
+        }
+
+        var rate = collector.completionRate(Duration.ofMinutes(5));
+
+        assertThat(rate).isPresent();
+        // Dividing by the 5-minute window instead would report ~0.033/s —
+        // an order of magnitude off from the true ~1/s.
+        assertThat(rate.getAsDouble())
+                .as("ten completions over ten seconds is one per second, not one per five minutes")
+                .isCloseTo(1.0, org.assertj.core.data.Offset.offset(0.15));
+    }
+
+    @Test
+    @DisplayName("D5: completionRate is empty when there is no completion inside the window at all")
+    void completionRateIsEmptyWithNoCompletionInWindow() {
+        var collector = new PoolMetricsCollector(clock);
+        for (int i = 0; i < 10; i++) {
+            collector.recordSuccess(Duration.ofMillis(1));
+            clock.advance(Duration.ofSeconds(1));
+        }
+
+        assertThat(collector.completionRate(Duration.ofMillis(500))).isEmpty();
+    }
+
     @Test
     @DisplayName("Config rejects a non-positive maxSamples, and a long window shorter than the short window")
     void configValidates() {

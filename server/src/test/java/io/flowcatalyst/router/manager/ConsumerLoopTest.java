@@ -66,6 +66,15 @@ class ConsumerLoopTest {
     private final List<RouterManager> managers = new CopyOnWriteArrayList<>();
 
     private RouterManager manager() {
+        return manager(RouterManager.DEFAULT_DEFERRAL_BUDGET);
+    }
+
+    /// @param deferralBudget the budget clause's threshold (`docs/spec/router-hol-deferral.md`
+    ///        §1) — a test that wants "every known pool full" to actually
+    ///        pause the loop must spend this budget itself (see
+    ///        [#spendDeferralBudget]), since a full destination set alone no
+    ///        longer parks it.
+    private RouterManager manager(int deferralBudget) {
         Mediator mediator = (message, recordFailure) -> {
             // Held open so a test can fill the pool: with instant delivery the
             // queue drains as fast as it fills and never reaches capacity.
@@ -78,7 +87,7 @@ class ConsumerLoopTest {
         pool = new Pool(new Pool.Config(RouterManager.DEFAULT_POOL, 4, 0), mediator, NO_OP_BROKER,
                 PoolMetrics.NO_OP, clock);
         var manager = new RouterManager(tracker, warnings, clock,
-                config -> new Pool(config, mediator, NO_OP_BROKER, PoolMetrics.NO_OP, clock));
+                config -> new Pool(config, mediator, NO_OP_BROKER, PoolMetrics.NO_OP, clock), false, deferralBudget);
         manager.registerPool(RouterManager.DEFAULT_POOL, pool);
         manager.registerConsumer(consumer);
         managers.add(manager);
@@ -89,6 +98,10 @@ class ConsumerLoopTest {
     /// per-consumer capacity tests, which need a pool the consumer feeds
     /// (filled to capacity) and a pool it never touches (left with room).
     private RouterManager twoPoolManager() {
+        return twoPoolManager(RouterManager.DEFAULT_DEFERRAL_BUDGET);
+    }
+
+    private RouterManager twoPoolManager(int deferralBudget) {
         Mediator mediator = (message, recordFailure) -> {
             while (deliveryBlocked.get()) {
                 Thread.sleep(Duration.ofMillis(5));
@@ -99,12 +112,22 @@ class ConsumerLoopTest {
         pool = new Pool(new Pool.Config("A", 4, 0), mediator, NO_OP_BROKER, PoolMetrics.NO_OP, clock);
         poolB = new Pool(new Pool.Config("B", 4, 0), mediator, NO_OP_BROKER, PoolMetrics.NO_OP, clock);
         var manager = new RouterManager(tracker, warnings, clock,
-                config -> new Pool(config, mediator, NO_OP_BROKER, PoolMetrics.NO_OP, clock));
+                config -> new Pool(config, mediator, NO_OP_BROKER, PoolMetrics.NO_OP, clock), false, deferralBudget);
         manager.registerPool("A", pool);
         manager.registerPool("B", poolB);
         manager.registerConsumer(consumer);
         managers.add(manager);
         return manager;
+    }
+
+    /// Spends `manager`'s deferral budget for "queue-1" with one ledger
+    /// entry due an hour from now — far enough out that it can never itself
+    /// fire [CapacityGate#awaitChangeSince(long, Duration)]'s timer during a
+    /// test's own timing budget, so a resume a test observes is provably the
+    /// capacity signal, not the ledger's fallback wake-up (D11,
+    /// `docs/spec/router-hol-deferral.md`).
+    private void spendDeferralBudget(RouterManager manager) {
+        manager.deferralLedger(consumer.identifier()).add(clock.instant().plus(Duration.ofHours(1)));
     }
 
     @AfterEach
@@ -286,15 +309,20 @@ class ConsumerLoopTest {
     @Test
     @DisplayName("with every pool full the loop pauses instead of pulling messages it must hand back")
     void pausesWhenAllPoolsAreFull() {
-        var manager = manager();
+        // D11: a full pool alone no longer parks the loop (it defers into the
+        // pool instead) — the budget must be spent too, or this test would
+        // hang on the await below with the loop still (correctly) polling.
+        var manager = manager(1);
         fillPool(manager);
+        spendDeferralBudget(manager);
         consumer.deliver(batch("m1"));
 
         start(manager);
 
         await(() -> !warnings.raised.isEmpty());
         assertThat(warnings.raised.getFirst())
-                .contains("POOL_CAPACITY").contains("all pools at capacity").contains("queue-1");
+                .contains("POOL_CAPACITY").contains("destination pools at capacity")
+                .contains("1 deferrals outstanding").contains("queue-1");
         assertThat(consumer.polls.get()).as("no poll while there is nowhere to put the result").isZero();
     }
 
@@ -303,8 +331,9 @@ class ConsumerLoopTest {
     void capacityWarningIsNotRepeated() {
         // A warning store holding a thousand entries would otherwise be
         // flooded by one busy period.
-        var manager = manager();
+        var manager = manager(1);
         fillPool(manager);
+        spendDeferralBudget(manager);
         start(manager);
         await(() -> !warnings.raised.isEmpty());
 
@@ -320,8 +349,9 @@ class ConsumerLoopTest {
         // park in ConsumerLoop#awaitCapacity → this test fails on the
         // resume-timing assertion below, because the loop would still be
         // asleep 100 ms after the pool frees up.
-        var manager = manager();
+        var manager = manager(1);
         fillPool(manager);
+        spendDeferralBudget(manager);
         consumer.deliver(batch("m1"));
         start(manager);
 
@@ -366,8 +396,9 @@ class ConsumerLoopTest {
     @Test
     @DisplayName("2026-09-07: stopping a loop parked for capacity returns promptly, not after a fixed pause")
     void stopsPromptlyWhileParkedForCapacity() {
-        var manager = manager();
+        var manager = manager(1);
         fillPool(manager);
+        spendDeferralBudget(manager);
         start(manager);
         await(() -> !warnings.raised.isEmpty());
 
@@ -379,6 +410,34 @@ class ConsumerLoopTest {
         assertThat(elapsed)
                 .as("interrupting a loop parked on the capacity gate must not wait out a fixed pause")
                 .isLessThan(Duration.ofMillis(500));
+    }
+
+    @Test
+    @DisplayName("D7: a loop parked with its budget spent wakes on the ledger's earliest due time, "
+            + "within 1s — a timing assertion")
+    void wakesOnDeferralDue() {
+        // The pool stays full for the whole test (deliveryBlocked never
+        // clears) and the budget (1) stays spent until the ledger entry
+        // prunes itself past its due time — so a capacity-gate signal never
+        // comes here, and the ONLY thing that can make this loop poll again
+        // is the ledger's own wake-up timer. Mutant: drop the timer arm
+        // (revert to the untimed `gate.awaitChangeSince(generation)`) → the
+        // loop never wakes and the `await` below times out at its own 60s
+        // budget instead of passing well under one second.
+        var manager = manager(1);
+        fillPool(manager);
+        manager.deferralLedger(consumer.identifier()).add(clock.instant().plus(Duration.ofMillis(150)));
+        consumer.deliver(batch("m1"));
+
+        long startedAt = System.nanoTime();
+        start(manager);
+
+        await(() -> consumer.polls.get() >= 1);
+        var elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
+
+        assertThat(elapsed)
+                .as("must wake on the deferral coming due, not on a capacity signal that never arrives here")
+                .isLessThan(Duration.ofSeconds(1));
     }
 
     @Test
@@ -410,7 +469,7 @@ class ConsumerLoopTest {
         // which it never feeds — always has capacity. Mutate #hasRoom back
         // to `manager.anyPoolHasCapacity()` and this test fails: the
         // warning below never fires and the assertion times out.
-        var manager = twoPoolManager();
+        var manager = twoPoolManager(1);
         consumer.deliver(List.of(message("seed", "A")));
         var loop = start(manager);
         await(() -> delivered.contains("seed"));
@@ -418,6 +477,7 @@ class ConsumerLoopTest {
         // remembered fed-pool set is now {"A"}.
 
         fillPoolA(manager);
+        spendDeferralBudget(manager);
         // Further polls return nothing; lastFedPools is untouched by an
         // empty batch, so it keeps naming "A".
         consumer.deliver(List.of());
@@ -431,6 +491,137 @@ class ConsumerLoopTest {
         assertThat(manager.anyPoolHasCapacity())
                 .as("pool B, which this consumer never fed, still has room").isTrue();
         assertThat(loop.lastAlive()).as("a capacity pause is alive, not stalled").isPresent();
+    }
+
+    // ── D10: end to end, the head-of-line trap ────────────────────────────
+
+    @Test
+    @DisplayName("D10: end to end, TWO batches — a batch of only the full pool's messages must not park "
+            + "the queue once the fast pool's batch arrives behind it (owner ruling 2026-09-22)")
+    void fullPoolDefersInsteadOfBlockingTheQueueAcrossTwoBatches() throws InterruptedException {
+        var delivered = new CopyOnWriteArrayList<String>();
+        var slowEntered = new CountDownLatch(1);
+        var slowBlocked = new AtomicBoolean(true);
+        Mediator slowMediator = (msg, recordFailure) -> {
+            slowEntered.countDown();
+            while (slowBlocked.get()) {
+                Thread.sleep(Duration.ofMillis(5));
+            }
+            delivered.add(msg.id());
+            return MediationOutcome.Success.of(200);
+        };
+        Mediator fastMediator = (msg, recordFailure) -> {
+            delivered.add(msg.id());
+            return MediationOutcome.Success.of(200);
+        };
+        var broker = new RecordingHolBroker(tracker);
+        var slowPool = new Pool(new Pool.Config("SLOW", 1, 0), slowMediator, broker, PoolMetrics.NO_OP, clock);
+        var fastPool = new Pool(new Pool.Config("FAST", 4, 0), fastMediator, broker, PoolMetrics.NO_OP, clock);
+        var manager = new RouterManager(tracker, warnings, clock,
+                config -> new Pool(config, slowMediator, broker, PoolMetrics.NO_OP, clock));
+        manager.registerPool("SLOW", slowPool);
+        manager.registerPool("FAST", fastPool);
+        manager.registerConsumer(consumer);
+        managers.add(manager);
+        try {
+            // Fill SLOW to capacity ONCE, synchronously — no background
+            // filler thread and no race, unlike ConsumerLoopTest#fillPool:
+            // with concurrency 1 and its only worker permanently blocked in
+            // slowMediator, nothing ever drains it, so a one-shot fill stays
+            // put for the rest of the test.
+            int capacity = slowPool.config().queueCapacity();
+            slowPool.submit(message("occupy", "SLOW"));
+            assertThat(slowEntered.await(2, java.util.concurrent.TimeUnit.SECONDS)).as("the only SLOW worker is now blocked").isTrue();
+            for (int i = 0; i < capacity; i++) {
+                slowPool.submit(message("filler-" + i, "SLOW"));
+            }
+            assertThat(slowPool.queueSize()).isEqualTo(capacity);
+
+            // First a batch of ONLY the slow pool's traffic: after routing it,
+            // the consumer's remembered destination set becomes {SLOW},
+            // which is full — the exact one-batch memory that used to park
+            // the whole queue (`docs/spec/router-hol-deferral.md` §1). A
+            // SINGLE mixed batch would NOT catch this: the first poll's
+            // destination set starts empty, falls back to
+            // anyPoolHasCapacity() (true, via FAST), and admits everything —
+            // including FAST's messages — before the set is ever learned.
+            // Only a SECOND, later poll judged against an already-learned
+            // {SLOW} set can be wrongly parked, which is why this is two
+            // batches, not one.
+            var slowBatch = IntStream.range(0, 5)
+                    .mapToObj(i -> message("slow-" + i, "SLOW")).toList();
+            consumer.deliver(slowBatch);
+            var loop = start(manager);
+            await(() -> broker.deferredOrder.size() == 5);
+
+            // Then the fast pool's traffic, arriving behind it.
+            var fastBatch = IntStream.range(0, 3)
+                    .mapToObj(i -> message("fast-" + i, "FAST")).toList();
+            consumer.deliver(fastBatch);
+
+            await(() -> delivered.containsAll(List.of("fast-0", "fast-1", "fast-2")));
+            // Give a wrongly-parked loop a moment it would use to prove it
+            // is NOT stuck, rather than a race with the assertions below.
+            sleep(Duration.ofMillis(50));
+
+            assertThat(broker.deferredOrder).as("SLOW's five messages deferred, in arrival order")
+                    .containsExactly("slow-0", "slow-1", "slow-2", "slow-3", "slow-4");
+            assertThat(broker.deferredOrder.stream().map(broker.deferredDelays::get).toList())
+                    .as("each deferral carries a real, scheduled delay >= the 5s floor — never the old "
+                            + "flat 10s-or-nothing nack")
+                    .allSatisfy(d -> assertThat(d).isGreaterThanOrEqualTo(Duration.ofSeconds(5)));
+            assertThat(broker.nackedIds).as("a full pool is a deferral, not a failure").isEmpty();
+            assertThat(delivered).as("FAST's messages delivered while SLOW stayed full the whole time")
+                    .containsExactlyInAnyOrder("fast-0", "fast-1", "fast-2");
+            assertThat(tracker.size())
+                    .as("deferred messages leave the pipeline: no tracker entries linger to dedup their redelivery")
+                    .isZero();
+            assertThat(manager.deferralLedger(consumer.identifier()).outstanding(clock.instant()))
+                    .as("the consumer's ledger recorded every deferral").isEqualTo(5);
+            assertThat(loop.lastAlive()).as("never parked — always provably alive").isPresent();
+        } finally {
+            slowBlocked.set(false);
+        }
+    }
+
+    /// Records every ack/defer/nack, for [#fullPoolDefersInsteadOfBlockingTheQueueAcrossTwoBatches].
+    private static final class RecordingHolBroker implements io.flowcatalyst.router.pool.Broker {
+        final List<String> deferredOrder = new CopyOnWriteArrayList<>();
+        final java.util.Map<String, Duration> deferredDelays = new java.util.concurrent.ConcurrentHashMap<>();
+        final List<String> nackedIds = new CopyOnWriteArrayList<>();
+        private final InFlightTracker tracker;
+
+        RecordingHolBroker(InFlightTracker tracker) {
+            this.tracker = tracker;
+        }
+
+        @Override
+        public void ack(QueuedMessage message) {
+            tracker.remove(message.id());
+        }
+
+        @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            deferredOrder.add(message.id());
+            deferredDelays.put(message.id(), delay);
+            tracker.remove(message.id());
+        }
+
+        @Override
+        public void nack(QueuedMessage message, Duration delay) {
+            nackedIds.add(message.id());
+            tracker.remove(message.id());
+        }
+
+        @Override
+        public void release(QueuedMessage message) {
+            tracker.remove(message.id());
+        }
+
+        @Override
+        public boolean honoursDelayedReturn(QueuedMessage message) {
+            return true;
+        }
     }
 
     // ── Liveness while a poll is genuinely in progress (2026-09-07) ──────
@@ -538,6 +729,11 @@ class ConsumerLoopTest {
     private static final Broker NO_OP_BROKER = new Broker() {
         @Override
         public void ack(QueuedMessage message) {
+        }
+
+        @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            nack(message, delay);
         }
 
         @Override
@@ -763,6 +959,11 @@ class ConsumerLoopTest {
         }
 
         @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            nack(message, delay);
+        }
+
+        @Override
         public void nack(QueuedMessage message, Duration delay) {
         }
 
@@ -840,6 +1041,11 @@ class ConsumerLoopTest {
         @Override
         public boolean ack(QueuedMessage message) {
             return true;
+        }
+
+        @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            nack(message, delay);
         }
 
         @Override

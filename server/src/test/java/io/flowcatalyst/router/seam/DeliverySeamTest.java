@@ -335,6 +335,11 @@ class DeliverySeamTest {
         }
 
         @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            nack(message, delay);
+        }
+
+        @Override
         public void nack(QueuedMessage message, Duration delay) {
             nacked.put(message.receiptHandle(), delay);
         }

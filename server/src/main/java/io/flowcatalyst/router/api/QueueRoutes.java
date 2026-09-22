@@ -20,15 +20,6 @@ import java.util.Map;
 /// and `ageSeconds` on the refresh response is how stale.
 final class QueueRoutes {
 
-    /// `queue-stats`' `totalDeferred`, which is structurally zero on both
-    /// sides. Go carries a `Defer` verb on every backend and the counter this
-    /// field reports — and no production caller, so Go answers 0 as well.
-    /// Java never grew the verb: a deferral is a `nack` with a delay and is
-    /// counted as a nack, so the column loses nothing that the nack count does
-    /// not already hold. Named rather than inlined so the next reader finds
-    /// the reason instead of a bare literal.
-    private static final long DEFERRALS_ARE_NACKS = 0;
-
     /// `queue-stats`' `throughput`. Go hard-codes 0.0 — it never computed a
     /// rate — and a plausible-looking number invented here would be worse than
     /// an obviously absent one, because a dashboard would plot it.
@@ -92,12 +83,20 @@ final class QueueRoutes {
 
     /// One `queue-stats` row. Separated from the HTTP so the derivations can be
     /// tested on values chosen to make a wrong one visible.
+    ///
+    /// `totalDeferred` used to be structurally zero on both sides: Go carries
+    /// a `Defer` verb on every backend and the counter this field reports,
+    /// but had no production caller either, and Java had grown no `defer`
+    /// verb at all — a hand-back was a `nack` regardless of reason. Owner
+    /// ruling 2026-09-22 (`docs/spec/router-hol-deferral.md` §2) gives every
+    /// backend a real `defer`, counted apart from `nack`, so this now reports
+    /// the consumer's own lifetime count.
     static Wire.DashboardQueueStats queueStatsRow(String queue, io.flowcatalyst.router.queue.QueueMetrics m) {
         long processed = m.acked() + m.nacked();
         // 1.0, not 0.0 — see the handler's javadoc.
         double successRate = processed > 0 ? (double) m.acked() / processed : 1.0;
         return new Wire.DashboardQueueStats(queue, m.polled(), m.acked(), m.nacked(),
-                DEFERRALS_ARE_NACKS, successRate, m.pending() + m.inFlight(),
+                m.deferred(), successRate, m.pending() + m.inFlight(),
                 THROUGHPUT_NOT_COMPUTED, m.pending(), m.inFlight());
     }
 

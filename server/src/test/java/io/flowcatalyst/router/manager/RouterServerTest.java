@@ -73,6 +73,11 @@ class RouterServerTest {
             }
 
             @Override
+            public void defer(QueuedMessage message, Duration delay) {
+                nack(message, delay);
+            }
+
+            @Override
             public void nack(QueuedMessage message, Duration delay) {
                 nacked.add(message.id());
             }
@@ -585,11 +590,15 @@ class RouterServerTest {
             return MediationOutcome.Success.of(200);
         };
         var localPools = new CopyOnWriteArrayList<Pool>();
+        // D11 (`docs/spec/router-hol-deferral.md` §1): a full pool alone no
+        // longer pauses the loop — it keeps polling while its deferral
+        // budget lasts. Budget 1, spent below with one ledger entry due an
+        // hour out, is what actually parks it now.
         var localManager = new RouterManager(isolatedTracker, warnings, mutableClock, cfg -> {
             var pool = new Pool(cfg, blockingMediator, NO_OP_BROKER, PoolMetrics.NO_OP, mutableClock);
             localPools.add(pool);
             return pool;
-        });
+        }, false, 1);
         var oneShot = new OneShotThenEmptyConsumer("q://cap");
         election = new LeaderElection(LeaderElection.Config.disabled(), store, mutableClock);
         var localServer = new RouterServer(localManager, isolatedTracker, election, q -> ConsumerBuild.of(oneShot),
@@ -619,6 +628,9 @@ class RouterServerTest {
                 // manager always carries an untouched DEFAULT-POOL too,
                 // which would otherwise mask "A" being full.
                 await(() -> !localManager.poolsHaveCapacity(java.util.Set.of("A")));
+                // Spend the budget too (D11) — a full pool by itself no
+                // longer parks the loop.
+                localManager.deferralLedger("q://cap").add(mutableClock.instant().plusSeconds(3600));
                 // Let the loop notice and enter its capacity-pause branch at
                 // least once under the CURRENT (pre-jump) clock value.
                 await(() -> !warnings.raised.isEmpty());
@@ -903,6 +915,11 @@ class RouterServerTest {
         }
 
         @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            nack(message, delay);
+        }
+
+        @Override
         public void nack(QueuedMessage message, Duration delay) {
         }
 
@@ -975,6 +992,11 @@ class RouterServerTest {
         @Override
         public boolean ack(QueuedMessage message) {
             return true;
+        }
+
+        @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            nack(message, delay);
         }
 
         @Override
@@ -1062,6 +1084,11 @@ class RouterServerTest {
         public boolean ack(QueuedMessage message) {
             acked.add(message.id());
             return true;
+        }
+
+        @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            nack(message, delay);
         }
 
         @Override

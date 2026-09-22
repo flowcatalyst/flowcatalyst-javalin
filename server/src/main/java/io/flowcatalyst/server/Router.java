@@ -248,13 +248,21 @@ public final class Router implements AutoCloseable {
         // The broker is resolved per message from the queue it came from, so
         // it is built before the manager and closed over by it.
         var brokerRef = new java.util.concurrent.atomic.AtomicReference<QueueBroker>();
+        // R-59-shaped: 0/unset means "use the implementation's own default"
+        // (`docs/spec/router-hol-deferral.md` §7), never "no horizon" —
+        // [Pool]'s own constructor resolves a null/non-positive Duration the
+        // same way [PoolAdmission#DEFAULT_HORIZON] already does.
+        var deferralHorizon = env.routerDeferralMaxDelaySeconds() > 0
+                ? Duration.ofSeconds(env.routerDeferralMaxDelaySeconds())
+                : null;
         RouterManager.PoolFactory poolFactory = config -> {
             metrics.computeIfAbsent(config.code(), ignored -> new PoolMetricsCollector(clock));
             return new Pool(config, Pool.Backoffs.DEFAULT, mediator, brokerRef.get(),
-                    metrics.get(config.code()), clock, warningSink, blockedSiblings);
+                    metrics.get(config.code()), clock, warningSink, blockedSiblings, deferralHorizon);
         };
 
-        var manager = new RouterManager(tracker, warningSink, clock, poolFactory, env.routerStrictRouting());
+        var manager = new RouterManager(tracker, warningSink, clock, poolFactory, env.routerStrictRouting(),
+                env.routerDeferralBudget());
         brokerRef.set(new QueueBroker(queueId -> manager.consumer(queueId).orElse(null), tracker, clock));
 
         var redisClient = redisFor(env);

@@ -539,6 +539,11 @@ class RouterManagerTest {
             }
 
             @Override
+            public void defer(QueuedMessage message, Duration delay) {
+                nack(message, delay);
+            }
+
+            @Override
             public void nack(QueuedMessage message, Duration delay) {
             }
 
@@ -683,6 +688,11 @@ class RouterManagerTest {
                 }
 
                 @Override
+                public void defer(QueuedMessage message, Duration delay) {
+                    nack(message, delay);
+                }
+
+                @Override
                 public void nack(QueuedMessage message, Duration delay) {
                 }
 
@@ -764,6 +774,11 @@ class RouterManagerTest {
         public boolean ack(QueuedMessage message) {
             acked.add(message.id());
             return true;
+        }
+
+        @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            nack(message, delay);
         }
 
         @Override

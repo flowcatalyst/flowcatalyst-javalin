@@ -351,9 +351,10 @@ class PoolTest {
     }
 
     @Test
-    @DisplayName("a full pool pushes back instead of growing without bound")
+    @DisplayName("D9: a full pool DEFERS instead of nacking (owner ruling 2026-09-22) — backpressure, "
+            + "not rejection (mutant: nack at capacity instead of defer)")
     void capacityPushesBack() {
-        // Capacity is max(concurrency*20, 50); block every delivery so
+        // Capacity is max(concurrency*40, 100); block every delivery so
         // nothing drains and the queue fills.
         mediator.block();
         var p = pool(1, 0);
@@ -365,15 +366,22 @@ class PoolTest {
         // couple: a message that has already claimed a slot no longer counts
         // against the queue, which is correct — it is being delivered, not
         // waiting.
-        await(() -> broker.nacked.size() >= 15);
+        await(() -> broker.deferred.size() >= 15);
         assertThat(p.queueSize()).isLessThanOrEqualTo(capacity);
-        assertThat(broker.nacked.values()).allMatch(Pool.REJECTED_NACK_DELAY::equals);
+        // Never the OLD flat nack: every excess message is deferred, with a
+        // real reservation (>= the 5s floor), and NOTHING at capacity is
+        // nacked at all.
+        assertThat(broker.deferred.values()).allSatisfy(delay ->
+                assertThat(delay).isGreaterThanOrEqualTo(PoolAdmission.MIN_DELAY));
+        assertThat(broker.nacked).as("a full buffer is a deferral, never a nack").isEmpty();
         assertThat(broker.acked).isEmpty();
+        assertThat(p.totalDeferred()).as("the pool's own lifetime counter agrees").isEqualTo(broker.deferred.size());
         mediator.unblock();
     }
 
     @Test
-    @DisplayName("stopping hands back everything still queued")
+    @DisplayName("D9: stopping still hands back everything queued as a NACK, not a defer — a full buffer "
+            + "is the only capacity case that defers")
     void stopNacksBufferedMessages() {
         mediator.block();
         var p = pool(1, 0);
@@ -385,8 +393,34 @@ class PoolTest {
 
         // Accepted but never delivered, so the broker is where they belong.
         assertThat(broker.nacked).hasSizeGreaterThanOrEqualTo(4);
+        assertThat(broker.deferred).as("stopping is not a capacity defer").isEmpty();
         assertThat(broker.acked).isEmpty();
         mediator.unblock();
+    }
+
+    @Test
+    @DisplayName("D9: submitting to an already-stopped pool nacks, not defers, even though the buffer "
+            + "reports empty (not the capacity case)")
+    void stoppedPoolNacksRatherThanDefers() {
+        var p = pool(1, 0);
+        p.stop();
+
+        p.submit(immediate("late"));
+
+        assertThat(broker.nacked).as("stopped is a rejection, not backpressure").containsKey("late");
+        assertThat(broker.deferred).isEmpty();
+    }
+
+    @Test
+    @DisplayName("D13: buffer capacity is max(concurrency x 40, 100) — doubled from x20/50 "
+            + "(owner ruling 2026-09-22)")
+    void queueCapacityIsMaxOfConcurrencyTimes40AndTheFloor() {
+        assertThat(new Pool.Config("P", 1, 0).queueCapacity()).as("the floor dominates below concurrency 3")
+                .isEqualTo(100);
+        assertThat(new Pool.Config("P", 2, 0).queueCapacity()).isEqualTo(100);
+        assertThat(new Pool.Config("P", 4, 0).queueCapacity()).as("4 x 40 = 160, above the floor")
+                .isEqualTo(160);
+        assertThat(new Pool.Config("P", 50, 0).queueCapacity()).isEqualTo(2000);
     }
 
     @Test
@@ -1248,6 +1282,10 @@ class PoolTest {
         final Map<String, String> ackReasons = new ConcurrentHashMap<>();
         final Map<String, Duration> nacked = new ConcurrentHashMap<>();
         final Map<String, String> nackReasons = new ConcurrentHashMap<>();
+        /// D9 (`docs/spec/router-hol-deferral.md`): a message the pool's
+        /// buffer had no room for — separate from [#nacked], never a
+        /// rejection.
+        final Map<String, Duration> deferred = new ConcurrentHashMap<>();
         final InFlightTracker tracker = new InFlightTracker(Clock.systemUTC());
 
         @Override
@@ -1265,6 +1303,12 @@ class PoolTest {
         public void ack(QueuedMessage message, String reason) {
             ackReasons.put(message.id(), reason);
             ack(message);
+        }
+
+        @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            deferred.put(message.id(), delay);
+            tracker.remove(message.id());
         }
 
         @Override
@@ -1344,6 +1388,11 @@ class PoolTest {
 
         @Override
         public void recordHttpVersion(HttpVersion version) {
+        }
+
+        @Override
+        public java.util.OptionalDouble completionRate(Duration window) {
+            return java.util.OptionalDouble.empty();
         }
     }
 }

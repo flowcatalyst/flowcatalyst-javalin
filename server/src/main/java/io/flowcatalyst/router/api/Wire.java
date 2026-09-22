@@ -73,6 +73,7 @@ public final class Wire {
                                 @JsonProperty("message_group_count") int messageGroupCount,
                                 @JsonProperty("rate_limit_per_minute") Integer rateLimitPerMinute,
                                 @JsonProperty("is_rate_limited") boolean isRateLimited,
+                                @JsonProperty("total_deferred") long totalDeferred,
                                 PoolMetricsCollector.Snapshot metrics) {
     }
 
@@ -80,7 +81,7 @@ public final class Wire {
     /// distinct from [WirePoolStats]: no `isRateLimited`, but `totalRateLimited`
     /// and `availablePermits` instead.
     public record DashboardPoolStats(String poolCode, long totalProcessed, long totalSucceeded, long totalFailed,
-                                     long totalRateLimited, double successRate, int activeWorkers,
+                                     long totalRateLimited, long totalDeferred, double successRate, int activeWorkers,
                                      int availablePermits, int maxConcurrency, int queueSize, int maxQueueCapacity,
                                      double averageProcessingTimeMs) {
     }

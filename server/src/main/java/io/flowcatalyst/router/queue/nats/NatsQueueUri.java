@@ -58,8 +58,20 @@ record NatsQueueUri(
     static final int DEFAULT_MAX_MESSAGES = 10;
     static final Duration DEFAULT_POLL_TIMEOUT = Duration.ofSeconds(20);
     static final Duration DEFAULT_ACK_WAIT = Duration.ofSeconds(120);
-    static final int DEFAULT_MAX_DELIVER = 10;
-    static final int DEFAULT_MAX_ACK_PENDING = 1000;
+    /// Unlimited by default (owner ruling 2026-09-22, hand-off §4): the
+    /// router owns give-up — it terminal-ACKs what must not be retried and
+    /// releases the rest to the broker on its own schedule. A finite cap
+    /// converts a slow backlog (a dedicated pool draining for hours) into
+    /// silent, permanent loss of work never attempted once the cap is spent.
+    /// Still settable per URI (`max-deliver=`).
+    static final int DEFAULT_MAX_DELIVER = -1;
+    /// Unlimited by default (owner ruling 2026-09-22, hand-off §4): a NAKed
+    /// message stays outstanding on the server for its whole delay, so a
+    /// finite cap would suspend delivery of the WHOLE stream — every other
+    /// pool's messages included — the moment a deferred backlog exceeded it,
+    /// recreating the head-of-line block this ruling removes. Still settable
+    /// per URI (`max-ack-pending=`).
+    static final int DEFAULT_MAX_ACK_PENDING = -1;
     static final String DEFAULT_STORAGE = "file";
     static final int DEFAULT_REPLICAS = 1;
     static final Duration DEFAULT_MAX_AGE = Duration.ofDays(7);

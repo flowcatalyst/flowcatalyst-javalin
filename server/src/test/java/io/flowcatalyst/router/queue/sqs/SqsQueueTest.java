@@ -417,6 +417,49 @@ class SqsQueueTest {
         assertThat(queue().honoursDelayedReturn()).isTrue();
     }
 
+    // --- defer: backpressure, not failure (D8, owner ruling 2026-09-22) ------
+
+    @Test
+    @DisplayName("D8: defer changes visibility exactly like nack, clamped the same way, but counts as "
+            + "deferred, not nacked (mutant: count as a nack, or ignore the delay)")
+    void deferChangesVisibilityLikeNackButCountsSeparately() throws InterruptedException {
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-1", "receipt-1", "{\"id\":\"msg-1\"}"))
+                .build());
+        SqsQueue sqs = queue();
+        QueuedMessage qm = delivered(sqs.poll(10)).get(0);
+
+        sqs.defer(qm, Duration.ofSeconds(600));
+
+        assertThat(client.changeVisibilityRequests()).singleElement().satisfies(r -> {
+            assertThat(r.receiptHandle()).isEqualTo("receipt-1");
+            assertThat(r.visibilityTimeout()).isEqualTo(600);
+        });
+        assertThat(client.deleteRequests()).isEmpty();
+        assertThat(sqs.metrics()).hasValueSatisfying(m -> {
+            assertThat(m.deferred()).as("counted as a deferral").isEqualTo(1L);
+            assertThat(m.nacked()).as("never as a nack").isZero();
+        });
+    }
+
+    @Test
+    @DisplayName("D8: defer is clamped to SQS's 12-hour ceiling, measured from the original poll — "
+            + "the same clamp as nack")
+    void deferClampsToTwelveHoursSinceTheOriginalPoll() throws InterruptedException {
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-1", "receipt-1", "{\"id\":\"msg-1\"}"))
+                .build());
+        SqsQueue sqs = queue();
+        QueuedMessage qm = delivered(sqs.poll(10)).get(0);
+        clock.advance(Duration.ofSeconds(200));
+
+        sqs.defer(qm, Duration.ofSeconds(50_000));
+
+        assertThat(client.changeVisibilityRequests()).singleElement()
+                .extracting(r -> r.visibilityTimeout())
+                .isEqualTo(43_200 - 200);
+    }
+
     // --- a queue that does not exist yet (owner ruling 2026-09-11) --------
 
     @Test
@@ -551,7 +594,7 @@ class SqsQueueTest {
 
         Optional<QueueMetrics> metrics = sqs.metrics();
 
-        assertThat(metrics).contains(new QueueMetrics(7, 2, 1, 0, 0));
+        assertThat(metrics).contains(new QueueMetrics(7, 2, 1, 0, 0, 0));
     }
 
     @Test

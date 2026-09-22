@@ -264,6 +264,35 @@ class PostgresQueueTest {
     }
 
     @Test
+    @DisplayName("D8: defer sets visible_at exactly like nack (owner ruling 2026-09-22), but counts "
+            + "as deferred, not nacked (mutant: count it as a nack)")
+    void deferSetsVisibleAtLikeNackButCountsSeparately() throws InterruptedException {
+        String queue = freshQueue();
+        String id = "m-" + UUID.randomUUID();
+        insertNowVisible(queue, id, null, message(id, null));
+
+        try (PostgresQueue consumer = new PostgresQueue(DS, queue, Duration.ofSeconds(30))) {
+            var delivered = (Consumer.PollResult.Delivered) consumer.poll(10);
+            QueuedMessage claimed = delivered.messages().getFirst();
+
+            consumer.defer(claimed, Duration.ofSeconds(1));
+
+            var tooSoon = (Consumer.PollResult.Delivered) consumer.poll(10);
+            assertThat(tooSoon.messages()).as("same visibility mechanics as nack: not yet elapsed").isEmpty();
+
+            Thread.sleep(1500);
+
+            var afterDelay = (Consumer.PollResult.Delivered) consumer.poll(10);
+            assertThat(afterDelay.messages()).as("delay elapsed, visible again").hasSize(1);
+
+            assertThat(consumer.metrics()).hasValueSatisfying(m -> {
+                assertThat(m.deferred()).as("counted as a deferral").isEqualTo(1L);
+                assertThat(m.nacked()).as("never as a nack").isZero();
+            });
+        }
+    }
+
+    @Test
     @DisplayName("a malformed payload is moved to the failed table, and the batch still delivers")
     void malformedPayloadIsMovedToFailedTable() throws InterruptedException {
         // Q17 ruled (owner, 2026-08-25). Go fails the WHOLE poll here, and the

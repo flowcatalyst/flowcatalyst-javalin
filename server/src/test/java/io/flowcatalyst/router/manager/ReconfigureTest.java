@@ -362,6 +362,11 @@ class ReconfigureTest {
         }
 
         @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            nack(message, delay);
+        }
+
+        @Override
         public void nack(QueuedMessage message, Duration delay) {
             nacked.add(message.id());
         }
@@ -381,6 +386,11 @@ class ReconfigureTest {
     private static final Broker NO_OP_BROKER = new Broker() {
         @Override
         public void ack(QueuedMessage message) {
+        }
+
+        @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            nack(message, delay);
         }
 
         @Override
@@ -418,6 +428,11 @@ class ReconfigureTest {
         @Override
         public boolean ack(QueuedMessage message) {
             return true;
+        }
+
+        @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            nack(message, delay);
         }
 
         @Override

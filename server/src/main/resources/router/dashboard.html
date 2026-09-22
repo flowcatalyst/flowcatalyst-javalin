@@ -256,6 +256,9 @@
                                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" data-sort="rateLimited" data-table="pool">
                                         <div class="flex items-center">Rate Limited <span class="sort-indicator ml-1"></span></div>
                                     </th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" data-sort="deferred" data-table="pool" title="Messages handed back to the broker because this pool's buffer was full; they return on the pool's own schedule">
+                                        <div class="flex items-center">Deferred <span class="sort-indicator ml-1"></span></div>
+                                    </th>
                                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" data-sort="total" data-table="pool">
                                         <div class="flex items-center">Total <span class="sort-indicator ml-1"></span></div>
                                     </th>
@@ -777,6 +780,10 @@
                             valA = statsA.totalRateLimited || 0;
                             valB = statsB.totalRateLimited || 0;
                             break;
+                        case 'deferred':
+                            valA = statsA.totalDeferred || 0;
+                            valB = statsB.totalDeferred || 0;
+                            break;
                         case 'total':
                             valA = statsA.totalProcessed || 0;
                             valB = statsB.totalProcessed || 0;
@@ -961,7 +968,7 @@
                 let poolEntries = Object.entries(this.data.poolStats);
 
                 if (poolEntries.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="9" class="text-center py-4 text-gray-500">No pool data available</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="10" class="text-center py-4 text-gray-500">No pool data available</td></tr>';
                     return;
                 }
 
@@ -972,7 +979,7 @@
                 }
 
                 if (poolEntries.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="9" class="text-center py-4 text-gray-500">No pools match filter</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="10" class="text-center py-4 text-gray-500">No pools match filter</td></tr>';
                     return;
                 }
 
@@ -1001,6 +1008,7 @@
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${stats.activeWorkers}/${stats.maxConcurrency}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-purple-600">${stats.queueSize}/${stats.maxQueueCapacity}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-orange-600">${(stats.totalRateLimited || 0).toLocaleString()}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-amber-700">${(stats.totalDeferred || 0).toLocaleString()}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${(stats.totalProcessed || 0).toLocaleString()}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-green-600">${(stats.totalSucceeded || 0).toLocaleString()}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
@@ -1024,16 +1032,18 @@
                     t.capacity  += s.maxConcurrency || 0;
                     t.queue     += s.queueSize || 0;
                     t.rateLimited += s.totalRateLimited || 0;
+                    t.deferred += s.totalDeferred || 0;
                     t.processed += s.totalProcessed || 0;
                     t.succeeded += s.totalSucceeded || 0;
                     return t;
-                }, { mediating: 0, capacity: 0, queue: 0, rateLimited: 0, processed: 0, succeeded: 0 });
+                }, { mediating: 0, capacity: 0, queue: 0, rateLimited: 0, deferred: 0, processed: 0, succeeded: 0 });
                 tbody.innerHTML += `
                     <tr class="bg-gray-50 border-t-2 border-gray-300 font-semibold">
                         <td class="px-6 py-3 text-sm text-gray-900">Totals (${poolEntries.length} pools)</td>
                         <td class="px-6 py-3 text-sm text-gray-900">${totals.mediating}/${totals.capacity}</td>
                         <td class="px-6 py-3 text-sm text-purple-700">${totals.queue.toLocaleString()}</td>
                         <td class="px-6 py-3 text-sm text-orange-700">${totals.rateLimited.toLocaleString()}</td>
+                        <td class="px-6 py-3 text-sm text-amber-700">${totals.deferred.toLocaleString()}</td>
                         <td class="px-6 py-3 text-sm text-gray-900">${totals.processed.toLocaleString()}</td>
                         <td class="px-6 py-3 text-sm text-green-700">${totals.succeeded.toLocaleString()}</td>
                         <td class="px-6 py-3"></td>

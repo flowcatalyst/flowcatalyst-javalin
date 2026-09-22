@@ -266,6 +266,19 @@ public record Env(
         // implementation's own default" ([io.flowcatalyst.router.manager.RouterManager#DEFAULT_SYNTH_POOL_IDLE_TTL]),
         // never "never evict".
         int routerSynthPoolIdleSecs,
+        // `FC_ROUTER_DEFERRAL_MAX_DELAY_SECONDS`, default 3600 (owner ruling
+        // 2026-09-22, `docs/spec/router-hol-deferral.md` §7): the admission
+        // schedule's reservation horizon — the longest a full pool asks the
+        // broker to hold a message it handed back for capacity. 0/unset
+        // means "use the implementation's own default"
+        // ([io.flowcatalyst.router.pool.Pool]'s `PoolAdmission#DEFAULT_HORIZON]`,
+        // same value), never "no horizon".
+        int routerDeferralMaxDelaySeconds,
+        // `FC_ROUTER_DEFERRAL_BUDGET`, default 5000 (§7): how many deferred
+        // messages one queue's consumer may have outstanding before it stops
+        // polling into pools that are all full. Sized against SQS FIFO's
+        // 20,000 in-flight ceiling, which a deferred message counts toward.
+        int routerDeferralBudget,
         // Raw `AUTH_MODE` (trimmed); `NONE` (case-insensitive) forces router BasicAuth off.
         String routerAuthMode,
         // `FC_ROUTER_AUTH_USER` (alias `AUTH_BASIC_USERNAME`); `""` when unset or when
@@ -539,6 +552,8 @@ public record Env(
                 e.integer("FC_DRAIN_TIMEOUT_SECONDS", 60),
                 e.bool("FC_ROUTER_STRICT_ROUTING", false),
                 e.integer("FC_ROUTER_SYNTH_POOL_IDLE_SECS", 0),
+                e.integer("FC_ROUTER_DEFERRAL_MAX_DELAY_SECONDS", 0),
+                e.integer("FC_ROUTER_DEFERRAL_BUDGET", 0),
                 authMode,
                 authOff ? "" : e.firstSet("FC_ROUTER_AUTH_USER", "AUTH_BASIC_USERNAME").orElse(""),
                 authOff ? "" : e.firstSet("FC_ROUTER_AUTH_PASS", "AUTH_BASIC_PASSWORD").orElse(""),

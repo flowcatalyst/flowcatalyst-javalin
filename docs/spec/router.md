@@ -572,9 +572,15 @@ Per iteration (`router/manager.go:436-507`):
    still pauses a fixed 2 s and retries — a defensive fallback for a state
    production never actually reaches (`RouterManager#reconfigure` always
    creates `DEFAULT-POOL` before any loop starts), not a knob. On the
-   *transition* into "all full" record one `POOL_CAPACITY`/`WARNING` warning
-   `"all pools at capacity; pausing <queueId>"` (not repeated while it stays
-   full). A pool "has capacity" iff `queueSize < max(concurrency×20, 50)`.
+   *transition* into "all full AND the deferral budget spent" record one
+   `POOL_CAPACITY`/`WARNING` warning `"destination pools at capacity and N
+   deferrals outstanding; pausing <queueId>"` (not repeated while it stays
+   full). A pool "has capacity" iff `queueSize < max(concurrency×40, 100)`.
+   **Amended by owner ruling 2026-09-22** — `docs/spec/router-hol-deferral.md`
+   is now authoritative for this paragraph: a full pool alone no longer
+   pauses the loop (it defers into the full pool and keeps polling for other
+   destinations), the warning text and the buffer multiplier both changed,
+   and a per-queue deferral budget/ledger gates the pause instead.
 3. `Poll(ctx, 10)`.
    - Error and consumer reports `ErrStopped` → **exit the loop** (the restart
      watchdog will rebuild it); no heartbeat.

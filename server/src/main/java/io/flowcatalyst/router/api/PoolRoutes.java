@@ -96,7 +96,8 @@ final class PoolRoutes {
         int rpm = pool.config().requestsPerMinute();
         Integer rateLimit = rpm == 0 ? null : rpm; // 0 -> unlimited -> omitted (Go `RateLimitPerMinute()` returns nil)
         return new Wire.WirePoolStats(code, pool.config().concurrency(), pool.activeWorkers(), pool.queueSize(),
-                pool.config().queueCapacity(), pool.messageGroupCount(), rateLimit, pool.rateLimited(), snapshot);
+                pool.config().queueCapacity(), pool.messageGroupCount(), rateLimit, pool.rateLimited(),
+                pool.totalDeferred(), snapshot);
     }
 
     /// `time_window=5min|5m|30min|30m` select a window; anything else
@@ -141,7 +142,8 @@ final class PoolRoutes {
         int active = pool.activeWorkers();
         int available = Math.max(concurrency - active, 0);
         return new Wire.DashboardPoolStats(pool.config().code(), succeeded + failed, succeeded, failed, rateLimited,
-                successRate, active, available, concurrency, pool.queueSize(), pool.config().queueCapacity(), avgMs);
+                pool.totalDeferred(), successRate, active, available, concurrency, pool.queueSize(),
+                pool.config().queueCapacity(), avgMs);
     }
 
     private static void updatePool(Exchange ctx, State s) {

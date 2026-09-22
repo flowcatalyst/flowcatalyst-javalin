@@ -143,6 +143,7 @@ public final class PostgresQueue implements Consumer, Publisher {
     private final AtomicLong polled = new AtomicLong();
     private final AtomicLong acked = new AtomicLong();
     private final AtomicLong nacked = new AtomicLong();
+    private final AtomicLong deferred = new AtomicLong();
 
     /// @param visibilityTimeout how long a claimed message stays invisible;
     ///                          `null`, zero or negative falls back to 30 s,
@@ -376,6 +377,20 @@ public final class PostgresQueue implements Consumer, Publisher {
     /// the `UPDATE` simply affects zero rows). Best-effort: never throws.
     @Override
     public void nack(QueuedMessage message, Duration delay) {
+        returnAfter(message, delay, "nack failed", nacked);
+    }
+
+    /// Same `visible_at` update as [#nack] (owner ruling 2026-09-22, hand-off
+    /// §2): the pool's buffer was full, not the message wrong — counted as
+    /// `deferred`, [#nacked] left untouched.
+    @Override
+    public void defer(QueuedMessage message, Duration delay) {
+        returnAfter(message, delay, "defer failed", deferred);
+    }
+
+    /// The shared row update behind [#nack] and [#defer]. Best-effort: never
+    /// throws.
+    private void returnAfter(QueuedMessage message, Duration delay, String failureMessage, AtomicLong counter) {
         long delaySeconds = (delay == null || delay.isNegative()) ? 0 : delay.toSeconds();
         long newVisibleAt = Instant.now().getEpochSecond() + delaySeconds;
         try (Connection conn = dataSource.getConnection();
@@ -386,9 +401,9 @@ public final class PostgresQueue implements Consumer, Publisher {
             ps.setString(2, message.receiptHandle());
             ps.setString(3, queueName);
             ps.executeUpdate();
-            nacked.incrementAndGet();
+            counter.incrementAndGet();
         } catch (Exception e) {
-            log.atWarn().setMessage("nack failed")
+            log.atWarn().setMessage(failureMessage)
                     .addKeyValue("queue", queueName)
                     .addKeyValue("receipt", message.receiptHandle())
                     .setCause(e)
@@ -449,7 +464,7 @@ public final class PostgresQueue implements Consumer, Publisher {
                 }
                 long pending = rs.getLong(1);
                 long inFlight = rs.getLong(2);
-                return Optional.of(new QueueMetrics(pending, inFlight, polled.get(), acked.get(), nacked.get()));
+                return Optional.of(new QueueMetrics(pending, inFlight, polled.get(), acked.get(), nacked.get(), deferred.get()));
             }
         } catch (SQLException e) {
             log.atWarn().setMessage("metrics query failed")

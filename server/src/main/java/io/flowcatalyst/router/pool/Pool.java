@@ -30,6 +30,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiConsumer;
 
 /// One processing pool: bounded concurrency, a rate limit, and delivery of
 /// every message routed to it (`docs/spec/router.md` §3.4, §3.5).
@@ -89,8 +90,13 @@ public final class Pool implements AutoCloseable {
     /// Floor when a rate-limit wait is cancelled (spec constant 18).
     static final Duration RATE_LIMIT_CANCELLED_FLOOR = Duration.ofSeconds(5);
 
-    private static final int QUEUE_CAPACITY_MULTIPLIER = 20;
-    private static final int MIN_QUEUE_CAPACITY = 50;
+    // Doubled 20->40, 50->100 (owner ruling 2026-09-22, hand-off §5): a
+    // buffered message is a pointer-sized struct, and twice the buffer is
+    // twice the burst a pool absorbs before it starts deferring messages to
+    // the broker. Accepted cost: a buffered message waits twice as long, so
+    // the tracker dedups twice as many visibility-lapse redeliveries for it.
+    private static final int QUEUE_CAPACITY_MULTIPLIER = 40;
+    private static final int MIN_QUEUE_CAPACITY = 100;
 
     /// The warning category for the pool's own limiter holding deliveries
     /// back (§7.3) — distinct from a target's own 429, which never reaches
@@ -176,6 +182,19 @@ public final class Pool implements AutoCloseable {
     /// why swapping the instance strands everyone already waiting on it.
     private final ResizableSemaphore slots;
 
+    /// The deferral reservation schedule for a full buffer (owner ruling
+    /// 2026-09-22, `docs/spec/router-hol-deferral.md` §3) — see
+    /// [PoolAdmission].
+    private final PoolAdmission admission;
+
+    /// Run after every successful [Broker#defer] — how a parked
+    /// [io.flowcatalyst.router.manager.RouterManager] books the return time
+    /// on the deferring consumer's ledger (§1). Defaults to a no-op so a pool
+    /// built and used before this is wired up never NPEs, the same shape as
+    /// [#capacityListener].
+    private volatile BiConsumer<String, Instant> deferralObserver = (queueId, returnAt) -> {
+    };
+
     /// IMMEDIATE messages awaiting a slot or sitting in a backoff. Ordered
     /// messages are counted by [OrderedGroups#buffered], so there is one
     /// owner per number rather than a total that can drift from its parts.
@@ -228,6 +247,15 @@ public final class Pool implements AutoCloseable {
 
     public Pool(Config config, Backoffs backoffs, Mediator mediator, Broker broker,
                 PoolMetrics metrics, Clock clock, Warnings warnings, BlockedSiblings siblingPolicy) {
+        this(config, backoffs, mediator, broker, metrics, clock, warnings, siblingPolicy, null);
+    }
+
+    /// @param deferralHorizon the admission schedule's reservation horizon
+    ///        (`FC_ROUTER_DEFERRAL_MAX_DELAY_SECONDS`, `docs/spec/router-hol-deferral.md`
+    ///        §3); `null`/non-positive falls back to [PoolAdmission#DEFAULT_HORIZON].
+    public Pool(Config config, Backoffs backoffs, Mediator mediator, Broker broker,
+                PoolMetrics metrics, Clock clock, Warnings warnings, BlockedSiblings siblingPolicy,
+                Duration deferralHorizon) {
         this.config = config;
         this.backoffs = backoffs;
         this.mediator = mediator;
@@ -239,6 +267,7 @@ public final class Pool implements AutoCloseable {
         this.flushes = new GroupFlushRegistry(clock);
         this.limiter = new RateLimiter(config.requestsPerMinute());
         this.slots = new ResizableSemaphore(config.concurrency());
+        this.admission = new PoolAdmission(deferralHorizon, clock);
     }
 
     public Config config() {
@@ -260,6 +289,23 @@ public final class Pool implements AutoCloseable {
     /// pool with a [io.flowcatalyst.router.manager.RouterManager].
     public void onCapacityFreed(Runnable listener) {
         this.capacityListener = listener;
+    }
+
+    /// Registers `observer` to run after every deferral this pool hands back
+    /// for capacity, with the queue identifier the message came from and
+    /// when it is due back — set once, by whatever registers this pool with
+    /// a [io.flowcatalyst.router.manager.RouterManager], to book the return
+    /// time on that consumer's deferral ledger (§1).
+    public void onDeferral(BiConsumer<String, Instant> observer) {
+        this.deferralObserver = observer;
+    }
+
+    /// Lifetime messages this pool has handed back to the broker for lack of
+    /// buffer room (`docs/spec/router-hol-deferral.md` §6) — distinct from
+    /// [PoolMetrics], which never sees a deferral: it never reached
+    /// [#deliverOnce].
+    public long totalDeferred() {
+        return admission.totalDeferred();
     }
 
     /// Re-evaluates [#full] against the current [#queueSize] and runs
@@ -319,7 +365,19 @@ public final class Pool implements AutoCloseable {
             return;
         }
         if (queueSize() >= config.queueCapacity()) {
-            broker.nack(message, REJECTED_NACK_DELAY);
+            // Backpressure, not rejection (owner ruling 2026-09-22,
+            // `docs/spec/router-hol-deferral.md` §1-§3): the message has not
+            // failed, the buffer is simply full right now, so it is deferred
+            // with a reservation derived from this pool's own measured pace
+            // rather than nacked with a flat delay. Every OTHER
+            // REJECTED_NACK_DELAY site in this class (stopped/draining just
+            // above, closed-before-dispatch below, a stood-down hand-back)
+            // stays a nack — a full buffer is the one case that is not a
+            // rejection.
+            var delay = admission.delay(queueSize(), metrics.completionRate(PoolAdmission.RATE_WINDOW),
+                    broker.honoursDelayedReturn(message));
+            broker.defer(message, delay);
+            deferralObserver.accept(message.queueId(), clock.instant().plus(delay));
             return;
         }
         if (message.ordered()) {

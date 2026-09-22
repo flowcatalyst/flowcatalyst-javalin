@@ -240,28 +240,63 @@ public final class ConsumerLoop implements Runnable {
             }
             return true;
         }
+        var ledger = manager.deferralLedger(queueId());
         if (!pausedForCapacity) {
             pausedForCapacity = true;
             warnings.raise(Warnings.Severity.WARNING, "POOL_CAPACITY",
-                    "all pools at capacity; pausing " + queueId());
+                    "destination pools at capacity and " + ledger.outstanding(clock.instant())
+                            + " deferrals outstanding; pausing " + queueId());
         }
         lastCapacityPause.set(clock.instant());
         if (manager.pools().isEmpty()) {
             // Nobody exists to ever signal the gate — see the class doc.
             Thread.sleep(NO_POOLS_PAUSE);
         } else {
-            gate.awaitChangeSince(generation);
+            // The second wake-up (owner ruling 2026-09-22, `docs/spec/router-hol-deferral.md`
+            // §1): a loop parked here because every known pool is full AND
+            // the deferral budget is spent gets its budget back the moment
+            // the earliest deferred message comes due — nothing else signals
+            // that, so the capacity gate's own wait is armed with a timer to
+            // it rather than adding a second loop. No deferral outstanding
+            // (a genuinely full-and-nothing-in-flight pool) leaves this an
+            // untimed wait, unchanged from before.
+            var earliest = ledger.earliest();
+            if (earliest.isPresent()) {
+                var wait = Duration.between(clock.instant(), earliest.get());
+                gate.awaitChangeSince(generation, wait);
+            } else {
+                gate.awaitChangeSince(generation);
+            }
         }
         return false;
     }
 
     /// Whether this consumer should keep polling right now (`docs/spec/router.md`
-    /// §2.4, §6): judged against the pools its own last non-empty batch fed,
-    /// not the whole process — a consumer that has never fed a pool, or
-    /// whose entire remembered set has since been removed by a reconfigure,
-    /// falls back to [RouterManager#anyPoolHasCapacity] rather than being
-    /// stuck on a set that can no longer answer anything.
+    /// §2.4, §6; owner ruling 2026-09-22, `docs/spec/router-hol-deferral.md`
+    /// §1): judged against the pools its own last non-empty batch fed, not
+    /// the whole process — a consumer that has never fed a pool, or whose
+    /// entire remembered set has since been removed by a reconfigure, falls
+    /// back to [RouterManager#anyPoolHasCapacity] rather than being stuck on
+    /// a set that can no longer answer anything.
+    ///
+    /// **A full destination set is not the end of it.** "Last batch's pools"
+    /// is a one-batch memory — a queue whose last ten messages all named a
+    /// full pool may well have another pool's traffic queued behind them,
+    /// and the only way to find that traffic is to poll and defer what is in
+    /// the way (`Pool#submit`). So this consumer keeps polling for as long as
+    /// its deferral budget lasts, even with every known destination full;
+    /// only once the budget itself is spent does it actually pause. The
+    /// budget is what keeps that bounded — a deferred message is still in
+    /// flight from the broker's side, and SQS FIFO stops delivering anything
+    /// from a queue at 20,000 in flight.
     private boolean hasRoom() {
+        if (poolsHaveRoom()) {
+            return true;
+        }
+        return manager.deferralLedger(queueId()).outstanding(clock.instant()) < manager.deferralBudget();
+    }
+
+    private boolean poolsHaveRoom() {
         var fed = lastFedPools;
         if (fed.isEmpty()) {
             return manager.anyPoolHasCapacity();

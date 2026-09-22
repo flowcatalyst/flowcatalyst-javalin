@@ -108,6 +108,7 @@ public final class SqsQueue implements Consumer {
     private final AtomicLong polled = new AtomicLong();
     private final AtomicLong acked = new AtomicLong();
     private final AtomicLong nacked = new AtomicLong();
+    private final AtomicLong deferred = new AtomicLong();
 
     private record ReceiptMapping(String messageId, Instant polledAt) {
     }
@@ -458,6 +459,22 @@ public final class SqsQueue implements Consumer {
     /// whether or not the broker confirmed it, same as [#ack].
     @Override
     public void nack(QueuedMessage message, Duration delay) {
+        changeVisibility(message, delay, nacked);
+    }
+
+    /// Same `ChangeMessageVisibility` call and clamp as [#nack] — Go's SQS
+    /// `Defer` was a no-op until this ruling; Java's SQS had no `defer` at
+    /// all. Counted as `deferred`, [#nacked] left untouched: the pool is not
+    /// reporting a failure, it is asking to come back later.
+    @Override
+    public void defer(QueuedMessage message, Duration delay) {
+        changeVisibility(message, delay, deferred);
+    }
+
+    /// The shared `ChangeMessageVisibility` body for [#nack] and [#defer]:
+    /// same clamp (R3, `docs/spec/router-deferral-handback.md`), same
+    /// best-effort contract, different counter.
+    private void changeVisibility(QueuedMessage message, Duration delay, AtomicLong counter) {
         try {
             long seconds = (delay == null || delay.isNegative()) ? 0 : delay.toSeconds();
             long clamped = Math.min(seconds, remainingVisibilitySeconds(message.receiptHandle()));
@@ -469,7 +486,7 @@ public final class SqsQueue implements Consumer {
         } catch (RuntimeException e) {
             transportFailure("sqs ChangeMessageVisibility failed", e).addKeyValue("message_id", message.id()).log();
         } finally {
-            nacked.incrementAndGet();
+            counter.incrementAndGet();
         }
     }
 
@@ -509,7 +526,7 @@ public final class SqsQueue implements Consumer {
         }
         long pending = parseAttribute(response, QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES);
         long inFlight = parseAttribute(response, QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_NOT_VISIBLE);
-        return Optional.of(new QueueMetrics(pending, inFlight, polled.get(), acked.get(), nacked.get()));
+        return Optional.of(new QueueMetrics(pending, inFlight, polled.get(), acked.get(), nacked.get(), deferred.get()));
     }
 
     private static long parseAttribute(GetQueueAttributesResponse response, QueueAttributeName name) {

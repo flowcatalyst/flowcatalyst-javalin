@@ -1,5 +1,7 @@
 package io.flowcatalyst.router.manager;
 
+import java.time.Duration;
+
 /// Wakes every [ConsumerLoop] parked in [ConsumerLoop#awaitCapacity] the
 /// moment some pool's capacity might have changed, replacing the fixed
 /// `Thread.sleep(2s)` poll that loop used to fall back on with an event a
@@ -61,6 +63,32 @@ final class CapacityGate {
         synchronized (lock) {
             while (generation == since) {
                 lock.wait();
+            }
+        }
+    }
+
+    /// As [#awaitChangeSince(long)], but also returns once `timeout` elapses
+    /// — the head-of-line deferral wake-up (owner ruling 2026-09-22,
+    /// `docs/spec/router-hol-deferral.md` §1): a loop parked because its
+    /// deferral budget is spent must also wake when the earliest deferred
+    /// message comes due, not only on a capacity signal, since nothing else
+    /// signals "budget is back". This is the ONE wait [ConsumerLoop#awaitCapacity]
+    /// arms with a timer to that due time — not a second loop.
+    ///
+    /// A non-positive `timeout` returns at once without waiting at all,
+    /// matching a due time that has already passed.
+    void awaitChangeSince(long since, Duration timeout) throws InterruptedException {
+        if (timeout.isZero() || timeout.isNegative()) {
+            return;
+        }
+        synchronized (lock) {
+            var deadline = System.nanoTime() + timeout.toNanos();
+            while (generation == since) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) {
+                    return;
+                }
+                lock.wait(remaining / 1_000_000, (int) (remaining % 1_000_000));
             }
         }
     }

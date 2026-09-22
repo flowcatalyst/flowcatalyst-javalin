@@ -144,6 +144,22 @@ class QueueBrokerTest {
         assertThat(localBroker.honoursDelayedReturn(unregistered)).isFalse();
     }
 
+    // ── §2: defer reaches the consumer's own defer, not nack ────────────
+
+    @Test
+    @DisplayName("owner ruling 2026-09-22: defer reaches the message's own consumer's defer "
+            + "(freshest handle substituted), and releases ownership first")
+    void deferReachesTheConsumersOwnDeferAndReleasesOwnership() {
+        var message = message("m1", "b1");
+        tracker.register(RouterManager.inFlight(message, "1", clock.instant()));
+
+        broker.defer(message, Duration.ofSeconds(45));
+
+        assertThat(queue.deferredReceipts).as("reached defer, not nack").containsEntry("receipt-b1",
+                Duration.ofSeconds(45));
+        assertThat(tracker.size()).as("ownership released before the broker call settles").isZero();
+    }
+
     // ── R-26/X-11: lingering consumers ─────────────────────────────────
 
     @Test
@@ -189,6 +205,11 @@ class QueueBrokerTest {
             new io.flowcatalyst.router.pool.Broker() {
                 @Override
                 public void ack(QueuedMessage message) {
+                }
+
+                @Override
+                public void defer(QueuedMessage message, Duration delay) {
+                    nack(message, delay);
                 }
 
                 @Override
@@ -238,6 +259,11 @@ class QueueBrokerTest {
         }
 
         @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            nack(message, delay);
+        }
+
+        @Override
         public void nack(QueuedMessage message, Duration delay) {
         }
 
@@ -262,6 +288,7 @@ class QueueBrokerTest {
     private static final class FakeAcknowledger implements Acknowledger {
         private final String id;
         final java.util.List<String> ackedReceipts = new java.util.concurrent.CopyOnWriteArrayList<>();
+        final java.util.Map<String, Duration> deferredReceipts = new java.util.concurrent.ConcurrentHashMap<>();
 
         FakeAcknowledger() {
             this("queue-1");
@@ -285,6 +312,11 @@ class QueueBrokerTest {
         @Override
         public boolean honoursDelayedReturn() {
             return true;
+        }
+
+        @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            deferredReceipts.put(message.receiptHandle(), delay);
         }
 
         @Override

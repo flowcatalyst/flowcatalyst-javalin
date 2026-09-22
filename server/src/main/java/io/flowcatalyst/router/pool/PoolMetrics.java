@@ -1,6 +1,7 @@
 package io.flowcatalyst.router.pool;
 
 import java.time.Duration;
+import java.util.OptionalDouble;
 
 /// What a pool records about its own deliveries.
 ///
@@ -37,6 +38,17 @@ public interface PoolMetrics {
     /// is preferred by default.
     void recordHttpVersion(HttpVersion version);
 
+    /// Deliveries completed (success, failure or transient — every
+    /// [#recordSuccess]/[#recordFailure]/[#recordTransient] call) within the
+    /// last `window`, divided by the span since the OLDEST of them, floored
+    /// at one second — the admission schedule's throughput estimate
+    /// (`docs/spec/router-hol-deferral.md` §3, [PoolAdmission]). Dividing by
+    /// `window` itself instead would understate a pool that only just woke
+    /// up: one that completed ten deliveries in the last ten seconds runs at
+    /// roughly one per second, not one per five minutes. Empty when there is
+    /// no completion within `window` at all.
+    OptionalDouble completionRate(Duration window);
+
     PoolMetrics NO_OP = new PoolMetrics() {
         @Override
         public void recordSuccess(Duration took) {
@@ -60,6 +72,11 @@ public interface PoolMetrics {
 
         @Override
         public void recordHttpVersion(HttpVersion version) {
+        }
+
+        @Override
+        public OptionalDouble completionRate(Duration window) {
+            return OptionalDouble.empty();
         }
     };
 }

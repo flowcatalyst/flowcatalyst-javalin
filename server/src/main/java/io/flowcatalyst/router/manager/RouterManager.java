@@ -64,6 +64,12 @@ public final class RouterManager implements AutoCloseable {
     /// (spec constant 10).
     static final Duration NO_POOL_NACK_DELAY = Duration.ofSeconds(5);
 
+    /// Per-queue outstanding-deferral budget when none is configured
+    /// (`FC_ROUTER_DEFERRAL_BUDGET`, owner ruling 2026-09-22, hand-off §1,
+    /// §7): sized against SQS FIFO's 20,000 in-flight ceiling, which a
+    /// deferred message counts toward.
+    public static final int DEFAULT_DEFERRAL_BUDGET = 5000;
+
     /// How long a reconfigure will spend building consumers before carrying
     /// on without the stragglers. They are reported as failures and retried
     /// on the next reconfigure.
@@ -155,6 +161,22 @@ public final class RouterManager implements AutoCloseable {
     /// from under the configuration that put it there.
     private volatile Set<String> configuredPoolCodes = Set.of();
 
+    /// One deferral ledger per consumer, keyed by [Consumer#identifier] —
+    /// the same key [#consumersByIdentifier] uses, since a deferral is
+    /// booked against whichever consumer's `queueId()` the deferred message
+    /// carried (`docs/spec/router-hol-deferral.md` §1). Created when a
+    /// consumer becomes active ([#registerConsumer], [#replaceConsumer], the
+    /// `Built` case of [#applyConsumers]) and dropped when it stops being one
+    /// ([#stopConsumer]) — a deferral landing for an identifier this map no
+    /// longer holds is simply dropped by [#noteDeferral]: nothing polls that
+    /// queue any more, so nothing needs its ledger.
+    private final Map<String, DeferralLedger> deferralLedgers = new ConcurrentHashMap<>();
+
+    /// [ConsumerLoop#hasRoom]'s budget clause: how many deferrals one queue's
+    /// consumer may have outstanding before a full destination set actually
+    /// pauses it (§1).
+    private final int deferralBudget;
+
     private final InFlightTracker tracker;
     private final Warnings warnings;
     private final Clock clock;
@@ -205,11 +227,17 @@ public final class RouterManager implements AutoCloseable {
 
     public RouterManager(InFlightTracker tracker, Warnings warnings, Clock clock, PoolFactory poolFactory,
                          boolean strictRouting) {
+        this(tracker, warnings, clock, poolFactory, strictRouting, DEFAULT_DEFERRAL_BUDGET);
+    }
+
+    public RouterManager(InFlightTracker tracker, Warnings warnings, Clock clock, PoolFactory poolFactory,
+                         boolean strictRouting, int deferralBudget) {
         this.tracker = tracker;
         this.warnings = warnings;
         this.clock = clock;
         this.poolFactory = poolFactory;
         this.strictRouting = strictRouting;
+        this.deferralBudget = deferralBudget > 0 ? deferralBudget : DEFAULT_DEFERRAL_BUDGET;
     }
 
     public void registerPool(String code, Pool pool) {
@@ -220,10 +248,13 @@ public final class RouterManager implements AutoCloseable {
     /// [#capacityGate] so its own crossing back under capacity wakes a
     /// parked [ConsumerLoop], and signals once for the addition itself —
     /// a brand new pool can turn "no pools at all" or "every pool full"
-    /// into "there is room" just by existing.
+    /// into "there is room" just by existing. Also wires [#noteDeferral] so
+    /// every deferral this pool hands back is booked on its source queue's
+    /// ledger (§1).
     private void addPool(String code, Pool pool) {
         pools.put(code, pool);
         pool.onCapacityFreed(capacityGate::signal);
+        pool.onDeferral(this::noteDeferral);
         capacityGate.signal();
     }
 
@@ -232,9 +263,40 @@ public final class RouterManager implements AutoCloseable {
         return capacityGate;
     }
 
+    /// The per-consumer deferral ledger this manager keeps for
+    /// [ConsumerLoop]'s budget clause and wake-up (§1) — created on demand so
+    /// a loop reading its own, currently-active consumer's ledger never finds
+    /// nothing there, even though the write side ([#noteDeferral]) resolves
+    /// strictly by lookup and drops a deferral for an identifier with none.
+    DeferralLedger deferralLedger(String identifier) {
+        return deferralLedgers.computeIfAbsent(identifier, ignored -> new DeferralLedger());
+    }
+
+    /// How many deferrals one queue's consumer may have outstanding before
+    /// [ConsumerLoop#hasRoom]'s budget clause runs out (§1, §7
+    /// `FC_ROUTER_DEFERRAL_BUDGET`).
+    int deferralBudget() {
+        return deferralBudget;
+    }
+
+    /// Every pool's [Pool#onDeferral] observer (§1): books the deferral's
+    /// return time on the ledger of the consumer that owns `queueIdentifier`
+    /// — the consumer that actually polled the deferred message, resolved
+    /// the same way ack/nack resolution is ([#consumer], by
+    /// [Consumer#identifier]). An identifier with no active ledger (the
+    /// consumer was deregistered between routing and this call completing)
+    /// is dropped without error: nothing polls that queue any more.
+    private void noteDeferral(String queueIdentifier, Instant returnAt) {
+        var ledger = deferralLedgers.get(queueIdentifier);
+        if (ledger != null) {
+            ledger.add(returnAt);
+        }
+    }
+
     public void registerConsumer(Consumer consumer) {
         consumers.put(consumer.identifier(), consumer);
         consumersByIdentifier.put(consumer.identifier(), consumer);
+        deferralLedgers.putIfAbsent(consumer.identifier(), new DeferralLedger());
     }
 
     /// Resolves a consumer for ack/nack **by [Consumer#identifier]** — the
@@ -288,6 +350,7 @@ public final class RouterManager implements AutoCloseable {
     public void replaceConsumer(String queueName, Consumer replacement) {
         var old = consumers.put(queueName, replacement);
         consumersByIdentifier.put(replacement.identifier(), replacement);
+        deferralLedgers.putIfAbsent(replacement.identifier(), new DeferralLedger());
         if (old != null) {
             // Only drop the identifier entry if it is still THIS old
             // consumer's — a replacement that happens to share an identifier
@@ -295,6 +358,9 @@ public final class RouterManager implements AutoCloseable {
             // queueName) must not have the `put` above undone by a stale
             // removal.
             consumersByIdentifier.remove(old.identifier(), old);
+            if (!old.identifier().equals(replacement.identifier())) {
+                deferralLedgers.remove(old.identifier());
+            }
             linger(queueName, old);
         }
     }
@@ -463,6 +529,7 @@ public final class RouterManager implements AutoCloseable {
         consumers.values().forEach(RouterManager::closeQuietly);
         consumers.clear();
         consumersByIdentifier.clear();
+        deferralLedgers.clear();
         queueConfigs.clear();
         // Lingering consumers too: nothing is going to poll on their behalf
         // any more once leadership is gone, so there is no reason left to
@@ -597,6 +664,7 @@ public final class RouterManager implements AutoCloseable {
                     // fires exactly once, on the actual creation.
                     var created = poolFactory.create(new Pool.Config(synthesised, DEFAULT_POOL_CONCURRENCY, 0));
                     created.onCapacityFreed(capacityGate::signal);
+                    created.onDeferral(this::noteDeferral);
                     capacityGate.signal();
                     return created;
                 }));
@@ -844,6 +912,7 @@ public final class RouterManager implements AutoCloseable {
                     var consumer = built.consumer();
                     consumers.put(entry.getKey(), consumer);
                     consumersByIdentifier.put(consumer.identifier(), consumer);
+                    deferralLedgers.putIfAbsent(consumer.identifier(), new DeferralLedger());
                     queueConfigs.put(entry.getKey(), entry.getValue());
                     // Built after having been missing: the streak is over,
                     // so the NEXT disappearance logs its own INFO rather than
@@ -887,6 +956,10 @@ public final class RouterManager implements AutoCloseable {
         var consumer = consumers.remove(queueName);
         if (consumer != null) {
             consumersByIdentifier.remove(consumer.identifier(), consumer);
+            // Nothing will poll this identifier again, so its ledger goes
+            // too — a deferral still landing for it after this point is the
+            // race [#noteDeferral]'s "dropped without error" is for.
+            deferralLedgers.remove(consumer.identifier());
             linger(queueName, consumer);
         }
     }

@@ -97,7 +97,7 @@ final class MetricsRoutes {
         }
         return () -> cache.latest().entrySet().stream()
                 .map(e -> new QueueSnapshot(e.getKey(), e.getValue().pending(), e.getValue().inFlight(),
-                        e.getValue().polled(), e.getValue().acked(), e.getValue().nacked(), 0))
+                        e.getValue().polled(), e.getValue().acked(), e.getValue().nacked(), e.getValue().deferred()))
                 .toList();
     }
 

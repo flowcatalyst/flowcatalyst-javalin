@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Deque;
 import java.util.List;
+import java.util.OptionalDouble;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -184,6 +185,34 @@ public final class PoolMetricsCollector implements PoolMetrics {
     public void recordSuppressed() {
         totalSuppressed.incrementAndGet();
         recordEvent(suppressedEvents);
+    }
+
+    /// The admission schedule's throughput estimate (`docs/spec/router-hol-deferral.md`
+    /// §3, D5): completions in `window` — reusing [#samples], the same
+    /// timestamped ring [#snapshot] windows for the dashboard — divided by
+    /// the span since the OLDEST of them, floored at one second, **not**
+    /// divided by `window` itself. Empty when there is no completion inside
+    /// `window`.
+    @Override
+    public OptionalDouble completionRate(Duration window) {
+        var now = clock.instant();
+        var cutoff = now.minus(window);
+        List<Sample> recent;
+        lock.lock();
+        try {
+            recent = sinceCutoff(new ArrayList<>(samples), cutoff);
+        } finally {
+            lock.unlock();
+        }
+        if (recent.isEmpty()) {
+            return OptionalDouble.empty();
+        }
+        var oldest = recent.get(0).at();
+        var span = Duration.between(oldest, now);
+        if (span.compareTo(Duration.ofSeconds(1)) < 0) {
+            span = Duration.ofSeconds(1);
+        }
+        return OptionalDouble.of(recent.size() / (span.toNanos() / 1_000_000_000.0));
     }
 
     @Override

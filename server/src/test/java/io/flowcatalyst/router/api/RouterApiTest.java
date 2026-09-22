@@ -77,6 +77,11 @@ class RouterApiTest {
         }
 
         @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            nack(message, delay);
+        }
+
+        @Override
         public void nack(QueuedMessage message, Duration delay) {
         }
 
@@ -646,6 +651,11 @@ class RouterApiTest {
             }
 
             @Override
+            public void defer(QueuedMessage message, Duration delay) {
+                nack(message, delay);
+            }
+
+            @Override
             public void nack(QueuedMessage message, Duration delay) {
                 delivered.countDown();
             }
@@ -698,6 +708,63 @@ class RouterApiTest {
         } finally {
             limitedPool.close();
             unlimitedPool.close();
+        }
+    }
+
+    @Test
+    @DisplayName("D14: GET /monitoring/pools' total_deferred and /monitoring/pool-stats' totalDeferred "
+            + "carry the pool's own admission-schedule count")
+    void monitoringSurfacesCarryTotalDeferred() throws InterruptedException {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        Mediator blocking = (msg, recordFailure) -> {
+            entered.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return MediationOutcome.Success.of(200);
+        };
+        var isolatedTracker = new InFlightTracker(CLOCK);
+        var isolatedManager = new RouterManager(isolatedTracker, Warnings.NO_OP, CLOCK,
+                cfg -> new Pool(cfg, blocking, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK));
+        // concurrency 1 -> capacity max(1*40, 100) = 100: one message occupies
+        // the only worker (blocked in `blocking` above), the next 100 fill the
+        // buffer to exactly capacity, and the 102nd overflows into a deferral.
+        var deferPool = new Pool(new Pool.Config("DEFER-POOL", 1, 0), blocking, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK);
+        isolatedManager.registerPool("DEFER-POOL", deferPool);
+        var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(CLOCK), null, null, null,
+                "v", "/router", null, null, null, null);
+        try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
+            var capacity = deferPool.config().queueCapacity();
+            deferPool.submit(QueuedMessage.of(
+                    new Message("occupy", "DEFER-POOL", null, null, null, "https://example.invalid/hook",
+                            "", false, null),
+                    "", "rh-occupy", "queue-1"));
+            assertThat(entered.await(2, TimeUnit.SECONDS)).as("the only worker is now blocked").isTrue();
+            for (int i = 0; i < capacity + 1; i++) {
+                deferPool.submit(QueuedMessage.of(
+                        new Message("m" + i, "DEFER-POOL", null, null, null, "https://example.invalid/hook",
+                                "", false, null),
+                        "", "rh-" + i, "queue-1"));
+            }
+
+            var pools = json(isolatedHttp.get("/router/monitoring/pools"));
+            var poolStats = json(isolatedHttp.get("/router/monitoring/pool-stats")).get("DEFER-POOL");
+            long fromMonitoringPools = -1;
+            for (var entry : pools) {
+                if ("DEFER-POOL".equals(entry.get("pool_code").asText())) {
+                    fromMonitoringPools = entry.get("total_deferred").asLong();
+                }
+            }
+
+            assertThat(fromMonitoringPools).as("/monitoring/pools' total_deferred").isPositive();
+            assertThat(poolStats.get("totalDeferred").asLong()).as("/monitoring/pool-stats' totalDeferred")
+                    .isEqualTo(fromMonitoringPools);
+        } finally {
+            release.countDown();
+            deferPool.close();
         }
     }
 
@@ -1674,7 +1741,7 @@ class RouterApiTest {
         // shape already on the wire; tidying it would be a break dressed up
         // as consistency.
         var isolated = new BrokerStatsCache(CLOCK);
-        isolated.refresh(Map.of("q-snake", () -> Optional.of(new QueueMetrics(7, 3, 0, 0, 0))));
+        isolated.refresh(Map.of("q-snake", () -> Optional.of(new QueueMetrics(7, 3, 0, 0, 0, 0))));
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), new WarningStore(CLOCK), null, null, null,
                 "v", "/router", null, null, null, isolated);
         try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
@@ -1697,9 +1764,9 @@ class RouterApiTest {
         // — and an unsorted implementation passes a single-queue test.
         var isolated = new BrokerStatsCache(CLOCK);
         isolated.refresh(Map.of(
-                "zulu", () -> Optional.of(new QueueMetrics(1, 0, 0, 0, 0)),
-                "alpha", () -> Optional.of(new QueueMetrics(2, 0, 0, 0, 0)),
-                "mike", () -> Optional.of(new QueueMetrics(3, 0, 0, 0, 0))));
+                "zulu", () -> Optional.of(new QueueMetrics(1, 0, 0, 0, 0, 0)),
+                "alpha", () -> Optional.of(new QueueMetrics(2, 0, 0, 0, 0, 0)),
+                "mike", () -> Optional.of(new QueueMetrics(3, 0, 0, 0, 0, 0))));
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), new WarningStore(CLOCK), null, null, null,
                 "v", "/router", null, null, null, isolated);
         try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
@@ -1717,7 +1784,7 @@ class RouterApiTest {
         // 90 acked, 10 nacked -> 0.9. Chosen so a swapped numerator (0.1) or a
         // denominator of totalPolled (0.9 by accident is impossible: 90/120)
         // both show up as a different number.
-        isolated.refresh(Map.of("q-derive", () -> Optional.of(new QueueMetrics(11, 4, 120, 90, 10))));
+        isolated.refresh(Map.of("q-derive", () -> Optional.of(new QueueMetrics(11, 4, 120, 90, 10, 7))));
         var state = new RouterApi.State(null, new InFlightTracker(CLOCK), new WarningStore(CLOCK), null, null, null,
                 "v", "/router", null, null, null, isolated);
         try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
@@ -1735,7 +1802,7 @@ class RouterApiTest {
             assertThat(row.get("currentSize").asLong()).as("pending + inFlight").isEqualTo(15);
             assertThat(row.get("throughput").asDouble()).as("never computed, on either side").isZero();
             assertThat(row.get("totalDeferred").asLong())
-                    .as("Go's Defer verb has no production caller, so this is 0 on both sides").isZero();
+                    .as("owner ruling 2026-09-22: the consumer's own defer count, not a hardcoded 0").isEqualTo(7);
         }
     }
 
@@ -1745,12 +1812,12 @@ class RouterApiTest {
         // 0.0 and 1.0 are both plausible-looking and only one is right: a
         // queue that has done nothing has failed nothing, and zero would
         // paint every freshly-created queue as a total outage.
-        var idle = QueueRoutes.queueStatsRow("fresh", new QueueMetrics(0, 0, 0, 0, 0));
+        var idle = QueueRoutes.queueStatsRow("fresh", new QueueMetrics(0, 0, 0, 0, 0, 0));
         assertThat(idle.successRate()).isEqualTo(1.0);
 
         // ...and it is genuinely derived, not a constant: one failure and
         // nothing else is a total failure.
-        assertThat(QueueRoutes.queueStatsRow("bad", new QueueMetrics(0, 0, 1, 0, 1)).successRate()).isZero();
+        assertThat(QueueRoutes.queueStatsRow("bad", new QueueMetrics(0, 0, 1, 0, 1, 0)).successRate()).isZero();
     }
 
     @Test
@@ -1758,13 +1825,13 @@ class RouterApiTest {
     void queueStatsWindow() {
         var clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
         var isolated = new BrokerStatsCache(clock);
-        var live = new java.util.concurrent.atomic.AtomicReference<>(new QueueMetrics(0, 0, 100, 90, 10));
+        var live = new java.util.concurrent.atomic.AtomicReference<>(new QueueMetrics(0, 0, 100, 90, 10, 0));
         Map<String, java.util.function.Supplier<Optional<QueueMetrics>>> source =
                 Map.of("q-win", () -> Optional.of(live.get()));
 
         isolated.refresh(source);                       // baseline: 90 acked
         clock.advance(Duration.ofMinutes(6));           // now outside 5min, inside 30
-        live.set(new QueueMetrics(0, 0, 140, 125, 15));
+        live.set(new QueueMetrics(0, 0, 140, 125, 15, 0));
         isolated.refresh(source);
 
         var state = new RouterApi.State(null, new InFlightTracker(clock), new WarningStore(clock), null, null, null,
@@ -1790,7 +1857,7 @@ class RouterApiTest {
         var state = new RouterApi.State(isolatedManager, new InFlightTracker(CLOCK), new WarningStore(CLOCK),
                 null, null, null, "v", "/router", null, null, null, isolated);
         try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
-            consumer.queueMetrics = new QueueMetrics(42, 0, 0, 0, 0);
+            consumer.queueMetrics = new QueueMetrics(42, 0, 0, 0, 0, 0);
 
             assertThat(json(isolatedHttp.get("/router/monitoring/queue-stats")).isEmpty())
                     .as("nothing sampled yet, and the endpoint does not sample on its own").isTrue();
@@ -1806,7 +1873,7 @@ class RouterApiTest {
         var isolatedManager = new RouterManager(new InFlightTracker(CLOCK), Warnings.NO_OP, CLOCK,
                 cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, CLOCK));
         var consumer = new RecordingConsumer("q-forced");
-        consumer.queueMetrics = new QueueMetrics(5, 1, 0, 0, 0);
+        consumer.queueMetrics = new QueueMetrics(5, 1, 0, 0, 0, 0);
         isolatedManager.registerConsumer(consumer);
         var isolated = new BrokerStatsCache(CLOCK);
         var state = new RouterApi.State(isolatedManager, new InFlightTracker(CLOCK), new WarningStore(CLOCK),
@@ -2112,6 +2179,11 @@ class RouterApiTest {
         }
 
         @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            nack(message, delay);
+        }
+
+        @Override
         public void nack(QueuedMessage message, Duration delay) {
         }
 
@@ -2236,6 +2308,11 @@ class RouterApiTest {
         }
 
         @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            nack(message, delay);
+        }
+
+        @Override
         public void nack(QueuedMessage message, Duration delay) {
         }
 
@@ -2276,6 +2353,11 @@ class RouterApiTest {
         @Override
         public boolean ack(QueuedMessage message) {
             return true;
+        }
+
+        @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            nack(message, delay);
         }
 
         @Override

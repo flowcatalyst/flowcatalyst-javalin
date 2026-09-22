@@ -124,6 +124,27 @@ public final class QueueBroker implements Broker {
         settled(message, "nack", reason, delay, true);
     }
 
+    /// Hands the message back for capacity, on `message`'s own consumer —
+    /// counted by that consumer as `totalDeferred`, never `totalNacked`
+    /// (owner ruling 2026-09-22, hand-off §2). Same ownership shape as
+    /// [#nack]: freshest handle substituted, tracker entry released first.
+    @Override
+    public void defer(QueuedMessage message, Duration delay) {
+        var freshest = withFreshestHandle(message);
+        var consumer = consumers.apply(message.queueId());
+        tracker.remove(message.id());
+        if (consumer == null) {
+            log.atWarn().setMessage("defer skipped: queue is no longer registered")
+                    .addKeyValue("queue", message.queueId())
+                    .addKeyValue("message_id", message.id())
+                    .log();
+            settled(message, "defer", "capacity", delay, false);
+            return;
+        }
+        consumer.defer(freshest, delay);
+        settled(message, "defer", "capacity", delay, true);
+    }
+
     @Override
     public void retrying(QueuedMessage message) {
         tracker.markRetrying(message.id());

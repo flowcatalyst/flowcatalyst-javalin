@@ -166,6 +166,7 @@ public final class NatsQueue implements Consumer {
     final AtomicLong polled = new AtomicLong();
     final AtomicLong acked = new AtomicLong();
     final AtomicLong nacked = new AtomicLong();
+    final AtomicLong deferred = new AtomicLong();
 
     /// Connects, provisions the stream and durable consumer (create-or-update,
     /// matching Go's `CreateOrUpdateStream`/`CreateOrUpdateConsumer`), and
@@ -353,12 +354,20 @@ public final class NatsQueue implements Consumer {
 
     /// False (R5, owner ruling 2026-09-17,
     /// `docs/spec/router-deferral-handback.md`): this stream is one durable
-    /// WorkQueue consumer with `max-ack-pending` 1000 and no per-group
-    /// subject, so the broker enforces no group ordering — a nack never
-    /// blocks a delayed head's successors the way R4 blocks Postgres — and
-    /// each hand-back spends one of `max-deliver`'s limited redeliveries.
-    /// Deliberately unchanged from pre-R1 behaviour: a delay-bearing
-    /// deferral stays on the in-memory `DEFERRED` retry curve.
+    /// WorkQueue consumer with no per-group subject, so the broker enforces
+    /// no group ordering at all — a nack never blocks a delayed head's
+    /// successors the way R4 blocks Postgres. Deliberately unchanged from
+    /// pre-R1 behaviour: a delay-bearing deferral stays on the in-memory
+    /// `DEFERRED` retry curve. (This answer used to also protect the finite
+    /// `max-deliver` budget; that is unlimited by default since 2026-09-22 —
+    /// see [NatsQueueUri#DEFAULT_MAX_DELIVER].)
+    ///
+    /// The router's backpressure deferral ([#defer]) is the one hand-back
+    /// that reaches this broker regardless of this answer — with a full pool
+    /// there is nowhere in memory to keep the message. It reads this `false`
+    /// to space consecutive reservations at least a second apart, so a
+    /// deferred group's messages come back in the order they were deferred
+    /// (owner ruling 2026-09-22, hand-off §3/§4).
     @Override
     public boolean honoursDelayedReturn() {
         return false;
@@ -555,6 +564,21 @@ public final class NatsQueue implements Consumer {
     /// cadence). Best-effort: never throws.
     @Override
     public void nack(QueuedMessage message, Duration delay) {
+        nakWithCounter(message, delay, "nats: nack failed", nacked);
+    }
+
+    /// Same `nakWithDelay` wire effect as [#nack] (owner ruling 2026-09-22,
+    /// hand-off §2) — the one hand-back that reaches NATS regardless of
+    /// [#honoursDelayedReturn]. Counted as `deferred`, [#nacked] left
+    /// untouched: the pool's buffer was full, the message did not fail.
+    @Override
+    public void defer(QueuedMessage message, Duration delay) {
+        nakWithCounter(message, delay, "nats: defer failed", deferred);
+    }
+
+    /// The shared NAK body for [#nack] and [#defer]. Best-effort: never
+    /// throws.
+    private void nakWithCounter(QueuedMessage message, Duration delay, String failureMessage, AtomicLong counter) {
         io.nats.client.Message msg = pending.remove(message.receiptHandle());
         if (msg == null) {
             log.atWarn().setMessage("nats: no pending message")
@@ -569,9 +593,9 @@ public final class NatsQueue implements Consumer {
             } else {
                 msg.nak();
             }
-            nacked.incrementAndGet();
+            counter.incrementAndGet();
         } catch (Exception e) {
-            log.atWarn().setMessage("nats: nack failed")
+            log.atWarn().setMessage(failureMessage)
                     .addKeyValue("queue", identifier)
                     .addKeyValue("receipt", message.receiptHandle())
                     .setCause(e)
@@ -590,7 +614,8 @@ public final class NatsQueue implements Consumer {
         try {
             ConsumerInfo info = consumer.getConsumerInfo();
             return Optional.of(new QueueMetrics(
-                    info.getNumPending(), info.getNumAckPending(), polled.get(), acked.get(), nacked.get()));
+                    info.getNumPending(), info.getNumAckPending(), polled.get(), acked.get(), nacked.get(),
+                    deferred.get()));
         } catch (Exception e) {
             log.atWarn().setMessage("nats: metrics query failed")
                     .addKeyValue("queue", identifier)

@@ -197,7 +197,7 @@ public final class BrokerStatsCache {
         latest.forEach((queueId, live) -> {
             var since = baseline.get(queueId);
             if (since == null) {
-                out.put(queueId, new QueueMetrics(live.pending(), live.inFlight(), 0, 0, 0));
+                out.put(queueId, new QueueMetrics(live.pending(), live.inFlight(), 0, 0, 0, 0));
                 return;
             }
             // Depths are levels, not counters — they are reported as they are
@@ -207,7 +207,8 @@ public final class BrokerStatsCache {
                     live.pending(), live.inFlight(),
                     delta(live.polled(), since.polled()),
                     delta(live.acked(), since.acked()),
-                    delta(live.nacked(), since.nacked())));
+                    delta(live.nacked(), since.nacked()),
+                    delta(live.deferred(), since.deferred())));
         });
         return Map.copyOf(out);
     }

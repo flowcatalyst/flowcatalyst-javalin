@@ -82,6 +82,8 @@ class EnvTest {
         assertThat(env.routerDrainTimeoutSec()).isEqualTo(60);
         assertThat(env.routerStrictRouting()).as("R-13/R-16: off until every producer is confirmed compliant").isFalse();
         assertThat(env.routerSynthPoolIdleSecs()).as("0 means \"use the implementation default\", not \"never evict\"").isZero();
+        assertThat(env.routerDeferralMaxDelaySeconds()).as("0 means \"use the implementation default\" (3600s)").isZero();
+        assertThat(env.routerDeferralBudget()).as("0 means \"use the implementation default\" (5000)").isZero();
         assertThat(env.routerAuthMode()).isEmpty();
         assertThat(env.routerAuthUser()).isEmpty();
         assertThat(env.routerAuthPass()).isEmpty();
@@ -304,6 +306,15 @@ class EnvTest {
 
         assertThat(env.routerStrictRouting()).isTrue();
         assertThat(env.routerSynthPoolIdleSecs()).isEqualTo(1800);
+    }
+
+    /// Owner ruling 2026-09-22, `docs/spec/router-hol-deferral.md` §7.
+    @Test
+    void routerDeferralKnobs() {
+        var env = load("FC_ROUTER_DEFERRAL_MAX_DELAY_SECONDS", "600", "FC_ROUTER_DEFERRAL_BUDGET", "42");
+
+        assertThat(env.routerDeferralMaxDelaySeconds()).isEqualTo(600);
+        assertThat(env.routerDeferralBudget()).isEqualTo(42);
     }
 
     /// The Rust `fc-router` drop-in brief (2026-09-11): `apiPort` is a

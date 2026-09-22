@@ -110,6 +110,11 @@ class RouterShutdownTest {
                     }
 
                     @Override
+                    public void defer(QueuedMessage message, Duration delay) {
+                        nack(message, delay);
+                    }
+
+                    @Override
                     public void nack(QueuedMessage message, Duration delay) {
                         nacked.add(message.id());
                     }
@@ -211,6 +216,11 @@ class RouterShutdownTest {
         }
 
         @Override
+        public void defer(QueuedMessage message, Duration delay) {
+            nack(message, delay);
+        }
+
+        @Override
         public void nack(QueuedMessage message, Duration delay) {
         }
 
@@ -296,6 +306,11 @@ class RouterShutdownTest {
                 new Broker() {
                     @Override
                     public void ack(QueuedMessage message) {
+                    }
+
+                    @Override
+                    public void defer(QueuedMessage message, Duration delay) {
+                        nack(message, delay);
                     }
 
                     @Override

@@ -439,6 +439,23 @@ class NatsQueueTest {
     }
 
     @Test
+    @DisplayName("D8: defer with a positive delay NAKs with that delay too (owner ruling 2026-09-22), "
+            + "but counts as deferred, not nacked (mutant: count it as a nack)")
+    void deferWithPositiveDelayNaksWithDelayButCountsSeparately() {
+        var queue = testQueue();
+        var fake = new FakeJetStreamMessage(VALID_PAYLOAD);
+        queue.pending.put("STREAM:1", fake);
+        var queued = QueuedMessage.of(minimalMessage(), "1:1", "STREAM:1", "nats-test");
+
+        queue.defer(queued, Duration.ofSeconds(30));
+
+        assertThat(fake.nakCalls).as("same wire effect as nack: nakWithDelay").isEqualTo(1);
+        assertThat(fake.lastNakDelay).isEqualTo(Duration.ofSeconds(30));
+        assertThat(queue.deferred.get()).as("counted as a deferral").isEqualTo(1);
+        assertThat(queue.nacked.get()).as("never as a nack").isZero();
+    }
+
+    @Test
     @DisplayName("nack with a zero or negative delay NAKs immediately")
     void nackWithNonPositiveDelayNaksImmediately() {
         var queue = testQueue();

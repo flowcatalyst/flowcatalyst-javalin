@@ -219,7 +219,7 @@ class BrokerStatsCacheTest {
     }
 
     private static QueueMetrics metrics(long pending, long inFlight, long polled, long acked, long nacked) {
-        return new QueueMetrics(pending, inFlight, polled, acked, nacked);
+        return new QueueMetrics(pending, inFlight, polled, acked, nacked, 0);
     }
 
     private static final class RecordingWarnings implements Warnings {
