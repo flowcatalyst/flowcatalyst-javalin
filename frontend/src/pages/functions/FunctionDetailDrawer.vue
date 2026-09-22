@@ -230,6 +230,7 @@ function heartbeatAge(dateString?: string | null): string {
 
 <template>
   <EntityDrawer
+    size="two-thirds"
     ref="drawer"
     :title="fn?.name || fn?.address || 'Function'"
     :subtitle="fn?.address"

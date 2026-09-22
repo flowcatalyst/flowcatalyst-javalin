@@ -7,7 +7,7 @@ const props = withDefaults(
 	defineProps<{
 		title: string;
 		subtitle?: string;
-		size?: "default" | "wide";
+		size?: "default" | "wide" | "two-thirds";
 		loading?: boolean;
 		error?: string | null;
 		dirty?: boolean;
@@ -68,7 +68,7 @@ defineExpose({
     :block-scroll="false"
     :dismissable="false"
     class="entity-drawer"
-    :class="size === 'wide' ? 'entity-drawer-wide' : 'entity-drawer-default'"
+    :class="size === 'wide' ? 'entity-drawer-wide' : size === 'two-thirds' ? 'entity-drawer-two-thirds' : 'entity-drawer-default'"
     @update:visible="onVisibleUpdate"
     @hide="emit('close')"
   >
@@ -175,6 +175,11 @@ defineExpose({
 
 .p-drawer.entity-drawer.entity-drawer-wide {
   width: min(800px, calc(100vw - 24px));
+}
+
+/* The function drawers: tabs with tables (versions, hosts, config) need the room. */
+.p-drawer.entity-drawer.entity-drawer-two-thirds {
+  width: min(66.67vw, calc(100vw - 24px));
 }
 
 /* No modal mask anymore — a stronger shadow separates the panel from the

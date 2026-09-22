@@ -86,7 +86,9 @@ function prettyManifest(version: number): string {
 // Promote: enabled only for a READY version (U5). Retire: never for the
 // live version (also U5) and never for one already RETIRED.
 function canPromoteRow(v: VersionResponse): boolean {
-	return v.state === "READY";
+	// READY and not already the live one — promoting the live version is the
+	// platform's ALIAS_UNCHANGED conflict, which is not an error worth offering.
+	return v.state === "READY" && !v.live;
 }
 function canRetireRow(v: VersionResponse): boolean {
 	return !v.live && v.state !== "RETIRED";

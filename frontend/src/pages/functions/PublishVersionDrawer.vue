@@ -173,7 +173,7 @@ async function onSubmit() {
     :modal="false"
     :block-scroll="false"
     :dismissable="false"
-    class="entity-drawer entity-drawer-default publish-version-drawer"
+    class="entity-drawer entity-drawer-two-thirds publish-version-drawer"
     @update:visible="(v: boolean) => !v && emit('close')"
   >
     <template #header>

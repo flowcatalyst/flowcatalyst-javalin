@@ -150,6 +150,14 @@ describe("FunctionVersionsTab — Promote/Retire gating (U5)", () => {
 		expect(promote2?.attributes("disabled")).toBeDefined();
 	});
 
+	it("disables Promote for the version that is already live — the platform would answer ALIAS_UNCHANGED", async () => {
+		const wrapper = await mountTab();
+		const liveRow = wrapper.findAll("tbody > tr").find((r) => r.text().includes("v3"));
+		const promoteLive = liveRow?.findAll("button").find((b) => b.text() === "Promote");
+		expect(promoteLive).toBeTruthy();
+		expect(promoteLive?.attributes("disabled")).toBeDefined();
+	});
+
 	it("disables Retire for the live version even though it is READY", async () => {
 		const wrapper = await mountTab();
 
