@@ -1,5 +1,7 @@
 # Port status — living document
 
+> The function service, in one document for a newcomer: `docs/function-service-overview.md`.
+
 Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.

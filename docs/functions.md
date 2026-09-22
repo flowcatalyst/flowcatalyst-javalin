@@ -11,6 +11,10 @@ names which. Where the platform's behaviour is less convenient than you might ex
 says so plainly rather than rounding it off — see [§8 Honest limits](#8-honest-limits) in
 particular before you rely on `Result.fail`/`Result.retry` for anything precise.
 
+
+> New to the function service? `docs/function-service-overview.md` explains what it is, how it fits
+> the platform, and where everything lives — read that first, then come back here for the how-to.
+
 ## 1. What a function is
 
 **A function is always invoked over HTTP** — there is no separate "event invocation" type. An
