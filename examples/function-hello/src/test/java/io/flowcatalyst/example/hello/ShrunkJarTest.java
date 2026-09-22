@@ -77,13 +77,28 @@ class ShrunkJarTest {
         assertThat(manifest.entrypoint()).isEqualTo(ENTRYPOINT);
         assertThat(manifest.endpoints()).hasSize(3);
         assertThat(manifest.subscriptions()).hasSize(1);
-        assertThat(manifest.subscriptions().get(0).eventType()).isEqualTo("hello:greeting:requested");
+        assertThat(manifest.subscriptions().get(0).eventType()).isEqualTo("hello:greeting:greeting:requested");
         assertThat(manifest.config()).containsExactly("GREETING");
         assertThat(manifest.secrets()).containsExactly("API_KEY");
         // The platform default limits still apply where the manifest sets nothing
         // stricter — proves this manifest is valid against them, not just parseable.
         assertThat(manifest.limits().maxDurationMs()).isEqualTo(10_000);
         assertThat(manifest.limits().maxConcurrency()).isEqualTo(8);
+    }
+
+    /// The event types the manifest subscribes to and the function emits are
+    /// codes the PLATFORM will accept: four segments, application first
+    /// (`EventTypeCode`). The sample once carried a three-segment code that
+    /// parsed fine here and could never be created on a real platform.
+    @Test
+    void everyEventTypeCodeIsOneThePlatformCanCreate() throws IOException {
+        var root = Json.MAPPER.readTree(Files.readString(Path.of("manifest.json")));
+        for (var sub : root.path("subscriptions")) {
+            var parsed = io.flowcatalyst.platform.eventtype.EventTypeCode.parse(sub.path("eventType").asString());
+            assertThat(parsed.application()).as("owned by the sample's own application").isEqualTo("hello");
+        }
+        assertThat(io.flowcatalyst.platform.eventtype.EventTypeCode.parse("hello:greeting:greeting:sent").application())
+                .isEqualTo("hello");
     }
 
     // ── the shrunk jar's own contents ─────────────────────────────────────────────
@@ -147,7 +162,7 @@ class ShrunkJarTest {
 
             assertThat(events.emitted).hasSize(1);
             OutboundEvent emitted = events.emitted.get(0);
-            assertThat(emitted.type()).isEqualTo("hello:greeting:sent");
+            assertThat(emitted.type()).isEqualTo("hello:greeting:greeting:sent");
             assertThat(emitted.correlationId()).isEqualTo("corr-1");
             String data = new String(emitted.data(), StandardCharsets.UTF_8);
             assertThat(data).contains("\"world\"").contains("Howdy, world!");
@@ -218,7 +233,7 @@ class ShrunkJarTest {
     }
 
     private static byte[] eventEnvelope(String name, String correlationId) {
-        String json = "{\"id\":\"evt_1\",\"type\":\"hello:greeting:requested\",\"attemptNumber\":1,"
+        String json = "{\"id\":\"evt_1\",\"type\":\"hello:greeting:greeting:requested\",\"attemptNumber\":1,"
                 + "\"subject\":\"greeting-" + name + "\",\"correlationId\":\"" + correlationId + "\","
                 + "\"data\":{\"name\":\"" + name + "\"}}";
         return json.getBytes(StandardCharsets.UTF_8);

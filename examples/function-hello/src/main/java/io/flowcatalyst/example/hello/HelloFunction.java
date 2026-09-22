@@ -41,7 +41,7 @@ import java.util.UUID;
 public final class HelloFunction implements Function {
 
     private static final ObjectMapper JSON = JsonMapper.builder().build();
-    private static final String EVENT_TYPE = "hello:greeting:sent";
+    private static final String EVENT_TYPE = "hello:greeting:greeting:sent";
 
     @Override
     public void init(FunctionContext ctx) {

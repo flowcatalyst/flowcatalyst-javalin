@@ -123,7 +123,7 @@ first, on the platform, not at runtime on a host. **Unknown keys at any level ar
     { "path": "/healthz", "auth": "none", "methods": ["GET"] }
   ],
   "subscriptions": [
-    { "eventType": "hello:greeting:requested", "path": "/events/greeting-requested",
+    { "eventType": "hello:greeting:greeting:requested", "path": "/events/greeting-requested",
       "mode": "IMMEDIATE", "maxRetries": 3, "timeoutSeconds": 30, "dataOnly": false }
   ],
   "schedules": [ ],
@@ -271,7 +271,7 @@ not silently dropped.
 
 ```java
 ctx.events().emit(new OutboundEvent(
-        "hello:greeting:sent",                 // type — must be owned by your function's application
+        "hello:greeting:greeting:sent",                 // type — must be owned by your function's application
         "function:" + ctx.address().render(),  // source
         event.subject(),                       // subject, carried through from the inbound delivery
         "application/json",
