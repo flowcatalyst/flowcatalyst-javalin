@@ -20,6 +20,7 @@ use FlowCatalyst\Client\FlowCatalystClient;
 use FlowCatalyst\Console\Commands\ScanDefinitionsCommand;
 use FlowCatalyst\Console\Commands\SessionTableCommand;
 use FlowCatalyst\Console\Commands\SyncDefinitionsCommand;
+use FlowCatalyst\Console\Commands\VerifySignatureCommand;
 use FlowCatalyst\Definition\DefinitionRepository;
 use FlowCatalyst\Definition\DefinitionScanner;
 use FlowCatalyst\Sync\DefinitionSynchronizer;
@@ -618,6 +619,7 @@ class FlowCatalystServiceProvider extends ServiceProvider
                 ScanDefinitionsCommand::class,
                 SyncDefinitionsCommand::class,
                 SessionTableCommand::class,
+                VerifySignatureCommand::class,
             ]);
         }
     }

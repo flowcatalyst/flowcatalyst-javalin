@@ -758,9 +758,6 @@
           "errorType": {
             "type": "string"
           },
-          "request": {
-            "$ref": "#/components/schemas/RequestSummary"
-          },
           "responseBody": {
             "type": "string"
           },
@@ -1894,9 +1891,6 @@
             "readOnly": true,
             "type": "string"
           },
-          "applicationCode": {
-            "type": "string"
-          },
           "clientId": {
             "type": "string"
           },
@@ -1925,9 +1919,6 @@
           "serviceAccountId": {
             "type": "string"
           },
-          "source": {
-            "type": "string"
-          },
           "status": {
             "type": "string"
           },
@@ -1942,7 +1933,6 @@
           "name",
           "status",
           "serviceAccountId",
-          "source",
           "createdAt",
           "updatedAt"
         ],
@@ -2159,10 +2149,6 @@
             ],
             "format": "uri",
             "readOnly": true,
-            "type": "string"
-          },
-          "applicationCode": {
-            "description": "Optional application this connection belongs to. Omitted means shared (usable from any application).",
             "type": "string"
           },
           "clientId": {
@@ -3243,38 +3229,6 @@
         ],
         "type": "object"
       },
-      "DeliveryPlan": {
-        "additionalProperties": false,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "https://example.com/schemas/DeliveryPlan.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "body": {
-            "type": "string"
-          },
-          "headers": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object"
-          },
-          "request": {
-            "$ref": "#/components/schemas/RequestSummary"
-          }
-        },
-        "required": [
-          "request",
-          "headers",
-          "body"
-        ],
-        "type": "object"
-      },
       "DeveloperUserListResponse": {
         "additionalProperties": false,
         "properties": {
@@ -3396,9 +3350,6 @@
             "format": "date-time",
             "type": "string"
           },
-          "descriptor": {
-            "type": "string"
-          },
           "dispatchMode": {
             "type": "string"
           },
@@ -3414,15 +3365,6 @@
           "lastAttemptAt": {
             "format": "date-time",
             "type": "string"
-          },
-          "messageGroup": {
-            "type": "string"
-          },
-          "metadata": {
-            "items": {
-              "$ref": "#/components/schemas/MetadataDTO"
-            },
-            "type": "array"
           },
           "mode": {
             "type": "string"
@@ -3512,9 +3454,6 @@
           },
           "dataOnly": {
             "type": "boolean"
-          },
-          "descriptor": {
-            "type": "string"
           },
           "dispatchPoolId": {
             "type": "string"
@@ -5603,9 +5542,6 @@
           "scope": {
             "type": "string"
           },
-          "serviceAccountId": {
-            "type": "string"
-          },
           "twoFactorMethods": {
             "items": {
               "type": "string"
@@ -6259,40 +6195,6 @@
           "name",
           "expiresAt",
           "createdAt"
-        ],
-        "type": "object"
-      },
-      "RequestSummary": {
-        "additionalProperties": false,
-        "properties": {
-          "bearer": {
-            "type": "boolean"
-          },
-          "headers": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "signature": {
-            "type": "boolean"
-          },
-          "signedBy": {
-            "type": "string"
-          },
-          "target": {
-            "type": "string"
-          },
-          "timestamp": {
-            "type": "string"
-          },
-          "unsignedReason": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "signature",
-          "bearer"
         ],
         "type": "object"
       },
@@ -6973,9 +6875,6 @@
           "name": {
             "type": "string"
           },
-          "oauthClientId": {
-            "type": "string"
-          },
           "principalId": {
             "type": "string"
           },
@@ -7478,55 +7377,6 @@
         },
         "required": [
           "reason"
-        ],
-        "type": "object"
-      },
-      "SyncConnectionInputRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "code": {
-            "type": "string"
-          },
-          "description": {
-            "type": "string"
-          },
-          "externalId": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "name"
-        ],
-        "type": "object"
-      },
-      "SyncConnectionsRequest": {
-        "additionalProperties": true,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "https://example.com/schemas/SyncConnectionsRequest.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "clientId": {
-            "type": "string"
-          },
-          "connections": {
-            "items": {
-              "$ref": "#/components/schemas/SyncConnectionInputRequest"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "connections"
         ],
         "type": "object"
       },
@@ -8117,10 +7967,6 @@
           "code": {
             "type": "string"
           },
-          "connectionCode": {
-            "description": "Connection code — stable across environments, unlike connectionId. By default resolves a connection owned by THIS application; set sharedConnection to resolve it among the shared (application-less) connections instead. Within either namespace, a client-scoped sync (clientId set) prefers its own client's connection, falling back to a global one; a client-less sync only resolves a global connection.",
-            "type": "string"
-          },
           "connectionId": {
             "type": "string"
           },
@@ -8149,10 +7995,6 @@
           "name": {
             "type": "string"
           },
-          "sharedConnection": {
-            "description": "Resolve connectionCode among the shared (application-less) connections instead of this application's own. Requires connectionCode.",
-            "type": "boolean"
-          },
           "target": {
             "type": "string"
           },
@@ -8179,9 +8021,6 @@
             ],
             "format": "uri",
             "readOnly": true,
-            "type": "string"
-          },
-          "clientId": {
             "type": "string"
           },
           "subscriptions": {
@@ -8452,9 +8291,6 @@
             ],
             "format": "uri",
             "readOnly": true,
-            "type": "string"
-          },
-          "applicationCode": {
             "type": "string"
           },
           "description": {
@@ -9430,69 +9266,6 @@
         "summary": "List roles registered against an application",
         "tags": [
           "applications"
-        ]
-      }
-    },
-    "/api/applications/{appCode}/connections/sync": {
-      "post": {
-        "operationId": "syncConnections",
-        "parameters": [
-          {
-            "description": "Application code",
-            "in": "path",
-            "name": "appCode",
-            "required": true,
-            "schema": {
-              "description": "Application code",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Remove API/CODE connections not in the list",
-            "explode": false,
-            "in": "query",
-            "name": "removeUnlisted",
-            "schema": {
-              "description": "Remove API/CODE connections not in the list",
-              "type": "boolean"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SyncConnectionsRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SyncResultResponse"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorModel"
-                }
-              }
-            },
-            "description": "Error"
-          }
-        },
-        "summary": "Sync an application's connections (SDK self-registration)",
-        "tags": [
-          "sdk-sync"
         ]
       }
     },
@@ -12364,16 +12137,6 @@
             }
           },
           {
-            "description": "Exact message group",
-            "explode": false,
-            "in": "query",
-            "name": "messageGroup",
-            "schema": {
-              "description": "Exact message group",
-              "type": "string"
-            }
-          },
-          {
             "explode": false,
             "in": "query",
             "name": "limit",
@@ -12698,16 +12461,6 @@
             }
           },
           {
-            "description": "Exact message group",
-            "explode": false,
-            "in": "query",
-            "name": "messageGroup",
-            "schema": {
-              "description": "Exact message group",
-              "type": "string"
-            }
-          },
-          {
             "explode": false,
             "in": "query",
             "name": "limit",
@@ -12909,16 +12662,6 @@
             "name": "until",
             "schema": {
               "description": "RFC3339 timestamp",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Exact message group",
-            "explode": false,
-            "in": "query",
-            "name": "messageGroup",
-            "schema": {
-              "description": "Exact message group",
               "type": "string"
             }
           },
@@ -13307,47 +13050,6 @@
           }
         },
         "summary": "Get a dispatch job (raw)",
-        "tags": [
-          "dispatch-jobs"
-        ]
-      }
-    },
-    "/api/dispatch-jobs/{id}/sign": {
-      "post": {
-        "operationId": "signDispatchJob",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeliveryPlan"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorModel"
-                }
-              }
-            },
-            "description": "Error"
-          }
-        },
-        "summary": "Build the job's delivery (signing account, headers, signature) without sending it",
         "tags": [
           "dispatch-jobs"
         ]
