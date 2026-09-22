@@ -1592,3 +1592,25 @@ the two `:synced` rollups are pinned (this unit). **Suggested unit:** one test p
 against the seeded schema for its type — then fix whichever side is wrong, type by type (the
 schema is probably the stale one: connections lost their `endpoint` when subscriptions took it).
 It is a wire contract with subscribers, so which side moves is the owner's call.
+
+## JDK: stay on 25 LTS with `--enable-preview` until 29 LTS (owner ruling 2026-09-22)
+
+The reactor compiles with preview features on for `StructuredTaskScope` (seven `main` sites: the
+router's `Concurrently`, `RouterServer`, `HttpConfigSource`; `StreamProcessor`, `Projector`;
+`ScheduledJobScheduler`; the function host's `Reconciler`). The owner wants the feature and keeps
+the flag; a preview class file runs only on the exact release that compiled it, so every launcher
+passes `--enable-preview` (`make run`, both Docker entrypoints, the native build args).
+
+**Ruling: no move to 26/27/28. Move directly from 25 to 29 LTS in September 2027.** Per JEP 543
+(Candidate, 2026-09-17) the JDK 27 preview (JEP 533: `join()` gains an exception type parameter,
+after 26's minor changes) is the final shape and 28 finalises it without further change, so 29
+carries the final API. JDK 25 itself never receives the revisions — preview APIs are frozen at the
+release that ships them; 25.0.x updates are fixes only.
+
+**The unit, when 29 GA lands:** re-fit the seven sites to the final API (the `join()` type
+parameter and whatever 26 changed); remove `--enable-preview` from the root `pom.xml` compiler
+args and surefire `argLine`, `fcdev/pom.xml` and `server/pom.xml` native build args, both
+`docker/entrypoint.sh` files and the Makefile; bump `mise`, both Docker base images and the GraalVM
+toolchain; full reactor from clean plus both native builds. After it the jar is no longer pinned to
+one release. Re-check JEP 543's status before then — if finalisation slipped past 28, the re-fit is
+the same but the flag stays.
