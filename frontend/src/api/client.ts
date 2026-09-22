@@ -17,16 +17,27 @@ export const AUTH_BASE_URL = "/auth";
 export class ApiError extends Error {
 	status: number;
 	code?: string;
+	/**
+	 * The platform envelope's raw `details` object (CONVENTIONS.md §4), when
+	 * present — e.g. `{ errors: [{ message, location }] }` for a validation
+	 * failure. `message` above already has the field parts folded into its
+	 * text for the common toast case; `details` is kept as structured data
+	 * for a caller that wants to render its own per-field errors (the
+	 * function publish drawer, docs/spec/function-ui.md §2.2/U4).
+	 */
+	details?: Record<string, unknown>;
 
 	constructor(
 		message: string,
 		status: number,
 		code?: string,
+		details?: Record<string, unknown>,
 	) {
 		super(message);
 		this.name = "ApiError";
 		this.status = status;
 		this.code = code;
+		this.details = details;
 	}
 }
 
@@ -185,7 +196,11 @@ async function baseFetch<T>(
 			toast.error(summaryForStatus(response.status), message);
 		}
 
-		throw new ApiError(message, response.status, code);
+		const details =
+			error?.details && typeof error.details === "object"
+				? (error.details as Record<string, unknown>)
+				: undefined;
+		throw new ApiError(message, response.status, code, details);
 	}
 
 	// Handle 204 No Content

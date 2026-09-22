@@ -484,9 +484,8 @@ const router = createRouter({
 					component: () =>
 						import("@/pages/dispatch-jobs/DispatchJobListPage.vue"),
 				},
-				// Functions (docs/spec/function-ui.md). Domains and Policies are
-				// placeholder pages until H3 — their routes exist now so nav +
-				// permission gating are complete.
+				// Functions (docs/spec/function-ui.md): the function list/detail
+				// (H1/H2) plus domains and policies (H3).
 				{
 					path: "functions",
 					name: "functions",
@@ -504,14 +503,36 @@ const router = createRouter({
 				{
 					path: "function-domains",
 					name: "function-domains",
-					component: () => import("@/pages/PlaceholderPage.vue"),
-					props: { title: "Domains" },
+					component: () =>
+						import("@/pages/function-domains/FunctionDomainListPage.vue"),
+					children: [
+						{
+							path: "new",
+							name: "function-domain-claim",
+							component: () =>
+								import("@/pages/function-domains/FunctionDomainClaimDrawer.vue"),
+						},
+						{
+							path: ":hostname",
+							name: "function-domain-detail",
+							component: () =>
+								import("@/pages/function-domains/FunctionDomainDetailDrawer.vue"),
+						},
+					],
 				},
 				{
 					path: "function-policies",
 					name: "function-policies",
-					component: () => import("@/pages/PlaceholderPage.vue"),
-					props: { title: "Policies" },
+					component: () =>
+						import("@/pages/function-policies/FunctionPolicyListPage.vue"),
+					children: [
+						{
+							path: ":owner",
+							name: "function-policy-detail",
+							component: () =>
+								import("@/pages/function-policies/FunctionPolicyDetailDrawer.vue"),
+						},
+					],
 				},
 				// Events
 				{

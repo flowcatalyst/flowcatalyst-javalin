@@ -1,4 +1,4 @@
-import { apiFetch } from "./client";
+import { apiFetch, type FetchOptions } from "./client";
 import type {
 	AliasResponse,
 	ClaimRequest,
@@ -8,10 +8,13 @@ import type {
 	FunctionPageResponse,
 	FunctionResponse,
 	FunctionRouteResponse,
+	Manifest,
 	PolicyResponse,
+	PolicySignerRequest,
 	PoolSummaryResponse,
 	PromoteRequest,
 	PromoteResponse,
+	PublishManifestRequest,
 	PublishRequest,
 	PublishResponse,
 	PutPolicyRequest,
@@ -38,9 +41,12 @@ export type {
 	FunctionPageResponse,
 	FunctionResponse,
 	FunctionRouteResponse,
+	Manifest,
 	PolicyResponse,
+	PolicySignerRequest,
 	PoolSummaryResponse,
 	PromoteResponse,
+	PublishManifestRequest,
 	PublishResponse,
 	SecretListResponse,
 	StatusResponse,
@@ -188,8 +194,20 @@ export const functionsApi = {
 		});
 	},
 
-	listSecrets(address: string): Promise<SecretListResponse> {
-		return apiFetch(`/functions/${encodeURIComponent(address)}/secrets`);
+	/**
+	 * `options` is an additive pass-through (unused by any existing caller)
+	 * so the secrets tab can request `suppressGlobalErrorToast` for the
+	 * ENCRYPTION_UNCONFIGURED 503 (docs/spec/function-ui.md §2.1: "renders as
+	 * a disabled state with the reason, not as an error toast").
+	 */
+	listSecrets(
+		address: string,
+		options?: FetchOptions,
+	): Promise<SecretListResponse> {
+		return apiFetch(
+			`/functions/${encodeURIComponent(address)}/secrets`,
+			options,
+		);
 	},
 
 	/** 204 No Content — the value is never returned, only "set"/"not set". */
@@ -197,17 +215,22 @@ export const functionsApi = {
 		address: string,
 		key: string,
 		data: SetSecretRequest,
+		options?: FetchOptions,
 	): Promise<void> {
 		return apiFetch(
 			`/functions/${encodeURIComponent(address)}/secrets/${encodeURIComponent(key)}`,
-			{ method: "PUT", body: JSON.stringify(data) },
+			{ method: "PUT", body: JSON.stringify(data), ...options },
 		);
 	},
 
-	deleteSecret(address: string, key: string): Promise<void> {
+	deleteSecret(
+		address: string,
+		key: string,
+		options?: FetchOptions,
+	): Promise<void> {
 		return apiFetch(
 			`/functions/${encodeURIComponent(address)}/secrets/${encodeURIComponent(key)}`,
-			{ method: "DELETE" },
+			{ method: "DELETE", ...options },
 		);
 	},
 

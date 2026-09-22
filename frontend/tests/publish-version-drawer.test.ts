@@ -1,0 +1,205 @@
+// @vitest-environment jsdom
+/**
+ * U3/U4 (docs/spec/function-ui.md §2.2, §6): the publish drawer sha256's
+ * the chosen jar in the browser, uploads it BEFORE it publishes, and
+ * publishes with the artifactRef the UPLOAD returned — never a locally
+ * built string. A failed upload surfaces its code/message/details in the
+ * drawer and never calls publish.
+ */
+
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { mount, flushPromises } from "@vue/test-utils";
+import PrimeVue from "primevue/config";
+import { ApiError } from "@/api/client";
+import type { PublishResponse, UploadArtifactResponse } from "@/api/functions";
+
+if (typeof window !== "undefined" && !window.matchMedia) {
+	window.matchMedia = ((query: string) => ({
+		matches: false,
+		media: query,
+		onchange: null,
+		addListener: () => {},
+		removeListener: () => {},
+		addEventListener: () => {},
+		removeEventListener: () => {},
+		dispatchEvent: () => false,
+	})) as unknown as typeof window.matchMedia;
+}
+
+const mocks = vi.hoisted(() => ({
+	uploadArtifact: vi.fn(),
+	publishVersion: vi.fn(),
+}));
+
+vi.mock("@/api/functions", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@/api/functions")>();
+	return {
+		...actual,
+		functionsApi: {
+			...actual.functionsApi,
+			uploadArtifact: mocks.uploadArtifact,
+			publishVersion: mocks.publishVersion,
+		},
+	};
+});
+
+const JAR_BYTES = new Uint8Array([10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
+const MANIFEST_TEXT = JSON.stringify({
+	runtime: "jvm",
+	entrypoint: "com.example.Hello",
+});
+
+async function expectedDigest(): Promise<string> {
+	const digestBuf = await crypto.subtle.digest("SHA-256", JAR_BYTES);
+	const hex = Array.from(new Uint8Array(digestBuf))
+		.map((b) => b.toString(16).padStart(2, "0"))
+		.join("");
+	return `sha256:${hex}`;
+}
+
+function setFile(input: HTMLInputElement, file: File) {
+	Object.defineProperty(input, "files", { value: [file], configurable: true });
+	input.dispatchEvent(new Event("change"));
+}
+
+/**
+ * jsdom's File/Blob.arrayBuffer() resolves via a real macrotask (not just a
+ * microtask), so a single flushPromises() after a click isn't always enough
+ * to observe the upload call that follows the sha256 hashing step.
+ */
+async function settle() {
+	await flushPromises();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	await flushPromises();
+}
+
+async function mountDrawer() {
+	const { default: PublishVersionDrawer } = await import(
+		"@/pages/functions/PublishVersionDrawer.vue"
+	);
+	return mount(PublishVersionDrawer, {
+		props: { address: "acme.default.hello" },
+		global: {
+			plugins: [PrimeVue],
+			stubs: { Teleport: true },
+		},
+	});
+}
+
+async function selectFiles(wrapper: Awaited<ReturnType<typeof mountDrawer>>) {
+	const jarFile = new File([JAR_BYTES], "hello.jar");
+	const manifestFile = new File([MANIFEST_TEXT], "manifest.json", {
+		type: "application/json",
+	});
+
+	const jarInput = wrapper.get('[data-testid="publish-jar-input"]')
+		.element as HTMLInputElement;
+	setFile(jarInput, jarFile);
+	await flushPromises();
+
+	const manifestInput = wrapper.get('[data-testid="publish-manifest-input"]')
+		.element as HTMLInputElement;
+	setFile(manifestInput, manifestFile);
+	await flushPromises();
+}
+
+describe("PublishVersionDrawer", () => {
+	beforeEach(() => {
+		mocks.uploadArtifact.mockReset();
+		mocks.publishVersion.mockReset();
+	});
+
+	it("U3: uploads the jar with its sha256 digest BEFORE publishing, and publishes with the ref the upload returned", async () => {
+		const uploadResponse: UploadArtifactResponse = {
+			artifactRef: "platform://store/distinctive-ref-from-upload",
+			digest: await expectedDigest(),
+			bytes: JAR_BYTES.length,
+		};
+		const publishResponse: PublishResponse = {
+			id: "ver_1",
+			version: 1,
+			state: "PUBLISHED",
+			digest: uploadResponse.digest,
+		};
+		mocks.uploadArtifact.mockResolvedValue(uploadResponse);
+		mocks.publishVersion.mockResolvedValue(publishResponse);
+
+		const wrapper = await mountDrawer();
+		await selectFiles(wrapper);
+
+		await wrapper.get('[data-testid="publish-submit"]').trigger("click");
+		await settle();
+
+		expect(mocks.uploadArtifact).toHaveBeenCalledTimes(1);
+		expect(mocks.publishVersion).toHaveBeenCalledTimes(1);
+
+		// Order: upload before publish.
+		const uploadOrder = mocks.uploadArtifact.mock.invocationCallOrder[0];
+		const publishOrder = mocks.publishVersion.mock.invocationCallOrder[0];
+		expect(uploadOrder).toBeLessThan(publishOrder as number);
+
+		// Upload got the address, the correct sha256 digest, and the jar bytes.
+		const uploadArgs = mocks.uploadArtifact.mock.calls[0];
+		expect(uploadArgs[0]).toBe("acme.default.hello");
+		expect(uploadArgs[1]).toBe(await expectedDigest());
+
+		// Publish used the artifactRef the upload RETURNED — never a locally
+		// built string.
+		const publishArgs = mocks.publishVersion.mock.calls[0];
+		expect(publishArgs[0]).toBe("acme.default.hello");
+		expect(publishArgs[1].artifactRef).toBe(
+			"platform://store/distinctive-ref-from-upload",
+		);
+		expect(publishArgs[1].digest).toBe(uploadResponse.digest);
+
+		expect(wrapper.emitted("published")).toBeTruthy();
+	});
+
+	it("U4: a DIGEST_MISMATCH upload failure is surfaced in the drawer and publish is never called", async () => {
+		mocks.uploadArtifact.mockRejectedValue(
+			new ApiError("digest did not match the uploaded bytes", 422, "DIGEST_MISMATCH"),
+		);
+
+		const wrapper = await mountDrawer();
+		await selectFiles(wrapper);
+
+		await wrapper.get('[data-testid="publish-submit"]').trigger("click");
+		await settle();
+
+		expect(mocks.uploadArtifact).toHaveBeenCalledTimes(1);
+		expect(mocks.publishVersion).not.toHaveBeenCalled();
+
+		const errorBox = wrapper.get('[data-testid="publish-error"]');
+		expect(errorBox.text()).toContain("DIGEST_MISMATCH");
+		expect(errorBox.text()).toContain("digest did not match the uploaded bytes");
+		expect(wrapper.emitted("published")).toBeFalsy();
+	});
+
+	it("U4: MANIFEST_INVALID with field details renders those details and does not publish", async () => {
+		mocks.uploadArtifact.mockResolvedValue({
+			artifactRef: "platform://store/ok",
+			digest: await expectedDigest(),
+			bytes: JAR_BYTES.length,
+		} satisfies UploadArtifactResponse);
+		mocks.publishVersion.mockRejectedValue(
+			new ApiError("manifest failed validation", 400, "MANIFEST_INVALID", {
+				errors: [{ location: "manifest.warm", message: "must be a boolean" }],
+			}),
+		);
+
+		const wrapper = await mountDrawer();
+		await selectFiles(wrapper);
+
+		await wrapper.get('[data-testid="publish-submit"]').trigger("click");
+		await settle();
+
+		expect(mocks.uploadArtifact).toHaveBeenCalledTimes(1);
+		expect(mocks.publishVersion).toHaveBeenCalledTimes(1);
+
+		const errorBox = wrapper.get('[data-testid="publish-error"]');
+		expect(errorBox.text()).toContain("MANIFEST_INVALID");
+		expect(errorBox.text()).toContain("manifest.warm");
+		expect(errorBox.text()).toContain("must be a boolean");
+		expect(wrapper.emitted("published")).toBeFalsy();
+	});
+});

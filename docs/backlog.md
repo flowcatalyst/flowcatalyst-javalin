@@ -1614,3 +1614,21 @@ args and surefire `argLine`, `fcdev/pom.xml` and `server/pom.xml` native build a
 toolchain; full reactor from clean plus both native builds. After it the jar is no longer pinned to
 one release. Re-check JEP 543's status before then — if finalisation slipped past 28, the re-fit is
 the same but the flag stays.
+
+## Function API gaps the SPA exposed (2026-09-22, package H)
+
+Found while building the function screens (`docs/spec/function-ui.md`):
+
+1. **No list route for policies.** `GET /api/function-policies/{owner}` only; the Policies page fans
+   out one call per owner (platform + every client). Add `GET /api/function-policies` (reach-scoped,
+   paged) and an `updatedAt` on `PolicyResponse`, which has no timestamp on the wire.
+2. **No read of a domain by hostname.** `GET /api/function-domains` is an owner-scoped list; the
+   detail drawer carries the owner across navigation as a query parameter and a bare deep link to
+   another owner's domain does not resolve. Add `GET /api/function-domains/{hostname}`.
+3. **`POST …/versions`'s 400 under-documents its codes.** `functions.openapi.json` lists
+   `ARTIFACT_REF_REQUIRED, MANIFEST_REQUIRED, ENDPOINT_INVALID`; the operation also answers the
+   manifest-validation family (`MANIFEST_INVALID`, `MANIFEST_UNKNOWN_FIELD`, `RUNTIME_INVALID`, …
+   per `function-registry.md` §4.3). The conformance test only checks codes it exercises — extend
+   O4 to drive one manifest-validation refusal so the description must name it.
+
+Each is a small `main` unit; the SPA already handles the codes generically, so none blocks it.

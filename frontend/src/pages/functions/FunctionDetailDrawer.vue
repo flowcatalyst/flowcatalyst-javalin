@@ -1,8 +1,9 @@
 <script setup lang="ts">
-// The function detail drawer (docs/spec/function-ui.md §2.1). H1 ships the
-// Overview tab only — Versions / Config & secrets / Public routes / Invoke
-// land in H2/H3 — but the tab bar itself is real (a single "Overview" tab),
-// not a placeholder.
+// The function detail drawer (docs/spec/function-ui.md §2.1). Overview +
+// Versions + Config & secrets + Public routes + Invoke. The last four are
+// their own components (FunctionVersionsTab / FunctionConfigSecretsTab /
+// FunctionPublicRoutesTab / FunctionInvokeTab) so each can be unit-tested
+// without mounting this whole drawer.
 import { computed, ref, watch } from "vue";
 import { toast } from "@/utils/errorBus";
 import { useConfirm } from "primevue/useconfirm";
@@ -10,6 +11,7 @@ import {
 	functionsApi,
 	type FunctionResponse,
 	type StatusResponse,
+	type VersionResponse,
 } from "@/api/functions";
 import { clientsApi } from "@/api/clients";
 import { useAuthStore } from "@/stores/auth";
@@ -17,6 +19,10 @@ import { userHasPermission } from "@/stores/permissions";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
 import { useDirtyForm } from "@/composables/useDirtyForm";
+import FunctionVersionsTab from "./FunctionVersionsTab.vue";
+import FunctionConfigSecretsTab from "./FunctionConfigSecretsTab.vue";
+import FunctionPublicRoutesTab from "./FunctionPublicRoutesTab.vue";
+import FunctionInvokeTab from "./FunctionInvokeTab.vue";
 
 const emit = defineEmits<{
 	changed: [];
@@ -27,6 +33,9 @@ const authStore = useAuthStore();
 
 const canManage = computed(() =>
 	userHasPermission(authStore.user, "platform:function:function:manage"),
+);
+const canInvoke = computed(() =>
+	userHasPermission(authStore.user, "platform:function:version:invoke"),
 );
 
 const editing = ref(false);
@@ -52,17 +61,44 @@ const saving = ref(false);
 const status = ref<StatusResponse | null>(null);
 const statusLoading = ref(false);
 
+const activeTab = ref("overview");
+const invokeVersions = ref<VersionResponse[]>([]);
+const invokeVersionsLoaded = ref(false);
+
 watch(
 	address,
 	async (value) => {
 		if (!value) return;
 		editing.value = false;
 		resetDirty();
+		activeTab.value = "overview";
+		invokeVersionsLoaded.value = false;
+		invokeVersions.value = [];
 		await loadFunction(value);
 		void loadStatus(value);
 	},
 	{ immediate: true },
 );
+
+// Lazy: the version list backing the Invoke tab's selector is only fetched
+// once that tab is actually opened.
+watch(activeTab, async (tab) => {
+	if (tab !== "invoke" || invokeVersionsLoaded.value || !fn.value) return;
+	invokeVersionsLoaded.value = true;
+	try {
+		invokeVersions.value = await functionsApi.listVersions(fn.value.address);
+	} catch {
+		invokeVersions.value = [];
+	}
+});
+
+/** Refresh after a Versions-tab promote/retire/publish — the live alias
+ * (Overview) and the Hosts panel (status) can both have changed. */
+async function onVersionsChanged() {
+	if (!fn.value) return;
+	await loadFunction(fn.value.address);
+	void loadStatus(fn.value.address);
+}
 
 async function loadFunction(addr: string) {
 	loading.value = true;
@@ -207,9 +243,13 @@ function heartbeatAge(dateString?: string | null): string {
     </template>
 
     <template v-if="fn">
-      <Tabs value="overview">
+      <Tabs v-model:value="activeTab">
         <TabList>
           <Tab value="overview">Overview</Tab>
+          <Tab value="versions">Versions</Tab>
+          <Tab value="config">Config &amp; Secrets</Tab>
+          <Tab value="routes">Public Routes</Tab>
+          <Tab v-if="canInvoke" value="invoke">Invoke</Tab>
         </TabList>
         <TabPanels>
           <TabPanel value="overview">
@@ -311,6 +351,30 @@ function heartbeatAge(dateString?: string | null): string {
                 </div>
               </div>
             </FcFormSection>
+          </TabPanel>
+
+          <TabPanel value="versions">
+            <FunctionVersionsTab :address="fn.address" @changed="onVersionsChanged" />
+          </TabPanel>
+
+          <TabPanel value="config">
+            <FunctionConfigSecretsTab :address="fn.address" />
+          </TabPanel>
+
+          <TabPanel value="routes">
+            <FunctionPublicRoutesTab
+              :address="fn.address"
+              :client-id="fn.clientId"
+              :has-live-version="!!fn.live"
+            />
+          </TabPanel>
+
+          <TabPanel v-if="canInvoke" value="invoke">
+            <FunctionInvokeTab
+              :address="fn.address"
+              :versions="invokeVersions"
+              :live-version="fn.live?.version"
+            />
           </TabPanel>
         </TabPanels>
       </Tabs>
