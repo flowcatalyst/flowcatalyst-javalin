@@ -1,13 +1,10 @@
 <script setup lang="ts">
 // Function policies list (docs/spec/function-ui.md §2.4), anchor-only.
 //
-// GET /api/function-policies/{owner} is a per-owner read with no batch/list
-// route on the wire — the spec's "List: owner, signers, limit ceilings,
-// updated" implies a listing that does not exist as a single call. This
-// page builds one by fanning out a getPolicy call per known owner
-// (platform + every client); `PolicyResponse` also carries no `updated`
-// timestamp, so that column is omitted. Both are noted in the H3 report as
-// spec/API-document mismatches.
+// `GET /api/function-policies` (S2) returns every STORED policy row in one
+// call; owners with no row are not listed there and get a "defaults" row
+// built from ONE per-owner `getPolicy` read (the effective-default shape is
+// the same for every such owner).
 import { onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { functionsApi, type PolicyResponse } from "@/api/functions";
@@ -28,17 +25,29 @@ const loading = ref(true);
 async function load() {
 	loading.value = true;
 	try {
-		const clients = (await clientsApi.list()).clients;
+		const [clients, listResponse] = await Promise.all([
+			clientsApi.list(),
+			functionsApi.listPolicies(),
+		]);
 		const owners = [
 			{ id: "platform", label: "Platform" },
-			...clients.map((c) => ({ id: c.id, label: c.name })),
+			...clients.clients.map((c) => ({ id: c.id, label: c.name })),
 		];
-		const policies = await Promise.all(
-			owners.map((o) => functionsApi.getPolicy(o.id).catch(() => null)),
-		);
+		const stored = new Map(listResponse.policies.map((p) => [p.owner, p]));
+		// The effective-default shape is the same for every owner without a
+		// row (the platform's limit defaults; only `owner` differs), so one
+		// read serves all of them — no per-owner fan-out.
+		const firstMissing = owners.find((o) => !stored.has(o.id));
+		const defaults = firstMissing
+			? await functionsApi.getPolicy(firstMissing.id).catch(() => null)
+			: null;
 		rows.value = owners
-			.map((o, i) => ({ owner: o.id, ownerLabel: o.label, policy: policies[i] }))
-			.filter((r): r is Row => r.policy !== null && r.policy !== undefined);
+			.map((o) => {
+				const policy =
+					stored.get(o.id) ?? (defaults ? { ...defaults, owner: o.id } : undefined);
+				return policy ? { owner: o.id, ownerLabel: o.label, policy } : null;
+			})
+			.filter((r): r is Row => r !== null);
 	} catch (err) {
 		console.error("Failed to load function policies", err);
 		rows.value = [];
@@ -48,6 +57,11 @@ async function load() {
 }
 
 onMounted(load);
+
+function formatDate(dateString?: string | null): string {
+	if (!dateString) return "—";
+	return new Date(dateString).toLocaleString();
+}
 
 function viewPolicy(row: Row) {
 	void router.push({
@@ -102,6 +116,9 @@ function signerLines(policy: PolicyResponse): string {
         </Column>
         <Column header="Concurrency Ceiling">
           <template #body="{ data }">{{ data.policy.ceilings.maxConcurrency }}</template>
+        </Column>
+        <Column header="Updated">
+          <template #body="{ data }">{{ formatDate(data.policy.updatedAt) }}</template>
         </Column>
         <Column header="">
           <template #body="{ data }">

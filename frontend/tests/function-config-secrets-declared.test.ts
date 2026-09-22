@@ -1,17 +1,22 @@
 // @vitest-environment jsdom
 /**
- * Gap 2 (docs/spec/function-ui.md §2.1, docs/functions.md §12): before a
- * function's first promote, the LIVE manifest has no declared keys at all —
- * the tab must derive them from the union of the live manifest and every
- * non-retired version's own manifest instead (`listVersions` + `getVersion`
- * per row, same call FunctionVersionsTab.vue makes on expand).
+ * Gap 2 (docs/spec/function-ui.md §2.1, docs/functions.md §12; fixed
+ * server-side by S1, function-context.md §1): before a function's first
+ * promote, the LIVE manifest has no declared keys at all — `declared` is now
+ * server-computed as the union of the live manifest's keys and the newest
+ * non-retired version's ("the candidate"), and `declaredBy` names, per key,
+ * which version(s) declared it. The tab no longer fans out `listVersions` +
+ * `getVersion` itself to compute this.
  *
- * - with no live version and one READY version whose manifest declares
- *   GREETING/API_KEY, the tab renders both keys (marked from that version)
- *   and the SETTINGS_MISSING banner (mutant: read only the live manifest —
- *   configRows/secretRows would be empty and this test's "GREETING"/
- *   "API_KEY"/banner assertions would fail; mutant: banner ignores the
- *   candidate — missingCount would be 0 and the banner assertion fails)
+ * - with no live version and `declaredBy` naming version 1 for GREETING/
+ *   API_KEY, the tab renders both keys and the SETTINGS_MISSING banner
+ *   (mutant: ignore `declaredBy`/`declared` from the response — the rows
+ *   would be empty and the GREETING/API_KEY/banner assertions fail)
+ * - a key declared only by a non-live version is tagged "declared by v<n>";
+ *   a key the live version itself declares is not (mutant: drop the
+ *   `liveVersion` comparison — GREETING, declared by live v1, would wrongly
+ *   grow a "declared by v1" tag too, and the presence/absence assertions
+ *   below would both fail)
  * - setting a value calls functionsApi.setConfig with the whole map
  * - the "Add key" row: a key typed there is sent (mutant: drop it from the
  *   request — the toHaveBeenCalledWith assertion below fails)
@@ -23,7 +28,7 @@ import { createPinia, setActivePinia, type Pinia } from "pinia";
 import PrimeVue from "primevue/config";
 import ConfirmationService from "primevue/confirmationservice";
 import { useAuthStore } from "@/stores/auth";
-import type { ConfigResponse, Manifest, SecretListResponse, VersionResponse } from "@/api/functions";
+import type { ConfigResponse, SecretListResponse } from "@/api/functions";
 
 if (typeof window !== "undefined" && !window.matchMedia) {
 	window.matchMedia = ((query: string) => ({
@@ -44,8 +49,6 @@ const mocks = vi.hoisted(() => ({
 	listSecrets: vi.fn(),
 	setSecret: vi.fn(),
 	deleteSecret: vi.fn(),
-	listVersions: vi.fn(),
-	getVersion: vi.fn(),
 }));
 
 vi.mock("@/api/functions", async (importOriginal) => {
@@ -59,52 +62,45 @@ vi.mock("@/api/functions", async (importOriginal) => {
 			listSecrets: mocks.listSecrets,
 			setSecret: mocks.setSecret,
 			deleteSecret: mocks.deleteSecret,
-			listVersions: mocks.listVersions,
-			getVersion: mocks.getVersion,
 		},
 	};
 });
 
-const noLiveConfig: ConfigResponse = { values: {}, declared: [], missing: [] };
-const noLiveSecrets: SecretListResponse = { keys: [], declared: [], missing: [] };
-
-const readyVersion: VersionResponse = {
-	id: "ver_1",
-	version: 1,
-	state: "READY",
-	digest: "sha256:aaaa",
-	artifactRef: "platform://store/1",
-	pool: "default",
-	warm: false,
-	publishedBy: "user_1",
-	publishedAt: "2026-09-01T00:00:00Z",
-	live: false,
+// No live version: `declared`/`declaredBy` come from the candidate (v1)
+// alone.
+const noLiveConfig: ConfigResponse = {
+	values: {},
+	declared: ["GREETING"],
+	missing: ["GREETING"],
+	declaredBy: [{ version: 1, keys: ["GREETING"] }],
+};
+const noLiveSecrets: SecretListResponse = {
+	keys: [],
+	declared: ["API_KEY"],
+	missing: ["API_KEY"],
+	declaredBy: [{ version: 1, keys: ["API_KEY"] }],
 };
 
-const readyManifest: Manifest = {
-	runtime: "jvm",
-	entrypoint: "io.flowcatalyst.example.hello.HelloFunction",
-	pool: "default",
-	warm: true,
-	limits: { maxDurationMs: 10000, maxConcurrency: 8 },
-	endpoints: [],
-	subscriptions: [],
-	schedules: [],
-	public: [],
-	config: ["GREETING"],
-	secrets: ["API_KEY"],
-	db: [],
-	httpAllow: [],
+// A live version (1) that declares GREETING, plus a candidate (2) that adds
+// EXTRA — the "declared by v2" tag scenario.
+const liveAndCandidateConfig: ConfigResponse = {
+	values: { GREETING: "hi" },
+	declared: ["GREETING", "EXTRA"],
+	missing: ["EXTRA"],
+	declaredBy: [
+		{ version: 1, keys: ["GREETING"] },
+		{ version: 2, keys: ["EXTRA"] },
+	],
 };
 
 let pinia: Pinia;
 
-async function mountTab() {
+async function mountTab(liveVersion?: number) {
 	const { default: FunctionConfigSecretsTab } = await import(
 		"@/pages/functions/FunctionConfigSecretsTab.vue"
 	);
 	const wrapper = mount(FunctionConfigSecretsTab, {
-		props: { address: "hello.default.hello" },
+		props: { address: "hello.default.hello", liveVersion },
 		global: {
 			plugins: [pinia, PrimeVue, ConfirmationService],
 			stubs: { Teleport: true },
@@ -114,7 +110,7 @@ async function mountTab() {
 	return wrapper;
 }
 
-describe("FunctionConfigSecretsTab — declared keys from the candidate version (gap 2)", () => {
+describe("FunctionConfigSecretsTab — declared keys from the server (gap 2 / S1)", () => {
 	beforeEach(() => {
 		pinia = createPinia();
 		setActivePinia(pinia);
@@ -134,32 +130,36 @@ describe("FunctionConfigSecretsTab — declared keys from the candidate version 
 		mocks.listSecrets.mockReset();
 		mocks.setSecret.mockReset();
 		mocks.deleteSecret.mockReset();
-		mocks.listVersions.mockReset();
-		mocks.getVersion.mockReset();
 
 		mocks.getConfig.mockResolvedValue(noLiveConfig);
 		mocks.listSecrets.mockResolvedValue(noLiveSecrets);
-		mocks.listVersions.mockResolvedValue([readyVersion]);
-		mocks.getVersion.mockResolvedValue({ ...readyVersion, manifest: readyManifest });
 	});
 
-	it("renders GREETING/API_KEY from the READY candidate and shows the SETTINGS_MISSING banner", async () => {
+	it("renders GREETING/API_KEY from `declared` and shows the SETTINGS_MISSING banner", async () => {
 		const wrapper = await mountTab();
-
-		expect(mocks.listVersions).toHaveBeenCalledWith("hello.default.hello");
-		expect(mocks.getVersion).toHaveBeenCalledWith("hello.default.hello", 1);
 
 		const text = wrapper.text();
 		expect(text).toContain("GREETING");
 		expect(text).toContain("API_KEY");
-		// Marked as coming from the candidate version, not "live" (no live
-		// version exists in this scenario).
-		expect(text).toContain("v1 (ready)");
 		expect(text).not.toContain("not declared");
 
-		// Both declared keys have no value/aren't set — SETTINGS_MISSING.
+		// Both declared keys have no value/aren't set — SETTINGS_MISSING,
+		// taken straight from the server's `missing` (config: 1 + secrets: 1).
 		expect(text).toContain("SETTINGS_MISSING");
 		expect(text).toContain("2 declared keys have no value");
+	});
+
+	it('tags a key declared only by a non-live version "declared by v<n>", and never a key the live version declares', async () => {
+		mocks.getConfig.mockResolvedValue(liveAndCandidateConfig);
+		mocks.listSecrets.mockResolvedValue({ keys: [], declared: [], missing: [], declaredBy: [] });
+
+		const wrapper = await mountTab(1);
+		const text = wrapper.text();
+
+		// EXTRA is declared only by the candidate (v2, not the live v1).
+		expect(text).toContain("declared by v2");
+		// GREETING is declared by the live version (1) — must not be tagged.
+		expect(text).not.toContain("declared by v1");
 	});
 
 	it("setting a config value calls setConfig with the whole map", async () => {
@@ -167,6 +167,7 @@ describe("FunctionConfigSecretsTab — declared keys from the candidate version 
 			values: { GREETING: "hi" },
 			declared: [],
 			missing: [],
+			declaredBy: [],
 		});
 		const wrapper = await mountTab();
 
@@ -193,6 +194,7 @@ describe("FunctionConfigSecretsTab — declared keys from the candidate version 
 			values: { EXTRA_KEY: "extra-value" },
 			declared: [],
 			missing: [],
+			declaredBy: [],
 		});
 		const wrapper = await mountTab();
 

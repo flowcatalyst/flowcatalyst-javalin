@@ -2,20 +2,16 @@
 // Domain detail drawer (docs/spec/function-ui.md §2.3): the TXT record,
 // Verify, Release.
 //
-// GET /api/function-domains has no single-hostname read — it is owner-
-// scoped only (`clientId` required). The list page therefore carries the
-// owner across navigation as a `?owner=` query param; a direct deep link
-// without it falls back to the current user's own scope ("platform" for an
-// anchor, their own client otherwise), which will not resolve a hostname
-// owned by someone else. Noted in the H3 report as a real API-doc gap.
+// `GET /api/function-domains/{hostname}` (S3) resolves by hostname alone —
+// reach-gated server-side — so a deep link needs no owner context carried
+// across navigation.
 import { computed, ref, watch } from "vue";
-import { useRoute } from "vue-router";
 import { toast } from "@/utils/errorBus";
 import { useConfirm } from "primevue/useconfirm";
 import { ApiError } from "@/api/client";
 import { functionsApi, type DomainResponse } from "@/api/functions";
 import { useAuthStore } from "@/stores/auth";
-import { userScope, userHasPermission } from "@/stores/permissions";
+import { userHasPermission } from "@/stores/permissions";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
 
@@ -23,11 +19,9 @@ const emit = defineEmits<{
 	changed: [];
 }>();
 
-const route = useRoute();
 const confirm = useConfirm();
 const authStore = useAuthStore();
 
-const isAnchor = computed(() => userScope(authStore.user) === "anchor");
 const canManage = computed(() =>
 	userHasPermission(authStore.user, "platform:function:domain:manage"),
 );
@@ -55,23 +49,13 @@ watch(
 	{ immediate: true },
 );
 
-function resolveOwner(): string {
-	const fromQuery = route.query["owner"];
-	if (typeof fromQuery === "string" && fromQuery) return fromQuery;
-	if (isAnchor.value) return "platform";
-	return authStore.user?.clientId ?? "platform";
-}
-
 async function load(h: string) {
 	loading.value = true;
 	loadError.value = null;
 	verifyError.value = null;
 	releaseError.value = null;
 	try {
-		const owner = resolveOwner();
-		const list = await functionsApi.listDomains(owner);
-		domain.value = list.find((d) => d.hostname === h) ?? null;
-		if (!domain.value) loadError.value = "Domain not found";
+		domain.value = await functionsApi.getDomain(h);
 	} catch {
 		domain.value = null;
 		loadError.value = "Domain not found";

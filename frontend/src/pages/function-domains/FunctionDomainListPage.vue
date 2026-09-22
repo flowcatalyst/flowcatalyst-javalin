@@ -61,7 +61,7 @@ onMounted(async () => {
 function viewDomain(d: DomainResponse) {
 	void router.push({
 		path: `/function-domains/${encodeURIComponent(d.hostname)}`,
-		query: { ...route.query, owner: d.owner },
+		query: route.query,
 	});
 }
 

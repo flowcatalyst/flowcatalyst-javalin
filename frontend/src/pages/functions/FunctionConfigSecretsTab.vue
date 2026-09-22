@@ -4,19 +4,14 @@
 // secret values are never returned by the API and must never appear back in
 // this component's DOM after a set (U7).
 //
-// Declared keys are the UNION of the LIVE manifest's declared keys (server-
-// computed, `GET .../config`/`.../secrets`'s `declared`) and every
-// non-RETIRED version's own manifest, fetched here via `listVersions` +
-// `getVersion` (the same call `FunctionVersionsTab.vue` makes on row
-// expand) — docs/functions.md §12's former gap 2: before a function's first
-// promote there is no live manifest at all, so the server's own `declared`
-// is always empty and the tab offered no way to set a key a fresh version
-// needs. `PromoteVersion.requireSettingsPresent` (function-context.md §1)
-// checks the CANDIDATE version being promoted, not the live one, so the
-// SETTINGS_MISSING banner is computed the same way here: from the newest
-// non-retired PUBLISHED/READY version's manifest, not only the live one's
-// (the server-side fix — exposing the candidate's declared keys directly —
-// is a separate, recommended follow-up; not done here, client-side only).
+// `declared`/`missing`/`declaredBy` are now fully server-computed
+// (function-context.md §1, S1): `declared` is the union of the live
+// manifest's keys and the newest non-retired version's (the CANDIDATE
+// `PromoteVersion.requireSettingsPresent` actually checks), and
+// `declaredBy` names, per key, which version(s) declared it — so this tab no
+// longer fans out `listVersions` + `getVersion` per version itself just to
+// compute the same union. A key declared only by a non-live version (i.e.
+// not by `liveVersion`) is flagged "declared by v<n>".
 import { computed, ref, watch } from "vue";
 import { toast } from "@/utils/errorBus";
 import { useConfirm } from "primevue/useconfirm";
@@ -24,15 +19,18 @@ import { ApiError } from "@/api/client";
 import {
 	functionsApi,
 	type ConfigResponse,
-	type Manifest,
 	type SecretListResponse,
-	type VersionResponse,
 } from "@/api/functions";
 import { useAuthStore } from "@/stores/auth";
 import { userHasPermission } from "@/stores/permissions";
 
 const props = defineProps<{
 	address: string;
+	/** The live version's number (`fn.live.version`), when there is one —
+	 * used only to decide whether a key's declaring version(s) include the
+	 * live one, so the "declared by v<n>" tag never fires for a key live
+	 * already declares. */
+	liveVersion?: number;
 }>();
 
 const authStore = useAuthStore();
@@ -53,18 +51,11 @@ const secretsLoading = ref(true);
 const secretsDisabledReason = ref<string | null>(null);
 const savingSecretKey = ref<string | null>(null);
 
-// Every non-retired version's manifest, fetched purely to compute the
-// declared-key union above (never rendered as a manifest viewer — that's
-// FunctionVersionsTab's job).
-const versions = ref<VersionResponse[]>([]);
-const versionManifests = ref<Record<number, Manifest | null>>({});
-const versionsLoading = ref(true);
-
 watch(
 	() => props.address,
 	async (addr) => {
 		if (!addr) return;
-		await Promise.all([loadConfig(addr), loadSecrets(addr), loadVersionManifests(addr)]);
+		await Promise.all([loadConfig(addr), loadSecrets(addr)]);
 	},
 	{ immediate: true },
 );
@@ -84,7 +75,7 @@ async function loadSecrets(addr: string) {
 	secretsLoading.value = true;
 	secretsDisabledReason.value = null;
 	try {
-		secrets.value = await functionsApi.listSecrets(addr, {
+		secrets.value = await functionsApi.listSecrets(addr, undefined, {
 			suppressGlobalErrorToast: true,
 		});
 	} catch (e) {
@@ -99,133 +90,91 @@ async function loadSecrets(addr: string) {
 	}
 }
 
-async function loadVersionManifests(addr: string) {
-	versionsLoading.value = true;
-	try {
-		const list = await functionsApi.listVersions(addr);
-		const nonRetired = list.filter((v) => v.state !== "RETIRED");
-		versions.value = nonRetired;
-		const entries = await Promise.all(
-			nonRetired.map(async (v): Promise<[number, Manifest | null]> => {
-				try {
-					const full = await functionsApi.getVersion(addr, v.version);
-					return [v.version, full.manifest ?? null];
-				} catch {
-					return [v.version, null];
-				}
-			}),
-		);
-		versionManifests.value = Object.fromEntries(entries);
-	} catch {
-		versions.value = [];
-		versionManifests.value = {};
-	} finally {
-		versionsLoading.value = false;
-	}
-}
-
-function versionLabel(v: VersionResponse): string {
-	return `v${v.version} (${v.state.toLowerCase()})`;
-}
-
-// The version promote will actually check (spec comment above): the newest
-// non-retired PUBLISHED/READY version by version number.
-const candidateVersion = computed<VersionResponse | null>(() => {
-	const eligible = versions.value.filter((v) => v.state === "PUBLISHED" || v.state === "READY");
-	if (eligible.length === 0) return null;
-	return [...eligible].sort((a, b) => b.version - a.version)[0]!;
-});
-
-const candidateManifest = computed<Manifest | null>(() => {
-	const v = candidateVersion.value;
-	if (!v) return null;
-	return versionManifests.value[v.version] ?? null;
-});
-
-/** key -> the sources that declare it ("live", "v2 (ready)", …), in the
- * order live, then versions oldest to newest — stable, readable output. */
-function declaredSources(
-	liveDeclared: string[] | undefined,
-	manifestKey: "config" | "secrets",
-): Map<string, string[]> {
-	const map = new Map<string, string[]>();
-	const add = (key: string, source: string) => {
-		const existing = map.get(key);
-		if (existing) existing.push(source);
-		else map.set(key, [source]);
-	};
-	for (const key of liveDeclared ?? []) add(key, "live");
-	for (const v of versions.value) {
-		const manifest = versionManifests.value[v.version];
-		for (const key of manifest?.[manifestKey] ?? []) add(key, versionLabel(v));
+/** key -> the version numbers whose manifest declares it, from the
+ * response's `declaredBy` (live first when it declares the key, since the
+ * server lists live's entry first — S1). */
+function declaredByVersions(
+	entries: { version: number; keys: string[] }[] | undefined,
+): Map<string, number[]> {
+	const map = new Map<string, number[]>();
+	for (const entry of entries ?? []) {
+		for (const key of entry.keys) {
+			const existing = map.get(key);
+			if (existing) existing.push(entry.version);
+			else map.set(key, [entry.version]);
+		}
 	}
 	return map;
 }
 
-const configDeclaredSources = computed(() => declaredSources(config.value?.declared, "config"));
-const secretsDeclaredSources = computed(() => declaredSources(secrets.value?.declared, "secrets"));
+const configDeclaredBy = computed(() => declaredByVersions(config.value?.declaredBy));
+const secretsDeclaredBy = computed(() => declaredByVersions(secrets.value?.declaredBy));
+
+/** The highest declaring version to flag with "declared by v<n>", or null
+ * when the key isn't declared at all, or IS declared by the live version
+ * (nothing to flag — it's already live). */
+function nonLiveDeclaringVersion(declaredBy: number[], liveVersion: number | undefined): number | null {
+	if (declaredBy.length === 0) return null;
+	if (liveVersion !== undefined && declaredBy.includes(liveVersion)) return null;
+	return Math.max(...declaredBy);
+}
 
 interface ConfigRow {
 	key: string;
 	value: string | undefined;
-	sources: string[];
+	declaredBy: number[];
+	declaredByTag: number | null;
 }
 
 const configRows = computed<ConfigRow[]>(() => {
-	const sources = configDeclaredSources.value;
+	const declaredBy = configDeclaredBy.value;
 	const values = config.value?.values ?? {};
-	const keys = new Set<string>([...sources.keys(), ...Object.keys(values)]);
-	return [...keys].sort().map((key) => ({
-		key,
-		value: values[key],
-		sources: sources.get(key) ?? [],
-	}));
+	const keys = new Set<string>([...declaredBy.keys(), ...Object.keys(values)]);
+	return [...keys].sort().map((key) => {
+		const versions = declaredBy.get(key) ?? [];
+		return {
+			key,
+			value: values[key],
+			declaredBy: versions,
+			declaredByTag: nonLiveDeclaringVersion(versions, props.liveVersion),
+		};
+	});
 });
 
 interface SecretRow {
 	key: string;
 	isSet: boolean;
-	sources: string[];
+	declaredBy: number[];
+	declaredByTag: number | null;
 	updatedAt?: string;
 	updatedBy?: string;
 }
 
 const secretRows = computed<SecretRow[]>(() => {
-	const sources = secretsDeclaredSources.value;
+	const declaredBy = secretsDeclaredBy.value;
 	const byKey = new Map((secrets.value?.keys ?? []).map((k) => [k.key, k]));
-	const keys = new Set<string>([...sources.keys(), ...byKey.keys()]);
+	const keys = new Set<string>([...declaredBy.keys(), ...byKey.keys()]);
 	return [...keys].sort().map((key) => {
 		const entry = byKey.get(key);
+		const versions = declaredBy.get(key) ?? [];
 		return {
 			key,
 			isSet: !!entry,
-			sources: sources.get(key) ?? [],
+			declaredBy: versions,
+			declaredByTag: nonLiveDeclaringVersion(versions, props.liveVersion),
 			updatedAt: entry?.updatedAt,
 			updatedBy: entry?.updatedBy,
 		};
 	});
 });
 
-// SETTINGS_MISSING (spec §2.1): a declared key with no value — computed
-// from the union of the live manifest's OWN `missing` (server-computed) and
-// the CANDIDATE version's declared keys that have no value/aren't set,
-// since that is what an actual promote call checks (comment at file top).
+// SETTINGS_MISSING (spec §2.1): a declared key with no value — now fully
+// server-computed (S1: `missing` already accounts for the candidate
+// version, not only live).
 const missingCount = computed(() => {
-	const configMissing = new Set<string>(config.value?.missing ?? []);
-	const secretsMissing = new Set<string>(secrets.value?.missing ?? []);
-
-	const candidate = candidateManifest.value;
-	if (candidate) {
-		const values = config.value?.values ?? {};
-		for (const key of candidate.config) {
-			if (values[key] === undefined) configMissing.add(key);
-		}
-		const setSecretKeys = new Set((secrets.value?.keys ?? []).map((k) => k.key));
-		for (const key of candidate.secrets) {
-			if (!setSecretKeys.has(key)) secretsMissing.add(key);
-		}
-	}
-	return configMissing.size + secretsMissing.size;
+	const configMissing = config.value?.missing?.length ?? 0;
+	const secretsMissing = secrets.value?.missing?.length ?? 0;
+	return configMissing + secretsMissing;
 });
 
 // Config inline edit
@@ -385,10 +334,10 @@ async function deleteSecret(key: string) {
     </Message>
 
     <FcFormSection title="Config" flat>
-      <ProgressSpinner v-if="configLoading || versionsLoading" style="width: 24px; height: 24px" />
+      <ProgressSpinner v-if="configLoading" style="width: 24px; height: 24px" />
       <template v-else>
         <p v-if="configRows.length === 0" class="empty-hint">
-          No config keys declared by the live manifest or any published/ready version yet.
+          No config keys declared by the live manifest or the candidate version yet.
         </p>
         <table v-else class="kv-table">
           <thead>
@@ -402,8 +351,14 @@ async function deleteSecret(key: string) {
             <tr v-for="row in configRows" :key="row.key">
               <td>
                 <code>{{ row.key }}</code>
-                <Tag v-if="row.sources.length === 0" value="not declared" severity="warn" class="flag-tag" />
-                <span v-else class="source-tags">{{ row.sources.join(", ") }}</span>
+                <Tag v-if="row.declaredBy.length === 0" value="not declared" severity="warn" class="flag-tag" />
+                <Tag
+                  v-else-if="row.declaredByTag !== null"
+                  :value="`declared by v${row.declaredByTag}`"
+                  severity="info"
+                  class="flag-tag"
+                  data-testid="declared-by-tag"
+                />
               </td>
               <td>
                 <template v-if="editingConfigKey === row.key">
@@ -468,10 +423,10 @@ async function deleteSecret(key: string) {
         Secrets management is unavailable: {{ secretsDisabledReason }}
       </Message>
       <template v-else>
-        <ProgressSpinner v-if="secretsLoading || versionsLoading" style="width: 24px; height: 24px" />
+        <ProgressSpinner v-if="secretsLoading" style="width: 24px; height: 24px" />
         <template v-else>
           <p v-if="secretRows.length === 0" class="empty-hint">
-            No secret keys declared by the live manifest or any published/ready version yet.
+            No secret keys declared by the live manifest or the candidate version yet.
           </p>
           <table v-else class="kv-table">
             <thead>
@@ -485,8 +440,14 @@ async function deleteSecret(key: string) {
               <tr v-for="row in secretRows" :key="row.key">
                 <td>
                   <code>{{ row.key }}</code>
-                  <Tag v-if="row.sources.length === 0" value="not declared" severity="warn" class="flag-tag" />
-                  <span v-else class="source-tags">{{ row.sources.join(", ") }}</span>
+                  <Tag v-if="row.declaredBy.length === 0" value="not declared" severity="warn" class="flag-tag" />
+                  <Tag
+                    v-else-if="row.declaredByTag !== null"
+                    :value="`declared by v${row.declaredByTag}`"
+                    severity="info"
+                    class="flag-tag"
+                    data-testid="declared-by-tag"
+                  />
                 </td>
                 <td>
                   <template v-if="editingSecretKey === row.key">
@@ -600,12 +561,6 @@ async function deleteSecret(key: string) {
 
 .flag-tag {
   margin-left: 6px;
-}
-
-.source-tags {
-  margin-left: 8px;
-  font-size: 11px;
-  color: #64748b;
 }
 
 .unset {

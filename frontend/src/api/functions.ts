@@ -9,6 +9,7 @@ import type {
 	FunctionResponse,
 	FunctionRouteResponse,
 	Manifest,
+	PolicyListResponse,
 	PolicyResponse,
 	PolicySignerRequest,
 	PoolSummaryResponse,
@@ -42,6 +43,7 @@ export type {
 	FunctionResponse,
 	FunctionRouteResponse,
 	Manifest,
+	PolicyListResponse,
 	PolicyResponse,
 	PolicySignerRequest,
 	PoolSummaryResponse,
@@ -180,18 +182,26 @@ export const functionsApi = {
 		);
 	},
 
-	getConfig(address: string): Promise<ConfigResponse> {
-		return apiFetch(`/functions/${encodeURIComponent(address)}/config`);
+	getConfig(address: string, version?: number): Promise<ConfigResponse> {
+		const query = version !== undefined ? `?version=${version}` : "";
+		return apiFetch(
+			`/functions/${encodeURIComponent(address)}/config${query}`,
+		);
 	},
 
 	setConfig(
 		address: string,
 		data: SetConfigRequest,
+		version?: number,
 	): Promise<ConfigResponse> {
-		return apiFetch(`/functions/${encodeURIComponent(address)}/config`, {
-			method: "PUT",
-			body: JSON.stringify(data),
-		});
+		const query = version !== undefined ? `?version=${version}` : "";
+		return apiFetch(
+			`/functions/${encodeURIComponent(address)}/config${query}`,
+			{
+				method: "PUT",
+				body: JSON.stringify(data),
+			},
+		);
 	},
 
 	/**
@@ -202,10 +212,12 @@ export const functionsApi = {
 	 */
 	listSecrets(
 		address: string,
+		version?: number,
 		options?: FetchOptions,
 	): Promise<SecretListResponse> {
+		const query = version !== undefined ? `?version=${version}` : "";
 		return apiFetch(
-			`/functions/${encodeURIComponent(address)}/secrets`,
+			`/functions/${encodeURIComponent(address)}/secrets${query}`,
 			options,
 		);
 	},
@@ -234,6 +246,10 @@ export const functionsApi = {
 		);
 	},
 
+	listPolicies(): Promise<PolicyListResponse> {
+		return apiFetch("/function-policies");
+	},
+
 	getPolicy(owner: string): Promise<PolicyResponse> {
 		return apiFetch(`/function-policies/${encodeURIComponent(owner)}`);
 	},
@@ -259,6 +275,10 @@ export const functionsApi = {
 	listDomains(clientId: string): Promise<DomainResponse[]> {
 		const params = new URLSearchParams({ clientId });
 		return apiFetch(`/function-domains?${params.toString()}`);
+	},
+
+	getDomain(hostname: string): Promise<DomainResponse> {
+		return apiFetch(`/function-domains/${encodeURIComponent(hostname)}`);
 	},
 
 	verifyDomain(hostname: string): Promise<DomainResponse> {

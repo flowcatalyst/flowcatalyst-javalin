@@ -359,7 +359,7 @@ function heartbeatAge(dateString?: string | null): string {
           </TabPanel>
 
           <TabPanel value="config">
-            <FunctionConfigSecretsTab :address="fn.address" />
+            <FunctionConfigSecretsTab :address="fn.address" :live-version="fn.live?.version" />
           </TabPanel>
 
           <TabPanel value="routes">

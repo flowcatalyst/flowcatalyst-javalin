@@ -309,12 +309,21 @@ export type PoolSummaryResponse = {
     hosts: number;
 };
 
+/**
+ * One manifest that contributed to `declared`/`missing`: `keys` is that manifest's own full key list, not only the keys it added beyond another entry.
+ */
+export type DeclaredByEntry = {
+    version: number;
+    keys: Array<string>;
+};
+
 export type ConfigResponse = {
     values: {
         [key: string]: string;
     };
     declared: Array<string>;
     missing: Array<string>;
+    declaredBy: Array<DeclaredByEntry>;
 };
 
 export type SetConfigRequest = {
@@ -333,6 +342,7 @@ export type SecretListResponse = {
     keys: Array<SecretKeyResponse>;
     declared: Array<string>;
     missing: Array<string>;
+    declaredBy: Array<DeclaredByEntry>;
 };
 
 export type SetSecretRequest = {
@@ -375,6 +385,14 @@ export type PolicyResponse = {
     signers: Array<PolicySignerResponse>;
     ceilings: PolicyCeilingsResponse;
     stored: boolean;
+    /**
+     * absent on the effective-default shape, which has no stored row
+     */
+    updatedAt?: string;
+};
+
+export type PolicyListResponse = {
+    policies: Array<PolicyResponse>;
 };
 
 export type ClaimRequest = {
@@ -796,7 +814,7 @@ export type PublishFunctionVersionData = {
 
 export type PublishFunctionVersionErrors = {
     /**
-     * ARTIFACT_REF_REQUIRED, MANIFEST_REQUIRED, ENDPOINT_INVALID
+     * ARTIFACT_REF_REQUIRED, ARTIFACT_REF_INVALID, DIGEST_INVALID, MANIFEST_REQUIRED, MANIFEST_UNKNOWN_FIELD, MANIFEST_INVALID, RUNTIME_INVALID, RUNTIME_MISMATCH, ENTRYPOINT_REQUIRED, ENTRYPOINT_INVALID, POOL_INVALID, LIMIT_INVALID, LIMIT_OVER_CEILING, LIMIT_NOT_APPLICABLE, ENDPOINT_INVALID, ENDPOINT_AUTH_REQUIRED, ROUTE_AMBIGUOUS, SUBSCRIPTION_INVALID, SUBSCRIPTION_DUPLICATE, SUBSCRIPTION_PATH_NOT_WEBHOOK, SCHEDULE_INVALID, SCHEDULE_DUPLICATE, SCHEDULE_PATH_NOT_WEBHOOK, PUBLIC_ROUTE_INVALID, PUBLIC_ROUTE_DUPLICATE, DB_INVALID, CONFIG_INVALID, SIGNATURE_REQUIRED, SIGNATURE_REJECTED
      */
     400: ErrorResponse;
     /**
@@ -1062,17 +1080,26 @@ export type GetFunctionConfigData = {
          */
         address: string;
     };
-    query?: never;
+    query?: {
+        /**
+         * the version whose declared keys join the live manifest's; absent defaults to the newest non-retired version
+         */
+        version?: number;
+    };
     url: '/api/functions/{address}/config';
 };
 
 export type GetFunctionConfigErrors = {
     /**
+     * VERSION_INVALID
+     */
+    400: ErrorResponse;
+    /**
      * PERMISSION_REQUIRED
      */
     403: ErrorResponse;
     /**
-     * Function_NOT_FOUND
+     * Function_NOT_FOUND, FunctionVersion_NOT_FOUND
      */
     404: ErrorResponse;
 };
@@ -1096,13 +1123,18 @@ export type SetFunctionConfigData = {
          */
         address: string;
     };
-    query?: never;
+    query?: {
+        /**
+         * the version whose declared keys join the live manifest's in the response; absent defaults to the newest non-retired version
+         */
+        version?: number;
+    };
     url: '/api/functions/{address}/config';
 };
 
 export type SetFunctionConfigErrors = {
     /**
-     * SETTING_KEY_INVALID, SETTING_TOO_LARGE
+     * SETTING_KEY_INVALID, SETTING_TOO_LARGE, VERSION_INVALID
      */
     400: ErrorResponse;
     /**
@@ -1110,7 +1142,7 @@ export type SetFunctionConfigErrors = {
      */
     403: ErrorResponse;
     /**
-     * Function_NOT_FOUND
+     * Function_NOT_FOUND, FunctionVersion_NOT_FOUND
      */
     404: ErrorResponse;
 };
@@ -1134,17 +1166,26 @@ export type ListFunctionSecretsData = {
          */
         address: string;
     };
-    query?: never;
+    query?: {
+        /**
+         * the version whose declared keys join the live manifest's; absent defaults to the newest non-retired version
+         */
+        version?: number;
+    };
     url: '/api/functions/{address}/secrets';
 };
 
 export type ListFunctionSecretsErrors = {
     /**
+     * VERSION_INVALID
+     */
+    400: ErrorResponse;
+    /**
      * PERMISSION_REQUIRED
      */
     403: ErrorResponse;
     /**
-     * Function_NOT_FOUND
+     * Function_NOT_FOUND, FunctionVersion_NOT_FOUND
      */
     404: ErrorResponse;
     /**
@@ -1251,6 +1292,31 @@ export type SetFunctionSecretResponses = {
 };
 
 export type SetFunctionSecretResponse = SetFunctionSecretResponses[keyof SetFunctionSecretResponses];
+
+export type ListFunctionPoliciesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/function-policies';
+};
+
+export type ListFunctionPoliciesErrors = {
+    /**
+     * PERMISSION_REQUIRED
+     */
+    403: ErrorResponse;
+};
+
+export type ListFunctionPoliciesError = ListFunctionPoliciesErrors[keyof ListFunctionPoliciesErrors];
+
+export type ListFunctionPoliciesResponses = {
+    /**
+     * The stored policies, platform first then client ids ascending
+     */
+    200: PolicyListResponse;
+};
+
+export type ListFunctionPoliciesResponse = ListFunctionPoliciesResponses[keyof ListFunctionPoliciesResponses];
 
 export type GetFunctionPolicyData = {
     body?: never;
@@ -1466,6 +1532,44 @@ export type ReleaseFunctionDomainResponses = {
 };
 
 export type ReleaseFunctionDomainResponse = ReleaseFunctionDomainResponses[keyof ReleaseFunctionDomainResponses];
+
+export type GetFunctionDomainData = {
+    body?: never;
+    path: {
+        /**
+         * the claimed hostname
+         */
+        hostname: string;
+    };
+    query?: never;
+    url: '/api/function-domains/{hostname}';
+};
+
+export type GetFunctionDomainErrors = {
+    /**
+     * HOSTNAME_INVALID
+     */
+    400: ErrorResponse;
+    /**
+     * PERMISSION_REQUIRED
+     */
+    403: ErrorResponse;
+    /**
+     * FunctionDomain_NOT_FOUND
+     */
+    404: ErrorResponse;
+};
+
+export type GetFunctionDomainError = GetFunctionDomainErrors[keyof GetFunctionDomainErrors];
+
+export type GetFunctionDomainResponses = {
+    /**
+     * The domain
+     */
+    200: DomainResponse;
+};
+
+export type GetFunctionDomainResponse = GetFunctionDomainResponses[keyof GetFunctionDomainResponses];
 
 export type ListFunctionRoutesData = {
     body?: never;
