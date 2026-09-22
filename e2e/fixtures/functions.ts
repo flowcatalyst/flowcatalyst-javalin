@@ -142,7 +142,8 @@ export async function setConfigAndSecretViaUi(
     await page.getByTestId("add-config-value-input").fill(greeting);
     await page.getByTestId("add-config-key-button").click();
     const configRes = await configResponse;
-    expect(configRes.ok(), await configRes.text()).toBe(true);
+    const configResBody = await configRes.text().catch(() => "<body discarded by the browser after navigation>");
+expect(configRes.ok(), configResBody).toBe(true);
 
     const secretResponse = page.waitForResponse(
         (r) =>
@@ -153,7 +154,8 @@ export async function setConfigAndSecretViaUi(
     await page.getByTestId("add-secret-value-input").fill(apiKey);
     await page.getByTestId("add-secret-key-button").click();
     const secretRes = await secretResponse;
-    expect(secretRes.ok(), await secretRes.text()).toBe(true);
+    const secretResBody = await secretRes.text().catch(() => "<body discarded by the browser after navigation>");
+expect(secretRes.ok(), secretResBody).toBe(true);
 }
 
 /// Polls (bounded by `timeoutMs`, derived by the caller from the runner's
@@ -173,7 +175,10 @@ export async function waitForVersionState(
     await expect(async () => {
         await page.reload();
         await page.getByRole("tab", { name: "Versions", exact: true }).click();
-        const row = page.locator("tr", { hasText: `v${version}` });
+        // Scoped to the versions table: the Config & Secrets tab also names
+        // versions ("v1 (ready)") in its source column, and the drawer keeps
+        // inactive tab panels mounted.
+        const row = page.locator(".versions-tab tr", { hasText: `v${version}` });
         await expect(row.getByText(state, { exact: true })).toBeVisible();
     }).toPass({ timeout: timeoutMs, intervals: [1000, 2000, 3000, 5000] });
 }

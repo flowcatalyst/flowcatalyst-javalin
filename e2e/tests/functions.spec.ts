@@ -165,11 +165,12 @@ test.describe("functions", () => {
         );
         await page.getByTestId("publish-submit").click();
         const publishRes = await publishResponse;
-        expect(publishRes.ok(), await publishRes.text()).toBe(true);
-        const published = (await publishRes.json()) as { version: number };
+        const publishResBody = await publishRes.text().catch(() => "<body discarded by the browser after navigation>");
+expect(publishRes.ok(), publishResBody).toBe(true);
+        const published = JSON.parse(publishResBody) as { version: number };
         expect(published.version).toBeGreaterThan(0);
 
-        await expect(page.locator("tr", { hasText: `v${published.version}` })).toBeVisible();
+        await expect(page.locator(".versions-tab tr", { hasText: `v${published.version}` })).toBeVisible();
 
         // ── 5. Config & secrets: GREETING / API_KEY through the real Config &
         // Secrets tab's "Add key" rows (Gap 2, closed — fixtures/functions.ts's
@@ -183,7 +184,7 @@ test.describe("functions", () => {
         await waitForVersionState(page, published.version, "READY", pollBudgetMs);
 
         await confirmedAction(page, "Promote", "Promote Version", "Promote");
-        await expect(page.locator("tr", { hasText: `v${published.version}` }).getByText("LIVE")).toBeVisible();
+        await expect(page.locator(".versions-tab tr", { hasText: `v${published.version}` }).getByText("LIVE")).toBeVisible();
 
         // ── Hosts panel (Overview tab) shows LOADED after reload. ───────────
         await waitForHostState(page, published.version, "LOADED", pollBudgetMs);
