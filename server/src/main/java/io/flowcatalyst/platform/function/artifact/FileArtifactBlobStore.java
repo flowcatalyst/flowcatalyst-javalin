@@ -19,6 +19,11 @@ public final class FileArtifactBlobStore implements ArtifactBlobStore {
 
     private final Path dir;
 
+    /// The directory this store writes under — what `FC_FN_ARTIFACT_STORE` resolved to.
+    public Path root() {
+        return dir;
+    }
+
     public FileArtifactBlobStore(Path dir) {
         this.dir = Objects.requireNonNull(dir, "dir");
         try {

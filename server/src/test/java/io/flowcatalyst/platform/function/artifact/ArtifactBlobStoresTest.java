@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.function.artifact;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
 
@@ -25,6 +26,24 @@ class ArtifactBlobStoresTest {
         Optional<ArtifactBlobStore> store = ArtifactBlobStores.configure("file://" + dir);
         assertThat(store).isPresent();
         assertThat(store.get()).isInstanceOf(FileArtifactBlobStore.class);
+    }
+
+    /// The value as an operator types it, and as `Path#toUri` writes it: a path
+    /// with a space — macOS's `~/Library/Application Support/…` is fcdev's own
+    /// default state directory — is accepted literally and percent-encoded, and
+    /// both name the same directory. `new URI("file:///…/Application Support/…")`
+    /// refused it and fcdev could not start on a Mac.
+    @Test
+    void aFilePathWithASpaceIsAcceptedLiterallyAndPercentEncoded(@TempDir Path base) throws Exception {
+        Path dir = Files.createDirectories(base.resolve("Application Support").resolve("fn-artifacts"));
+
+        Optional<ArtifactBlobStore> literal = ArtifactBlobStores.configure("file://" + dir);
+        Optional<ArtifactBlobStore> encoded = ArtifactBlobStores.configure(dir.toUri().toString());
+
+        assertThat(literal).isPresent();
+        assertThat(encoded).isPresent();
+        assertThat(((FileArtifactBlobStore) literal.get()).root()).isEqualTo(dir);
+        assertThat(((FileArtifactBlobStore) encoded.get()).root()).isEqualTo(dir);
     }
 
     /// U8: an unrecognised scheme fails startup naming the variable, rather

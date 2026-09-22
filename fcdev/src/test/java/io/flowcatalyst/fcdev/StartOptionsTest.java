@@ -140,7 +140,22 @@ class StartOptionsTest {
     void devEnvDefaultsTheArtifactStoreToStateFnArtifacts() {
         var o = new StartOptions(DevEnv.of(Map.of()), PATHS);
         var env = StartCommand.devEnv(DevEnv.of(Map.of()).mutable(), o, "postgresql://x@y/z", PATHS);
-        assertThat(env.fnArtifactStore()).isEqualTo("file://" + PATHS.fnArtifactsDir());
+        assertThat(env.fnArtifactStore()).isEqualTo(PATHS.fnArtifactsDir().toUri().toString());
+    }
+
+    /// macOS's state directory has a space in it (`~/Library/Application
+    /// Support`); the default must still be a value the platform accepts —
+    /// `"file://" + path` was not, and fcdev could not start on a Mac.
+    @Test
+    void devEnvDefaultArtifactStoreSurvivesASpaceInTheStateDirectory(@org.junit.jupiter.api.io.TempDir java.nio.file.Path home) {
+        // A real directory with a space, as macOS's ~/Library/Application Support has.
+        java.nio.file.Path data = home.resolve("Application Support").resolve("flowcatalyst");
+        DevPaths spaced = new DevPaths(data, home.resolve("cache"));
+        var o = new StartOptions(DevEnv.of(Map.of()), spaced);
+        var env = StartCommand.devEnv(DevEnv.of(Map.of()).mutable(), o, "postgresql://x@y/z", spaced);
+        assertThat(spaced.fnArtifactsDir().toString()).contains("Application Support");
+        assertThat(io.flowcatalyst.platform.function.artifact.ArtifactBlobStores.configure(env.fnArtifactStore()))
+                .as("the platform accepts fcdev's own default").isPresent();
     }
 
     /// An operator who already pointed `FC_FN_ARTIFACT_STORE` elsewhere (a

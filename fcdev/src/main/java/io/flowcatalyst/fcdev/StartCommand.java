@@ -329,7 +329,10 @@ public final class StartCommand implements Callable<Integer> {
         // directly, now the platform's own upload/download routes own it.
         // setDefault, not set: an operator who already pointed FC_FN_ARTIFACT_STORE
         // elsewhere (a real S3 bucket, say) keeps that value.
-        dev.setDefault("FC_FN_ARTIFACT_STORE", "file://" + paths.fnArtifactsDir());
+        // Path#toUri, not "file://" + path: the default state directory on macOS is
+        // `~/Library/Application Support/…`, and a space is not a URI character —
+        // string concatenation produced a value the platform refused at startup.
+        dev.setDefault("FC_FN_ARTIFACT_STORE", paths.fnArtifactsDir().toUri().toString());
         // `docs/spec/function-developer-surface.md` §1: the PLATFORM's own
         // function-publish settings — signature verification off (dev mode is
         // already on) and the pool-URL template pointed at fcdev's own

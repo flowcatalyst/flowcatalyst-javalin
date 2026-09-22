@@ -48,13 +48,20 @@ public final class ArtifactBlobStores {
                 "FC_FN_ARTIFACT_STORE must be file:///abs/dir or s3://bucket[/prefix], got: " + spec);
     }
 
+    /// `file:///abs/dir`, read as an operator writes it: a path typed straight
+    /// into the variable may hold a space (`…/Application Support/…`), which is
+    /// not a URI character, so the path is taken from the string and decoded
+    /// leniently rather than parsed by `new URI` — that refused fcdev's own
+    /// default on macOS. A percent-encoded form (`Path#toUri`) decodes the same.
     private static Path fileDir(String spec) {
-        URI uri = parse(spec);
-        if (uri.getHost() != null && !uri.getHost().isEmpty()) {
+        String rest = spec.substring(FILE_PREFIX.length());
+        int slash = rest.indexOf('/');
+        String host = slash < 0 ? rest : rest.substring(0, slash);
+        if (!host.isEmpty()) {
             throw new IllegalStateException("FC_FN_ARTIFACT_STORE file:// must not carry a host: " + spec);
         }
-        String path = uri.getPath();
-        if (path == null || !path.startsWith("/")) {
+        String path = slash < 0 ? "" : java.net.URLDecoder.decode(rest.substring(slash).replace("+", "%2B"), java.nio.charset.StandardCharsets.UTF_8);
+        if (path.isEmpty() || !path.startsWith("/")) {
             throw new IllegalStateException("FC_FN_ARTIFACT_STORE file:// must be an absolute path: " + spec);
         }
         return Path.of(path);
