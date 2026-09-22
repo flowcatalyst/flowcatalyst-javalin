@@ -1659,3 +1659,28 @@ function's first promote the routes say nothing is declared while promote refuse
 `listVersions` + one `getVersion` per version on every tab load. Fix on the server: an optional
 `?version=` on both routes, or `declared` computed over live ∪ newest PUBLISHED/READY, and
 `missing` against the candidate. Then the SPA drops its N+1.
+
+## Function domains: zone claims and alias prefixes (owner rulings 2026-09-22, queued after the backlog above)
+
+Owner wants subdomain-per-app URLs (`myapp.mybusinessdomain.com`) and preview hostnames per alias.
+Ruled:
+
+1. **Zone claims.** A claim names a zone (`mybusinessdomain.com`), verified once by a TXT record
+   at the zone; every hostname under it belongs to the claimant. Route entries name any hostname in
+   a zone the owner holds. Whether the exact-hostname claim survives beside it (the `.localhost`
+   dev case) is a design choice for the spec, not a ruling.
+2. **Alias prefixes, opt-in per route.** A public route lists the alias prefixes it accepts
+   (`"aliasPrefixes": ["qa", "staging"]`); with none listed the hostname matches exactly and
+   nothing else. With prefixes, `qa-myapp.mybusinessdomain.com` serves the `qa` alias's version of
+   the function that owns `myapp.mybusinessdomain.com`; a prefix without a matching alias is 404;
+   an exact claim always wins over a prefix match.
+3. **Aliases are HTTP-only.** Subscriptions, schedules and the dispatch pool stay bound to `live`;
+   a prefixed hostname is a preview environment for HTTP traffic.
+
+Also queued with it, the manifest authoring aids: a JSON Schema for `manifest.json` served by the
+platform and committed, a validate/dry-run route returning the promote plan, an SPA form that edits,
+validates and exports the manifest (and publishes with it), and `fcdev fn init`. The manifest file
+stays the source of truth; the UI is an editor.
+
+Production side (owner, IaC): a wildcard certificate and a `*.mybusinessdomain.com` rule to the
+function hosts.
