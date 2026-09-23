@@ -6,6 +6,21 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## Package J landed: zone claims, named aliases, alias-prefixed hostnames (2026-09-23)
+
+On `main`: J1 `bc1be581` (a claim covers its zone; claims never nest; verify/release/publish resolve
+through the covering claim — and verify now reads the zone's TXT, not the caller's hostname's),
+J2 `f8269fba` (any alias name, READY-gated, HTTP-only; `DELETE` alias with `live` protected; retire
+refuses an aliased version; `fn promote --alias`, `fn alias`; SPA promote dialog + aliases table —
+and `ALIAS_UNCHANGED` no longer compares every alias against live), J3 `f7c453a8` (manifest
+`aliasPrefixes`, `fn_routes` V15, desired state `role: alias`, host derives `qa-myapp.zone` → alias
+`qa` through the pinned loader, exact hostname always wins), J4 `6a16efe8` (e2e through the UI;
+Promote enabled on the live row). Spec `docs/spec/function-zones-and-aliases.md`. Server 5183 ·
+function-host 353 · fcdev 225 · SPA 45 · e2e 54/54 on the rebuilt jar. Production needs a wildcard
+certificate and a `*.zone` LB rule (owner IaC, `docs/deployments.md`).
+
+Next candidates: the pool-ownership rule for client-owned functions; the manifest authoring aids.
+
 ## Function backlog units S/F/U landed; zone claims and alias prefixes ruled (2026-09-22, evening)
 
 On `main` (`82f91318` server, `8ff9270f` fcdev, `512101b2` + `0e253d55` SPA), spec
