@@ -303,13 +303,6 @@ export const functionsApi = {
 		return apiFetch(`/function-domains/${encodeURIComponent(hostname)}`);
 	},
 
-	verifyDomain(hostname: string): Promise<DomainResponse> {
-		return apiFetch(
-			`/function-domains/${encodeURIComponent(hostname)}/verify`,
-			{ method: "POST" },
-		);
-	},
-
 	releaseDomain(hostname: string): Promise<void> {
 		return apiFetch(`/function-domains/${encodeURIComponent(hostname)}`, {
 			method: "DELETE",

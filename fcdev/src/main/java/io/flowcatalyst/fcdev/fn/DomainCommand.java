@@ -13,12 +13,13 @@ import tools.jackson.databind.node.ObjectNode;
 
 import java.util.concurrent.Callable;
 
-/// `fn domain claim|verify|list|release` (`docs/spec/function-public-routes.md`
-/// §1, §5): the `/api/function-domains` surface, thin over [FnClient] — same
-/// convention as [ConfigCommand]/[VersionsCommand].
-@Command(name = "domain", description = "Manage public hostnames: claim, verify, list, release",
-        subcommands = {DomainCommand.Claim.class, DomainCommand.Verify.class, DomainCommand.List.class,
-                DomainCommand.Release.class})
+/// `fn domain claim|list|release` (`docs/spec/function-public-routes.md`
+/// §1, §5, amended `docs/spec/function-domains-no-dns.md`): the
+/// `/api/function-domains` surface, thin over [FnClient] — same convention
+/// as [ConfigCommand]/[VersionsCommand]. A claim is verified by being made —
+/// there is no `verify` subcommand.
+@Command(name = "domain", description = "Manage public hostnames: claim, list, release",
+        subcommands = {DomainCommand.Claim.class, DomainCommand.List.class, DomainCommand.Release.class})
 public final class DomainCommand implements Callable<Integer> {
 
     @Option(names = {"-h", "--help"}, usageHelp = true, description = "show this help and exit")
@@ -33,12 +34,9 @@ public final class DomainCommand implements Callable<Integer> {
         return 0;
     }
 
-    /// `fn domain claim <hostname> [--client <id>]`: prints the TXT record
-    /// to create (name + value) EXACTLY as the platform returned it (spec
-    /// §1: "prints the TXT record to create... exactly as the platform
-    /// returned it") — never reconstructed client-side, so a wire-shape
-    /// change can never silently drift from what the platform actually
-    /// expects to see resolved. A claim is a ZONE (spec
+    /// `fn domain claim <hostname> [--client <id>]`: a claim is immediately
+    /// usable (spec `function-domains-no-dns.md`: "a claim is verified by
+    /// being made") — no TXT record to create. A claim is a ZONE (spec
     /// `function-zones-and-aliases.md` §1): it covers every hostname under
     /// it, not just the exact hostname given.
     @Command(name = "claim", description = "Claim a domain — covers every hostname under it", sortOptions = false)
@@ -77,46 +75,7 @@ public final class DomainCommand implements Callable<Integer> {
                 out.println(Json.write(d));
                 return;
             }
-            out.printf("%s  %s  owner=%s%n", d.hostname(), d.verification().state(), d.owner());
-            var record = d.verification().record();
-            if (record != null) {
-                out.println("create this DNS record to verify ownership:");
-                out.printf("  type:  %s%n", record.type());
-                out.printf("  name:  %s%n", record.name());
-                out.printf("  value: %s%n", record.value());
-            }
-        }
-    }
-
-    @Command(name = "verify", description = "Verify a claimed hostname's TXT record", sortOptions = false)
-    public static final class Verify implements Callable<Integer> {
-        @Option(names = {"-h", "--help"}, usageHelp = true, description = "show this help and exit")
-        boolean help;
-
-        @Parameters(index = "0", paramLabel = "<hostname>", description = "the hostname to verify")
-        String hostname;
-
-        @Spec
-        CommandSpec spec;
-
-        @Override
-        public Integer call() {
-            FnCommand root = FnCommand.of(spec);
-            return FnCommand.runSafely(spec, () -> {
-                JsonNode node = root.client().post("/api/function-domains/" + hostname + "/verify", null);
-                var d = Json.MAPPER.convertValue(node, FunctionDomainApi.DomainResponse.class);
-                print(root, d);
-                return 0;
-            });
-        }
-
-        private void print(FnCommand root, FunctionDomainApi.DomainResponse d) {
-            var out = spec.commandLine().getOut();
-            if (root.output() == OutputMode.JSON) {
-                out.println(Json.write(d));
-                return;
-            }
-            out.printf("%s  %s%n", d.hostname(), d.verification().state());
+            out.printf("%s  owner=%s%n", d.hostname(), d.owner());
         }
     }
 
@@ -161,7 +120,7 @@ public final class DomainCommand implements Callable<Integer> {
                 return;
             }
             for (var d : domains) {
-                out.printf("%s  %s  owner=%s%n", d.hostname(), d.verification().state(), d.owner());
+                out.printf("%s  owner=%s%n", d.hostname(), d.owner());
             }
         }
     }

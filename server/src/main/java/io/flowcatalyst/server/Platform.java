@@ -699,12 +699,11 @@ public final class Platform {
                         functionRepo, functionVersionRepo, functionHostRepo, uow, serviceAccountRepo, functionSettingsRepo,
                         applicationRepo, eventTypeRepo, eventRepo, functionRouteRepo, functionArtifactStore));
         // function-public-routes.md §1 (slice F1): domains + route sync's own routes.
-        // devMode (spec §1: "dev mode taken from Env and passed into the operation
-        // factory") is env.routerDevMode() — the SAME flag Signatures#resolve above
-        // reads, never re-derived from the process environment inside the operation.
+        // Amended by function-domains-no-dns.md: a claim is verified by being made,
+        // so there is no resolver and no dev-mode flag to wire here at all.
         io.flowcatalyst.platform.function.api.FunctionDomainApi.register(routes,
                 new io.flowcatalyst.platform.function.api.FunctionDomainApi.State(functionDomainRepo, functionRouteRepo,
-                        functionRepo, uow, new io.flowcatalyst.platform.function.JndiTxtResolver(), env.routerDevMode()));
+                        functionRepo, uow));
 
         // public, pre-login reads (spec docs/spec/publicapi.md): outside the authenticator via isPublicPath, outside the lockfile
         PublicApi.register(routes, new PublicApi.State(new Branding(platformConfigRepo)));

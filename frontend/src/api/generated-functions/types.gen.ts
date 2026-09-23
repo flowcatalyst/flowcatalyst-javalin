@@ -408,22 +408,10 @@ export type ClaimRequest = {
     clientId?: string;
 };
 
-export type DomainRecordView = {
-    type: 'TXT';
-    name: string;
-    value: string;
-};
-
-export type DomainVerificationView = {
-    state: 'PENDING' | 'VERIFIED';
-    record?: DomainRecordView;
-};
-
 export type DomainResponse = {
     id: string;
     hostname: string;
     owner: string;
-    verification: DomainVerificationView;
     createdAt: string;
 };
 
@@ -1508,48 +1496,6 @@ export type ClaimFunctionDomainResponses = {
 };
 
 export type ClaimFunctionDomainResponse = ClaimFunctionDomainResponses[keyof ClaimFunctionDomainResponses];
-
-export type VerifyFunctionDomainData = {
-    body?: never;
-    path: {
-        /**
-         * any hostname covered by the claimed zone, or the zone apex itself — resolves to the zone's one claim
-         */
-        hostname: string;
-    };
-    query?: never;
-    url: '/api/function-domains/{hostname}/verify';
-};
-
-export type VerifyFunctionDomainErrors = {
-    /**
-     * PERMISSION_REQUIRED
-     */
-    403: ErrorResponse;
-    /**
-     * FunctionDomain_NOT_FOUND
-     */
-    404: ErrorResponse;
-    /**
-     * DOMAIN_NOT_VERIFIED
-     */
-    409: ErrorResponse;
-    /**
-     * DNS_UNAVAILABLE
-     */
-    503: ErrorResponse;
-};
-
-export type VerifyFunctionDomainError = VerifyFunctionDomainErrors[keyof VerifyFunctionDomainErrors];
-
-export type VerifyFunctionDomainResponses = {
-    /**
-     * The verified domain
-     */
-    200: DomainResponse;
-};
-
-export type VerifyFunctionDomainResponse = VerifyFunctionDomainResponses[keyof VerifyFunctionDomainResponses];
 
 export type ReleaseFunctionDomainData = {
     body?: never;

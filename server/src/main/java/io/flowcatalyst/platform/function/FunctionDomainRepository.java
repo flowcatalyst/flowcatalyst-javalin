@@ -95,21 +95,18 @@ public final class FunctionDomainRepository implements Persist<FunctionDomain> {
 
     // ── Writes (inside the unit of work's transaction only) ────────────────
 
-    /// Upsert by id. `SET`: `verified_at` only — every other column is
-    /// written once at [FunctionDomain#claim] (spec §6.5).
+    /// Insert-only: every column is written once at [FunctionDomain#claim]
+    /// (spec §6.5) and a claim never changes thereafter — nothing updates it
+    /// (spec `function-domains-no-dns.md`: no verification state to move).
     @Override
     public void persist(FunctionDomain d, DbTx tx) {
         DSLContext txDsl = DSL.using(tx.connection(), SQLDialect.POSTGRES);
-        OffsetDateTime verifiedAt = verifiedAt(d.verification());
         txDsl.insertInto(T)
                 .set(T.ID, d.id())
                 .set(T.CLIENT_ID, d.owner().clientIdOrNull())
                 .set(T.HOSTNAME, d.hostname().value())
-                .set(T.VERIFICATION_TOKEN, d.verificationToken())
-                .set(T.VERIFIED_AT, verifiedAt)
                 .set(T.CREATED_AT, utc(d.createdAt()))
-                .onConflict(T.ID).doUpdate()
-                .set(T.VERIFIED_AT, verifiedAt)
+                .onConflict(T.ID).doNothing()
                 .execute();
     }
 
@@ -121,20 +118,11 @@ public final class FunctionDomainRepository implements Persist<FunctionDomain> {
     // ── Row ↔ entity ───────────────────────────────────────────────────────
 
     private static FunctionDomain toEntity(FnDomainsRecord row) {
-        FunctionDomain.Verification verification = row.getVerifiedAt() == null
-                ? new FunctionDomain.Verification.Pending()
-                : new FunctionDomain.Verification.Verified(row.getVerifiedAt().toInstant());
         return new FunctionDomain(
                 row.getId(),
                 FunctionOwner.ofClientId(row.getClientId()),
                 new Hostname(row.getHostname()),
-                row.getVerificationToken(),
-                verification,
                 row.getCreatedAt().toInstant());
-    }
-
-    private static OffsetDateTime verifiedAt(FunctionDomain.Verification verification) {
-        return verification instanceof FunctionDomain.Verification.Verified verified ? utc(verified.at()) : null;
     }
 
     private static OffsetDateTime utc(Instant instant) {

@@ -72,16 +72,6 @@ public class FnDomains extends TableImpl<FnDomainsRecord> {
     public final TableField<FnDomainsRecord, String> HOSTNAME = createField(DSL.name("hostname"), SQLDataType.VARCHAR(253).nullable(false), this, "");
 
     /**
-     * The column <code>public.fn_domains.verification_token</code>.
-     */
-    public final TableField<FnDomainsRecord, String> VERIFICATION_TOKEN = createField(DSL.name("verification_token"), SQLDataType.VARCHAR(64).nullable(false), this, "");
-
-    /**
-     * The column <code>public.fn_domains.verified_at</code>.
-     */
-    public final TableField<FnDomainsRecord, OffsetDateTime> VERIFIED_AT = createField(DSL.name("verified_at"), SQLDataType.TIMESTAMPWITHTIMEZONE(6), this, "");
-
-    /**
      * The column <code>public.fn_domains.created_at</code>.
      */
     public final TableField<FnDomainsRecord, OffsetDateTime> CREATED_AT = createField(DSL.name("created_at"), SQLDataType.TIMESTAMPWITHTIMEZONE(6).nullable(false).defaultValue(DSL.field(DSL.raw("now()"), SQLDataType.TIMESTAMPWITHTIMEZONE)), this, "");

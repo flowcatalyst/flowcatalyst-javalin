@@ -43,7 +43,6 @@ public final class FunctionEvents {
     /// domain is not a function, so it gets its own message-group namespace,
     /// the same treatment [#POLICY_UPDATED] gets via [#policyMetadataFor].
     public static final String DOMAIN_CLAIMED = "platform:function:domain:claimed";
-    public static final String DOMAIN_VERIFIED = "platform:function:domain:verified";
     public static final String DOMAIN_RELEASED = "platform:function:domain:released";
 
     private FunctionEvents() {
@@ -71,7 +70,7 @@ public final class FunctionEvents {
         return EventMetadata.of(ec, POLICY_UPDATED, SOURCE, subject).withMessageGroup(messageGroup);
     }
 
-    /// [DomainClaimed] / [DomainVerified] / [DomainReleased]'s metadata:
+    /// [DomainClaimed] / [DomainReleased]'s metadata:
     /// subject `platform.function-domain.{domainId}`, group
     /// `platform:function-domain:{domainId}` — never [#metadataFor], which
     /// would group a domain event into a (nonexistent) function's stream.
@@ -323,24 +322,6 @@ public final class FunctionEvents {
 
         public static DomainClaimed of(ExecutionContext ec, FunctionDomain d) {
             return new DomainClaimed(domainMetadataFor(ec, DOMAIN_CLAIMED, d.id()), d.id(), d.hostname().value(),
-                    d.owner().toWire());
-        }
-
-        @Override
-        public Object data() {
-            return new Data(domainId, hostname, owner);
-        }
-
-        private record Data(String domainId, String hostname, String owner) {
-        }
-    }
-
-    /// `{domainId, hostname, owner}`.
-    public record DomainVerified(EventMetadata metadata, String domainId, String hostname, String owner)
-            implements DomainEvent {
-
-        public static DomainVerified of(ExecutionContext ec, FunctionDomain d) {
-            return new DomainVerified(domainMetadataFor(ec, DOMAIN_VERIFIED, d.id()), d.id(), d.hostname().value(),
                     d.owner().toWire());
         }
 

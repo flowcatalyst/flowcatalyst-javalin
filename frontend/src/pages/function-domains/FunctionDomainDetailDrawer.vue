@@ -1,6 +1,7 @@
 <script setup lang="ts">
-// Domain detail drawer (docs/spec/function-ui.md §2.3): the TXT record,
-// Verify, Release.
+// Domain detail drawer (docs/spec/function-ui.md §2.3): claim details and
+// Release. A claim is verified by being made (docs/spec/function-domains-no-dns.md)
+// — there is no TXT record, no Verify action.
 //
 // `GET /api/function-domains/{hostname}` (S3) resolves by hostname alone —
 // reach-gated server-side — so a deep link needs no owner context carried
@@ -36,8 +37,6 @@ const loading = ref(true);
 const loadError = ref<string | null>(null);
 const domain = ref<DomainResponse | null>(null);
 
-const verifying = ref(false);
-const verifyError = ref<string | null>(null);
 const releaseError = ref<string | null>(null);
 
 watch(
@@ -52,7 +51,6 @@ watch(
 async function load(h: string) {
 	loading.value = true;
 	loadError.value = null;
-	verifyError.value = null;
 	releaseError.value = null;
 	try {
 		domain.value = await functionsApi.getDomain(h);
@@ -61,31 +59,6 @@ async function load(h: string) {
 		loadError.value = "Domain not found";
 	} finally {
 		loading.value = false;
-	}
-}
-
-function isLocalhost(h: string): boolean {
-	return h === "localhost" || h.endsWith(".localhost");
-}
-
-function copy(text: string, label: string) {
-	void navigator.clipboard.writeText(text);
-	toast.info("Copied", `${label} copied to clipboard`);
-}
-
-async function verify() {
-	if (!domain.value) return;
-	verifying.value = true;
-	verifyError.value = null;
-	try {
-		domain.value = await functionsApi.verifyDomain(domain.value.hostname);
-		toast.success("Success", "Domain verified");
-		emit("changed");
-	} catch (e) {
-		verifyError.value =
-			e instanceof ApiError ? `${e.code ?? ""} ${e.message}`.trim() : "Verification failed";
-	} finally {
-		verifying.value = false;
 	}
 }
 
@@ -131,13 +104,6 @@ function formatDate(s?: string): string {
     :error="loadError"
     @close="goToList()"
   >
-    <template v-if="domain" #header-extra>
-      <Tag
-        :value="domain.verification.state"
-        :severity="domain.verification.state === 'VERIFIED' ? 'success' : 'warn'"
-      />
-    </template>
-
     <template v-if="domain">
       <FcFormSection title="Details" flat>
         <div class="fc-detail-grid">
@@ -146,53 +112,6 @@ function formatDate(s?: string): string {
           </FcDetailField>
           <FcDetailField label="Owner" :value="domain.owner" />
           <FcDetailField label="Claimed" :value="formatDate(domain.createdAt)" />
-        </div>
-      </FcFormSection>
-
-      <FcFormSection title="Verification" flat>
-        <p v-if="isLocalhost(domain.hostname)" class="localhost-note">
-          Auto-verified in dev mode — <code>.localhost</code> always resolves to loopback, no DNS
-          record is needed.
-        </p>
-        <template v-else-if="domain.verification.record">
-          <p class="txt-intro">Create this DNS record to verify ownership:</p>
-          <div class="txt-record">
-            <div class="txt-row">
-              <span class="txt-label">Type</span>
-              <code>{{ domain.verification.record.type }}</code>
-            </div>
-            <div class="txt-row">
-              <span class="txt-label">Name</span>
-              <code>{{ domain.verification.record.name }}</code>
-              <Button
-                icon="pi pi-copy"
-                text
-                size="small"
-                @click="copy(domain.verification.record.name, 'Record name')"
-              />
-            </div>
-            <div class="txt-row">
-              <span class="txt-label">Value</span>
-              <code>{{ domain.verification.record.value }}</code>
-              <Button
-                icon="pi pi-copy"
-                text
-                size="small"
-                @click="copy(domain.verification.record.value, 'Record value')"
-              />
-            </div>
-          </div>
-        </template>
-        <p v-else-if="domain.verification.state === 'VERIFIED'" class="localhost-note">
-          Verified.
-        </p>
-
-        <Message v-if="verifyError" severity="error" :closable="false" class="inline-error">
-          {{ verifyError }}
-        </Message>
-
-        <div v-if="canManage && domain.verification.state !== 'VERIFIED' && !isLocalhost(domain.hostname)" class="verify-action">
-          <Button label="Verify" icon="pi pi-check" :loading="verifying" @click="verify" />
         </div>
       </FcFormSection>
 
@@ -221,44 +140,6 @@ function formatDate(s?: string): string {
 </template>
 
 <style scoped>
-.localhost-note {
-  color: #475569;
-  font-size: 13px;
-}
-
-.txt-intro {
-  font-size: 13px;
-  color: #475569;
-  margin: 0 0 8px;
-}
-
-.txt-record {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  background: #fafafa;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 12px;
-}
-
-.txt-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-
-.txt-label {
-  min-width: 48px;
-  color: #64748b;
-  font-weight: 600;
-}
-
-.verify-action {
-  margin-top: 12px;
-}
-
 .inline-error {
   margin-top: 12px;
 }

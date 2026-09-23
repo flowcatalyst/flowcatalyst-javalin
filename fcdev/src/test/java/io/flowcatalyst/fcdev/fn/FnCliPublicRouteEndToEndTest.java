@@ -27,11 +27,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// End-to-end `fcdev fn domain` + the public listener, against the REAL dev
 /// stack (`docs/spec/function-developer-surface.md` §2, extending E1's own
-/// harness per its own instruction): `fn domain claim hello.localhost` ⇒
-/// `VERIFIED` (dev-mode `.localhost` auto-verify, no DNS) → deploy a
-/// function with that public route → a request through the PUBLIC port ⇒
-/// 200. Same conventions as `FnCliEndToEndTest`: no `--client-id`/etc flags,
-/// only `XDG_DATA_HOME` pointed at the fixture's own state dir.
+/// harness per its own instruction): `fn domain claim hello.localhost` is
+/// immediately usable (spec `function-domains-no-dns.md`: a claim is
+/// verified by being made, no DNS) → deploy a function with that public
+/// route → a request through the PUBLIC port ⇒ 200. Same conventions as
+/// `FnCliEndToEndTest`: no `--client-id`/etc flags, only `XDG_DATA_HOME`
+/// pointed at the fixture's own state dir.
 @SuppressWarnings("deprecation")
 class FnCliPublicRouteEndToEndTest {
 
@@ -69,14 +70,14 @@ class FnCliPublicRouteEndToEndTest {
         String run = Long.toUnsignedString(System.nanoTime(), 36);
         String hostname = "hello-" + run + ".localhost";
 
-        // ── fn domain claim: dev-mode .localhost auto-verifies at claim time ──
+        // ── fn domain claim: immediately usable, no DNS involved ──
         var claim = FnCliTestSupport.run(cliEnv(), "fn", "domain", "claim", hostname);
         assertThat(claim.exit()).as(claim.out() + claim.err()).isZero();
-        assertThat(claim.out()).as("mutant: .localhost must auto-verify under dev mode").contains("VERIFIED");
+        assertThat(claim.out()).as("mutant: drop the claimed hostname from the output").contains(hostname);
 
         var list = FnCliTestSupport.run(cliEnv(), "fn", "domain", "list");
         assertThat(list.exit()).as(list.err()).isZero();
-        assertThat(list.out()).contains(hostname).contains("VERIFIED");
+        assertThat(list.out()).contains(hostname);
 
         // ── deploy a function whose manifest publishes a public route on that hostname.
         // The owning application is provisioned by an ANCHOR fixture first — the fn-cli

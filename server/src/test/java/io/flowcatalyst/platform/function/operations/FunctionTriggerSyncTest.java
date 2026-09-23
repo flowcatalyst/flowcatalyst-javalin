@@ -306,20 +306,11 @@ class FunctionTriggerSyncTest {
         return Json.MAPPER.readTree(json);
     }
 
-    // ── Domain fixtures (spec `function-public-routes.md` §1) ───────────────
+    // ── Domain fixtures (spec `function-public-routes.md` §1, amended
+    // `function-domains-no-dns.md`: a claim is verified by being made) ──────
 
-    private static FunctionDomain persistVerifiedDomain(FunctionOwner owner, String hostname) {
-        FunctionDomain d = FunctionDomain.claim(owner, Hostname.parse(hostname), "tok-" + fresh(), Instant.now())
-                .verified(Instant.now());
-        uow.inTransaction(tx -> {
-            domains.persist(d, tx.dbTx());
-            return null;
-        });
-        return d;
-    }
-
-    private static FunctionDomain persistPendingDomain(FunctionOwner owner, String hostname) {
-        FunctionDomain d = FunctionDomain.claim(owner, Hostname.parse(hostname), "tok-" + fresh(), Instant.now());
+    private static FunctionDomain persistDomain(FunctionOwner owner, String hostname) {
+        FunctionDomain d = FunctionDomain.claim(owner, Hostname.parse(hostname), Instant.now());
         uow.inTransaction(tx -> {
             domains.persist(d, tx.dbTx());
             return null;
@@ -1515,10 +1506,12 @@ class FunctionTriggerSyncTest {
                 FunctionEvents.ALIAS_CHANGED)).hasSize(1);
     }
 
-    // ── F2 (spec `function-public-routes.md` §6): publish is refused for an
-    // unclaimed hostname, a pending one, and another owner's verified one —
-    // SAME code for all three, each its own test so a mutant dropping any one
-    // clause dies without killing the others ──────────────────────────────
+    // ── F2/N1/N2 (spec `function-public-routes.md` §6, amended
+    // `function-domains-no-dns.md`): publish is refused for an unclaimed
+    // hostname and for another owner's claimed one — SAME code for both,
+    // each its own test so a mutant dropping either clause dies without
+    // killing the other. A fresh claim is immediately usable (N1: no
+    // pending state left to refuse a publish for). ─────────────────────────
 
     @Test
     void publishRefusesAnUnclaimedHostname() {
@@ -1527,49 +1520,42 @@ class FunctionTriggerSyncTest {
         String host = "f2unclaimed-" + fresh() + ".example.com";
 
         assertUseCaseError(() -> publish(f.address(), "f2a", manifestWithPublic("default", host, "/")),
-                UseCaseError.Validation.class, "PUBLIC_HOSTNAME_NOT_VERIFIED");
+                UseCaseError.Validation.class, "PUBLIC_HOSTNAME_NOT_CLAIMED");
         assertThat(versions.listByFunction(f.id())).as("nothing persists on a refused publish").isEmpty();
     }
 
+    /// N2: another owner's claim refuses with the SAME code as an unclaimed
+    /// hostname — no oracle distinguishing "nobody claimed this" from
+    /// "someone else claimed this".
     @Test
-    void publishRefusesAPendingHostname() {
-        String appId = persistApplication("f2b");
-        Function f = createFunction(appId, new FunctionOwner.Platform());
-        String host = "f2pending-" + fresh() + ".example.com";
-        persistPendingDomain(new FunctionOwner.Platform(), host);
-
-        assertUseCaseError(() -> publish(f.address(), "f2b", manifestWithPublic("default", host, "/")),
-                UseCaseError.Validation.class, "PUBLIC_HOSTNAME_NOT_VERIFIED");
-    }
-
-    @Test
-    void publishRefusesAnotherOwnersVerifiedHostname() {
+    void publishRefusesAnotherOwnersClaimedHostname() {
         String appId = persistApplication("f2c");
         Function f = createFunction(appId, new FunctionOwner.Platform());
         String host = "f2otherowner-" + fresh() + ".example.com";
-        persistVerifiedDomain(FunctionOwner.ofClientId("clt_" + fresh()), host);
+        persistDomain(FunctionOwner.ofClientId("clt_" + fresh()), host);
 
         assertUseCaseError(() -> publish(f.address(), "f2c", manifestWithPublic("default", host, "/")),
-                UseCaseError.Validation.class, "PUBLIC_HOSTNAME_NOT_VERIFIED");
+                UseCaseError.Validation.class, "PUBLIC_HOSTNAME_NOT_CLAIMED");
     }
 
-    /// The positive control (mutant: "always throw" / "skip the owner
-    /// comparison" masking a false negative) — a hostname verified by the
-    /// SAME owner publishes cleanly.
+    /// N1: the positive control (mutant: "always throw" / "skip the owner
+    /// comparison" masking a false negative, or "require something else
+    /// before routing") — a FRESH claim of the same owner publishes cleanly
+    /// immediately, with no verification step in between.
     @Test
-    void publishSucceedsWithAVerifiedHostnameOfTheSameOwner() {
+    void publishSucceedsWithAFreshlyClaimedHostnameOfTheSameOwner() {
         String appId = persistApplication("f2ok");
         Function f = createFunction(appId, new FunctionOwner.Platform());
         String host = "f2ok-" + fresh() + ".example.com";
-        persistVerifiedDomain(new FunctionOwner.Platform(), host);
+        persistDomain(new FunctionOwner.Platform(), host);
 
         PublishVersion.Result result = publish(f.address(), "f2ok", manifestWithPublic("default", host, "/"));
         assertThat(result.version().version()).isEqualTo(1);
     }
 
     // ── Z1 (spec `function-zones-and-aliases.md` §8): a ZONE claim covers a
-    // deeper hostname under it — a claim of `acme.com` verifies
-    // `myapp.acme.com`; it does NOT verify a hostname under a DIFFERENT
+    // deeper hostname under it — a claim of `acme.com` covers
+    // `myapp.acme.com`; it does NOT cover a hostname under a DIFFERENT
     // apex. Mutant: equality instead of covering. ────────────────────────
 
     @Test
@@ -1577,7 +1563,7 @@ class FunctionTriggerSyncTest {
         String appId = persistApplication("z1ok");
         Function f = createFunction(appId, new FunctionOwner.Platform());
         String apex = "z1zone-" + fresh() + ".acme.com";
-        persistVerifiedDomain(new FunctionOwner.Platform(), apex);
+        persistDomain(new FunctionOwner.Platform(), apex);
         String deep = "myapp." + apex;
 
         PublishVersion.Result result = publish(f.address(), "z1ok", manifestWithPublic("default", deep, "/"));
@@ -1590,11 +1576,11 @@ class FunctionTriggerSyncTest {
         Function f = createFunction(appId, new FunctionOwner.Platform());
         // A zone claim exists, but for a DIFFERENT apex than the manifest's hostname —
         // pins "covering", not "any claim at all exists ⇒ pass".
-        persistVerifiedDomain(new FunctionOwner.Platform(), "z1other-" + fresh() + ".acme.com");
+        persistDomain(new FunctionOwner.Platform(), "z1other-" + fresh() + ".acme.com");
         String unrelated = "myapp.z1unrelated-" + fresh() + ".other.com";
 
         assertUseCaseError(() -> publish(f.address(), "z1no", manifestWithPublic("default", unrelated, "/")),
-                UseCaseError.Validation.class, "PUBLIC_HOSTNAME_NOT_VERIFIED");
+                UseCaseError.Validation.class, "PUBLIC_HOSTNAME_NOT_CLAIMED");
         assertThat(versions.listByFunction(f.id())).isEmpty();
     }
 
@@ -1608,7 +1594,7 @@ class FunctionTriggerSyncTest {
         String appId = persistApplication("f4mat");
         Function f = createFunction(appId, new FunctionOwner.Platform());
         String host = "f4mat-" + fresh() + ".example.com";
-        persistVerifiedDomain(new FunctionOwner.Platform(), host);
+        persistDomain(new FunctionOwner.Platform(), host);
 
         var p = publish(f.address(), "f4mat", manifestWithPublic("default", host, "/api"));
         assertThat(routes.listByFunction(f.id())).as("publish validates only, never materialises").isEmpty();
@@ -1628,7 +1614,7 @@ class FunctionTriggerSyncTest {
         String appId = persistApplication("j3copy");
         Function f = createFunction(appId, new FunctionOwner.Platform());
         String host = "j3copy-" + fresh() + ".example.com";
-        persistVerifiedDomain(new FunctionOwner.Platform(), host);
+        persistDomain(new FunctionOwner.Platform(), host);
 
         var p = publish(f.address(), "j3copy",
                 manifestWithPublicAndAliasPrefixes("default", host, "/", List.of("qa", "staging")));
@@ -1652,7 +1638,7 @@ class FunctionTriggerSyncTest {
         String appId = persistApplication("j3rewrite");
         Function f = createFunction(appId, new FunctionOwner.Platform());
         String host = "j3rewrite-" + fresh() + ".example.com";
-        persistVerifiedDomain(new FunctionOwner.Platform(), host);
+        persistDomain(new FunctionOwner.Platform(), host);
 
         var p1 = publish(f.address(), "j3rewrite1",
                 manifestWithPublicAndAliasPrefixes("default", host, "/", List.of("qa")));
@@ -1675,7 +1661,7 @@ class FunctionTriggerSyncTest {
     void promoteV2DropsARouteFreeingItForAnotherFunctionInTheSameTransactionVisibleWay() {
         String appId = persistApplication("f4free");
         String host = "f4free-" + fresh() + ".example.com";
-        persistVerifiedDomain(new FunctionOwner.Platform(), host);
+        persistDomain(new FunctionOwner.Platform(), host);
 
         Function a = createFunction(appId, new FunctionOwner.Platform());
         var pa1 = publish(a.address(), "f4freea1", manifestWithPublic("default", host, "/"));
@@ -1699,7 +1685,7 @@ class FunctionTriggerSyncTest {
     void equalRouteOnTwoFunctionsConflictsAtPublishFreeAndAtPromoteTaken() {
         String appId = persistApplication("f4race");
         String host = "f4race-" + fresh() + ".example.com";
-        persistVerifiedDomain(new FunctionOwner.Platform(), host);
+        persistDomain(new FunctionOwner.Platform(), host);
 
         Function a = createFunction(appId, new FunctionOwner.Platform());
         Function b = createFunction(appId, new FunctionOwner.Platform());
@@ -1739,7 +1725,7 @@ class FunctionTriggerSyncTest {
     void concurrentPromotesRacingPastTheReCheckStillMapTheLosingInsertTo409NotA500() throws Exception {
         String appId = persistApplication("f4uv");
         String host = "f4uv-" + fresh() + ".example.com";
-        persistVerifiedDomain(new FunctionOwner.Platform(), host);
+        persistDomain(new FunctionOwner.Platform(), host);
 
         Function a = createFunction(appId, new FunctionOwner.Platform());
         Function b = createFunction(appId, new FunctionOwner.Platform());
@@ -1796,7 +1782,7 @@ class FunctionTriggerSyncTest {
         String appIdA = persistApplication("f5a");
         String appIdB = persistApplication("f5b");
         String host = "f5-" + fresh() + ".example.com";
-        persistVerifiedDomain(FunctionOwner.ofClientId(clientId), host);
+        persistDomain(FunctionOwner.ofClientId(clientId), host);
 
         Function a = createFunction(appIdA, FunctionOwner.ofClientId(clientId));
         Function b = createFunction(appIdB, FunctionOwner.ofClientId(clientId));
@@ -1834,7 +1820,7 @@ class FunctionTriggerSyncTest {
     void deleteFunctionCascadesItsPublicRoutesToo() {
         String appId = persistApplication("f1del");
         String host = "f1del-" + fresh() + ".example.com";
-        persistVerifiedDomain(new FunctionOwner.Platform(), host);
+        persistDomain(new FunctionOwner.Platform(), host);
         Function f = createFunction(appId, new FunctionOwner.Platform());
         var p = publish(f.address(), "f1del", manifestWithPublic("default", host, "/"));
         promote(f.address(), p.version().version());

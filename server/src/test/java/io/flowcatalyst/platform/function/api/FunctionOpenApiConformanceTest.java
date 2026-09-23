@@ -20,7 +20,6 @@ import io.flowcatalyst.platform.function.FunctionVersionRepository;
 import io.flowcatalyst.platform.function.Hostname;
 import io.flowcatalyst.platform.function.RoutePattern;
 import io.flowcatalyst.platform.function.TriggerObjectRepository;
-import io.flowcatalyst.platform.function.TxtResolver;
 import io.flowcatalyst.platform.function.artifact.ArtifactBlobStore;
 import io.flowcatalyst.platform.function.artifact.FileArtifactBlobStore;
 import io.flowcatalyst.platform.function.artifact.Signatures;
@@ -61,7 +60,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -101,11 +99,6 @@ class FunctionOpenApiConformanceTest {
     private static final FunctionSettingsRepository settings =
             new FunctionSettingsRepository(TestPg.dataSource(), Optional.of(ENCRYPTION));
     private static final UnitOfWork uow = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
-
-    /// The claim/verify seam (`FunctionDomainApiTest`'s own pattern): the
-    /// next TXT lookup's answer, set right before the `verify` call it feeds.
-    private static final AtomicReference<List<String>> NEXT_TXT_VALUES = new AtomicReference<>(List.of());
-    private static final TxtResolver RESOLVER = name -> NEXT_TXT_VALUES.get();
 
     @TempDir
     static Path storeDir;
@@ -156,7 +149,7 @@ class FunctionOpenApiConformanceTest {
                     policies, FunctionLimits.defaults(), new Signatures.Off(), TriggerSync.none(), triggerObjects,
                     subscriptions, dispatchPools, scheduledJobs, settings, Optional.of(ENCRYPTION), artifactStore));
             FunctionPolicyApi.register(r, new FunctionPolicyApi.State(policies, clients, uow, FunctionLimits.defaults()));
-            FunctionDomainApi.register(r, new FunctionDomainApi.State(domains, routeRepo, functions, uow, RESOLVER, false));
+            FunctionDomainApi.register(r, new FunctionDomainApi.State(domains, routeRepo, functions, uow));
             FunctionControlApi.register(r, new FunctionControlApi.State(functions, versions, hosts, uow,
                     serviceAccounts, settings, applications, eventTypes, events, routeRepo, artifactStore));
         });
@@ -374,18 +367,10 @@ class FunctionOpenApiConformanceTest {
         call("listFunctionSecrets", http.get("/api/functions/" + address + "/secrets", FULL), 200, null);
         call("deleteFunctionSecret", http.delete("/api/functions/" + address + "/secrets/mysecret", FULL), 204, null);
 
-        // 21. claimFunctionDomain
+        // 21. claimFunctionDomain — immediately usable, no verify step (function-domains-no-dns.md)
         String hostname = "fnopenapi-" + RUN + ".example.com";
         String claimBody = "{\"hostname\":\"" + hostname + "\"}";
-        JsonNode domain = call("claimFunctionDomain", http.post("/api/function-domains", claimBody, FULL), 201, claimBody);
-        String recordValue = domain.get("verification").get("record").get("value").asText();
-        String token = recordValue.substring("fc-verify=".length());
-
-        // 22. verifyFunctionDomain
-        NEXT_TXT_VALUES.set(List.of("fc-verify=" + token));
-        JsonNode verified = call("verifyFunctionDomain",
-                http.post("/api/function-domains/" + hostname + "/verify", "", FULL), 200, null);
-        assertThat(verified.get("verification").get("state").asText()).isEqualTo("VERIFIED");
+        call("claimFunctionDomain", http.post("/api/function-domains", claimBody, FULL), 201, claimBody);
 
         // 23. listFunctionDomains
         call("listFunctionDomains", http.get("/api/function-domains?clientId=platform", FULL), 200, null);

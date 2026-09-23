@@ -14,8 +14,6 @@ import io.flowcatalyst.platform.function.FunctionRouteRepository;
 import io.flowcatalyst.platform.function.Hostname;
 import io.flowcatalyst.platform.function.RoutePattern;
 import io.flowcatalyst.platform.function.Runtime;
-import io.flowcatalyst.platform.function.DnsException;
-import io.flowcatalyst.platform.function.TxtResolver;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
 import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
@@ -36,15 +34,16 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// `/api/function-domains` + `/api/function-routes` end to end (spec
-/// `function-public-routes.md` §1, §2): routing, the coarse permission gate,
-/// and the claim → verify → list → release round trip. Exhaustive
-/// exact-match / dev-mode-localhost mutation coverage lives in
-/// `FunctionDomainOperationsTest`, which this file does not repeat.
+/// `function-public-routes.md` §1, §2, amended `function-domains-no-dns.md`):
+/// routing, the coarse permission gate, and the claim → list → release round
+/// trip. A claim is verified by being made — there is no verify route, no
+/// resolver seam, no `verification` key on the wire. Exhaustive nesting /
+/// zone-covering mutation coverage lives in `FunctionDomainOperationsTest`,
+/// which this file does not repeat.
 @SuppressWarnings("deprecation")
 class FunctionDomainApiTest {
 
@@ -55,20 +54,6 @@ class FunctionDomainApiTest {
     private static final FunctionDomainRepository domains = new FunctionDomainRepository(TestPg.dataSource());
     private static final FunctionRouteRepository routes = new FunctionRouteRepository(TestPg.dataSource());
     private static final UnitOfWork uow = new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER));
-
-    /// The test's TXT-resolver seam: each test sets what the next `verify`
-    /// call should "find" — read by [#RESOLVER], the one instance the harness
-    /// registers ([FunctionDomainApi.State] takes exactly one [TxtResolver]).
-    /// [#LAST_QUERIED_NAME] records the record name the operation actually
-    /// asked for — Z1/Z5's zone-resolution tests need this: a fake that
-    /// ignores its `name` argument would let "query the caller's raw
-    /// hostname instead of the resolved zone" pass unnoticed.
-    private static final AtomicReference<List<String>> NEXT_TXT_VALUES = new AtomicReference<>(List.of());
-    private static final AtomicReference<String> LAST_QUERIED_NAME = new AtomicReference<>();
-    private static final TxtResolver RESOLVER = name -> {
-        LAST_QUERIED_NAME.set(name);
-        return NEXT_TXT_VALUES.get();
-    };
 
     private static final String[] ANCHOR = {
             Authenticator.TEST_PRINCIPAL, "usr_anchor_" + RUN, Authenticator.TEST_SCOPE, "ANCHOR",
@@ -83,12 +68,6 @@ class FunctionDomainApiTest {
             Authenticator.TEST_PERMISSIONS, "platform:function:function:view"};
 
     private static TestHttp http;
-    /// A SECOND harness, sharing every repository, whose resolver always
-    /// fails — the ONLY way to reach `503 DNS_UNAVAILABLE` through the real
-    /// HTTP handler (spec §1, §6 M1): [FunctionDomainApi.State] takes one
-    /// fixed [TxtResolver] at registration, so the "always fails" behaviour
-    /// needs its own route registration, not a per-test toggle.
-    private static TestHttp httpDnsDown;
 
     @BeforeAll
     static void start() {
@@ -98,22 +77,13 @@ class FunctionDomainApiTest {
         http = TestHttp.routes(r -> {
             HttpError.install(r);
             r.before("/api/*", auth);
-            FunctionDomainApi.register(r, new FunctionDomainApi.State(domains, routes, functions, uow, RESOLVER, false));
-        });
-        TxtResolver failing = name -> {
-            throw new DnsException("simulated resolver failure");
-        };
-        httpDnsDown = TestHttp.routes(r -> {
-            HttpError.install(r);
-            r.before("/api/*", auth);
-            FunctionDomainApi.register(r, new FunctionDomainApi.State(domains, routes, functions, uow, failing, false));
+            FunctionDomainApi.register(r, new FunctionDomainApi.State(domains, routes, functions, uow));
         });
     }
 
     @AfterAll
     static void stop() {
         http.close();
-        httpDnsDown.close();
     }
 
     private static JsonNode json(HttpResponse<String> r) {
@@ -142,19 +112,18 @@ class FunctionDomainApiTest {
         assertThat(r.statusCode()).isEqualTo(403);
     }
 
-    // ── Claim → verify → list → release round trip ───────────────────────────
+    // ── Claim → list → release round trip ─────────────────────────────────
 
     @Test
-    void claimVerifyListAndReleaseRoundTrip() {
+    void claimListAndReleaseRoundTrip() {
         String h = host("roundtrip");
         var claimed = http.post("/api/function-domains", "{\"hostname\":\"" + h + "\"}", MANAGE);
         assertThat(claimed.statusCode()).as(claimed.body()).isEqualTo(201);
         JsonNode claimedBody = json(claimed);
         assertThat(claimedBody.get("hostname").asString()).isEqualTo(h);
         assertThat(claimedBody.get("owner").asString()).isEqualTo("platform");
-        assertThat(claimedBody.get("verification").get("state").asString()).isEqualTo("PENDING");
-        String recordValue = claimedBody.get("verification").get("record").get("value").asString();
-        assertThat(recordValue).startsWith("fc-verify=");
+        // N3: no verification key at all — a claim is verified by being made.
+        assertThat(claimedBody.has("verification")).as("mutant: still carry a verification key").isFalse();
 
         // A second claim of the SAME hostname conflicts and never names the holder.
         var retaken = http.post("/api/function-domains", "{\"hostname\":\"" + h + "\"}", MANAGE);
@@ -166,13 +135,6 @@ class FunctionDomainApiTest {
         assertThat(listed.statusCode()).as(listed.body()).isEqualTo(200);
         assertThat(json(listed)).anySatisfy(n -> assertThat(n.get("hostname").asString()).isEqualTo(h));
 
-        // Verify with a resolver that answers the exact token.
-        NEXT_TXT_VALUES.set(List.of(recordValue));
-        var verified = http.post("/api/function-domains/" + h + "/verify", "", MANAGE);
-        assertThat(verified.statusCode()).as(verified.body()).isEqualTo(200);
-        assertThat(json(verified).get("verification").get("state").asString()).isEqualTo("VERIFIED");
-        assertThat(json(verified).get("verification").has("record")).as("no record once verified").isFalse();
-
         // Release.
         var released = http.delete("/api/function-domains/" + h, MANAGE);
         assertThat(released.statusCode()).isEqualTo(204);
@@ -180,56 +142,16 @@ class FunctionDomainApiTest {
         assertThat(json(afterRelease)).noneSatisfy(n -> assertThat(n.get("hostname").asString()).isEqualTo(h));
     }
 
-    /// spec §1, §6 M1: no TXT value matches ⇒ `409 DOMAIN_NOT_VERIFIED`, not
-    /// `503` — the negative control for the resolver-failure test below.
+    /// N3: the verify route is gone — a request to it 404s with the router's
+    /// own not-found shape (no matching route at all), never a handler that
+    /// happens to answer something else.
     @Test
-    void verifyWithNoMatchingTxtValueIs409DomainNotVerified() {
-        String h = host("nomatch");
+    void verifyRouteIsGoneAndAnswersTheRoutersOwnNotFoundShape() {
+        String h = host("noverify");
         http.post("/api/function-domains", "{\"hostname\":\"" + h + "\"}", MANAGE);
-        NEXT_TXT_VALUES.set(List.of("v=spf1 ~all"));
 
         var r = http.post("/api/function-domains/" + h + "/verify", "", MANAGE);
-        assertThat(r.statusCode()).as("no matching TXT value ⇒ 409, not 503").isEqualTo(409);
-        assertThat(json(r).get("error").asString()).isEqualTo("DOMAIN_NOT_VERIFIED");
-    }
-
-    /// spec §1, §6 M1: a resolver failure is `503 DNS_UNAVAILABLE`, never
-    /// silently treated as "not verified" — pinned through the REAL HTTP
-    /// handler's `catch (DnsUnavailableException)`, not just the operation.
-    @Test
-    void verifyWithAResolverFailureIs503DnsUnavailable() {
-        String h = host("dnsdown");
-        http.post("/api/function-domains", "{\"hostname\":\"" + h + "\"}", MANAGE);
-
-        var r = httpDnsDown.post("/api/function-domains/" + h + "/verify", "", MANAGE);
-        assertThat(r.statusCode()).as("mutant: treat failure as unverified").isEqualTo(503);
-        assertThat(json(r).get("error").asString()).isEqualTo("DNS_UNAVAILABLE");
-    }
-
-    /// Verifying via a hostname UNDER the zone (not the zone apex itself)
-    /// still resolves and verifies the ZONE's own claim, checking the TXT
-    /// record at the apex — never a record at the deeper hostname, which
-    /// nobody was ever asked to create. Mutant: use the caller's raw
-    /// hostname for the TXT lookup instead of the resolved zone's.
-    @Test
-    void verifyOfADeeperHostnameVerifiesTheZonesOwnClaimAtTheApexsTxtRecord() {
-        String apex = host("z1verify");
-        var claimed = http.post("/api/function-domains", "{\"hostname\":\"" + apex + "\"}", MANAGE);
-        String recordValue = json(claimed).get("verification").get("record").get("value").asString();
-        String deep = "myapp." + apex;
-
-        NEXT_TXT_VALUES.set(List.of(recordValue));
-        var verified = http.post("/api/function-domains/" + deep + "/verify", "", MANAGE);
-        assertThat(verified.statusCode()).as(verified.body()).isEqualTo(200);
-        assertThat(json(verified).get("hostname").asString()).as("the zone apex, not the deep hostname").isEqualTo(apex);
-        assertThat(json(verified).get("verification").get("state").asString()).isEqualTo("VERIFIED");
-        assertThat(LAST_QUERIED_NAME.get()).as("mutant: query the caller's raw hostname instead of the resolved zone")
-                .isEqualTo("_flowcatalyst." + apex);
-
-        // Re-claiming the (now verified) apex is still DOMAIN_TAKEN — proves it is the
-        // SAME zone claim that got verified, not some separate per-hostname record.
-        var reclaim = http.post("/api/function-domains", "{\"hostname\":\"" + apex + "\"}", MANAGE);
-        assertThat(reclaim.statusCode()).isEqualTo(409);
+        assertThat(r.statusCode()).as("mutant: a handler still answers this route").isEqualTo(404);
     }
 
     @Test
@@ -364,7 +286,7 @@ class FunctionDomainApiTest {
         assertThat(reachableBody.get("id").asString()).isEqualTo(claimedBody.get("id").asString());
         assertThat(reachableBody.get("hostname").asString()).isEqualTo(h);
         assertThat(reachableBody.get("owner").asString()).isEqualTo(clientA);
-        assertThat(reachableBody.get("verification").get("state").asString()).isEqualTo("PENDING");
+        assertThat(reachableBody.has("verification")).as("mutant: still carry a verification key").isFalse();
 
         // Out of reach (a DIFFERENT client's domain): 404, never 403 — pins "skip the
         // reach check", which would answer 200 with clientA's domain to clientB's caller.

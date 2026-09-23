@@ -1,6 +1,5 @@
 package io.flowcatalyst.platform.function.operations;
 
-import io.flowcatalyst.platform.function.DnsException;
 import io.flowcatalyst.platform.function.Function;
 import io.flowcatalyst.platform.function.FunctionAddress;
 import io.flowcatalyst.platform.function.FunctionDomain;
@@ -12,10 +11,8 @@ import io.flowcatalyst.platform.function.FunctionRouteRepository;
 import io.flowcatalyst.platform.function.Hostname;
 import io.flowcatalyst.platform.function.DnsLabel;
 import io.flowcatalyst.platform.function.Runtime;
-import io.flowcatalyst.platform.function.TxtResolver;
 import io.flowcatalyst.platform.function.operations.FunctionEvents.DomainClaimed;
 import io.flowcatalyst.platform.function.operations.FunctionEvents.DomainReleased;
-import io.flowcatalyst.platform.function.operations.FunctionEvents.DomainVerified;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Scope;
@@ -44,12 +41,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/// `ClaimFunctionDomain` / `VerifyFunctionDomain` / `ReleaseFunctionDomain`
-/// against embedded Postgres (spec `function-public-routes.md` §1, §6): F1
-/// (never names the holder; exact-match verify; resolver failure is 503-
-/// shaped, never "not verified") and F3 (dev-mode `.localhost` auto-verify,
-/// label-exact, never outside dev mode).
-@SuppressWarnings("deprecation")
+/// `ClaimFunctionDomain` / `ReleaseFunctionDomain` against embedded Postgres
+/// (spec `function-public-routes.md` §1, §6, amended `function-domains-no-dns.md`):
+/// F1 (never names the holder; a fresh claim is immediately usable).
 class FunctionDomainOperationsTest {
 
     private static final DataSource DS = TestPg.dataSource();
@@ -74,28 +68,9 @@ class FunctionDomainOperationsTest {
         return "fdo-" + tag + "-" + fresh() + ".example.com";
     }
 
-    /// A resolver that always answers `values` for any name — the test's own
-    /// seam (spec §1 deliverable 1).
-    private static TxtResolver fake(List<String> values) {
-        return name -> values;
-    }
-
-    /// A resolver that always fails — pins §6 M1's "resolver failure is 503,
-    /// not 'not verified'".
-    private static TxtResolver failing() {
-        return name -> {
-            throw new DnsException("simulated resolver failure");
-        };
-    }
-
-    private static DomainClaimed claim(FunctionOwner owner, String hostname, boolean devMode) {
-        return Auth.runAs(ANCHOR, () -> ClaimFunctionDomain.of(domains, devMode)
+    private static DomainClaimed claim(FunctionOwner owner, String hostname) {
+        return Auth.runAs(ANCHOR, () -> ClaimFunctionDomain.of(domains)
                 .run(uow, new ClaimCommand(owner, hostname), EC));
-    }
-
-    private static VerifyFunctionDomain.Result verify(String hostname, TxtResolver resolver) {
-        return Auth.runAs(ANCHOR, () -> VerifyFunctionDomain.of(domains, resolver)
-                .run(uow, new VerifyCommand(hostname), EC));
     }
 
     private static DomainReleased release(String hostname) {
@@ -119,25 +94,23 @@ class FunctionDomainOperationsTest {
 
     // ── Claim ────────────────────────────────────────────────────────────
 
+    /// N1: a fresh claim is immediately usable — the claim itself writes
+    /// exactly one `domain:claimed` event, on the correct message group,
+    /// with no verification state anywhere in it.
     @Test
-    void claimStartsPendingAndWritesOneClaimedEventWithNoToken() {
+    void claimWritesOneClaimedEvent() {
         String h = host("claim");
-        DomainClaimed ev = claim(new FunctionOwner.Platform(), h, false);
+        DomainClaimed ev = claim(new FunctionOwner.Platform(), h);
         assertThat(ev.hostname()).isEqualTo(h);
         assertThat(ev.owner()).isEqualTo("platform");
 
         FunctionDomain d = domains.findByHostname(Hostname.parse(h)).orElseThrow();
-        assertThat(d.verification()).isInstanceOf(FunctionDomain.Verification.Pending.class);
-        assertThat(d.verificationToken()).isNotBlank();
+        assertThat(d.hostname()).isEqualTo(Hostname.parse(h));
 
         var rows = eventsFor("platform.function-domain." + ev.domainId(), FunctionEvents.DOMAIN_CLAIMED);
         assertThat(rows).hasSize(1);
         assertThat(rows.getFirst().get("message_group")).as("F1 mutant guard: wrong message group")
                 .isEqualTo("platform:function-domain:" + ev.domainId());
-        // spec §1: "no token" — the event's own JSON must never carry it.
-        var data = DB.fetch("SELECT data::text AS data FROM msg_events WHERE subject = ? AND type = ?",
-                "platform.function-domain." + ev.domainId(), FunctionEvents.DOMAIN_CLAIMED);
-        assertThat(data.getFirst().get("data", String.class)).doesNotContain(d.verificationToken());
     }
 
     /// F1: a hostname already claimed by ANYONE cannot be claimed again, and
@@ -148,142 +121,12 @@ class FunctionDomainOperationsTest {
     void aHostnameClaimedByOneOwnerCannotBeClaimedByAnotherAndTheErrorNeverNamesTheHolder() {
         String h = host("taken");
         String holderClientId = "clt_" + fresh();
-        claim(FunctionOwner.ofClientId(holderClientId), h, false);
+        claim(FunctionOwner.ofClientId(holderClientId), h);
 
-        assertUseCaseError(() -> claim(new FunctionOwner.Platform(), h, false), UseCaseError.Conflict.class, "DOMAIN_TAKEN");
-        assertThatThrownBy(() -> claim(new FunctionOwner.Platform(), h, false))
+        assertUseCaseError(() -> claim(new FunctionOwner.Platform(), h), UseCaseError.Conflict.class, "DOMAIN_TAKEN");
+        assertThatThrownBy(() -> claim(new FunctionOwner.Platform(), h))
                 .hasMessageNotContaining(holderClientId)
                 .as("mutant: name the holder");
-    }
-
-    // ── Verify: exact match only (F1, §6 M1) ────────────────────────────────
-
-    @Test
-    void verifySucceedsOnlyOnAnExactTokenMatch() {
-        String h = host("exact");
-        DomainClaimed ev = claim(new FunctionOwner.Platform(), h, false);
-        FunctionDomain claimed = domains.findByHostname(Hostname.parse(h)).orElseThrow();
-        String expected = "fc-verify=" + claimed.verificationToken();
-
-        VerifyFunctionDomain.Result result = verify(h, fake(List.of(expected)));
-        assertThat(result.changed()).isTrue();
-        assertThat(result.domain().verification()).isInstanceOf(FunctionDomain.Verification.Verified.class);
-
-        var rows = eventsFor("platform.function-domain." + ev.domainId(), FunctionEvents.DOMAIN_VERIFIED);
-        assertThat(rows).hasSize(1);
-    }
-
-    @Test
-    void verifyRejectsAValuePrefixedByTheToken() {
-        String h = host("prefix");
-        claim(new FunctionOwner.Platform(), h, false);
-        FunctionDomain claimed = domains.findByHostname(Hostname.parse(h)).orElseThrow();
-        String prefixed = "fc-verify=" + claimed.verificationToken() + "-extra";
-
-        assertUseCaseError(() -> verify(h, fake(List.of(prefixed))), UseCaseError.Conflict.class, "DOMAIN_NOT_VERIFIED");
-    }
-
-    @Test
-    void verifyRejectsAValueWithAnExtraPrefix() {
-        String h = host("suffix");
-        claim(new FunctionOwner.Platform(), h, false);
-        FunctionDomain claimed = domains.findByHostname(Hostname.parse(h)).orElseThrow();
-        String suffixed = "extra-fc-verify=" + claimed.verificationToken();
-
-        assertUseCaseError(() -> verify(h, fake(List.of(suffixed))), UseCaseError.Conflict.class, "DOMAIN_NOT_VERIFIED");
-    }
-
-    @Test
-    void verifyRejectsAnUnrelatedRecordValue() {
-        String h = host("other");
-        claim(new FunctionOwner.Platform(), h, false);
-
-        assertUseCaseError(() -> verify(h, fake(List.of("v=spf1 include:example.com ~all"))),
-                UseCaseError.Conflict.class, "DOMAIN_NOT_VERIFIED");
-    }
-
-    @Test
-    void verifyRejectsACaseChangedToken() {
-        String h = host("case");
-        claim(new FunctionOwner.Platform(), h, false);
-        FunctionDomain claimed = domains.findByHostname(Hostname.parse(h)).orElseThrow();
-        String changedCase = ("fc-verify=" + claimed.verificationToken()).toUpperCase(Locale.ROOT);
-
-        assertUseCaseError(() -> verify(h, fake(List.of(changedCase))), UseCaseError.Conflict.class, "DOMAIN_NOT_VERIFIED");
-    }
-
-    /// F1, §6 M1: a resolver failure is 503-shaped ([DnsUnavailableException]),
-    /// never silently treated as "no matching TXT value found".
-    @Test
-    void verifyResolverFailureIsDnsUnavailableNeverTreatedAsUnverified() {
-        String h = host("dnsfail");
-        claim(new FunctionOwner.Platform(), h, false);
-
-        assertThatThrownBy(() -> verify(h, failing()))
-                .as("mutant: treat failure as unverified")
-                .isInstanceOf(DnsUnavailableException.class)
-                .isNotInstanceOf(UseCaseException.class);
-    }
-
-    @Test
-    void verifyingAnAlreadyVerifiedDomainIs200WithNoNewEvent() {
-        String h = host("already");
-        DomainClaimed ev = claim(new FunctionOwner.Platform(), h, false);
-        FunctionDomain claimed = domains.findByHostname(Hostname.parse(h)).orElseThrow();
-        String expected = "fc-verify=" + claimed.verificationToken();
-        verify(h, fake(List.of(expected)));
-        assertThat(eventsFor("platform.function-domain." + ev.domainId(), FunctionEvents.DOMAIN_VERIFIED)).hasSize(1);
-
-        VerifyFunctionDomain.Result second = verify(h, fake(List.of(expected)));
-        assertThat(second.changed()).as("mutant: re-verify unconditionally").isFalse();
-        assertThat(eventsFor("platform.function-domain." + ev.domainId(), FunctionEvents.DOMAIN_VERIFIED))
-                .as("no second event").hasSize(1);
-    }
-
-    @Test
-    void verifyOfAnUnknownHostnameIs404() {
-        assertUseCaseError(() -> verify(host("missing"), fake(List.of())), UseCaseError.NotFound.class,
-                "FunctionDomain_NOT_FOUND");
-    }
-
-    // ── F3: dev-mode `.localhost` auto-verify at claim (§6 M3) ──────────────
-
-    @Test
-    void devModeAutoVerifiesAnXDotLocalhostHostnameAtClaim() {
-        DomainClaimed ev = claim(new FunctionOwner.Platform(), fresh() + ".localhost", true);
-        FunctionDomain d = domains.findById(ev.domainId()).orElseThrow();
-        assertThat(d.verification()).as("verified with no DNS call").isInstanceOf(FunctionDomain.Verification.Verified.class);
-    }
-
-    /// §6 M3: `evil.<x>.localhost.example.com`'s LAST label is `com`, not
-    /// `localhost` — never auto-verified, in OR out of dev mode.
-    @Test
-    void devModeDoesNotAutoVerifyAHostnameThatMerelyContainsTheLocalhostLabel() {
-        DomainClaimed ev = claim(new FunctionOwner.Platform(), "evil." + fresh() + ".localhost.example.com", true);
-        FunctionDomain d = domains.findById(ev.domainId()).orElseThrow();
-        assertThat(d.verification()).as("mutant: suffix match without the dot").isInstanceOf(FunctionDomain.Verification.Pending.class);
-    }
-
-    /// §6 M3, the mutant table's own wording: "suffix match WITHOUT THE DOT".
-    /// `x.fakelocalhost`'s raw characters end with the substring
-    /// `"localhost"` (a naive `String#endsWith("localhost")` would match it),
-    /// but its LAST LABEL is `fakelocalhost`, not `localhost` — must stay
-    /// PENDING. This is the one case `evil...com` above cannot distinguish
-    /// (that hostname's raw characters do not even end with "localhost").
-    @Test
-    void devModeDoesNotAutoVerifyAHostnameWhoseLastLabelMerelyEndsWithLocalhost() {
-        DomainClaimed ev = claim(new FunctionOwner.Platform(), fresh() + ".fakelocalhost", true);
-        FunctionDomain d = domains.findById(ev.domainId()).orElseThrow();
-        assertThat(d.verification()).as("mutant: suffix match without the dot").isInstanceOf(FunctionDomain.Verification.Pending.class);
-    }
-
-    /// §6 M3: the SAME hostname that auto-verifies in dev mode stays PENDING
-    /// outside it.
-    @Test
-    void nonDevModeNeverAutoVerifiesAnXDotLocalhostHostname() {
-        DomainClaimed ev = claim(new FunctionOwner.Platform(), fresh() + ".localhost", false);
-        FunctionDomain d = domains.findById(ev.domainId()).orElseThrow();
-        assertThat(d.verification()).as("mutant: ignore dev mode").isInstanceOf(FunctionDomain.Verification.Pending.class);
     }
 
     // ── Release ──────────────────────────────────────────────────────────
@@ -291,7 +134,7 @@ class FunctionDomainOperationsTest {
     @Test
     void releaseRemovesAnUnusedDomainAndWritesOneReleasedEvent() {
         String h = host("release");
-        DomainClaimed ev = claim(new FunctionOwner.Platform(), h, false);
+        DomainClaimed ev = claim(new FunctionOwner.Platform(), h);
 
         release(h);
 
@@ -302,7 +145,7 @@ class FunctionDomainOperationsTest {
     @Test
     void releaseOfADomainStillCarryingRoutesConflictsNamingTheFunctions() {
         String h = host("inuse");
-        claim(new FunctionOwner.Platform(), h, false).domainId();
+        claim(new FunctionOwner.Platform(), h).domainId();
 
         String appId = persistApplication("relinuse");
         FunctionAddress address =

@@ -50,11 +50,11 @@ const routeWithAliasPrefixes: FunctionRouteResponse = {
 	aliasPrefixes: ["qa", "staging"],
 };
 
-const verifiedDomain: DomainResponse = {
+const claimedDomain: DomainResponse = {
 	id: "dom_1",
 	hostname: "acme.com",
 	owner: "clt_1",
-	verification: { state: "VERIFIED" },
+	createdAt: "2026-01-01T00:00:00Z",
 };
 
 let pinia: Pinia;
@@ -91,7 +91,7 @@ describe("FunctionPublicRoutesTab — alias prefixes and derived hostnames (pack
 		mocks.listRoutes.mockReset();
 		mocks.listDomains.mockReset();
 		mocks.listRoutes.mockResolvedValue([routeWithAliasPrefixes]);
-		mocks.listDomains.mockResolvedValue([verifiedDomain]);
+		mocks.listDomains.mockResolvedValue([claimedDomain]);
 	});
 
 	it("renders each opted-in alias prefix's derived hostname", async () => {
@@ -101,6 +101,20 @@ describe("FunctionPublicRoutesTab — alias prefixes and derived hostnames (pack
 		// mutant: never render the derived hostname — this assertion fails without it.
 		expect(text).toContain("qa-myapp.acme.com");
 		expect(text).toContain("staging-myapp.acme.com");
+	});
+
+	it("a route under a zone claim is 'claimed' (a claim covers every hostname under it)", async () => {
+		// The claim is `acme.com`; the route is `myapp.acme.com`. Mutant: match the
+		// hostname exactly — the route would read "not claimed".
+		const wrapper = await mountTab();
+		expect(wrapper.text()).toContain("claimed");
+		expect(wrapper.text()).not.toContain("not claimed");
+	});
+
+	it("a route under nobody's claim is 'not claimed'", async () => {
+		mocks.listDomains.mockResolvedValue([{ ...claimedDomain, hostname: "other.com" }]);
+		const wrapper = await mountTab();
+		expect(wrapper.text()).toContain("not claimed");
 	});
 
 	it("shows 'none' for a route with no opted-in alias prefixes", async () => {

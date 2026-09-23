@@ -213,43 +213,40 @@ if (!(in.caller() instanceof Caller.Principal principal) || !principal.hasPermis
 By default a function is reachable only by address (`/functions/{address}/...`, on the PRIVATE
 listener — in-VPC / Service Connect / fcdev's own port) or as a webhook/schedule target the
 platform itself calls. `public[]` in the manifest exposes it on the internet-facing **public
-listener** instead, at a hostname covered by a zone you have claimed and verified.
+listener** instead, at a hostname covered by a zone you have claimed.
 
-### Claiming and verifying a zone
+**Trust model**: tenants can't deploy their own functions — the operator deploys every function
+that runs, including the ones that serve a particular client's solutions. Functions are the
+operator's own trusted code, never a tenant's; a client-owned function is simply one that runs
+*for* that tenant, not code the tenant supplied. That is why claiming a domain needs no further
+proof of ownership (below): TXT verification exists to defend one tenant from claiming another's
+domain, and with a single trusted operator claiming every domain, there is nobody to defend
+against.
+
+### Claiming a zone
 
 A claim is a **zone**: claiming `acme.com` covers `acme.com` itself AND every hostname whose labels
-end in `acme.com`'s (`myapp.acme.com`, `qa-myapp.acme.com`, …), verified once for the whole zone —
-you never claim each hostname under it separately. No two claims may nest (by any owner): claiming
-`api.acme.com` while `acme.com` is already claimed (or vice versa) is refused, `DOMAIN_TAKEN`.
+end in `acme.com`'s (`myapp.acme.com`, `qa-myapp.acme.com`, …) — you never claim each hostname
+under it separately. No two claims may nest (by any owner): claiming `api.acme.com` while
+`acme.com` is already claimed (or vice versa) is refused, `DOMAIN_TAKEN`.
 
 ```
 fcdev fn domain claim api.acme.com [--client <id>]     # --client omitted = platform-owned
-fcdev fn domain verify api.acme.com
 fcdev fn domain list [--client <id>]
 fcdev fn domain release api.acme.com
 ```
 
-`claim` prints a DNS record to create:
-
-```
-create this DNS record to verify ownership:
-  type:  TXT
-  name:  _flowcatalyst.api.acme.com
-  value: fc-verify=<token>
-```
-
-Create it with your DNS provider, then `fn domain verify api.acme.com`. Only a hostname covered by a
-zone you own AND have verified may appear in a `public[]` entry — publishing against an unclaimed,
-still-pending, or someone-else's-verified zone fails the same way for all three
-(`PUBLIC_HOSTNAME_NOT_VERIFIED`; the platform never tells you which of the three it was, so it can
+Claim it; that's all — then point the CNAME at the load balancer. A claim is verified by being
+made: there is no TXT record to create, no `verify` call, and no pending state. Only a hostname
+covered by a zone you own may appear in a `public[]` entry — publishing against an unclaimed
+hostname, or one under another owner's zone, fails the same way for both
+(`PUBLIC_HOSTNAME_NOT_CLAIMED`; the platform never tells you which of the two it was, so it can
 never be used to discover who holds a zone).
 
-**Local development**: any hostname whose last label is exactly `localhost` (e.g.
-`hello.localhost`) auto-verifies the instant you claim it — no DNS record, no `verify` call — because
-`.localhost` always resolves to loopback (RFC 6761) and `fcdev` runs in dev mode. `fcdev start`
-opens the public listener on `--fn-public-port` (default **8091**), so once you `fn domain claim
-hello.localhost` and publish a function with `"public": [{"hostname": "hello.localhost"}]`,
-`http://hello.localhost:8091/` reaches it immediately.
+`fcdev start` opens the public listener on `--fn-public-port` (default **8091**), so once you `fn
+domain claim hello.localhost` and publish a function with `"public": [{"hostname":
+"hello.localhost"}]`, `http://hello.localhost:8091/` reaches it immediately — the same claim/publish
+flow as any other hostname, dev or production.
 
 ### Reaching the function
 
@@ -531,9 +528,8 @@ two forms, or a two-part address, is a usage error (exit 2).
 | `fn secret set [<address>] <KEY> [--from-file <file>] [--manifest <file>] [--client <id>] [--no-create]`, `fn secret list\|delete` | the value is **never** a CLI argument — stdin (no echo at a TTY) or `--from-file` only. The CLI treats the value as a secret-manager reference (`aws-sm://`, `aws-ps://`, `gcp-sm://`, `vault://`, `env://`) unless prefixed **`encrypt:`**, which stores the plaintext encrypted at rest (`INVALID_SECRET_REF` otherwise); the prefix is stripped and the function receives the plain value. The admin UI and the raw `PUT …/secrets/{key}` take the plain value with no prefix — `encrypt:` is the CLI's convention only. `set` creates the function on a 404 for its address, same as `fn config set`; `list` never creates |
 | `fn invoke <address>[:<version>] [--path /x] [--method POST] [--body <file>\|-] [-H k:v…] [--host-url] [--webhook --signing-secret <secret>]` | calls the function **host** directly, never the platform |
 | `fn watch <dir> [<address>] [--jar <glob>] [--manifest manifest.json]` | debounced (500 ms) file watch; every change runs a deploy cycle; a failing cycle prints its error and the watch keeps going |
-| `fn domain claim <hostname> [--client <id>]` | claims a zone — covers every hostname under it (§6a); prints the TXT record to create, or nothing further if it auto-verified (`.localhost` under dev mode) |
-| `fn domain verify <hostname>` | resolves the zone's TXT record and marks the claim `VERIFIED` — `<hostname>` may be the zone apex or any hostname under it |
-| `fn domain list [--client <id>]` | lists claimed zones and their verification state (`--client` omitted = platform-owned) |
+| `fn domain claim <hostname> [--client <id>]` | claims a zone — covers every hostname under it (§6a); immediately usable, no DNS verification step |
+| `fn domain list [--client <id>]` | lists claimed zones (`--client` omitted = platform-owned) |
 | `fn domain release <hostname>` | releases a zone — refused while any `public[]` route on the zone or a hostname under it still uses it |
 
 ## 10. What the sample proves, end to end

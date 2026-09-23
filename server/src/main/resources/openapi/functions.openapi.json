@@ -1852,84 +1852,6 @@
         ]
       }
     },
-    "/api/function-domains/{hostname}/verify": {
-      "post": {
-        "operationId": "verifyFunctionDomain",
-        "tags": [
-          "function-domains"
-        ],
-        "summary": "Verify a claimed zone's TXT record",
-        "description": "Requires `platform:function:domain:manage`.",
-        "parameters": [
-          {
-            "name": "hostname",
-            "in": "path",
-            "required": true,
-            "description": "any hostname covered by the claimed zone, or the zone apex itself — resolves to the zone's one claim",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "The verified domain",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DomainResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "PERMISSION_REQUIRED",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "FunctionDomain_NOT_FOUND",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "DOMAIN_NOT_VERIFIED",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "DNS_UNAVAILABLE",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
     "/api/function-domains/{hostname}": {
       "get": {
         "operationId": "getFunctionDomain",
@@ -3868,48 +3790,6 @@
         ],
         "additionalProperties": false
       },
-      "DomainRecordView": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": [
-              "TXT"
-            ]
-          },
-          "name": {
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "type",
-          "name",
-          "value"
-        ],
-        "additionalProperties": false
-      },
-      "DomainVerificationView": {
-        "type": "object",
-        "properties": {
-          "state": {
-            "type": "string",
-            "enum": [
-              "PENDING",
-              "VERIFIED"
-            ]
-          },
-          "record": {
-            "$ref": "#/components/schemas/DomainRecordView"
-          }
-        },
-        "required": [
-          "state"
-        ],
-        "additionalProperties": false
-      },
       "DomainResponse": {
         "type": "object",
         "properties": {
@@ -3922,9 +3802,6 @@
           "owner": {
             "type": "string"
           },
-          "verification": {
-            "$ref": "#/components/schemas/DomainVerificationView"
-          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -3934,7 +3811,6 @@
           "id",
           "hostname",
           "owner",
-          "verification",
           "createdAt"
         ],
         "additionalProperties": false

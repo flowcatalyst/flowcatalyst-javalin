@@ -14,7 +14,6 @@ import io.flowcatalyst.platform.function.FunctionRepository;
 import io.flowcatalyst.platform.function.FunctionRouteRepository;
 import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
-import io.flowcatalyst.platform.function.JndiTxtResolver;
 import io.flowcatalyst.platform.function.TriggerObjectRepository;
 import io.flowcatalyst.platform.function.artifact.Signatures;
 import io.flowcatalyst.platform.function.operations.TriggerSync;
@@ -99,8 +98,7 @@ class FunctionOpenApiCoverageTest {
                     policies, FunctionLimits.defaults(), new Signatures.Off(), TriggerSync.none(), triggerObjects,
                     subscriptions, dispatchPools, scheduledJobs, settings, java.util.Optional.empty(), java.util.Optional.empty()));
             FunctionPolicyApi.register(r, new FunctionPolicyApi.State(policies, clients, uow, FunctionLimits.defaults()));
-            FunctionDomainApi.register(r, new FunctionDomainApi.State(domains, routes, functions, uow,
-                    new JndiTxtResolver(), false));
+            FunctionDomainApi.register(r, new FunctionDomainApi.State(domains, routes, functions, uow));
             FunctionControlApi.register(r, new FunctionControlApi.State(functions, versions, hosts, uow,
                     serviceAccounts, settings, applications, eventTypes, events, routes, java.util.Optional.empty()));
         });
@@ -121,9 +119,8 @@ class FunctionOpenApiCoverageTest {
             }
         }
         // Narrow to the EXACT prefixes above — a startsWith on "/api/function-domains" would
-        // also match "/api/function-domains/{hostname}/verify", which is intended, but must
-        // NOT match an unrelated sibling like "/api/functions-x"; the "/" join above already
-        // guards that.
+        // also match a nested path under it, which is intended, but must NOT match an
+        // unrelated sibling like "/api/functions-x"; the "/" join above already guards that.
 
         var doc = document();
         Set<String> documented = new LinkedHashSet<>();
@@ -139,7 +136,7 @@ class FunctionOpenApiCoverageTest {
         assertThat(missingRoute).as("operations documented in " + RESOURCE + " with no registered route")
                 .isEmpty();
 
-        assertThat(registered).as("mutant: delete a route from the registry or the document").hasSize(33);
+        assertThat(registered).as("mutant: delete a route from the registry or the document").hasSize(32);
     }
 
     // ── O5: the document is structurally valid OpenAPI 3.1 ──────────────────

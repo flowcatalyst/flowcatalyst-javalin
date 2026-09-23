@@ -16,6 +16,12 @@ function that owns `myapp.acme.com`. Subscriptions, schedules and the pool still
 
 ## 1. Zones (platform)
 
+> **Amended by `function-domains-no-dns.md` (owner clarification 2026-09-23):** DNS TXT
+> verification is gone — a claim is verified by being made. Every "verified"/"PENDING" reference
+> below (the TXT record, dev-mode `.localhost` auto-verify, `PUBLIC_HOSTNAME_NOT_VERIFIED`) no
+> longer applies: a fresh claim is immediately usable by its owner, and the publish-time check is
+> `PUBLIC_HOSTNAME_NOT_CLAIMED` with two clauses (unclaimed / another owner's), not three.
+
 **A claim is a zone.** One kind of claim, one table (`fn_domains` unchanged, `hostname` is the zone
 apex). A claim of `d` covers `d` itself and every hostname whose labels end in `d`'s labels
 (`acme.com` covers `myapp.acme.com` and `qa-myapp.acme.com`; `hello.localhost` covers itself and

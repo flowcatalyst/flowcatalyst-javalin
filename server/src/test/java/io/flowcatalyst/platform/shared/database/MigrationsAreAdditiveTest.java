@@ -16,7 +16,13 @@ import org.junit.jupiter.api.Test;
 /// is not a mirror of a Go goose migration must be **additive and ignorable
 /// by Go** — no dropped or renamed tables or columns, no retyped columns.
 /// A mirrored migration (header `-- Adopted from flowcatalyst-go …`) is
-/// exempt: Go itself ran it.
+/// exempt: Go itself ran it. A statement against a table in
+/// [SchemaFingerprintTest#JAVA_ONLY_TABLES] is exempt too, for the SAME
+/// reason that test excludes those tables from the byte-for-byte Go
+/// fingerprint comparison: a table Go never reads or writes leaves the
+/// rollback-to-Go story intact regardless of what happens to its columns
+/// (`fn_domains.verification_token`/`verified_at`, dropped by V16, spec
+/// `function-domains-no-dns.md`, is the first real instance of this).
 ///
 /// The predicate is tested on its own so the scan over the real directory
 /// (vacuous today: V2–V7 are all mirrors) is not the only thing pinning it.
@@ -29,17 +35,38 @@ class MigrationsAreAdditiveTest {
     static final Pattern DESTRUCTIVE = Pattern.compile(
             "(?is)\\b(DROP\\s+TABLE|DROP\\s+COLUMN|RENAME\\s+(TO|COLUMN)|ALTER\\s+COLUMN\\s+\\S+\\s+(SET\\s+DATA\\s+)?TYPE)\\b");
 
+    /// The table a `ALTER TABLE <table> ...` or `DROP TABLE [IF EXISTS] <table> ...`
+    /// statement names — group 1 is the table, `IF EXISTS` optional.
+    static final Pattern TABLE_STATEMENT = Pattern.compile(
+            "(?is)\\b(?:ALTER|DROP)\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?([\\w.]+)");
+
     static boolean isMirror(String sql) {
         return sql.stripLeading().startsWith(MIRROR_MARKER);
     }
 
+    /// Destructive statements against a [SchemaFingerprintTest#JAVA_ONLY_TABLES]
+    /// table are exempt (see the class doc) — checked PER STATEMENT (split on
+    /// `;`), not for the file as a whole, so a migration mixing a java-only
+    /// table's drop with a genuinely shared table's drop still catches the
+    /// shared one.
     static List<String> violations(String sql) {
         List<String> out = new ArrayList<>();
-        var m = DESTRUCTIVE.matcher(stripComments(sql));
-        while (m.find()) {
-            out.add(m.group(1).replaceAll("\\s+", " ").toUpperCase());
+        for (String statement : stripComments(sql).split(";")) {
+            String table = tableNameOf(statement);
+            if (table != null && SchemaFingerprintTest.JAVA_ONLY_TABLES.contains(table)) {
+                continue;
+            }
+            var m = DESTRUCTIVE.matcher(statement);
+            while (m.find()) {
+                out.add(m.group(1).replaceAll("\\s+", " ").toUpperCase());
+            }
         }
         return out;
+    }
+
+    private static String tableNameOf(String statement) {
+        var m = TABLE_STATEMENT.matcher(statement);
+        return m.find() ? m.group(1) : null;
     }
 
     private static String stripComments(String sql) {
@@ -63,6 +90,22 @@ class MigrationsAreAdditiveTest {
                 ALTER TABLE msg_subscriptions ALTER COLUMN mode SET DEFAULT 'NEXT_ON_ERROR';
                 DROP INDEX IF EXISTS old_ix;
                 """)).isEmpty();
+    }
+
+    /// A drop against a KNOWN java-only table is exempt; the identical drop
+    /// against an ordinary shared table is still caught — pins that the
+    /// exemption is table-specific, not a blanket "drops are fine now".
+    /// Mutant: drop the exemption entirely (first assertion fails), or
+    /// broaden it to every table (second assertion fails).
+    @Test
+    void javaOnlyTableDropsAreExemptButAnIdenticalDropOnASharedTableIsStillCaught() {
+        assertThat(SchemaFingerprintTest.JAVA_ONLY_TABLES).contains("fn_domains");
+        assertThat(violations("ALTER TABLE fn_domains DROP COLUMN verification_token;"))
+                .as("mutant: stop exempting java-only tables")
+                .isEmpty();
+        assertThat(violations("ALTER TABLE iam_principals DROP COLUMN verification_token;"))
+                .as("mutant: exempt every table, not just java-only ones")
+                .containsExactly("DROP COLUMN");
     }
 
     @Test

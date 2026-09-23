@@ -31,7 +31,7 @@ machinery as the plumbing.
         router ── signed webhook ──▶ ┌────────────┴──── function host (fc-fnhost) ──────────────────┐
         scheduler ── signed POST ──▶ │  one JVM, one class loader per function version              │
         API caller ── bearer ──────▶ │  :8080 private entry   /functions/{address}[:{version}]/path │
-        the public internet ───────▶ │  :8081 public entry    Host header → verified domain → route │
+        the public internet ───────▶ │  :8081 public entry    Host header → claimed domain → route  │
                                      │  :9090 /health /ready /metrics                                │
                                      └───────────────────────────────────────────────────────────────┘
 ```
@@ -121,7 +121,7 @@ are refused: the host's isolation is class-loader isolation, not process isolati
 | `endpoints[]` | the paths the function answers and **how each is authenticated** — `webhook` (signed delivery), `platform` (bearer token), `none`. No default: every endpoint says |
 | `subscriptions[]` | event types to receive, each pointing at a `webhook` endpoint |
 | `schedules[]` | cron entries, each pointing at a `webhook` endpoint |
-| `public[]` | hostname + path prefix served on the public entry, on a hostname covered by a zone the owner has claimed and verified by DNS TXT (a claim covers every hostname under it); each entry may opt into `aliasPrefixes` so a prefixed hostname (`qa-myapp.acme.com`) reaches that named alias's version too (`docs/functions.md` §6a "Alias prefixes") |
+| `public[]` | hostname + path prefix served on the public entry, on a hostname covered by a zone the owner has claimed — a claim is verified by being made, no DNS TXT step (a claim covers every hostname under it); each entry may opt into `aliasPrefixes` so a prefixed hostname (`qa-myapp.acme.com`) reaches that named alias's version too (`docs/functions.md` §6a "Alias prefixes") |
 | `config`, `secrets` | the keys the function needs; values are stored on the platform per function and delivered in desired state, **declared keys only** |
 | `db[]`, `httpAllow` | database connections (DSN from a secret) and the outbound hosts the function may call |
 
@@ -207,7 +207,7 @@ discovery document, and holds **no** storage credentials: artifacts come through
 | Event / outbox | `ctx.emit()` goes through the host to the platform's ingest with the function's identity |
 | Router | delivers to functions exactly as to any subscriber; honours `retry` by deferring (Java only — Go does not) |
 | Service accounts / OAuth | the host and the CLI are OAuth clients; `fcdev start` provisions both |
-| Domains | `fn_domains` + TXT verification back the `public[]` routes; a claim is a ZONE, covering every hostname under it; `.localhost` is auto-verified in dev mode |
+| Domains | `fn_domains` backs the `public[]` routes; a claim is a ZONE, covering every hostname under it, and is verified by being made — no DNS TXT step, no pending state, no dev-mode special case (`docs/spec/function-domains-no-dns.md`) |
 | Migrations | `V13__functions.sql` (Java-only tables `fn_*`; the only Go-shared change is widening `chk_msg_subscriptions_source` to admit `FUNCTION`) |
 
 **Divergence from Go.** The function service has no Go counterpart; it is Java-first and
@@ -278,7 +278,7 @@ Full detail: `docs/deployments.md` §4.
 - **candidate** — a `PUBLISHED` version carried in desired state so hosts can prove it loadable before promote.
 - **desired state** — the document a host fetches: which versions to run, with their config, secrets, signer and public routes.
 - **pool** — a named group of hosts; a manifest picks one; one ECS service per pool.
-- **private / public entry** — the host's two listeners: in-VPC by address, and the internet by verified hostname.
+- **private / public entry** — the host's two listeners: in-VPC by address, and the internet by claimed hostname.
 - **permit** — one unit of a function's concurrency limit; taken per invocation, released when it finishes.
 - **reach** — the platform's tenancy rule: which clients' rows a caller may see.
 - **warm / lazy** — loaded at reconcile, or on first invocation and unloaded after an hour idle.

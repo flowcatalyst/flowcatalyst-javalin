@@ -183,20 +183,21 @@ public final class FunctionTriggerSync implements TriggerSync {
         validatePublicRoutes(function, manifest);
     }
 
-    /// Spec `function-public-routes.md` §2: every `public[]` entry's hostname
-    /// must be a `VERIFIED` domain OF THIS FUNCTION'S OWNER — checked as
-    /// three independent conditions (unclaimed / pending / another owner's),
-    /// each throwing the SAME `PUBLIC_HOSTNAME_NOT_VERIFIED` (spec §6 M2:
-    /// "same code for all three ... no oracle") — and `(hostname,
-    /// pathPrefix)` must not already be routed to ANOTHER function
-    /// (`PUBLIC_ROUTE_TAKEN`, naming it only when the caller can reach it,
-    /// spec §6 M5). Checked against `fn_routes` as it stands right now — the
-    /// only rows there are what an earlier PROMOTE materialised, so two
-    /// functions can both pass this at publish when neither has promoted yet
-    /// (spec §6 M4's race); [#reconcilePublicRoutes] re-checks at promote.
+    /// Spec `function-public-routes.md` §2 (amended `function-domains-no-dns.md`):
+    /// every `public[]` entry's hostname must be under a domain CLAIMED BY
+    /// THIS FUNCTION'S OWNER — checked as two independent conditions
+    /// (unclaimed / another owner's), each throwing the SAME
+    /// `PUBLIC_HOSTNAME_NOT_CLAIMED` (spec §6 M2: "same code for all ...
+    /// no oracle") — and `(hostname, pathPrefix)` must not already be routed
+    /// to ANOTHER function (`PUBLIC_ROUTE_TAKEN`, naming it only when the
+    /// caller can reach it, spec §6 M5). Checked against `fn_routes` as it
+    /// stands right now — the only rows there are what an earlier PROMOTE
+    /// materialised, so two functions can both pass this at publish when
+    /// neither has promoted yet (spec §6 M4's race); [#reconcilePublicRoutes]
+    /// re-checks at promote.
     private void validatePublicRoutes(Function function, Manifest manifest) {
         for (Manifest.PublicRoute route : manifest.publicRoutes()) {
-            requireVerifiedOwnedDomain(function, route.hostname());
+            requireClaimedOwnedDomain(function, route.hostname());
             FunctionRoute existing = routes.findPublic(route.hostname(), route.pathPrefix()).orElse(null);
             if (existing != null && !existing.functionId().equals(function.id())) {
                 throw publicRouteTaken(existing, route.hostname(), route.pathPrefix());
@@ -204,29 +205,26 @@ public final class FunctionTriggerSync implements TriggerSync {
         }
     }
 
-    /// The three independent clauses of `PUBLIC_HOSTNAME_NOT_VERIFIED`
-    /// (spec §6 M2) — deliberately three separate `if`s, not one boolean
-    /// expression, so a mutant dropping any single clause is caught by its
-    /// own dedicated test rather than being masked by the others. Resolved
-    /// through [FunctionDomainRepository#covering] (spec
+    /// The two independent clauses of `PUBLIC_HOSTNAME_NOT_CLAIMED` (spec §6
+    /// M2, amended `function-domains-no-dns.md`) — deliberately two separate
+    /// `if`s, not one boolean expression, so a mutant dropping either clause
+    /// is caught by its own dedicated test rather than being masked by the
+    /// other. Resolved through [FunctionDomainRepository#covering] (spec
     /// `function-zones-and-aliases.md` §1), not `findByHostname`: a claim of
-    /// `acme.com` verifies `myapp.acme.com` too, without a second claim.
-    private void requireVerifiedOwnedDomain(Function function, Hostname hostname) {
+    /// `acme.com` covers `myapp.acme.com` too, without a second claim.
+    private void requireClaimedOwnedDomain(Function function, Hostname hostname) {
         FunctionDomain domain = domains.covering(hostname).orElse(null);
         if (domain == null) {
-            throw publicHostnameNotVerified(hostname);
-        }
-        if (!(domain.verification() instanceof FunctionDomain.Verification.Verified)) {
-            throw publicHostnameNotVerified(hostname);
+            throw publicHostnameNotClaimed(hostname);
         }
         if (!domain.owner().equals(function.owner())) {
-            throw publicHostnameNotVerified(hostname);
+            throw publicHostnameNotClaimed(hostname);
         }
     }
 
-    private static UseCaseException publicHostnameNotVerified(Hostname hostname) {
-        return UseCaseException.validation("PUBLIC_HOSTNAME_NOT_VERIFIED",
-                "hostname '" + hostname.value() + "' is not a verified domain of this function's owner");
+    private static UseCaseException publicHostnameNotClaimed(Hostname hostname) {
+        return UseCaseException.validation("PUBLIC_HOSTNAME_NOT_CLAIMED",
+                "hostname '" + hostname.value() + "' is not under a domain claimed by this function's owner");
     }
 
     /// Spec §6 M5: names the other function's address only when the CURRENT

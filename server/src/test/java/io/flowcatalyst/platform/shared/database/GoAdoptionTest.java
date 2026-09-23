@@ -62,14 +62,16 @@ class GoAdoptionTest {
         // descriptor/read-metadata/request_info, catch-up-2026-09-22.md) are
         // each idempotent and a no-op on this goose-57 database. V15
         // (fn_routes.alias_prefixes, spec `function-zones-and-aliases.md` §3,
-        // package J slice J3) has no Go counterpart at all (like V13's own
-        // fn_ tables) — it is a genuine addition here too.
-        assertThat(result.migrationsExecuted).isEqualTo(14);
+        // package J slice J3) and V16 (fn_domains drops verification_token/
+        // verified_at, spec `function-domains-no-dns.md`) have no Go
+        // counterpart at all (like V13's own fn_ tables) — each is a genuine
+        // addition here too.
+        assertThat(result.migrationsExecuted).isEqualTo(15);
         assertThat(result.migrations).extracting(m -> m.version)
-                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15");
+                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16");
 
         MigrationInfo[] applied = Migrator.flyway(ds).info().applied();
-        assertThat(applied).hasSize(15);
+        assertThat(applied).hasSize(16);
         assertThat(applied[0].getVersion().getVersion()).isEqualTo("1");
         assertThat(applied[0].getState()).isEqualTo(MigrationState.BASELINE);
         for (int i = 1; i < applied.length; i++) {
@@ -89,7 +91,7 @@ class GoAdoptionTest {
                 assertThat(rs.getString(1)).isEqualTo("BASELINE");
                 assertThat(rs.getString(2)).isEqualTo("1");
                 assertThat(rs.getBoolean(3)).isTrue();
-                for (int v = 2; v <= 15; v++) {
+                for (int v = 2; v <= 16; v++) {
                     assertThat(rs.next()).isTrue();
                     assertThat(rs.getString(2)).isEqualTo(String.valueOf(v));
                     assertThat(rs.getBoolean(3)).isTrue();
@@ -127,6 +129,16 @@ class GoAdoptionTest {
                       AND column_name = 'alias_prefixes'""")) {
                 rs.next();
                 assertThat(rs.getInt(1)).as("V15 adds fn_routes.alias_prefixes exactly once").isEqualTo(1);
+            }
+            // V16: fn_domains.verification_token/verified_at are gone — V13 created
+            // fn_domains WITH them on this Go-HEAD database (Go never had this table
+            // at all), and V16 drops them again in the very same adoption run.
+            try (ResultSet rs = st.executeQuery("""
+                    SELECT count(*) FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'fn_domains'
+                      AND column_name IN ('verification_token', 'verified_at')""")) {
+                rs.next();
+                assertThat(rs.getInt(1)).as("V16 drops fn_domains.verification_token and verified_at").isZero();
             }
             // V2..V7, V9 and V10 are no-ops on a Go-HEAD database: the schema they
             // add is already there exactly once, not duplicated or altered.

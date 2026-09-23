@@ -96,7 +96,9 @@ CASCADE` · `alias VARCHAR(63)` LABEL · `version_id` not null references `fn_ve
 
 **`fn_domains`** — `id` pk · `client_id` **null** (null = the platform's) · `hostname VARCHAR(253)` not null check
 `hostname = lower(hostname)` · `verification_token VARCHAR(64)` not null · `verified_at` nullable ·
-`created_at`. Unique `(hostname)`. Index `(client_id)`.
+`created_at`. Unique `(hostname)`. Index `(client_id)`. **`verification_token`/`verified_at` dropped by
+V16** (`function-domains-no-dns.md`) — the shape above is V13's original, kept for history only;
+current columns are `id, client_id, hostname, created_at`.
 
 **`fn_routes`** — superseded by `function-invocation.md` §3, §6.6: `hostname` is now NOT NULL (every
 row is public — a private call needs no route row at all) and there is no `method` column;
@@ -502,14 +504,15 @@ is that stored key.
 
 ### 6.5 `FunctionDomain`
 
-`FunctionDomain(id, FunctionOwner owner, Hostname hostname, String verificationToken, Verification
-verification, createdAt)`; `sealed Verification = Pending | Verified(Instant at)`.
-`static claim(FunctionOwner, Hostname, String token, now)`; `verified(now)`: `Pending` ⇒ `Verified`,
-`Verified` ⇒ conflict `DOMAIN_ALREADY_VERIFIED`. `boolean usableBy(FunctionOwner owner)` — verified and
-owned by that owner (`Platform` matches only `Platform`). `toString` masks the token.
+> **Amended by `function-domains-no-dns.md` (owner clarification 2026-09-23):** DNS TXT
+> verification is gone — a claim is verified by being made, so there is no `verificationToken`, no
+> `Verification` state, and no `verified`/`usableBy` transition left. The shape below is current.
 
-Repository: `findById`, `findByHostname(Hostname)`, `listByOwner(FunctionOwner)`, `persist` (SET:
-`verified_at` only), `delete`.
+`FunctionDomain(id, FunctionOwner owner, Hostname hostname, createdAt)`. `static claim(FunctionOwner,
+Hostname, now)` — the only constructor; the record is otherwise immutable once claimed.
+
+Repository: `findById`, `findByHostname(Hostname)`, `listByOwner(FunctionOwner)`, `persist`
+(insert-only — nothing about a claim ever changes after it is made), `delete`.
 
 ### 6.6 `FunctionRoute` — superseded by `function-invocation.md` §3, §6.6
 

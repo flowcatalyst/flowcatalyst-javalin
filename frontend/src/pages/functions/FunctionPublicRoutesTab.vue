@@ -1,7 +1,9 @@
 <script setup lang="ts">
 // Public routes tab (docs/spec/function-ui.md §2.1): the live manifest's
-// `public[]` entries, joined with each hostname's verification state from
-// GET /api/function-domains. Uses the materialised routes
+// `public[]` entries, joined with each hostname's claim state from
+// GET /api/function-domains — a claim is verified by being made
+// (docs/spec/function-domains-no-dns.md), so this is claimed/not claimed
+// only, never a pending state. Uses the materialised routes
 // (GET /api/function-routes?address=...) rather than re-parsing the live
 // version's manifest — promote reconciles fn_routes to exactly match
 // public[], so the two are equivalent for a promoted function, and this
@@ -55,22 +57,22 @@ async function load(addr: string) {
 	}
 }
 
-function isLocalhost(hostname: string): boolean {
-	return hostname === "localhost" || hostname.endsWith(".localhost");
+// A claim is a zone (docs/spec/function-zones-and-aliases.md §1): a route's
+// hostname is claimed when it equals a claim or sits under one.
+function coveringClaim(hostname: string): DomainResponse | undefined {
+	if (domainByHostname.value.has(hostname)) return domainByHostname.value.get(hostname);
+	for (const [zone, domain] of domainByHostname.value) {
+		if (hostname.endsWith("." + zone)) return domain;
+	}
+	return undefined;
 }
 
-function verificationLabel(hostname: string): string {
-	if (isLocalhost(hostname)) return "auto-verified (dev mode)";
-	const domain = domainByHostname.value.get(hostname);
-	if (!domain) return "not claimed";
-	return domain.verification.state === "VERIFIED" ? "verified" : "pending";
+function claimLabel(hostname: string): string {
+	return coveringClaim(hostname) ? "claimed" : "not claimed";
 }
 
-function verificationSeverity(hostname: string): "success" | "warn" | "danger" {
-	if (isLocalhost(hostname)) return "success";
-	const domain = domainByHostname.value.get(hostname);
-	if (!domain) return "danger";
-	return domain.verification.state === "VERIFIED" ? "success" : "warn";
+function claimSeverity(hostname: string): "success" | "danger" {
+	return coveringClaim(hostname) ? "success" : "danger";
 }
 
 // Package J3 (docs/spec/function-zones-and-aliases.md §3-§4): each opt-in
@@ -99,7 +101,7 @@ function derivedHostname(hostname: string, prefix: string): string {
           <th>Hostname</th>
           <th>Path Prefix</th>
           <th>Alias Prefixes</th>
-          <th>Verification</th>
+          <th>Claim</th>
           <th></th>
         </tr>
       </thead>
@@ -120,8 +122,8 @@ function derivedHostname(hostname: string, prefix: string): string {
           </td>
           <td>
             <Tag
-              :value="verificationLabel(route.hostname)"
-              :severity="verificationSeverity(route.hostname)"
+              :value="claimLabel(route.hostname)"
+              :severity="claimSeverity(route.hostname)"
             />
           </td>
           <td>

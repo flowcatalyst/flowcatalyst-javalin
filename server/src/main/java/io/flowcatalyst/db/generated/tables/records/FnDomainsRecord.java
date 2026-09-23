@@ -63,45 +63,17 @@ public class FnDomainsRecord extends UpdatableRecordImpl<FnDomainsRecord> {
     }
 
     /**
-     * Setter for <code>public.fn_domains.verification_token</code>.
-     */
-    public void setVerificationToken(String value) {
-        set(3, value);
-    }
-
-    /**
-     * Getter for <code>public.fn_domains.verification_token</code>.
-     */
-    public String getVerificationToken() {
-        return (String) get(3);
-    }
-
-    /**
-     * Setter for <code>public.fn_domains.verified_at</code>.
-     */
-    public void setVerifiedAt(OffsetDateTime value) {
-        set(4, value);
-    }
-
-    /**
-     * Getter for <code>public.fn_domains.verified_at</code>.
-     */
-    public OffsetDateTime getVerifiedAt() {
-        return (OffsetDateTime) get(4);
-    }
-
-    /**
      * Setter for <code>public.fn_domains.created_at</code>.
      */
     public void setCreatedAt(OffsetDateTime value) {
-        set(5, value);
+        set(3, value);
     }
 
     /**
      * Getter for <code>public.fn_domains.created_at</code>.
      */
     public OffsetDateTime getCreatedAt() {
-        return (OffsetDateTime) get(5);
+        return (OffsetDateTime) get(3);
     }
 
     // -------------------------------------------------------------------------
@@ -127,14 +99,12 @@ public class FnDomainsRecord extends UpdatableRecordImpl<FnDomainsRecord> {
     /**
      * Create a detached, initialised FnDomainsRecord
      */
-    public FnDomainsRecord(String id, String clientId, String hostname, String verificationToken, OffsetDateTime verifiedAt, OffsetDateTime createdAt) {
+    public FnDomainsRecord(String id, String clientId, String hostname, OffsetDateTime createdAt) {
         super(FnDomains.FN_DOMAINS);
 
         setId(id);
         setClientId(clientId);
         setHostname(hostname);
-        setVerificationToken(verificationToken);
-        setVerifiedAt(verifiedAt);
         setCreatedAt(createdAt);
         resetTouchedOnNotNull();
     }

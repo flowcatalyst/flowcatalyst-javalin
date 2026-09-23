@@ -64,6 +64,10 @@ through `operations/Access`:
 
 ## 3. Events
 
+> **Amended by `function-domains-no-dns.md` (owner clarification 2026-09-23):** the domain event
+> `platform:function:domain:verified` is gone — a claim is verified by being made, so `domain:claimed`
+> and `domain:released` are the only domain-aggregate events left (`function-public-routes.md` §1).
+
 `FunctionEvents`: source `platform:function`; subject `platform.function.<functionId>`; message group
 `platform:function:<functionId>` for **every** event below, so one function's history is ordered.
 (The policy event has no function: its subject is `platform.function-policy.<owner key>` and its group

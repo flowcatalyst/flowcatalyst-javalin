@@ -11,13 +11,9 @@ import io.flowcatalyst.platform.function.Hostname;
 import io.flowcatalyst.platform.function.operations.Access;
 import io.flowcatalyst.platform.function.operations.ClaimCommand;
 import io.flowcatalyst.platform.function.operations.ClaimFunctionDomain;
-import io.flowcatalyst.platform.function.operations.DnsUnavailableException;
 import io.flowcatalyst.platform.function.operations.FunctionEvents.DomainClaimed;
 import io.flowcatalyst.platform.function.operations.ReleaseCommand;
 import io.flowcatalyst.platform.function.operations.ReleaseFunctionDomain;
-import io.flowcatalyst.platform.function.operations.VerifyCommand;
-import io.flowcatalyst.platform.function.operations.VerifyFunctionDomain;
-import io.flowcatalyst.platform.function.TxtResolver;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
@@ -30,7 +26,6 @@ import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 
 import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_DOMAIN_MANAGE;
@@ -48,27 +43,23 @@ import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_VIEW;
 /// | POST | `/api/function-domains` | `FUNCTION_DOMAIN_MANAGE` |
 /// | GET | `/api/function-domains?clientId=` | `FUNCTION_VIEW` |
 /// | GET | `/api/function-domains/{hostname}` | `FUNCTION_VIEW` (S3) |
-/// | POST | `/api/function-domains/{hostname}/verify` | `FUNCTION_DOMAIN_MANAGE` |
 /// | DELETE | `/api/function-domains/{hostname}` | `FUNCTION_DOMAIN_MANAGE` |
 /// | GET | `/api/function-routes?hostname=&address=` | `FUNCTION_VIEW` |
+///
+/// Amended by `function-domains-no-dns.md`: there is no verify route — a
+/// claim is verified by being made.
 public final class FunctionDomainApi {
 
     private FunctionDomainApi() {
     }
 
-    /// `devMode` (spec §1: "dev mode taken from Env and passed into the
-    /// operation factory") is resolved once at the composition root, never
-    /// read from the process environment here. `resolver` is the test-visible
-    /// seam (spec §1's deliverable 1): production wires [io.flowcatalyst.platform.function.JndiTxtResolver];
-    /// a test hands in a fake.
     public record State(FunctionDomainRepository domains, FunctionRouteRepository routes,
-                        FunctionRepository functions, UnitOfWork uow, TxtResolver resolver, boolean devMode) {
+                        FunctionRepository functions, UnitOfWork uow) {
         public State {
             Objects.requireNonNull(domains, "domains");
             Objects.requireNonNull(routes, "routes");
             Objects.requireNonNull(functions, "functions");
             Objects.requireNonNull(uow, "uow");
-            Objects.requireNonNull(resolver, "resolver");
         }
     }
 
@@ -77,7 +68,6 @@ public final class FunctionDomainApi {
         write.post("/api/function-domains", Auth.scoped(ctx -> claim(ctx, s)));
         routes.get("/api/function-domains", Auth.scoped(ctx -> list(ctx, s)));
         routes.get("/api/function-domains/{hostname}", Auth.scoped(ctx -> getDomain(ctx, s)));
-        write.post("/api/function-domains/{hostname}/verify", Auth.scoped(ctx -> verify(ctx, s)));
         write.delete("/api/function-domains/{hostname}", Auth.scoped(ctx -> release(ctx, s)));
         routes.get("/api/function-routes", Auth.scoped(ctx -> listRoutes(ctx, s)));
     }
@@ -90,7 +80,7 @@ public final class FunctionDomainApi {
         var req = ctx.bodyAsClass(ClaimRequest.class);
         String clientId = blankToNull(req.clientId());
         FunctionOwner owner = FunctionOwner.ofClientId(clientId);
-        DomainClaimed event = ClaimFunctionDomain.of(s.domains(), s.devMode())
+        DomainClaimed event = ClaimFunctionDomain.of(s.domains())
                 .run(s.uow(), new ClaimCommand(owner, req.hostname()), Auth.executionContext());
         FunctionDomain d = s.domains().findById(event.domainId())
                 .orElseThrow(() -> HttpError.internal("REPO", "domain claimed but row not found", null));
@@ -119,7 +109,7 @@ public final class FunctionDomainApi {
     }
 
     /// spec §1 (S3): `GET /api/function-domains/{hostname}` — reach-or-404
-    /// through [Access#byHostname] (already written for verify/release; not
+    /// through [Access#byHostname] (already written for release; not
     /// duplicated here), `FUNCTION_VIEW`. An invalid hostname is the same
     /// `400 HOSTNAME_INVALID` the claim route gives, since [Hostname#parse]
     /// is the one parser both routes share.
@@ -128,23 +118,6 @@ public final class FunctionDomainApi {
         Hostname hostname = Hostname.parse(ctx.pathParam("hostname"));
         FunctionDomain d = Access.byHostname(s.domains(), hostname, Auth.current());
         ctx.json(DomainResponse.from(d));
-    }
-
-    /// spec §1: `POST /api/function-domains/{hostname}/verify`. A
-    /// [DnsUnavailableException] from the resolver is caught HERE, at the API
-    /// boundary — `503 DNS_UNAVAILABLE`, never surfaced as the generic 500 the
-    /// installed error handler would otherwise give an unrecognised
-    /// `RuntimeException` (spec §1: "resolver failure ⇒ 503").
-    private static void verify(Exchange ctx, State s) {
-        Checks.require(Auth.current(), FUNCTION_DOMAIN_MANAGE);
-        String hostname = ctx.pathParam("hostname");
-        try {
-            VerifyFunctionDomain.Result result = VerifyFunctionDomain.of(s.domains(), s.resolver())
-                    .run(s.uow(), new VerifyCommand(hostname), Auth.executionContext());
-            ctx.json(DomainResponse.from(result.domain()));
-        } catch (DnsUnavailableException e) {
-            HttpError.write(ctx, 503, "DNS_UNAVAILABLE", "the DNS resolver is unavailable; try again shortly", Map.of());
-        }
     }
 
     /// spec §1: `DELETE /api/function-domains/{hostname}`.
@@ -219,33 +192,12 @@ public final class FunctionDomainApi {
     public record ClaimRequest(String hostname, String clientId) {
     }
 
-    /// `{id, hostname, owner, verification: {state, record?}}` (spec §1).
-    /// `record` is present only while `state` is `PENDING` — a verified
-    /// domain's TXT record is no longer interesting and the token itself is
-    /// never repeated on a re-read (spec §1: "the TXT record is shown only
-    /// while PENDING").
-    public record DomainResponse(String id, String hostname, String owner, VerificationView verification,
-                                 Instant createdAt) {
+    /// `{id, hostname, owner, createdAt}` (spec §1, amended
+    /// `function-domains-no-dns.md`: no `verification` key — a claim is
+    /// verified by being made).
+    public record DomainResponse(String id, String hostname, String owner, Instant createdAt) {
         static DomainResponse from(FunctionDomain d) {
-            return new DomainResponse(d.id(), d.hostname().value(), d.owner().toWire(),
-                    VerificationView.from(d), d.createdAt());
-        }
-    }
-
-    public record VerificationView(String state, RecordView record) {
-        static VerificationView from(FunctionDomain d) {
-            return switch (d.verification()) {
-                case FunctionDomain.Verification.Pending ignored ->
-                        new VerificationView("PENDING", RecordView.of(d.hostname(), d.verificationToken()));
-                case FunctionDomain.Verification.Verified ignored -> new VerificationView("VERIFIED", null);
-            };
-        }
-    }
-
-    /// `{type: "TXT", name: "_flowcatalyst.<hostname>", value: "fc-verify=<token>"}` (spec §1).
-    public record RecordView(String type, String name, String value) {
-        static RecordView of(Hostname hostname, String token) {
-            return new RecordView("TXT", "_flowcatalyst." + hostname.value(), "fc-verify=" + token);
+            return new DomainResponse(d.id(), d.hostname().value(), d.owner().toWire(), d.createdAt());
         }
     }
 

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // Claim drawer (docs/spec/function-ui.md §2.3): hostname (+ client for an
-// anchor). `.localhost` hostnames auto-verify on claim (dev mode).
+// anchor). A claim is verified by being made — no DNS record, no dev-mode
+// special case (docs/spec/function-domains-no-dns.md).
 import { computed, ref } from "vue";
 import { toast } from "@/utils/errorBus";
 import { functionsApi } from "@/api/functions";
@@ -49,12 +50,7 @@ async function onSubmit() {
 					: (clientId.value ?? undefined)
 				: (authStore.user?.clientId ?? undefined),
 		});
-		toast.success(
-			"Success",
-			domain.verification.state === "VERIFIED"
-				? `${domain.hostname} claimed and auto-verified`
-				: `${domain.hostname} claimed — create its TXT record to verify it`,
-		);
+		toast.success("Success", `${domain.hostname} claimed`);
 		emit("changed");
 		void replaceToDetail(domain.hostname);
 	} catch (e) {
@@ -82,11 +78,7 @@ async function onSubmit() {
       />
       <small class="hint">
         A claim covers every hostname under it — claiming <code>acme.com</code> also covers
-        <code>myapp.acme.com</code>, verified once for the whole zone.
-      </small>
-      <small class="hint">
-        A hostname whose last label is <code>localhost</code> auto-verifies immediately, no DNS
-        record needed (dev mode only).
+        <code>myapp.acme.com</code>. It is usable immediately, no DNS record needed.
       </small>
     </div>
 

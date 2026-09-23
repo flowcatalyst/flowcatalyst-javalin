@@ -159,9 +159,6 @@
     { "id": "list-domains",
       "request": { "method": "GET", "path": "/api/function-domains", "query": { "clientId": "platform" } } },
 
-    { "id": "verify-domain-not-verified",
-      "request": { "method": "POST", "path": "/api/function-domains/pf-${run}.parity.example/verify" } },
-
     { "id": "list-routes-requires-filter",
       "request": { "method": "GET", "path": "/api/function-routes" } },
 

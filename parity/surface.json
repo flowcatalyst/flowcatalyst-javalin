@@ -80,7 +80,6 @@
   "GET /q/openapi",
   "PATCH /bff/event-types/{id}",
   "POST /api/function-domains",
-  "POST /api/function-domains/{hostname}/verify",
   "POST /api/functions",
   "POST /api/functions/{address}/versions",
   "POST /api/functions/{address}/versions/{version}/retire",

@@ -10,9 +10,7 @@ import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.op.Operation;
 import io.flowcatalyst.sdk.usecase.op.Plan;
 
-import java.security.SecureRandom;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.Objects;
 
 /// Claims a ZONE for its owner (spec `function-zones-and-aliases.md` §1): `d`
@@ -48,19 +46,15 @@ import java.util.Objects;
 /// yet to protect by hiding it as a 404, so a scope mismatch here is a
 /// legitimate 403.
 ///
-/// `devMode` is resolved ONCE by the composition root from `Env` and handed
-/// in here — never read from the process environment inside the operation
-/// (spec §1: "dev mode taken from Env and passed into the operation
-/// factory"). When `true` AND the claimed hostname's last label is exactly
-/// `localhost` (spec §1, §6 M3 — a LABEL match, not a string suffix: `x.localhost`
-/// qualifies, `evil.localhost.example.com` does not, because ITS last label is
-/// `com`), the domain is verified at claim time, no DNS.
+/// Amended by `function-domains-no-dns.md`: a claim is verified by being made
+/// — there is no DNS TXT record, no pending state, no dev-mode `.localhost`
+/// special case. Every fresh claim is immediately usable by its owner.
 public final class ClaimFunctionDomain {
 
     private ClaimFunctionDomain() {
     }
 
-    public static Operation<ClaimCommand, DomainClaimed> of(FunctionDomainRepository domains, boolean devMode) {
+    public static Operation<ClaimCommand, DomainClaimed> of(FunctionDomainRepository domains) {
         Objects.requireNonNull(domains, "domains");
         return Operation.<ClaimCommand, DomainClaimed>named("ClaimFunctionDomain")
                 .validate(cmd -> Hostname.parse(cmd.hostname()))
@@ -73,37 +67,13 @@ public final class ClaimFunctionDomain {
                     if (domains.anyUnder(hostname)) {
                         throw domainTaken();
                     }
-                    String token = generateToken();
-                    Instant now = Instant.now();
-                    FunctionDomain claimed = FunctionDomain.claim(cmd.owner(), hostname, token, now);
-                    if (devMode && isDevLocalhost(hostname)) {
-                        claimed = claimed.verified(now);
-                    }
+                    FunctionDomain claimed = FunctionDomain.claim(cmd.owner(), hostname, Instant.now());
                     DomainClaimed event = DomainClaimed.of(ec, claimed);
                     return Plan.save(claimed, domains, event);
                 });
     }
 
-    /// spec §1, §6 M3: the hostname's LAST LABEL is exactly `localhost` — a
-    /// label-boundary comparison, not `String#endsWith("localhost")` (which
-    /// would also match a hostname like `foo.notlocalhost`, whose last label
-    /// is `notlocalhost`, not `localhost`). [Hostname#parse] already
-    /// guarantees at least two labels, so `x.localhost` qualifies and a
-    /// bare `localhost` can never reach here at all.
-    private static boolean isDevLocalhost(Hostname hostname) {
-        String value = hostname.value();
-        int lastDot = value.lastIndexOf('.');
-        String lastLabel = lastDot < 0 ? value : value.substring(lastDot + 1);
-        return lastLabel.equals("localhost");
-    }
-
     private static UseCaseException domainTaken() {
         return UseCaseException.conflict("DOMAIN_TAKEN", "hostname is already claimed");
-    }
-
-    private static String generateToken() {
-        byte[] bytes = new byte[32];
-        new SecureRandom().nextBytes(bytes);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 }

@@ -16,8 +16,19 @@ below the route match is reused unchanged).
 > hostname"/"the claimed hostname" now reads "a hostname covered by a claimed zone, or the zone apex
 > itself" — the table's routes and codes are otherwise unchanged.
 
-A public hostname's **zone** must belong to the function's **owner** and be **verified** before any
-function can be routed on it — otherwise one tenant registers another's hostname.
+> **Amended by `function-domains-no-dns.md` (owner clarification 2026-09-23): DNS TXT verification
+> is GONE.** Tenants can't deploy their own functions — the operator deploys every function,
+> including the ones that run for a particular client — so TXT verification's job (defending one
+> tenant from claiming another's domain) has nobody left to defend against. A claim is verified by
+> being made: `POST /api/function-domains/{hostname}/verify`, `TxtResolver`/`JndiTxtResolver`,
+> `DnsException`, the `DOMAIN_NOT_VERIFIED`/`DNS_UNAVAILABLE` codes, the `…:domain:verified` event,
+> `FunctionDomain.verification`/`verificationToken`, and the dev-mode `.localhost` auto-verify
+> special case are ALL deleted — every claim, from any owner, of any hostname, is immediately usable.
+> `PUBLIC_HOSTNAME_NOT_VERIFIED` (§2, F2 below) is renamed `PUBLIC_HOSTNAME_NOT_CLAIMED` and drops to
+> two clauses (unclaimed / another owner's — no more "pending"). Below, "verified" reads "claimed".
+
+A public hostname's **zone** must belong to the function's **owner** before any function can be
+routed on it — otherwise one tenant registers another's hostname.
 
 | Route | Permission | Behaviour |
 |---|---|---|

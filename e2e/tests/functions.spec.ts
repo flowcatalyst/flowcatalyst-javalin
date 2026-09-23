@@ -119,21 +119,21 @@ test.describe("functions", () => {
         expect(requested.code).toBe("hello:greeting:greeting:requested");
         expect(sent.code).toBe("hello:greeting:greeting:sent");
 
-        // ── 3. Functions → Domains: claim hello.localhost. `.localhost`
-        // auto-verifies immediately in dev mode (docs/functions.md §6a). ────
+        // ── 3. Functions → Domains: claim hello.localhost. A claim is
+        // verified by being made (docs/spec/function-domains-no-dns.md) — no
+        // DNS step, immediately usable. ─────────────────────────────────────
         await page.goto("/function-domains/new");
         await bareInput(page, "Hostname").fill(FN_DOMAIN_HOSTNAME);
-        const claimed = await submitDrawer<{ hostname: string; verification: { state: string } }>(
+        const claimed = await submitDrawer<{ hostname: string }>(
             page,
             "Claim",
             "/api/function-domains",
         );
-        expect(claimed.verification.state).toBe("VERIFIED");
+        expect(claimed.hostname).toBe(FN_DOMAIN_HOSTNAME);
         await expect(page).toHaveURL(new RegExp(`/function-domains/${FN_DOMAIN_HOSTNAME}`));
 
         await page.reload();
-        await expect(page.getByText("VERIFIED", { exact: true }).first()).toBeVisible();
-        await expect(page.getByText("Auto-verified in dev mode", { exact: false })).toBeVisible();
+        await expect(page.getByText(FN_DOMAIN_HOSTNAME, { exact: true }).first()).toBeVisible();
 
         // ── 4. Functions: create hello.default.hello through the real Create
         // Function drawer (Gap 1, closed — fixtures/functions.ts's
@@ -214,11 +214,10 @@ expect(publishRes.ok(), publishResBody).toBe(true);
         await expect(secretRow.getByText("set", { exact: true })).toBeVisible();
         await expect(page.getByText(API_KEY_VALUE)).toHaveCount(0);
 
-        // ── Public routes tab: hello.localhost, auto-verified. ──────────────
+        // ── Public routes tab: hello.localhost. ──────────────────────────────
         await page.getByRole("tab", { name: "Public Routes", exact: true }).click();
         const routeRow = rowWithText(page, FN_DOMAIN_HOSTNAME);
         await expect(routeRow).toBeVisible();
-        await expect(routeRow.getByText("auto-verified (dev mode)", { exact: true })).toBeVisible();
 
         // ── 7. The function is actually reachable on its public route. ──────
         const healthRes = await page.request.get(`http://${FN_DOMAIN_HOSTNAME}:${FN_PUBLIC_PORT}/healthz`);

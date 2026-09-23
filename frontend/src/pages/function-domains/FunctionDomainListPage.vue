@@ -73,10 +73,6 @@ function claimDomain() {
 	void router.push({ path: "/function-domains/new", query: route.query });
 }
 
-function verificationSeverity(state: string): "success" | "warn" {
-	return state === "VERIFIED" ? "success" : "warn";
-}
-
 function formatDate(s?: string): string {
 	if (!s) return "—";
 	return new Date(s).toLocaleString();
@@ -89,8 +85,8 @@ function formatDate(s?: string): string {
       <div>
         <h1 class="page-title">Function Domains</h1>
         <p class="page-subtitle">
-          Zones claimed for functions' public routes (a claim covers every hostname under it), and
-          their DNS verification state
+          Zones claimed for functions' public routes — a claim covers every hostname under it and is
+          usable immediately
         </p>
       </div>
       <Button
@@ -135,14 +131,6 @@ function formatDate(s?: string): string {
         </Column>
         <Column header="Owner">
           <template #body="{ data }">{{ data.owner }}</template>
-        </Column>
-        <Column header="State">
-          <template #body="{ data }">
-            <Tag
-              :value="data.verification.state"
-              :severity="verificationSeverity(data.verification.state)"
-            />
-          </template>
         </Column>
         <Column header="Claimed">
           <template #body="{ data }">{{ formatDate(data.createdAt) }}</template>
