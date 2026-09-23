@@ -6,6 +6,14 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## Go catch-up: OIDC client cache shape + skipped-reset logging (2026-09-23, evening)
+
+Go `7ab071c` and `89f1a08` ported (backlog §"Go catch-up owed", with a correction: `invalidate`
+was wired; the gap was cross-node rotation, since `sameSecret` compared only whether a secret was present). The OIDC client
+cache is per provider, reused only while every shaping field is unchanged; a secret-less provider
+logs INFO; a skipped reset request (ineligible, or queued for approval) logs INFO with the
+principal id and reason, never the address. Next: the manifest authoring aids.
+
 ## Trust model clarified; DNS verification of domain claims removed (2026-09-23, afternoon)
 
 Owner: "tenants can't deploy their own functions. We deploy our own functions that run for our

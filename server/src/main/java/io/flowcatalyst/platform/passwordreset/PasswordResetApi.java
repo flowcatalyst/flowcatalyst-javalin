@@ -133,11 +133,23 @@ public final class PasswordResetApi {
             return;
         }
         Principal p = found.get();
-        if (!p.isUser() || p.isFederated() || p.email() == null || p.email().isBlank()) {
+        // Silent to the caller, never silent in the logs: "no reset email
+        // arrived" must be told apart from a delivery failure (Go `89f1a08`).
+        // The reason is a class, never the address.
+        String ineligible = ineligibleForReset(p);
+        if (ineligible != null) {
+            LOG.atInfo().setMessage("password reset requested for an ineligible account; no email sent")
+                    .addKeyValue("principal", p.id())
+                    .addKeyValue("reason", ineligible)
+                    .log();
             return;
         }
         boolean strong = s.mfa().confirmed(p.id()).contains(MfaMethod.TOTP);
         if (!strong && s.requireStrongFactorForReset()) {
+            LOG.atInfo().setMessage("password reset queued for approval; no email sent")
+                    .addKeyValue("principal", p.id())
+                    .addKeyValue("reason", "no strong factor and the platform requires one")
+                    .log();
             s.approvals().queue(p);
             return;
         }
@@ -150,6 +162,24 @@ public final class PasswordResetApi {
                     .setCause(e)
                     .log(); // the token still exists
         }
+    }
+
+    /// Why a self-service reset cannot be issued for `p`, or `null` when it
+    /// can — the eligibility rule's own clauses, in order.
+    /// `findByEmail` returns only USER principals with that address, so
+    /// today only the federated clause is reachable; the other two stay so
+    /// the rule does not silently depend on how the lookup is written.
+    static String ineligibleForReset(Principal p) {
+        if (!p.isUser()) {
+            return "not a USER principal";
+        }
+        if (p.isFederated()) {
+            return "OIDC-federated (signs in through an external identity provider; has no platform password)";
+        }
+        if (p.email() == null || p.email().isBlank()) {
+            return "no email address on the account";
+        }
+        return null;
     }
 
     // ── password-setup/request (app-managed-invitations §3) ─────────────────

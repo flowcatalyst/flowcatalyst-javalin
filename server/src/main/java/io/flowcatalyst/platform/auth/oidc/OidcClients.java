@@ -32,8 +32,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /// Provider resolution and the per-process client cache
 /// (`docs/spec/auth-identity.md` §4.1 with ruling Q1): one discovery
-/// round-trip per `issuer|clientId` until either the TTL lapses or the
-/// identity-provider row changes (`invalidate`). A client secret is
+/// round-trip per identity provider until either the TTL lapses or a field
+/// that shapes the client changes (`Shape`). A client secret is
 /// decrypted from its ref with the app key — a ref without an encryption
 /// service, or one that will not decrypt, fails resolution rather than
 /// falling back to a public client.
@@ -57,7 +57,19 @@ public final class OidcClients {
         }
     }
 
-    private record Cached(OidcProvider provider, String identityProviderId, Instant expiresAt) {
+    /// Every identity-provider field the built client depends on. An edit to
+    /// any of them — a secret entered after the first login, a rotated
+    /// secret, a multi-tenant flip — misses the cache on the next login
+    /// instead of serving the old client until the TTL (Go `7ab071c`, the
+    /// 2026-09-23 prod `AADSTS7000218`). The secret ref is the stored
+    /// ciphertext, never the plaintext.
+    private record Shape(String issuerUrl, String clientId, String clientSecretRef, boolean multiTenant, String issuerPattern) {
+        static Shape of(IdentityProvider idp) {
+            return new Shape(idp.oidcIssuerUrl(), idp.oidcClientId(), idp.oidcClientSecretRef(), idp.oidcMultiTenant(), idp.oidcIssuerPattern());
+        }
+    }
+
+    private record Cached(OidcProvider provider, Shape shape, Instant expiresAt) {
     }
 
     private final IdentityProviderRepository identityProviders;
@@ -117,9 +129,12 @@ public final class OidcClients {
         return new Resolution(Optional.of(client(idp)), idp, null);
     }
 
-    /// The identity-provider row changed: forget its client (ruling Q1).
+    /// The identity-provider row changed or went away on this node: forget
+    /// its client now. Correctness does not depend on it — every node sees an
+    /// edit through `Shape` on the next login — it only drops a deleted
+    /// provider's entry rather than leaving it to the TTL.
     public void invalidate(String identityProviderId) {
-        cache.values().removeIf(c -> c.identityProviderId().equals(identityProviderId));
+        cache.remove(identityProviderId);
     }
 
     // ── the cache ──────────────────────────────────────────────────────────
@@ -128,27 +143,33 @@ public final class OidcClients {
         if (idp.oidcIssuerUrl() == null || idp.oidcIssuerUrl().isBlank() || idp.oidcClientId() == null || idp.oidcClientId().isBlank()) {
             throw new ResolutionException("identity provider " + idp.id() + " has no OIDC issuer url / client id");
         }
-        String key = idp.oidcIssuerUrl() + "|" + idp.oidcClientId();
+        Shape shape = Shape.of(idp);
         Instant now = clock.instant();
-        Cached hit = cache.get(key);
-        if (hit != null && hit.expiresAt().isAfter(now) && sameSecret(hit.provider(), idp)) {
+        Cached hit = cache.get(idp.id());
+        if (hit != null && hit.expiresAt().isAfter(now) && hit.shape().equals(shape)) {
             return hit.provider();
         }
         // Discovery outside any lock: two racing callers may both discover
         // once, which is harmless; the invariant is only "at most one
-        // client per key survives".
+        // client per identity provider survives". Keyed by the provider, so
+        // an edit replaces its superseded entry rather than stranding it.
         OidcProvider built = build(idp);
-        cache.put(key, new Cached(built, idp.id(), now.plus(ttl)));
+        cache.put(idp.id(), new Cached(built, shape, now.plus(ttl)));
         return built;
-    }
-
-    private boolean sameSecret(OidcProvider p, IdentityProvider idp) {
-        boolean hasRef = idp.oidcClientSecretRef() != null && !idp.oidcClientSecretRef().isBlank();
-        return p.config().clientSecret().isPresent() == hasRef;
     }
 
     private OidcProvider build(IdentityProvider idp) throws ResolutionException {
         Optional<String> secret = secret(idp);
+        if (secret.isEmpty()) {
+            // Legal (a public client), but a confidential registration refuses
+            // the code exchange with nothing better than Entra's AADSTS7000218,
+            // so say it where the operator will look.
+            LOG.atInfo().setMessage("OIDC provider has no client secret configured; the code exchange will run as a public client")
+                    .addKeyValue("identity_provider", idp.id())
+                    .addKeyValue("code", idp.code())
+                    .addKeyValue("issuer", idp.oidcIssuerUrl())
+                    .log();
+        }
         OidcProvider.Endpoints endpoints = discover(idp.oidcIssuerUrl(), idp.oidcMultiTenant());
         JWKSource<SecurityContext> jwks;
         try {

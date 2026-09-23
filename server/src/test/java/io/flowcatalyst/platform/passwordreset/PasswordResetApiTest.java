@@ -38,6 +38,11 @@ import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.testpg.TestPg;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
 import org.jooq.DSLContext;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
@@ -123,15 +128,19 @@ class PasswordResetApiTest {
                 .withTwoFactor(new TwoFactorPolicy(true, List.of(MfaMethod.TOTP), false, 30));
         mappingId = m.id();
         UOW.inTransaction(tx -> { IDPS.persist(idp, tx.dbTx()); MAPPINGS.persist(m, tx.dbTx()); return null; });
-        var state = new PasswordResetApi.State(LINKS, TOKENS, PRINCIPALS, UOW, MFA, MFA_TOKENS, new DomainPolicy.Evaluator(MAPPINGS),
-                GRANTS, NOTICES, new PortalPasswords() {
-                    @Override public Optional<Identity> find(String id) { return PORTAL.get().find(id); }
-                    @Override public boolean setPasswordHash(String id, String hash) { return PORTAL.get().setPasswordHash(id, hash); }
-                }, ApprovalQueue.none(), false, MOVABLE, null, null);
+        var state = state(ApprovalQueue.none(), false);
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
             PasswordResetApi.register(routes, state);
         });
+    }
+
+    private static PasswordResetApi.State state(ApprovalQueue approvals, boolean requireStrongFactorForReset) {
+        return new PasswordResetApi.State(LINKS, TOKENS, PRINCIPALS, UOW, MFA, MFA_TOKENS, new DomainPolicy.Evaluator(MAPPINGS),
+                GRANTS, NOTICES, new PortalPasswords() {
+                    @Override public Optional<Identity> find(String id) { return PORTAL.get().find(id); }
+                    @Override public boolean setPasswordHash(String id, String hash) { return PORTAL.get().setPasswordHash(id, hash); }
+                }, approvals, requireStrongFactorForReset, MOVABLE, null, null);
     }
 
     @AfterAll
@@ -184,6 +193,51 @@ class PasswordResetApiTest {
         user(federated, null, "OIDC");
         http.post("/auth/password-reset/request", Json.write(Map.of("email", federated)));
         assertThat(SENT).as("a federated identity is ineligible").isEmpty();
+    }
+
+    /// Go `89f1a08`: an ineligible account, and one sent to the approval
+    /// queue, answer the caller silently but always leave an INFO naming the
+    /// principal and the reason class — never the address.
+    @Test
+    void aSkippedResetRequestLogsThePrincipalAndWhyButNeverTheAddress() {
+        var log = (Logger) LoggerFactory.getLogger(PasswordResetApi.class);
+        var captured = new ListAppender<ILoggingEvent>();
+        captured.start();
+        log.addAppender(captured);
+        try {
+            String federated = "skip-fed-" + RUN + "@example.com";
+            String fedId = user(federated, null, "OIDC");
+            String queued = "skip-queue-" + RUN + "@example.com";
+            String queuedId = user(queued, PasswordHash.hash(OLD_PASSWORD), null);
+            var queue = new ArrayList<String>();
+            SENT.clear();
+
+            PasswordResetApi.tryIssueToken(state(ApprovalQueue.none(), false), federated);
+            PasswordResetApi.tryIssueToken(state(pr -> queue.add(pr.id()), true), queued);
+
+            assertThat(SENT).as("no path here sends a mail").isEmpty();
+            assertThat(queue).containsExactly(queuedId);
+            assertThat(infoFor(captured, fedId)).contains("reason=OIDC-federated");
+            assertThat(infoFor(captured, queuedId)).contains("queued for approval").contains("reason=no strong factor");
+            assertThat(captured.list).allSatisfy(e -> assertThat(render(e)).doesNotContain(federated, queued));
+        } finally {
+            log.detachAppender(captured);
+        }
+    }
+
+    private static String infoFor(ListAppender<ILoggingEvent> captured, String principalId) {
+        var hits = captured.list.stream().filter(e -> e.getLevel() == Level.INFO).map(PasswordResetApiTest::render)
+                .filter(r -> r.contains("principal=" + principalId)).toList();
+        assertThat(hits).as("exactly one INFO for " + principalId).hasSize(1);
+        return hits.getFirst();
+    }
+
+    private static String render(ILoggingEvent e) {
+        var sb = new StringBuilder(e.getFormattedMessage());
+        if (e.getKeyValuePairs() != null) {
+            e.getKeyValuePairs().forEach(kv -> sb.append(' ').append(kv.key).append('=').append(kv.value));
+        }
+        return sb.toString();
     }
 
     @Test

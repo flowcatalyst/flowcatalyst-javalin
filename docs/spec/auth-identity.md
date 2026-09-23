@@ -309,6 +309,15 @@ the old client until restart (`:143-183`) — **load-bearing or accident?**
 (`:141-160`) — a Go convenience; the invariant is only "at most one
 discovery per key", not "serialise all resolutions".
 
+**Ruled (Q1) and as built, 2026-09-23:** one cached client per identity
+provider, reused only while every field that shapes it — issuer, client id,
+secret ref, multi-tenant, issuer pattern — is unchanged and the 10-minute
+TTL holds. An edit is seen on the next login on every node (Go `7ab071c`
+widened its key to the same fields); the provider API's same-node
+`invalidate` hook only drops a deleted provider's entry early. A
+provider resolving with no secret logs an INFO, since a confidential
+registration refuses the exchange with only `AADSTS7000218` to show for it.
+
 | Step | Rule | Source |
 |---|---|---|
 | `ResolveForEmail(email)` | domain = text after the **last** `@` (`:279-286`); `""` → error `invalid email: no domain`; `FindByEmailDomain` nil → error `no email-domain mapping for <d>`; IdP missing → error; IdP `INTERNAL` → `(nil, idp, mapping, nil)` = "no bridge needed" | `:72-99` |

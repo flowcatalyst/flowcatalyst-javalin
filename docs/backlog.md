@@ -1741,7 +1741,21 @@ operator's trusted code; tenants never deploy code; a client-owned function is o
 that tenant's solutions; the signer allow-list is the operator's CI; ceilings protect a pool from a
 mistake.
 
-## Go catch-up owed: two small auth commits (2026-09-23)
+## Go catch-up owed: two small auth commits (2026-09-23) — LANDED 2026-09-23
+
+Both ported. Correction to item 1 below: `OidcClients.invalidate` **is** wired — `Platform`
+passes `oidcClients::invalidate` as `IdentityProviderApi`'s change hook (the earlier grep failed
+on a zsh glob). The real gap was cross-node, plus rotation: `sameSecret` compared only whether a
+secret was present, so a rotated secret saved on another node kept the old one until the 10-minute
+TTL. The cache is now one entry per provider, reused only while the `Shape` (issuer, client id,
+secret ref, multi-tenant, issuer pattern) is unchanged; `invalidate` stays, to drop a deleted
+provider's entry early. A provider with no secret logs an INFO. Pinned by `OidcClientsCacheTest`
+(counts discovery round-trips; each Shape field, the shape check and `invalidate` mutant-checked).
+Item 2: INFO on the ineligible branch and on the approval-queue branch, principal id + reason
+class, never the address; pinned by `PasswordResetApiTest.aSkippedResetRequestLogs…` (both lines
+and an address-leak mutant killed). Only the federated clause is reachable today (`findByEmail`
+returns USER principals with an address); the other two stay as defensive clauses.
+
 
 Go `main` moved past the 2026-09-22 catch-up (`b60d75c`). Two commits are not in Java; both were
 checked against the Java code on 2026-09-23 and both have a real Java-side gap:
