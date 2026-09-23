@@ -96,4 +96,69 @@ class FunctionDomainRepositoryTest {
         assertThat(REPO.listByOwner(new FunctionOwner.Platform())).extracting(FunctionDomain::id).contains(claimed.id());
         assertThat(REPO.listByOwner(CLIENT_1)).extracting(FunctionDomain::id).doesNotContain(claimed.id());
     }
+
+    // ── #covering (spec `function-zones-and-aliases.md` §1, Z1/Z4/Z5) ────────
+
+    /// A zone claim covers a deeper hostname under it, and does NOT get
+    /// confused by an unrelated claim with a different apex — the exact
+    /// scenario `covering` exists to resolve (a sub-hostname under a zone,
+    /// with a decoy claim present under a DIFFERENT apex).
+    @Test
+    void coveringResolvesADeeperHostnameToItsZoneClaimIgnoringAnUnrelatedClaim() {
+        String apex = "acme-" + RUN + "-" + fresh() + ".com";
+        Hostname zone = Hostname.parse(apex);
+        FunctionDomain zoneClaim = persist(FunctionDomain.claim(CLIENT_1, zone, "token-" + fresh(), Instant.now()));
+        // Decoy: an unrelated claim under a totally different apex must never be picked.
+        persist(FunctionDomain.claim(CLIENT_1, Hostname.parse("myapp.other-" + RUN + "-" + fresh() + ".com"),
+                "token-" + fresh(), Instant.now()));
+
+        Hostname deep = Hostname.parse("qa-myapp." + apex);
+        assertThat(REPO.covering(deep)).map(FunctionDomain::id)
+                .as("mutant: pick the decoy, or fail to walk up to the zone apex")
+                .contains(zoneClaim.id());
+    }
+
+    /// No claim at all covering the hostname ⇒ empty — the negative control
+    /// for the test above (mutant: return SOMETHING regardless).
+    @Test
+    void coveringIsEmptyWhenNoClaimCoversTheHostname() {
+        Hostname deep = Hostname.parse("qa-nothing." + "unclaimed-" + RUN + "-" + fresh() + ".com");
+        assertThat(REPO.covering(deep)).isEmpty();
+    }
+
+    /// A claim of `myapp.acme.com` does NOT cover `xmyapp.acme.com` — a
+    /// LABEL-boundary suffix, never a raw string suffix. Mutant: `endsWith`
+    /// without the leading dot (which would let `xmyapp` slip through as if
+    /// it were `myapp`).
+    @Test
+    void coveringNeverMatchesALabelThatIsMerelyAStringSuffix() {
+        String suffix = "myapp-" + RUN + "-" + fresh() + ".acme.com";
+        Hostname narrowClaim = Hostname.parse(suffix);
+        persist(FunctionDomain.claim(CLIENT_1, narrowClaim, "token-" + fresh(), Instant.now()));
+
+        Hostname lookalike = Hostname.parse("x" + suffix);
+        assertThat(REPO.covering(lookalike)).as("mutant: string-suffix match instead of a label boundary").isEmpty();
+    }
+
+    // ── #anyUnder (spec §1's "covered by d" nesting clause) ──────────────────
+
+    @Test
+    void anyUnderIsTrueForAProperDescendantAndFalseForTheApexItselfAndAnUnrelatedHostname() {
+        String apex = "under-" + RUN + "-" + fresh() + ".com";
+        Hostname zone = Hostname.parse(apex);
+
+        assertThat(REPO.anyUnder(zone)).as("nothing claimed yet").isFalse();
+
+        // The apex itself, claimed directly (bypassing the operation's nesting rule,
+        // which this repository-level test is free to do): still not "under" itself.
+        persist(FunctionDomain.claim(CLIENT_1, zone, "token-" + fresh(), Instant.now()));
+        assertThat(REPO.anyUnder(zone)).as("the apex claiming itself is not a descendant of itself").isFalse();
+
+        persist(FunctionDomain.claim(CLIENT_1, Hostname.parse("api." + apex), "token-" + fresh(), Instant.now()));
+        assertThat(REPO.anyUnder(zone)).as("a claim strictly under the apex").isTrue();
+
+        String unrelatedApex = "notunder-" + RUN + "-" + fresh() + ".com";
+        assertThat(REPO.anyUnder(Hostname.parse(unrelatedApex)))
+                .as("mutant: match unrelated hostnames too").isFalse();
+    }
 }

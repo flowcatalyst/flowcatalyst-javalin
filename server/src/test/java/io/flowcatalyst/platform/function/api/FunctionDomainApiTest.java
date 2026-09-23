@@ -59,8 +59,16 @@ class FunctionDomainApiTest {
     /// The test's TXT-resolver seam: each test sets what the next `verify`
     /// call should "find" — read by [#RESOLVER], the one instance the harness
     /// registers ([FunctionDomainApi.State] takes exactly one [TxtResolver]).
+    /// [#LAST_QUERIED_NAME] records the record name the operation actually
+    /// asked for — Z1/Z5's zone-resolution tests need this: a fake that
+    /// ignores its `name` argument would let "query the caller's raw
+    /// hostname instead of the resolved zone" pass unnoticed.
     private static final AtomicReference<List<String>> NEXT_TXT_VALUES = new AtomicReference<>(List.of());
-    private static final TxtResolver RESOLVER = name -> NEXT_TXT_VALUES.get();
+    private static final AtomicReference<String> LAST_QUERIED_NAME = new AtomicReference<>();
+    private static final TxtResolver RESOLVER = name -> {
+        LAST_QUERIED_NAME.set(name);
+        return NEXT_TXT_VALUES.get();
+    };
 
     private static final String[] ANCHOR = {
             Authenticator.TEST_PRINCIPAL, "usr_anchor_" + RUN, Authenticator.TEST_SCOPE, "ANCHOR",
@@ -198,6 +206,32 @@ class FunctionDomainApiTest {
         assertThat(json(r).get("error").asString()).isEqualTo("DNS_UNAVAILABLE");
     }
 
+    /// Verifying via a hostname UNDER the zone (not the zone apex itself)
+    /// still resolves and verifies the ZONE's own claim, checking the TXT
+    /// record at the apex — never a record at the deeper hostname, which
+    /// nobody was ever asked to create. Mutant: use the caller's raw
+    /// hostname for the TXT lookup instead of the resolved zone's.
+    @Test
+    void verifyOfADeeperHostnameVerifiesTheZonesOwnClaimAtTheApexsTxtRecord() {
+        String apex = host("z1verify");
+        var claimed = http.post("/api/function-domains", "{\"hostname\":\"" + apex + "\"}", MANAGE);
+        String recordValue = json(claimed).get("verification").get("record").get("value").asString();
+        String deep = "myapp." + apex;
+
+        NEXT_TXT_VALUES.set(List.of(recordValue));
+        var verified = http.post("/api/function-domains/" + deep + "/verify", "", MANAGE);
+        assertThat(verified.statusCode()).as(verified.body()).isEqualTo(200);
+        assertThat(json(verified).get("hostname").asString()).as("the zone apex, not the deep hostname").isEqualTo(apex);
+        assertThat(json(verified).get("verification").get("state").asString()).isEqualTo("VERIFIED");
+        assertThat(LAST_QUERIED_NAME.get()).as("mutant: query the caller's raw hostname instead of the resolved zone")
+                .isEqualTo("_flowcatalyst." + apex);
+
+        // Re-claiming the (now verified) apex is still DOMAIN_TAKEN — proves it is the
+        // SAME zone claim that got verified, not some separate per-hostname record.
+        var reclaim = http.post("/api/function-domains", "{\"hostname\":\"" + apex + "\"}", MANAGE);
+        assertThat(reclaim.statusCode()).isEqualTo(409);
+    }
+
     @Test
     void releaseOfADomainInUseIs409NamingTheFunction() {
         String h = host("inuse");
@@ -221,6 +255,84 @@ class FunctionDomainApiTest {
         assertThat(r.statusCode()).isEqualTo(409);
         assertThat(json(r).get("error").asString()).isEqualTo("DOMAIN_IN_USE");
         assertThat(r.body()).contains(f.address().render());
+    }
+
+    // ── Z4 (spec `function-zones-and-aliases.md` §8): release refuses a ZONE
+    // claim while a DEEPER hostname under it is routed — the covering check,
+    // not the old equality check, which would have missed this. ────────────
+
+    @Test
+    void releaseOfAZoneIsDomainInUseWhileADeeperHostnameIsRouted() {
+        String apex = host("z4apex");
+        http.post("/api/function-domains", "{\"hostname\":\"" + apex + "\"}", MANAGE);
+        String deep = "myapp." + apex;
+
+        String appId = testApplication("z4inuse");
+        FunctionAddress address = FunctionAddress.of(new DnsLabel("fda" + RUN), new DnsLabel("svc"),
+                new DnsLabel(UUID.randomUUID().toString().substring(0, 8).toLowerCase(Locale.ROOT)));
+        Function f = Function.create(appId, address, new FunctionOwner.Platform(), Runtime.JVM, null);
+        uow.inTransaction(tx -> {
+            functions.persist(f, tx.dbTx());
+            return null;
+        });
+        // The routed hostname is DEEPER than the claimed apex — equality would miss it.
+        FunctionRoute route = FunctionRoute.of(f.id(), Hostname.parse(deep), RoutePattern.parse("/"), Instant.now());
+        uow.inTransaction(tx -> {
+            routes.replaceForFunction(f.id(), List.of(route), tx.dbTx());
+            return null;
+        });
+
+        var r = http.delete("/api/function-domains/" + apex, MANAGE);
+        assertThat(r.statusCode()).as("mutant: equality instead of covering").isEqualTo(409);
+        assertThat(json(r).get("error").asString()).isEqualTo("DOMAIN_IN_USE");
+        assertThat(r.body()).contains(f.address().render());
+    }
+
+    // ── Z2 (spec `function-zones-and-aliases.md` §8): no two claims may
+    // nest, by ANY owner, in EITHER order — and a same-owner attempt is
+    // refused just the same (no self-exception). Each direction is its own
+    // test so a mutant dropping either the "covers" or the "covered by"
+    // check dies on its own dedicated test. ──────────────────────────────
+
+    /// Claiming a SUB-hostname after the apex is already claimed (by another
+    /// owner) ⇒ `DOMAIN_TAKEN`. Mutant: drop the "covers d" check.
+    @Test
+    void claimOfASubHostnameAfterTheApexIsAlreadyClaimedIsDomainTaken() {
+        String apex = host("z2apex1");
+        var claimApex = http.post("/api/function-domains", "{\"hostname\":\"" + apex + "\"}", MANAGE);
+        assertThat(claimApex.statusCode()).as(claimApex.body()).isEqualTo(201);
+
+        var claimDeep = http.post("/api/function-domains", "{\"hostname\":\"myapp." + apex + "\"}", MANAGE);
+        assertThat(claimDeep.statusCode()).as("mutant: drop the covers-d check").isEqualTo(409);
+        assertThat(json(claimDeep).get("error").asString()).isEqualTo("DOMAIN_TAKEN");
+    }
+
+    /// The REVERSE order: the sub-hostname is claimed FIRST, then the apex ⇒
+    /// still `DOMAIN_TAKEN`. Mutant: drop the "covered by d" check.
+    @Test
+    void claimOfTheApexAfterASubHostnameIsAlreadyClaimedIsDomainTaken() {
+        String apex = host("z2apex2");
+        var claimDeep = http.post("/api/function-domains", "{\"hostname\":\"myapp." + apex + "\"}", MANAGE);
+        assertThat(claimDeep.statusCode()).as(claimDeep.body()).isEqualTo(201);
+
+        var claimApex = http.post("/api/function-domains", "{\"hostname\":\"" + apex + "\"}", MANAGE);
+        assertThat(claimApex.statusCode()).as("mutant: drop the covered-by-d check").isEqualTo(409);
+        assertThat(json(claimApex).get("error").asString()).isEqualTo("DOMAIN_TAKEN");
+    }
+
+    /// The SAME owner attempting to claim a nested zone is refused too — no
+    /// self-exception (spec §6 M1's "never names the holder" rule already
+    /// covers the equals case; this pins that nesting gets no carve-out
+    /// either, for either direction).
+    @Test
+    void claimNestingIsRefusedEvenForTheSameOwner() {
+        String apex = host("z2same");
+        var claimApex = http.post("/api/function-domains", "{\"hostname\":\"" + apex + "\"}", MANAGE);
+        assertThat(claimApex.statusCode()).as(claimApex.body()).isEqualTo(201);
+
+        var claimDeep = http.post("/api/function-domains", "{\"hostname\":\"myapp." + apex + "\"}", MANAGE);
+        assertThat(claimDeep.statusCode()).as("no self-exception to the nesting rule").isEqualTo(409);
+        assertThat(json(claimDeep).get("error").asString()).isEqualTo("DOMAIN_TAKEN");
     }
 
     // ── GET /api/function-domains/{hostname} (S3) ────────────────────────────
@@ -258,6 +370,37 @@ class FunctionDomainApiTest {
         // reach check", which would answer 200 with clientA's domain to clientB's caller.
         var outOfReach = http.get("/api/function-domains/" + h, clientView(clientB));
         assertThat(outOfReach.statusCode()).as("mutant: skip the reach check — clientB should not see clientA's domain")
+                .isEqualTo(404);
+        assertThat(json(outOfReach).get("error").asString()).isEqualTo("FunctionDomain_NOT_FOUND");
+    }
+
+    /// Z5: a DEEPER hostname than the claimed apex resolves to the zone's
+    /// claim (same id, same shape) — never the exact-match-only 404 the
+    /// pre-zones code would have given. A client who cannot reach the ZONE'S
+    /// owner still gets 404 on the deep hostname too (never confirming the
+    /// zone exists), same as S3a's exact-hostname case.
+    @Test
+    void z5GetDomainByADeeperHostnameResolvesToTheZonesClaimReachableIs200OutOfReachIs404() {
+        String clientA = "clt_z5a_" + RUN;
+        String clientB = "clt_z5b_" + RUN;
+        String apex = host("z5apex");
+        var claimed = http.post("/api/function-domains",
+                "{\"hostname\":\"" + apex + "\",\"clientId\":\"" + clientA + "\"}", MANAGE);
+        assertThat(claimed.statusCode()).as(claimed.body()).isEqualTo(201);
+        JsonNode claimedBody = json(claimed);
+        String deep = "qa-myapp." + apex;
+
+        var reachable = http.get("/api/function-domains/" + deep, clientView(clientA));
+        assertThat(reachable.statusCode()).as(reachable.body()).isEqualTo(200);
+        JsonNode reachableBody = json(reachable);
+        assertThat(reachableBody.get("id").asString())
+                .as("resolves to the ZONE's own claim, not a fictional per-hostname one")
+                .isEqualTo(claimedBody.get("id").asString());
+        assertThat(reachableBody.get("hostname").asString()).as("the zone apex, not the deep hostname queried")
+                .isEqualTo(apex);
+
+        var outOfReach = http.get("/api/function-domains/" + deep, clientView(clientB));
+        assertThat(outOfReach.statusCode()).as("never confirm the zone exists to an unreachable client")
                 .isEqualTo(404);
         assertThat(json(outOfReach).get("error").asString()).isEqualTo("FunctionDomain_NOT_FOUND");
     }

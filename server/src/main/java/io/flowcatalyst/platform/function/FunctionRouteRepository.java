@@ -47,6 +47,18 @@ public final class FunctionRouteRepository {
                 .orderBy(T.HOSTNAME.asc(), T.PATH_PREFIX.asc()).fetch().map(FunctionRouteRepository::toEntity));
     }
 
+    /// Every route whose hostname is covered by `zone` — `zone` itself or any
+    /// hostname strictly under it (spec `function-zones-and-aliases.md` §1's
+    /// `DOMAIN_IN_USE`: "any `fn_routes` row's hostname is covered by the
+    /// zone"). The exact-hostname clause and the strictly-under clause stay
+    /// two conditions `OR`ed in one query, not one collapsed into the other.
+    public List<FunctionRoute> listUnder(Hostname zone) {
+        Objects.requireNonNull(zone, "zone");
+        return List.copyOf(dsl.selectFrom(T)
+                .where(T.HOSTNAME.eq(zone.value()).or(T.HOSTNAME.endsWith("." + zone.value())))
+                .orderBy(T.HOSTNAME.asc(), T.PATH_PREFIX.asc()).fetch().map(FunctionRouteRepository::toEntity));
+    }
+
     /// The desired-state batch read: every route of every function named by
     /// `functionIds`, one query, grouped by function.
     public Map<String, List<FunctionRoute>> listByFunctions(Collection<String> functionIds) {

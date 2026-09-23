@@ -44,6 +44,17 @@ class DomainCommandTest {
                 """.formatted(hostname);
     }
 
+    /// spec `function-zones-and-aliases.md` §6: "`fn domain claim` help says
+    /// a claim covers the zone" — pinned here since `FnCliHelpTest` only
+    /// checks that every subcommand is LISTED, not what any one says.
+    @Test
+    void claimHelpTextSaysAClaimCoversTheZone() {
+        var r = FnCliTestSupport.run(Map.of(), "fn", "domain", "claim", "--help");
+        assertThat(r.exit()).isZero();
+        assertThat(r.out()).as("mutant: revert to the old exact-hostname wording")
+                .contains("covers every hostname under it");
+    }
+
     // ── claim: prints the TXT record exactly as the platform returned it ──
 
     @Test

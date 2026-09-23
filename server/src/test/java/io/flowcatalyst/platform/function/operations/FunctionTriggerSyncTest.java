@@ -1484,6 +1484,37 @@ class FunctionTriggerSyncTest {
         assertThat(result.version().version()).isEqualTo(1);
     }
 
+    // ── Z1 (spec `function-zones-and-aliases.md` §8): a ZONE claim covers a
+    // deeper hostname under it — a claim of `acme.com` verifies
+    // `myapp.acme.com`; it does NOT verify a hostname under a DIFFERENT
+    // apex. Mutant: equality instead of covering. ────────────────────────
+
+    @Test
+    void publishSucceedsWithAHostnameCoveredByAZoneClaimOfTheSameOwner() {
+        String appId = persistApplication("z1ok");
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        String apex = "z1zone-" + fresh() + ".acme.com";
+        persistVerifiedDomain(new FunctionOwner.Platform(), apex);
+        String deep = "myapp." + apex;
+
+        PublishVersion.Result result = publish(f.address(), "z1ok", manifestWithPublic("default", deep, "/"));
+        assertThat(result.version().version()).isEqualTo(1);
+    }
+
+    @Test
+    void publishRefusesAHostnameUnderAnUnrelatedApex() {
+        String appId = persistApplication("z1no");
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        // A zone claim exists, but for a DIFFERENT apex than the manifest's hostname —
+        // pins "covering", not "any claim at all exists ⇒ pass".
+        persistVerifiedDomain(new FunctionOwner.Platform(), "z1other-" + fresh() + ".acme.com");
+        String unrelated = "myapp.z1unrelated-" + fresh() + ".other.com";
+
+        assertUseCaseError(() -> publish(f.address(), "z1no", manifestWithPublic("default", unrelated, "/")),
+                UseCaseError.Validation.class, "PUBLIC_HOSTNAME_NOT_VERIFIED");
+        assertThat(versions.listByFunction(f.id())).isEmpty();
+    }
+
     // ── F4 (spec §6): promote materialises exactly the manifest's set; a
     // dropped route frees it for another function; equal routes on two
     // functions conflict at publish AND at promote; the unique-violation

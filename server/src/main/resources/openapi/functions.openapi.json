@@ -1664,8 +1664,8 @@
         "tags": [
           "function-domains"
         ],
-        "summary": "Claim a hostname",
-        "description": "Requires `platform:function:domain:manage`.",
+        "summary": "Claim a domain (zone)",
+        "description": "Claims `hostname` and every hostname under it — a zone, not a single exact hostname. Requires `platform:function:domain:manage`.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1708,7 +1708,7 @@
             }
           },
           "409": {
-            "description": "DOMAIN_TAKEN",
+            "description": "DOMAIN_TAKEN — an existing claim (any owner) equals, covers, or is covered by this hostname",
             "content": {
               "application/json": {
                 "schema": {
@@ -1790,14 +1790,14 @@
         "tags": [
           "function-domains"
         ],
-        "summary": "Verify a claimed hostname's TXT record",
+        "summary": "Verify a claimed zone's TXT record",
         "description": "Requires `platform:function:domain:manage`.",
         "parameters": [
           {
             "name": "hostname",
             "in": "path",
             "required": true,
-            "description": "the claimed hostname",
+            "description": "any hostname covered by the claimed zone, or the zone apex itself — resolves to the zone's one claim",
             "schema": {
               "type": "string"
             }
@@ -1868,14 +1868,14 @@
         "tags": [
           "function-domains"
         ],
-        "summary": "Get a claimed domain by hostname",
+        "summary": "Get the zone claim covering a hostname",
         "description": "Requires `platform:function:function:view`.",
         "parameters": [
           {
             "name": "hostname",
             "in": "path",
             "required": true,
-            "description": "the claimed hostname",
+            "description": "any hostname covered by a claimed zone, or the zone apex itself — resolves to the zone's one claim",
             "schema": {
               "type": "string"
             }
@@ -1934,14 +1934,14 @@
         "tags": [
           "function-domains"
         ],
-        "summary": "Release (delete) a claimed hostname",
+        "summary": "Release (delete) a claimed zone",
         "description": "Requires `platform:function:domain:manage`.",
         "parameters": [
           {
             "name": "hostname",
             "in": "path",
             "required": true,
-            "description": "the claimed hostname",
+            "description": "any hostname covered by the claimed zone, or the zone apex itself — resolves to the zone's one claim",
             "schema": {
               "type": "string"
             }
@@ -1972,7 +1972,7 @@
             }
           },
           "409": {
-            "description": "DOMAIN_IN_USE",
+            "description": "DOMAIN_IN_USE — a public route exists on this zone's apex or on a hostname covered by it",
             "content": {
               "application/json": {
                 "schema": {

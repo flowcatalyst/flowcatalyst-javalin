@@ -207,9 +207,12 @@ public final class FunctionTriggerSync implements TriggerSync {
     /// The three independent clauses of `PUBLIC_HOSTNAME_NOT_VERIFIED`
     /// (spec §6 M2) — deliberately three separate `if`s, not one boolean
     /// expression, so a mutant dropping any single clause is caught by its
-    /// own dedicated test rather than being masked by the others.
+    /// own dedicated test rather than being masked by the others. Resolved
+    /// through [FunctionDomainRepository#covering] (spec
+    /// `function-zones-and-aliases.md` §1), not `findByHostname`: a claim of
+    /// `acme.com` verifies `myapp.acme.com` too, without a second claim.
     private void requireVerifiedOwnedDomain(Function function, Hostname hostname) {
-        FunctionDomain domain = domains.findByHostname(hostname).orElse(null);
+        FunctionDomain domain = domains.covering(hostname).orElse(null);
         if (domain == null) {
             throw publicHostnameNotVerified(hostname);
         }

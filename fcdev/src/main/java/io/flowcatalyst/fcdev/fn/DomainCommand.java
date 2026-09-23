@@ -38,13 +38,16 @@ public final class DomainCommand implements Callable<Integer> {
     /// §1: "prints the TXT record to create... exactly as the platform
     /// returned it") — never reconstructed client-side, so a wire-shape
     /// change can never silently drift from what the platform actually
-    /// expects to see resolved.
-    @Command(name = "claim", description = "Claim a hostname for public routing", sortOptions = false)
+    /// expects to see resolved. A claim is a ZONE (spec
+    /// `function-zones-and-aliases.md` §1): it covers every hostname under
+    /// it, not just the exact hostname given.
+    @Command(name = "claim", description = "Claim a domain — covers every hostname under it", sortOptions = false)
     public static final class Claim implements Callable<Integer> {
         @Option(names = {"-h", "--help"}, usageHelp = true, description = "show this help and exit")
         boolean help;
 
-        @Parameters(index = "0", paramLabel = "<hostname>", description = "the hostname to claim")
+        @Parameters(index = "0", paramLabel = "<hostname>",
+                description = "the domain to claim — covers every hostname under it")
         String hostname;
 
         @Option(names = "--client", paramLabel = "<id>", description = "claim for this client (default: platform-owned)")

@@ -64,6 +64,26 @@ class HostnameTest {
         assertRejected(raw);
     }
 
+    // ── #zoneCandidates (spec `function-zones-and-aliases.md` §1) ────────────
+
+    @Test
+    void zoneCandidatesWalksUpToTwoLabelsMostSpecificFirst() {
+        assertThat(Hostname.parse("qa-myapp.acme.com").zoneCandidates())
+                .as("mutant: stop one label too early/late, or wrong order")
+                .containsExactly("qa-myapp.acme.com", "acme.com");
+    }
+
+    @Test
+    void zoneCandidatesOfATwoLabelHostnameIsJustItself() {
+        assertThat(Hostname.parse("acme.com").zoneCandidates()).containsExactly("acme.com");
+    }
+
+    @Test
+    void zoneCandidatesOfADeeperHostnameWalksEveryLevel() {
+        assertThat(Hostname.parse("a.b.c.acme.com").zoneCandidates())
+                .containsExactly("a.b.c.acme.com", "b.c.acme.com", "c.acme.com", "acme.com");
+    }
+
     private static void assertRejected(String raw) {
         assertThatThrownBy(() -> Hostname.parse(raw))
                 .isInstanceOf(UseCaseException.class)

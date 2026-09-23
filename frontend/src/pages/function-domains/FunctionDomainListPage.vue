@@ -89,7 +89,8 @@ function formatDate(s?: string): string {
       <div>
         <h1 class="page-title">Function Domains</h1>
         <p class="page-subtitle">
-          Hostnames claimed for functions' public routes, and their DNS verification state
+          Zones claimed for functions' public routes (a claim covers every hostname under it), and
+          their DNS verification state
         </p>
       </div>
       <Button
@@ -127,7 +128,7 @@ function formatDate(s?: string): string {
       >
         <template #empty>No domains claimed for this owner</template>
 
-        <Column header="Hostname">
+        <Column header="Domain">
           <template #body="{ data }">
             <code>{{ data.hostname }}</code>
           </template>

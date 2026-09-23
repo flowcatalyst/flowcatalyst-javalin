@@ -17,9 +17,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-/// Resolves the TXT record `_flowcatalyst.<hostname>` and, when a value
-/// equals `fc-verify=<token>` EXACTLY, moves the domain to `Verified` (spec
-/// `function-public-routes.md` §1, §6 M1). A [TxOperation] (not the
+/// Resolves the TXT record `_flowcatalyst.<zone>` and, when a value equals
+/// `fc-verify=<token>` EXACTLY, moves the domain to `Verified` (spec
+/// `function-zones-and-aliases.md` §1, `function-public-routes.md` §1, §6
+/// M1) — verified once for the whole zone. `cmd.hostname()` need not be the
+/// zone apex: [Access#byHostname] resolves it through
+/// [io.flowcatalyst.platform.function.FunctionDomainRepository#covering], so
+/// verifying any hostname under the zone acts on the ONE covering claim; the
+/// TXT lookup and the record shown on failure are always `d.hostname()` (the
+/// zone), never the caller's raw input. A [TxOperation] (not the
 /// single-event [Operation] this package's other by-hostname operations use)
 /// so an ALREADY-verified domain can answer 200 with no event at all (spec
 /// §1: "already verified ⇒ 200, no event") — [io.flowcatalyst.sdk.usecase.jdbc.TxScopedUnitOfWork#commit]
@@ -64,7 +70,7 @@ public final class VerifyFunctionDomain {
 
                     List<String> found;
                     try {
-                        found = resolver.txt("_flowcatalyst." + hostname.value());
+                        found = resolver.txt("_flowcatalyst." + d.hostname().value());
                     } catch (DnsException e) {
                         throw new DnsUnavailableException(e);
                     }
@@ -76,7 +82,7 @@ public final class VerifyFunctionDomain {
                     if (!matched) {
                         List<String> shown = found.stream().limit(MAX_FOUND_VALUES).map(VerifyFunctionDomain::truncate).toList();
                         throw new UseCaseException(UseCaseError.conflict("DOMAIN_NOT_VERIFIED",
-                                        "no TXT value at '_flowcatalyst." + hostname.value()
+                                        "no TXT value at '_flowcatalyst." + d.hostname().value()
                                                 + "' matched the verification token")
                                 .withDetails(Map.of("found", shown)));
                     }

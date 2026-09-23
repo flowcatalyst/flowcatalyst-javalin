@@ -213,9 +213,14 @@ if (!(in.caller() instanceof Caller.Principal principal) || !principal.hasPermis
 By default a function is reachable only by address (`/functions/{address}/...`, on the PRIVATE
 listener — in-VPC / Service Connect / fcdev's own port) or as a webhook/schedule target the
 platform itself calls. `public[]` in the manifest exposes it on the internet-facing **public
-listener** instead, at a hostname you have claimed and verified.
+listener** instead, at a hostname covered by a zone you have claimed and verified.
 
-### Claiming and verifying a hostname
+### Claiming and verifying a zone
+
+A claim is a **zone**: claiming `acme.com` covers `acme.com` itself AND every hostname whose labels
+end in `acme.com`'s (`myapp.acme.com`, `qa-myapp.acme.com`, …), verified once for the whole zone —
+you never claim each hostname under it separately. No two claims may nest (by any owner): claiming
+`api.acme.com` while `acme.com` is already claimed (or vice versa) is refused, `DOMAIN_TAKEN`.
 
 ```
 fcdev fn domain claim api.acme.com [--client <id>]     # --client omitted = platform-owned
@@ -233,11 +238,11 @@ create this DNS record to verify ownership:
   value: fc-verify=<token>
 ```
 
-Create it with your DNS provider, then `fn domain verify api.acme.com`. Only a domain you own AND
-have verified may appear in a `public[]` entry — publishing against an unclaimed, still-pending, or
-someone-else's-verified hostname fails the same way for all three (`PUBLIC_HOSTNAME_NOT_VERIFIED`;
-the platform never tells you which of the three it was, so it can never be used to discover who
-holds a hostname).
+Create it with your DNS provider, then `fn domain verify api.acme.com`. Only a hostname covered by a
+zone you own AND have verified may appear in a `public[]` entry — publishing against an unclaimed,
+still-pending, or someone-else's-verified zone fails the same way for all three
+(`PUBLIC_HOSTNAME_NOT_VERIFIED`; the platform never tells you which of the three it was, so it can
+never be used to discover who holds a zone).
 
 **Local development**: any hostname whose last label is exactly `localhost` (e.g.
 `hello.localhost`) auto-verifies the instant you claim it — no DNS record, no `verify` call — because
@@ -472,10 +477,10 @@ two forms, or a two-part address, is a usage error (exit 2).
 | `fn secret set [<address>] <KEY> [--from-file <file>] [--manifest <file>] [--client <id>] [--no-create]`, `fn secret list\|delete` | the value is **never** a CLI argument — stdin (no echo at a TTY) or `--from-file` only. The CLI treats the value as a secret-manager reference (`aws-sm://`, `aws-ps://`, `gcp-sm://`, `vault://`, `env://`) unless prefixed **`encrypt:`**, which stores the plaintext encrypted at rest (`INVALID_SECRET_REF` otherwise); the prefix is stripped and the function receives the plain value. The admin UI and the raw `PUT …/secrets/{key}` take the plain value with no prefix — `encrypt:` is the CLI's convention only. `set` creates the function on a 404 for its address, same as `fn config set`; `list` never creates |
 | `fn invoke <address>[:<version>] [--path /x] [--method POST] [--body <file>\|-] [-H k:v…] [--host-url] [--webhook --signing-secret <secret>]` | calls the function **host** directly, never the platform |
 | `fn watch <dir> [<address>] [--jar <glob>] [--manifest manifest.json]` | debounced (500 ms) file watch; every change runs a deploy cycle; a failing cycle prints its error and the watch keeps going |
-| `fn domain claim <hostname> [--client <id>]` | claims a hostname (§6a); prints the TXT record to create, or nothing further if it auto-verified (`.localhost` under dev mode) |
-| `fn domain verify <hostname>` | resolves the TXT record and marks the domain `VERIFIED` |
-| `fn domain list [--client <id>]` | lists claimed hostnames and their verification state (`--client` omitted = platform-owned) |
-| `fn domain release <hostname>` | releases a hostname — refused while any `public[]` route still uses it |
+| `fn domain claim <hostname> [--client <id>]` | claims a zone — covers every hostname under it (§6a); prints the TXT record to create, or nothing further if it auto-verified (`.localhost` under dev mode) |
+| `fn domain verify <hostname>` | resolves the zone's TXT record and marks the claim `VERIFIED` — `<hostname>` may be the zone apex or any hostname under it |
+| `fn domain list [--client <id>]` | lists claimed zones and their verification state (`--client` omitted = platform-owned) |
+| `fn domain release <hostname>` | releases a zone — refused while any `public[]` route on the zone or a hostname under it still uses it |
 
 ## 10. What the sample proves, end to end
 
@@ -544,9 +549,10 @@ merged) covers most of the same ground with a browser instead:
   could usefully expose the candidate's declared keys directly (`GET …/config`/`…/secrets` taking
   an explicit version, or a dedicated field) instead of the SPA reconstructing them from
   `listVersions` + per-version `getVersion` calls.
-- **Domains** — `/function-domains`: **Claim Domain** takes a hostname (+ client, for an anchor); a
-  hostname ending in `.localhost` auto-verifies immediately, no DNS record needed (dev mode). The
-  detail drawer shows the TXT record to create for anything else, a **Verify** button, and **Release**.
+- **Domains** — `/function-domains`: **Claim Domain** takes a hostname (+ client, for an anchor) — a
+  claim covers every hostname under it, verified once for the whole zone; a hostname ending in
+  `.localhost` auto-verifies immediately, no DNS record needed (dev mode). The detail drawer shows
+  the TXT record to create for anything else, a **Verify** button, and **Release**.
 
 ## Sources
 

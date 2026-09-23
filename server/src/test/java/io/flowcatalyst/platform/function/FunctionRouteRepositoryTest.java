@@ -104,4 +104,39 @@ class FunctionRouteRepositoryTest {
 
         assertThat(REPO.listByHostname(host)).hasSize(2);
     }
+
+    // ── #listUnder (spec `function-zones-and-aliases.md` §1's `DOMAIN_IN_USE`) ──
+
+    /// A route on the zone apex itself, AND one on a hostname under it, both
+    /// count as "covered by the zone"; a route under an unrelated apex does
+    /// not. Mutant: equality instead of covering — would miss the deeper route.
+    @Test
+    void listUnderFindsTheApexItselfAndAnythingUnderItButNotAnUnrelatedApex() {
+        Function f = createFunction();
+        String apex = "zoneunder-" + RUN + "-" + fresh() + ".com";
+        Hostname zone = Hostname.parse(apex);
+        Hostname deep = Hostname.parse("qa-myapp." + apex);
+        Hostname unrelated = Hostname.parse("other-" + RUN + "-" + fresh() + ".com");
+
+        replace(f.id(), List.of(
+                FunctionRoute.of(f.id(), zone, RoutePattern.parse("/a"), Instant.now()),
+                FunctionRoute.of(f.id(), deep, RoutePattern.parse("/b"), Instant.now()),
+                FunctionRoute.of(f.id(), unrelated, RoutePattern.parse("/c"), Instant.now())));
+
+        assertThat(REPO.listUnder(zone)).extracting(r -> r.hostname().value())
+                .as("mutant: equality instead of covering — must find BOTH the apex route and the deeper one")
+                .containsExactlyInAnyOrder(apex, deep.value());
+    }
+
+    @Test
+    void listUnderNeverMatchesALabelThatIsMerelyAStringSuffix() {
+        Function f = createFunction();
+        String apex = "labelboundary-" + RUN + "-" + fresh() + ".com";
+        Hostname zone = Hostname.parse(apex);
+        Hostname lookalike = Hostname.parse("x" + apex); // NOT under `zone` — no label boundary
+
+        replace(f.id(), List.of(FunctionRoute.of(f.id(), lookalike, RoutePattern.parse("/"), Instant.now())));
+
+        assertThat(REPO.listUnder(zone)).as("mutant: string-suffix match instead of a label boundary").isEmpty();
+    }
 }

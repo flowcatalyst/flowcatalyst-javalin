@@ -70,10 +70,17 @@ public final class Access {
     // clause of #canReach applies here; there is no application-reach clause
     // to AND it with.
 
-    /// @throws UseCaseException not-found `FunctionDomain_NOT_FOUND` when the
-    ///                          row is absent, or present but out of reach
+    /// Resolves through [FunctionDomainRepository#covering] (spec
+    /// `function-zones-and-aliases.md` §1) — `hostname` need not itself be
+    /// claimed; any hostname under a claimed zone, or the zone apex itself,
+    /// resolves to that zone's one covering claim. A hostname under nobody's
+    /// zone is the same not-found as an unclaimed exact hostname always was.
+    ///
+    /// @throws UseCaseException not-found `FunctionDomain_NOT_FOUND` when no
+    ///                          zone covers `hostname`, or one does but is
+    ///                          out of reach
     public static FunctionDomain byHostname(FunctionDomainRepository repo, Hostname hostname, AuthContext ac) {
-        FunctionDomain d = repo.findByHostname(hostname).orElseThrow(() -> domainNotFound(hostname));
+        FunctionDomain d = repo.covering(hostname).orElseThrow(() -> domainNotFound(hostname));
         requireDomainReach(ac, d);
         return d;
     }

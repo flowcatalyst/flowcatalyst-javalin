@@ -8,16 +8,24 @@ below the route match is reused unchanged).
 
 ## 1. Domains (slice F1, platform)
 
-A public hostname must belong to the function's **owner** and be **verified** before any function can
-be routed on it — otherwise one tenant registers another's hostname.
+> **Amended by `function-zones-and-aliases.md` §1 (slice J1, 2026-09):** a claim is a **zone**, not a
+> single exact hostname — claiming `acme.com` also covers `myapp.acme.com` and every other hostname
+> whose labels end in `acme.com`'s, verified once for the whole zone. `d` must have at least two
+> labels (already enforced by `Hostname.parse`'s own floor, `HOSTNAME_INVALID`); no two claims may
+> nest, by any owner (`DOMAIN_TAKEN`, same wording, no oracle). Every row below that reads "a public
+> hostname"/"the claimed hostname" now reads "a hostname covered by a claimed zone, or the zone apex
+> itself" — the table's routes and codes are otherwise unchanged.
+
+A public hostname's **zone** must belong to the function's **owner** and be **verified** before any
+function can be routed on it — otherwise one tenant registers another's hostname.
 
 | Route | Permission | Behaviour |
 |---|---|---|
-| `POST /api/function-domains` | `FUNCTION_DOMAIN_MANAGE` (`platform:function:domain:manage`, new; `messaging-admin`) | `{hostname, clientId?}` — absent `clientId` ⇒ platform-owned, needs anchor; else `checkScopeAccess`. `Hostname.parse`. Taken (by anyone) ⇒ 409 `DOMAIN_TAKEN` — **without naming the holder**. 201 `{id, hostname, owner, verification: {state: "PENDING", record: {type: "TXT", name: "_flowcatalyst.<hostname>", value: "fc-verify=<token>"}}}`. Token = 32 random bytes, base64url; stored; `FunctionDomain.toString` already masks it. `ClaimFunctionDomain` / event `platform:function:domain:claimed` (hostname, owner — no token) |
+| `POST /api/function-domains` | `FUNCTION_DOMAIN_MANAGE` (`platform:function:domain:manage`, new; `messaging-admin`) | `{hostname, clientId?}` — absent `clientId` ⇒ platform-owned, needs anchor; else `checkScopeAccess`. `Hostname.parse`, then the zone's own floor (≥ 2 labels — the same `HOSTNAME_INVALID`, no second `DOMAIN_INVALID` code). Nesting (by anyone, equals/covers/is-covered-by `d`) ⇒ 409 `DOMAIN_TAKEN` — **without naming the holder**. 201 `{id, hostname, owner, verification: {state: "PENDING", record: {type: "TXT", name: "_flowcatalyst.<hostname>", value: "fc-verify=<token>"}}}`. Token = 32 random bytes, base64url; stored; `FunctionDomain.toString` already masks it. `ClaimFunctionDomain` / event `platform:function:domain:claimed` (hostname, owner — no token) |
 | `GET /api/function-domains?clientId=` | `FUNCTION_VIEW` | reach-filtered; the TXT record is shown only while `PENDING` |
-| `GET /api/function-domains/{hostname}` | `FUNCTION_VIEW` | (2026-09-22, backlog unit S3) one domain by hostname — 200 the same `DomainResponse` shape `POST`/list give; reach-or-404 through `Access.byHostname` (the SAME predicate `verify`/`release` already share — not duplicated here); an out-of-reach domain (another client's) is 404, never 403, same rule as every other reach check in this spec. An invalid hostname is the same `400 HOSTNAME_INVALID` the claim route gives — both routes parse through `Hostname.parse` |
-| `POST /api/function-domains/{hostname}/verify` | manage | resolves TXT `_flowcatalyst.<hostname>` through `TxtResolver`; any value equal to `fc-verify=<token>` ⇒ `VERIFIED`, 200; none ⇒ 409 `DOMAIN_NOT_VERIFIED` listing what was found (truncated, ≤ 5 values, each ≤ 100 chars); resolver failure ⇒ 503 `DNS_UNAVAILABLE`. Already verified ⇒ 200, no event. Event `…:domain:verified` |
-| `DELETE /api/function-domains/{hostname}` | manage | 409 `DOMAIN_IN_USE` naming the functions while `fn_routes` rows exist for it; else 204, `…:domain:released` |
+| `GET /api/function-domains/{hostname}` | `FUNCTION_VIEW` | (2026-09-22, backlog unit S3) the claim covering `{hostname}` — 200 the same `DomainResponse` shape `POST`/list give, for the ZONE's own claim (its `hostname` is the zone apex, not necessarily the path param); reach-or-404 through `Access.byHostname` (the SAME predicate `verify`/`release` already share — not duplicated here, and now resolves through `FunctionDomainRepository.covering`); an out-of-reach zone (another client's) is 404, never 403, same rule as every other reach check in this spec. An invalid hostname is the same `400 HOSTNAME_INVALID` the claim route gives — both routes parse through `Hostname.parse` |
+| `POST /api/function-domains/{hostname}/verify` | manage | resolves through `Access.byHostname` to the covering zone claim `d`, then resolves TXT `_flowcatalyst.<d.hostname>` through `TxtResolver` — the ZONE's own record, never the caller's raw path param; any value equal to `fc-verify=<token>` ⇒ `VERIFIED`, 200; none ⇒ 409 `DOMAIN_NOT_VERIFIED` listing what was found (truncated, ≤ 5 values, each ≤ 100 chars); resolver failure ⇒ 503 `DNS_UNAVAILABLE`. Already verified ⇒ 200, no event. Event `…:domain:verified` |
+| `DELETE /api/function-domains/{hostname}` | manage | resolves through `Access.byHostname` to the covering zone claim; 409 `DOMAIN_IN_USE` naming the functions while any `fn_routes` row's hostname is covered by the zone (`FunctionRouteRepository.listUnder`); else 204, `…:domain:released` |
 
 `TxtResolver` is an interface (`List<String> txt(String name) throws DnsException`); the production
 implementation uses JNDI DNS (`com.sun.jndi.dns`, in the JDK — no dependency) with a 5 s timeout;
@@ -34,7 +42,8 @@ Joins I2's promote-time reconciliation (`FunctionTriggerSync`), same transaction
 **validated at publish, materialised at promote, removed at delete, untouched by disable** (a disabled
 function answers 404 by address already; its routes stay reserved).
 
-- **Publish**: each `public[].hostname` must be a `VERIFIED` domain **of the function's owner** ⇒ else
+- **Publish**: each `public[].hostname` must be **covered by** a `VERIFIED` zone **of the function's
+  owner** (`FunctionDomainRepository.covering`, `function-zones-and-aliases.md` §1) ⇒ else
   validation `PUBLIC_HOSTNAME_NOT_VERIFIED` naming it (same code whether unclaimed, pending, or another
   owner's — no oracle). `(hostname, pathPrefix)` already routed to **another** function ⇒ conflict
   `PUBLIC_ROUTE_TAKEN` naming that function's address **only when the caller can reach it**, else just

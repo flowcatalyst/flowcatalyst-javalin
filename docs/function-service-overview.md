@@ -119,7 +119,7 @@ are refused: the host's isolation is class-loader isolation, not process isolati
 | `endpoints[]` | the paths the function answers and **how each is authenticated** — `webhook` (signed delivery), `platform` (bearer token), `none`. No default: every endpoint says |
 | `subscriptions[]` | event types to receive, each pointing at a `webhook` endpoint |
 | `schedules[]` | cron entries, each pointing at a `webhook` endpoint |
-| `public[]` | hostname + path prefix served on the public entry, on a domain the owner has verified by DNS TXT |
+| `public[]` | hostname + path prefix served on the public entry, on a hostname covered by a zone the owner has claimed and verified by DNS TXT (a claim covers every hostname under it) |
 | `config`, `secrets` | the keys the function needs; values are stored on the platform per function and delivered in desired state, **declared keys only** |
 | `db[]`, `httpAllow` | database connections (DSN from a secret) and the outbound hosts the function may call |
 
@@ -195,7 +195,7 @@ discovery document, and holds **no** storage credentials: artifacts come through
 | Event / outbox | `ctx.emit()` goes through the host to the platform's ingest with the function's identity |
 | Router | delivers to functions exactly as to any subscriber; honours `retry` by deferring (Java only — Go does not) |
 | Service accounts / OAuth | the host and the CLI are OAuth clients; `fcdev start` provisions both |
-| Domains | `fn_domains` + TXT verification back the `public[]` routes; `.localhost` is auto-verified in dev mode |
+| Domains | `fn_domains` + TXT verification back the `public[]` routes; a claim is a ZONE, covering every hostname under it; `.localhost` is auto-verified in dev mode |
 | Migrations | `V13__functions.sql` (Java-only tables `fn_*`; the only Go-shared change is widening `chk_msg_subscriptions_source` to admit `FUNCTION`) |
 
 **Divergence from Go.** The function service has no Go counterpart; it is Java-first and

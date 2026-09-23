@@ -17,13 +17,17 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
-/// Releases (deletes) a claimed hostname (spec `function-public-routes.md`
-/// §1) — refused, `DOMAIN_IN_USE`, naming the functions, while `fn_routes`
-/// rows exist for it (a function's manifest still names this hostname; the
-/// caller must publish/promote it out first, or delete the function).
+/// Releases (deletes) a claimed ZONE (spec `function-zones-and-aliases.md`
+/// §1) — refused, `DOMAIN_IN_USE`, naming the functions, while any
+/// `fn_routes` row is covered by the zone (a function's manifest still names
+/// a hostname under it; the caller must publish/promote it out first, or
+/// delete the function).
 ///
 /// `Authorize: Public` — load-or-404 + reach is [Access#byHostname], run in
-/// `execute` (`CONVENTIONS.md` §3).
+/// `execute` (`CONVENTIONS.md` §3). [Access#byHostname] resolves through
+/// [FunctionDomainRepository#covering], so releasing ANY hostname under the
+/// zone (or the zone itself) acts on the one covering claim — `d.hostname()`
+/// below is the zone apex, not necessarily the hostname the caller passed.
 public final class ReleaseFunctionDomain {
 
     private ReleaseFunctionDomain() {
@@ -40,7 +44,7 @@ public final class ReleaseFunctionDomain {
                     Hostname hostname = Hostname.parse(cmd.hostname());
                     FunctionDomain d = Access.byHostname(domains, hostname, Auth.current());
 
-                    List<FunctionRoute> using = routes.listByHostname(hostname);
+                    List<FunctionRoute> using = routes.listUnder(d.hostname());
                     if (!using.isEmpty()) {
                         throw UseCaseException.conflict("DOMAIN_IN_USE",
                                 "domain is in use by: " + String.join(", ", functionAddresses(functions, using)));

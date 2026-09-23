@@ -69,7 +69,7 @@ async function onSubmit() {
   <EntityDrawer
     ref="drawer"
     title="Claim Domain"
-    subtitle="Claim a hostname for a function's public routes"
+    subtitle="Claim a zone for a function's public routes"
     :dirty="dirty"
     @close="goToList()"
   >
@@ -80,6 +80,10 @@ async function onSubmit() {
         placeholder="api.acme.com, or hello.localhost for dev"
         class="full-width"
       />
+      <small class="hint">
+        A claim covers every hostname under it — claiming <code>acme.com</code> also covers
+        <code>myapp.acme.com</code>, verified once for the whole zone.
+      </small>
       <small class="hint">
         A hostname whose last label is <code>localhost</code> auto-verifies immediately, no DNS
         record needed (dev mode only).
