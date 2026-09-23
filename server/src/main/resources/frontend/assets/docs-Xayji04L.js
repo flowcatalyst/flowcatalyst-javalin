@@ -1,0 +1,1 @@
+import{a as t}from"./index-D-0eJQCy.js";const p={list(){return t("/docs")},getPlatform(o){return t(`/docs/platform/${encodeURIComponent(o)}`)},getApplication(o,e){return t(`/docs/applications/${encodeURIComponent(o)}/${encodeURIComponent(e)}`)}};export{p as d};
