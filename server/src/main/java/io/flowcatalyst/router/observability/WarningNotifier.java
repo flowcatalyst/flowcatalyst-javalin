@@ -48,8 +48,10 @@ public final class WarningNotifier implements Warnings, AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(WarningNotifier.class);
 
-    /// Rust's `NotificationConfig::default().batch_interval_seconds`.
-    public static final Duration DEFAULT_INTERVAL = Duration.ofSeconds(300);
+    /// Owner ruling 2026-09-23: an ERROR (a target ACK-dropping its messages)
+    /// is seen within a minute, and a long incident is a card a minute — not
+    /// Rust's 300 s (five minutes blind) nor Go's 10 s (a channel people mute).
+    public static final Duration DEFAULT_INTERVAL = Duration.ofSeconds(60);
     private static final Duration POST_TIMEOUT = Duration.ofSeconds(10);
 
     /// The synthetic identity Rust's `send_batch` gives the summary card

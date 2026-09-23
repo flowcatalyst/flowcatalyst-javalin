@@ -250,7 +250,8 @@ public record Env(
         // `WARNING` (Rust accepts both).
         String routerNotifyMinSeverity,
         // `FC_NOTIFY_BATCH_INTERVAL_SECONDS` (alias `NOTIFICATION_BATCH_INTERVAL`),
-        // default 300 (Rust's `NotificationConfig::default`); `0` means no
+        // default 60 (owner ruling 2026-09-23: an ERROR seen within a minute, a long incident
+        // a card a minute — not Rust's 300 nor Go's hard-coded 10); `0` means no
         // batching — every notice is sent immediately as its own card.
         int routerNotifyBatchIntervalSeconds,
         // `FC_DRAIN_TIMEOUT_SECONDS`, default 60.
@@ -550,7 +551,7 @@ public record Env(
                 e.firstSet("FC_NOTIFY_WEBHOOK_URL", "NOTIFICATION_TEAMS_WEBHOOK_URL").orElse(""),
                 e.get("NOTIFICATION_TEAMS_ENABLED"),
                 e.firstSet("FC_NOTIFY_MIN_SEVERITY", "NOTIFICATION_MIN_SEVERITY").orElse("WARNING"),
-                e.integerAlias("FC_NOTIFY_BATCH_INTERVAL_SECONDS", "NOTIFICATION_BATCH_INTERVAL", 300),
+                e.integerAlias("FC_NOTIFY_BATCH_INTERVAL_SECONDS", "NOTIFICATION_BATCH_INTERVAL", 60),
                 e.integer("FC_DRAIN_TIMEOUT_SECONDS", 60),
                 e.bool("FC_ROUTER_STRICT_ROUTING", false),
                 e.integer("FC_ROUTER_SYNTH_POOL_IDLE_SECS", 0),

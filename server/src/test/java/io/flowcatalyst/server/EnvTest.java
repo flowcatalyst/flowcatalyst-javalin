@@ -78,7 +78,7 @@ class EnvTest {
         assertThat(env.routerNotifyWebhookUrl()).isEmpty();
         assertThat(env.routerNotifyTeamsEnabledRaw()).isEmpty();
         assertThat(env.routerNotifyMinSeverity()).isEqualTo("WARNING");
-        assertThat(env.routerNotifyBatchIntervalSeconds()).as("Rust's NotificationConfig::default").isEqualTo(300);
+        assertThat(env.routerNotifyBatchIntervalSeconds()).as("owner ruling 2026-09-23").isEqualTo(60);
         assertThat(env.routerDrainTimeoutSec()).isEqualTo(60);
         assertThat(env.routerStrictRouting()).as("R-13/R-16: off until every producer is confirmed compliant").isFalse();
         assertThat(env.routerSynthPoolIdleSecs()).as("0 means \"use the implementation default\", not \"never evict\"").isZero();
@@ -345,7 +345,7 @@ class EnvTest {
         assertThat(load().routerNotifyTeamsEnabledRaw()).isEmpty();
         assertThat(load("NOTIFICATION_TEAMS_ENABLED", "false").routerNotifyTeamsEnabledRaw()).isEqualTo("false");
 
-        assertThat(load().routerNotifyBatchIntervalSeconds()).isEqualTo(300);
+        assertThat(load().routerNotifyBatchIntervalSeconds()).isEqualTo(60);
         assertThat(load("FC_NOTIFY_BATCH_INTERVAL_SECONDS", "60", "NOTIFICATION_BATCH_INTERVAL", "90")
                 .routerNotifyBatchIntervalSeconds()).isEqualTo(60);
         assertThat(load("NOTIFICATION_BATCH_INTERVAL", "90").routerNotifyBatchIntervalSeconds()).isEqualTo(90);

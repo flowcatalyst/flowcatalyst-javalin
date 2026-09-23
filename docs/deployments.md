@@ -219,7 +219,7 @@ before picking which behaviour Java must match.
 | `NOTIFICATION_TEAMS_ENABLED` | literal | `true` | `:1520` |
 | `NOTIFICATION_TEAMS_WEBHOOK_URL` | literal — **secret, see below** | (secret — literal in IaC, not copied) | `:1521`, same literal value used in both np and prod (block is unconditional) |
 | `NOTIFICATION_MIN_SEVERITY` | literal | `WARNING` | `:1522` |
-| `NOTIFICATION_BATCH_INTERVAL` | literal | `300` | `:1523` |
+| `NOTIFICATION_BATCH_INTERVAL` | literal | `300` — owner changing to `60` (ruling 2026-09-23) | `:1523` |
 
 13 environment entries, 0 SSM/Secrets Manager secrets, **1 literal secret** — **13 variables total**.
 
@@ -311,7 +311,7 @@ changed to produce this table.
 | `NOTIFICATION_TEAMS_ENABLED` | router | **read** | Raw string carried as `Env.routerNotifyTeamsEnabledRaw`; `WarningNotifier.create` — **deliberate deviation from Go/Rust**: an explicit `false` always disables even with a URL set (Go/Rust: `false` is ignored once a URL is configured, so this value is a no-op there but load-bearing in Java). |
 | `NOTIFICATION_TEAMS_WEBHOOK_URL` | router | **aliased** | `Env.routerNotifyWebhookUrl` — `FC_NOTIFY_WEBHOOK_URL` → `NOTIFICATION_TEAMS_WEBHOOK_URL`. |
 | `NOTIFICATION_MIN_SEVERITY` | router | **aliased** | `Env.routerNotifyMinSeverity` — `FC_NOTIFY_MIN_SEVERITY` → `NOTIFICATION_MIN_SEVERITY`; accepts `WARN` and `WARNING`. |
-| `NOTIFICATION_BATCH_INTERVAL` | router | **aliased** | `Env.routerNotifyBatchIntervalSeconds` — `FC_NOTIFY_BATCH_INTERVAL_SECONDS` → `NOTIFICATION_BATCH_INTERVAL`, default 300. |
+| `NOTIFICATION_BATCH_INTERVAL` | router | **aliased** | `Env.routerNotifyBatchIntervalSeconds` — `FC_NOTIFY_BATCH_INTERVAL_SECONDS` → `NOTIFICATION_BATCH_INTERVAL`, default 60. |
 | `API_PORT` | router | **aliased** | Same chain as platform's `PORT` — `FC_API_PORT` → `API_PORT` → `PORT`. |
 | `AWS_REGION` | router | **read (implicit)** | Not read by `Env.java` at all; consumed by the AWS SDK for Java's own default region-resolution chain, same as the AWS SDK the Rust/Go binaries use — functionally equivalent, not a `Env`-level "read". |
 

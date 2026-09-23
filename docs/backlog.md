@@ -1535,7 +1535,9 @@ edit is a three-file change, drafted and reverted.
 
 ## Drop-in pass follow-ups (2026-09-14, `docs/audit/2026-09-14-drop-in-pass.md`)
 
-- **Ruling:** `NOTIFICATION_BATCH_INTERVAL` — the router task sets 300;
+- **RULED 2026-09-23: 60 s.** Java's default is 60 (CRITICAL still bypasses
+  batching); the owner sets the router task's IaC value to 60.
+  Was: `NOTIFICATION_BATCH_INTERVAL` — the router task sets 300;
   Go never reads it (20 msgs / 10 s hard-coded); Java honours it. Cutover
   changes Teams batching from 10 s to 300 s unless the IaC is set to 10.
 - **Ruling:** structured-log shape — Go flat slog JSON (`time`, `level`,
