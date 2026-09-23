@@ -1727,3 +1727,16 @@ with a no-reach client principal. **RLS/TenantTx: not for the platform** — the
 one-tenant-per-request (anchor, client links, applications, platform-owned NULL rows), the schema
 is shared with Go, and it would duplicate the reach check rather than add one; it fits a function's
 own database. Owner 2026-09-23: defer.
+
+## Pool-ownership rule withdrawn; DNS verification of domains withdrawn (owner clarification 2026-09-23)
+
+Owner: "tenants can't deploy their own functions. We deploy our own functions that run for our
+tenant solutions." Consequences: (1) the pool-ownership spec (`9da065ab`, a client's functions
+confined to granted pools) rested on untrusted client code in the shared JVM — withdrawn, spec
+deleted; a pool is an operational placement choice, not a security boundary. (2) TXT verification
+of domain claims defended one tenant from another claiming its domain — with one operator claiming
+every domain there is nobody to defend against; every claim is verified at claim time and the DNS
+path is removed (`docs/spec/function-domains-no-dns.md`). Model, for the docs: functions are the
+operator's trusted code; tenants never deploy code; a client-owned function is one that runs for
+that tenant's solutions; the signer allow-list is the operator's CI; ceilings protect a pool from a
+mistake.
