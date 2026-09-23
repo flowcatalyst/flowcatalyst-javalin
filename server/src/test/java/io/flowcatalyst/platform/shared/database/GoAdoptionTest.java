@@ -65,13 +65,15 @@ class GoAdoptionTest {
         // package J slice J3) and V16 (fn_domains drops verification_token/
         // verified_at, spec `function-domains-no-dns.md`) have no Go
         // counterpart at all (like V13's own fn_ tables) — each is a genuine
-        // addition here too.
-        assertThat(result.migrationsExecuted).isEqualTo(15);
+        // addition here too. V17 (config-permissions.md §A.4, the
+        // platform:admin:config:update -> :manage rename) is data-only and a
+        // no-op here too: this fixture never seeds iam_role_permissions rows.
+        assertThat(result.migrationsExecuted).isEqualTo(16);
         assertThat(result.migrations).extracting(m -> m.version)
-                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16");
+                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17");
 
         MigrationInfo[] applied = Migrator.flyway(ds).info().applied();
-        assertThat(applied).hasSize(16);
+        assertThat(applied).hasSize(17);
         assertThat(applied[0].getVersion().getVersion()).isEqualTo("1");
         assertThat(applied[0].getState()).isEqualTo(MigrationState.BASELINE);
         for (int i = 1; i < applied.length; i++) {
@@ -91,7 +93,7 @@ class GoAdoptionTest {
                 assertThat(rs.getString(1)).isEqualTo("BASELINE");
                 assertThat(rs.getString(2)).isEqualTo("1");
                 assertThat(rs.getBoolean(3)).isTrue();
-                for (int v = 2; v <= 16; v++) {
+                for (int v = 2; v <= 17; v++) {
                     assertThat(rs.next()).isTrue();
                     assertThat(rs.getString(2)).isEqualTo(String.valueOf(v));
                     assertThat(rs.getBoolean(3)).isTrue();

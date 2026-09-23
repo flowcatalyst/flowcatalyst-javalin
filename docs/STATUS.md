@@ -6,6 +6,17 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## Platform config gated by view/manage; invite sign-in recorded; Result<T, E> (2026-09-23, night)
+
+`docs/spec/config-permissions.md` (ruling CFG-PERM-2026-09-23): config reads need
+`platform:admin:config:view`, writes and deletes `platform:admin:config:manage` (replaces `update`;
+V17 renames existing role rows), anchor no longer passes by being anchor, `SECRET` values unmasked
+only for `manage`; the three access-grant routes and their code are gone (table kept until Go is
+off). An invite confirm that mints a session writes a `USER_LOGIN` SUCCESS row. New house type
+`io.flowcatalyst.sdk.result.Result<T, E>` (CONVENTIONS §8). Teams batch interval defaults to 60 s
+(owner sets the IaC). Owed: TS/Laravel SDK regeneration as its own unit (backlog); drop
+`app_platform_config_access` after cutover.
+
 ## Go catch-up: OIDC client cache shape + skipped-reset logging (2026-09-23, evening)
 
 Go `7ab071c` and `89f1a08` ported (backlog §"Go catch-up owed", with a correction: `invalidate`

@@ -162,7 +162,7 @@ public enum Permission {
 
     // admin / config
     CONFIG_VIEW("platform:admin:config:view"),
-    CONFIG_UPDATE("platform:admin:config:update"),
+    CONFIG_MANAGE("platform:admin:config:manage"),
 
     // messaging / batch
     BATCH_EVENTS_WRITE("platform:messaging:batch:events-write"),

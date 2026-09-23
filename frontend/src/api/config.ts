@@ -1,6 +1,5 @@
 import { apiFetch } from "./client";
 import type {
-	AccessListResponse as GenAccessListResponse,
 	ConfigListResponse as GenConfigListResponse,
 	ConfigResponse,
 } from "./generated";
@@ -47,13 +46,12 @@ export function defaultLoginTheme(): LoginTheme {
 // pages keep their imports. (`clientId`/`description` are optional on the
 // wire, not `| null` as the old hand-rolled type claimed.)
 export type PlatformConfig = ConfigResponse;
-// Wire types for the platform-config admin endpoints
-// (GET /platform-config/{app} and GET /platform-config/{app}/access);
-// the SPA has no callers yet, the aliases are here for when it grows them.
-// The grant body on POST /platform-config/{app}/access is
-// `{ roleCode, canWrite }` (GrantAccessRequest); revoke returns 204.
+// Wire type for GET /platform-config/{app}; the SPA has no caller yet, the
+// alias is here for when it grows one. The access-grant routes and their
+// types (AccessListResponse, GrantAccessRequest) are withdrawn
+// (docs/spec/config-permissions.md §A.3 — permissions come from roles now,
+// not a per-application grant table).
 export type ConfigListResponse = GenConfigListResponse;
-export type AccessListResponse = GenAccessListResponse;
 
 // Named for the platform-config property this module owns, not the generic
 // "SetConfigRequest" — the function service's generated types (§H1) export a

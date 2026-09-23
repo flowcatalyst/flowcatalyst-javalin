@@ -37,9 +37,9 @@ public final class PlatformRoles {
                             ADMIN_LOGIN_ATTEMPT_READ,
                             ADMIN_DOCS_READ,
                             DEVELOPER_APPLICATION_OPENAPI_MANAGE,
-                            // docs/spec/reach-only-routes.md §2: config + CORS-origin were
-                            // held by no role before the permission gates existed.
-                            ADMIN_CONFIG_READ, ADMIN_CONFIG_UPDATE,
+                            // docs/spec/config-permissions.md §A.4: platform:admin holds
+                            // view + manage (manage replaces the old update code).
+                            ADMIN_CONFIG_READ, ADMIN_CONFIG_MANAGE,
                             ADMIN_CORS_ORIGIN_READ, ADMIN_CORS_ORIGIN_CREATE, ADMIN_CORS_ORIGIN_DELETE)),
 
             // platform:admin-readonly

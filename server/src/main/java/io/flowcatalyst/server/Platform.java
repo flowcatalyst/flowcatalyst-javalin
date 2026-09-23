@@ -141,7 +141,6 @@ import io.flowcatalyst.platform.serviceaccount.operations.RsaServiceAccountToken
 import io.flowcatalyst.platform.serviceaccount.operations.ServiceAccountTokenMinter;
 import io.flowcatalyst.platform.subscription.SubscriptionRepository;
 import io.flowcatalyst.platform.subscription.api.SubscriptionApi;
-import io.flowcatalyst.platform.platformconfig.ConfigAccessRepository;
 import io.flowcatalyst.platform.platformconfig.PlatformConfigRepository;
 import io.flowcatalyst.platform.platformconfig.api.PlatformConfigApi;
 import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
@@ -339,7 +338,7 @@ public final class Platform {
         PasswordResetApi.register(routes, new PasswordResetApi.State(resetLinks, resetTokenRepo, loginPrincipalRepo, uow, mfa,
                 mfaTokens, new DomainPolicy.Evaluator(loginMappingRepo), grantStore, notices, portalPasswords,
                 resetApprovalQueue, false, Clock.systemUTC(), tokenIssuer,
-                new SessionCookie(cookiesSecure, (int) env.sessionTtlSeconds())));
+                new SessionCookie(cookiesSecure, (int) env.sessionTtlSeconds()), loginAttemptRepo));
         // /oauth/authorize and /auth/refresh are registered with the provider below, after the OAuth-client store.
         //   POST /api/dispatch/process (HMAC job-token auth) is registered below, alongside /api/dispatch/settled.
 
@@ -395,7 +394,7 @@ public final class Platform {
         var subscriptionRepo = new SubscriptionRepository(pool);
         SubscriptionApi.register(routes, new SubscriptionApi.State(subscriptionRepo, uow));
         var platformConfigRepo = new PlatformConfigRepository(pool);
-        PlatformConfigApi.register(routes, new PlatformConfigApi.State(platformConfigRepo, new ConfigAccessRepository(pool), uow));
+        PlatformConfigApi.register(routes, new PlatformConfigApi.State(platformConfigRepo, uow));
         var processRepo = new ProcessRepository(pool);
         ProcessApi.register(routes, new ProcessApi.State(processRepo, uow));
         CorsOriginApi.register(routes, new CorsOriginApi.State(corsOriginRepo, uow, corsAllowlist::invalidate));

@@ -62,7 +62,7 @@ perm	platform:admin	platform:admin:login-attempt:view
 perm	platform:admin	platform:admin:docs:view
 perm	platform:admin	platform:developer:application-openapi:manage
 perm	platform:admin	platform:admin:config:view
-perm	platform:admin	platform:admin:config:update
+perm	platform:admin	platform:admin:config:manage
 perm	platform:admin	platform:admin:cors-origin:view
 perm	platform:admin	platform:admin:cors-origin:create
 perm	platform:admin	platform:admin:cors-origin:delete

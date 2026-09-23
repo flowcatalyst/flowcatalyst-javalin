@@ -20,6 +20,9 @@ import io.flowcatalyst.platform.emaildomainmapping.TwoFactorPolicy;
 import io.flowcatalyst.platform.identityprovider.IdentityProvider;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderRepository;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderType;
+import io.flowcatalyst.platform.loginattempt.AttemptOutcome;
+import io.flowcatalyst.platform.loginattempt.AttemptType;
+import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
 import io.flowcatalyst.platform.mail.Mail;
 import io.flowcatalyst.platform.notify.Notifications;
 import io.flowcatalyst.platform.principal.EmailAddress;
@@ -71,6 +74,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static io.flowcatalyst.db.generated.Tables.IAM_LOGIN_ATTEMPTS;
 import static io.flowcatalyst.db.generated.Tables.IAM_MFA_TRUSTED_DEVICES;
 import static io.flowcatalyst.db.generated.Tables.IAM_PASSWORD_RESET_TOKENS;
 import static io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS;
@@ -113,6 +117,7 @@ class PasswordResetApiTest {
     private static final MfaRepository MFA_REPO = new MfaRepository(DS);
     private static final Mfa MFA = new Mfa(MFA_REPO, Optional.of(ENC), MailSender.logging(false), Mfa.Config.DEFAULT, Clock.systemUTC());
     private static final GrantStore GRANTS = new GrantStore(DS);
+    private static final LoginAttemptRepository ATTEMPTS = new LoginAttemptRepository(DS);
     private static final ResetLinks LINKS = new ResetLinks(TOKENS, SENT::add, () -> EmailTheme.defaults("Acme"), BASE, MOVABLE);
     private static final Notifications NOTICES = new Notifications(SENT::add, () -> "Acme");
     private static final MfaToken MFA_TOKENS = new MfaToken(KEYS.privateKey(), BASE);
@@ -145,12 +150,13 @@ class PasswordResetApiTest {
                 GRANTS, NOTICES, new PortalPasswords() {
                     @Override public Optional<Identity> find(String id) { return PORTAL.get().find(id); }
                     @Override public boolean setPasswordHash(String id, String hash) { return PORTAL.get().setPasswordHash(id, hash); }
-                }, approvals, requireStrongFactorForReset, MOVABLE, null, null);
+                }, approvals, requireStrongFactorForReset, MOVABLE, null, null, ATTEMPTS);
     }
 
     @AfterAll
     static void stop() {
         http.close();
+        DB.deleteFrom(IAM_LOGIN_ATTEMPTS).where(IAM_LOGIN_ATTEMPTS.PRINCIPAL_ID.in(principals)).execute();
         DB.deleteFrom(IAM_PASSWORD_RESET_TOKENS).where(IAM_PASSWORD_RESET_TOKENS.PRINCIPAL_ID.in(principals)).execute();
         DB.deleteFrom(IAM_REFRESH_TOKENS).where(IAM_REFRESH_TOKENS.PRINCIPAL_ID.in(principals)).execute();
         DB.deleteFrom(IAM_USER_MFA_METHODS).where(IAM_USER_MFA_METHODS.PRINCIPAL_ID.in(principals)).execute();
@@ -565,7 +571,7 @@ class PasswordResetApiTest {
                 GRANTS, NOTICES, new PortalPasswords() {
                     @Override public Optional<Identity> find(String id) { return PORTAL.get().find(id); }
                     @Override public boolean setPasswordHash(String id, String hash) { return PORTAL.get().setPasswordHash(id, hash); }
-                }, ApprovalQueue.none(), false, MOVABLE, issuer, cookie);
+                }, ApprovalQueue.none(), false, MOVABLE, issuer, cookie, ATTEMPTS);
     }
 
     /// Pins the whole §4 wire: the cookie's own attributes, its `Max-Age`
@@ -603,6 +609,60 @@ class PasswordResetApiTest {
             var me = h.get("/auth/me", "Cookie", pair);
             assertThat(me.statusCode()).as(me.body()).isEqualTo(200);
             assertThat(json(me).get("principalId").asString()).isEqualTo(pid);
+        }
+    }
+
+    /// config-permissions.md §B: the session mint the previous test proved
+    /// also writes exactly one `USER_LOGIN`/`SUCCESS` row for the principal —
+    /// a count before/after, not just an absence, so a write to the wrong
+    /// principal or the wrong outcome would still fail it.
+    @Test
+    void confirmOfAnInviteThatMintsASessionRecordsExactlyOneSuccessfulLoginAttempt() {
+        String email = "session-attempt-" + RUN + "@example.com";
+        String pid = user(email, null, null);
+        SENT.clear();
+        LINKS.sendInvite(PRINCIPALS.findById(pid).orElseThrow(), null);
+        String raw = linkToken(SENT.getFirst());
+
+        var issuer = new TokenIssuer(KEYS, TokenIssuer.Config.of(BASE));
+        var cookie = new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS);
+        try (var h = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            PasswordResetApi.register(routes, sessionState(issuer, cookie));
+        })) {
+            int before = DB.fetchCount(IAM_LOGIN_ATTEMPTS, IAM_LOGIN_ATTEMPTS.PRINCIPAL_ID.eq(pid)
+                    .and(IAM_LOGIN_ATTEMPTS.OUTCOME.eq(AttemptOutcome.SUCCESS.name())));
+            var r = h.post("/auth/password-reset/confirm", Json.write(Map.of("token", raw, "password", NEW_PASSWORD)));
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+            assertThat(json(r).get("sessionEstablished").asBoolean()).isTrue();
+            int after = DB.fetchCount(IAM_LOGIN_ATTEMPTS, IAM_LOGIN_ATTEMPTS.PRINCIPAL_ID.eq(pid)
+                    .and(IAM_LOGIN_ATTEMPTS.OUTCOME.eq(AttemptOutcome.SUCCESS.name())));
+            assertThat(after - before).as("mutant: removing the login-attempt write").isEqualTo(1);
+            var row = DB.selectFrom(IAM_LOGIN_ATTEMPTS).where(IAM_LOGIN_ATTEMPTS.PRINCIPAL_ID.eq(pid)).fetchOne();
+            assertThat(row.get(IAM_LOGIN_ATTEMPTS.ATTEMPT_TYPE)).as("mutant: wrong attempt type").isEqualTo(AttemptType.USER_LOGIN.name());
+            assertThat(row.get(IAM_LOGIN_ATTEMPTS.IDENTIFIER)).as("mutant: wrong identifier").isEqualTo(email);
+        }
+    }
+
+    /// The RESET-purpose confirm just above never even attempts a mint —
+    /// this proves the write is gated on the mint outcome (not "every
+    /// confirm"), the corollary of the count assertion above.
+    @Test
+    void confirmOfAResetTokenRecordsNoLoginAttempt() {
+        String email = "session-reset-attempt-" + RUN + "@example.com";
+        String pid = user(email, PasswordHash.hash(OLD_PASSWORD), null);
+        var issuer = new TokenIssuer(KEYS, TokenIssuer.Config.of(BASE));
+        var cookie = new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS);
+        try (var h = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            PasswordResetApi.register(routes, sessionState(issuer, cookie));
+        })) {
+            SENT.clear();
+            h.post("/auth/password-reset/request", Json.write(Map.of("email", email)));
+            String raw = linkToken(SENT.getFirst());
+            var r = h.post("/auth/password-reset/confirm", Json.write(Map.of("token", raw, "password", NEW_PASSWORD)));
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+            assertThat(DB.fetchCount(IAM_LOGIN_ATTEMPTS, IAM_LOGIN_ATTEMPTS.PRINCIPAL_ID.eq(pid))).isZero();
         }
     }
 
@@ -674,6 +734,8 @@ class PasswordResetApiTest {
             assertThat(json(r).get("status").asString()).as("sanity: status is ok, not enrollment_required, here").isEqualTo("ok");
             assertThat(json(r).has("sessionEstablished")).as("mutant: the inner requires2fa() check dropped").isFalse();
             assertThat(r.headers().firstValue("set-cookie")).isEmpty();
+            assertThat(DB.fetchCount(IAM_LOGIN_ATTEMPTS, IAM_LOGIN_ATTEMPTS.PRINCIPAL_ID.eq(pid)))
+                    .as("no session, so no sign-in recorded — config-permissions.md §B").isZero();
         }
     }
 

@@ -1,18 +1,10 @@
 package io.flowcatalyst.platform.platformconfig.api;
 
-import io.flowcatalyst.platform.platformconfig.ConfigAccess;
-import io.flowcatalyst.platform.platformconfig.ConfigAccessRepository;
 import io.flowcatalyst.platform.platformconfig.ConfigCoordinate;
 import io.flowcatalyst.platform.platformconfig.PlatformConfig;
 import io.flowcatalyst.platform.platformconfig.PlatformConfigRepository;
-import io.flowcatalyst.platform.platformconfig.operations.Access;
-import io.flowcatalyst.platform.platformconfig.operations.GrantAccess;
-import io.flowcatalyst.platform.platformconfig.operations.GrantAccessCommand;
-import io.flowcatalyst.platform.platformconfig.operations.RevokeAccess;
-import io.flowcatalyst.platform.platformconfig.operations.RevokeAccessCommand;
 import io.flowcatalyst.platform.platformconfig.operations.SetProperty;
 import io.flowcatalyst.platform.platformconfig.operations.SetPropertyCommand;
-import io.flowcatalyst.platform.shared.apicommon.CreatedResponse;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
@@ -26,43 +18,36 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
-import static io.flowcatalyst.platform.shared.auth.Permission.CONFIG_UPDATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.CONFIG_MANAGE;
 import static io.flowcatalyst.platform.shared.auth.Permission.CONFIG_VIEW;
 
-/// The platform-config surface (spec §4): the legacy `/api/platform-config/…`
-/// list + grant routes and the SPA's `/api/config/{app}/{section}/{property}`
-/// single-property routes. Gates on the property routes are per application —
-/// anchor, or a role with a grant ([Access]) — never permission codes; the
-/// three grant-management routes below (`listAccess`/`grant`/`revoke`) are
-/// anchor-only and, per `docs/spec/reach-only-routes.md`, now also require
-/// `CONFIG_VIEW`/`CONFIG_UPDATE` on top of `requireAnchor` — the property
-/// routes' `Access`-based reach+grant gate is untouched (a non-anchor grant
-/// holder has never carried permission codes; adding one here would be a
-/// different, broader change than this unit's reach-only-bypass fix). A
-/// write handler does: gate → command from DTO →
-/// `Operation.run` → response. Reads go straight to the repositories and
+/// The platform-config surface (`docs/spec/config-permissions.md` §A): the
+/// legacy `/api/platform-config/{app}` list route and the SPA's
+/// `/api/config/{app}/{section}/{property}` single-property routes. Gated by
+/// permission codes like every other admin route — `CONFIG_VIEW` on the
+/// reads, `CONFIG_MANAGE` on the writes — never by anchor scope or a
+/// per-application grant table (the access-grant routes and their backing
+/// table are withdrawn by this spec; `permissions-from-roles.md`: anchor is
+/// reach, not authority). A write handler does: gate → command from DTO →
+/// `Operation.run` → response. Reads go straight to the repository and
 /// apply the secret-masking rule here. Every handler runs inside
 /// [Auth#scoped] so the operations can read [Auth#current()].
 ///
-/// | Method | Path | Status |
-/// |---|---|---|
-/// | GET | `/api/platform-config/{app}` | 200 [ConfigListResponse] |
-/// | GET | `/api/config/{app}/{section}/{property}` | 200 [ConfigResponse] |
-/// | PUT | `/api/config/{app}/{section}/{property}` | 200 [ConfigResponse] |
-/// | DELETE | `/api/config/{app}/{section}/{property}` | 204 |
-/// | GET | `/api/platform-config/{app}/access` | 200 [AccessListResponse] |
-/// | POST | `/api/platform-config/{app}/access` | 201 [CreatedResponse] |
-/// | DELETE | `/api/platform-config/access/{id}` | 204 |
+/// | Method | Path | Status | Requires |
+/// |---|---|---|---|
+/// | GET | `/api/platform-config/{app}` | 200 [ConfigListResponse] | `CONFIG_VIEW` |
+/// | GET | `/api/config/{app}/{section}/{property}` | 200 [ConfigResponse] | `CONFIG_VIEW` |
+/// | PUT | `/api/config/{app}/{section}/{property}` | 200 [ConfigResponse] | `CONFIG_MANAGE` |
+/// | DELETE | `/api/config/{app}/{section}/{property}` | 204 | `CONFIG_MANAGE` |
 public final class PlatformConfigApi {
 
     private PlatformConfigApi() {
     }
 
     /// The handlers' dependencies.
-    public record State(PlatformConfigRepository configs, ConfigAccessRepository grants, UnitOfWork uow) {
+    public record State(PlatformConfigRepository configs, UnitOfWork uow) {
         public State {
             Objects.requireNonNull(configs, "configs");
-            Objects.requireNonNull(grants, "grants");
             Objects.requireNonNull(uow, "uow");
         }
     }
@@ -74,35 +59,33 @@ public final class PlatformConfigApi {
         routes.get("/api/config/{app}/{section}/{property}", Auth.scoped(ctx -> get(ctx, s)));
         write.put("/api/config/{app}/{section}/{property}", Auth.scoped(ctx -> set(ctx, s)));
         write.delete("/api/config/{app}/{section}/{property}", Auth.scoped(ctx -> delete(ctx, s)));
-        routes.get("/api/platform-config/{app}/access", Auth.scoped(ctx -> listAccess(ctx, s)));
-        write.post("/api/platform-config/{app}/access", Auth.scoped(ctx -> grant(ctx, s)));
-        write.delete("/api/platform-config/access/{id}", Auth.scoped(ctx -> revoke(ctx, s)));
     }
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
     private static void list(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
+        Checks.require(ac, CONFIG_VIEW);
         String app = ctx.pathParam("app");
-        Access.requireRead(s.grants(), ac, app);
         ctx.json(new ConfigListResponse(s.configs().findByApplication(app).stream()
                 .map(c -> ConfigResponse.from(visible(ac, c))).toList()));
     }
 
     private static void get(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
+        Checks.require(ac, CONFIG_VIEW);
         var coordinate = coordinate(ctx);
-        Access.requireRead(s.grants(), ac, coordinate.applicationCode());
         ctx.json(ConfigResponse.from(visible(ac, configAt(s, coordinate))));
     }
 
-    /// No handler gate: the write-access rule is resource-level (the target
-    /// application is a command field) and runs in [SetProperty]'s authorize
-    /// phase (spec §6). Answers with the value as re-read after the write, at
-    /// the coordinate the command addressed (unmasked — spec §4, open question 5).
+    /// Gate lives in [SetProperty]'s authorize phase (spec's "Error handling":
+    /// the operation's authorize phase is the established boundary for a
+    /// command-scoped check). Answers with the value as re-read after the
+    /// write, at the coordinate the command addressed (unmasked — spec §4,
+    /// open question 5; the caller just proved `CONFIG_MANAGE`).
     private static void set(Exchange ctx, State s) {
         var cmd = ctx.bodyAsClass(SetPropertyRequest.class).toCommand(coordinate(ctx));
-        SetProperty.of(s.configs(), s.grants()).run(s.uow(), cmd, Auth.executionContext());
+        SetProperty.of(s.configs()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(ConfigResponse.from(configAt(s, cmd.coordinate())));
     }
 
@@ -110,34 +93,12 @@ public final class PlatformConfigApi {
     /// open question 3); committed through the unit of work so the write
     /// still goes through one transaction.
     private static void delete(Exchange ctx, State s) {
+        Checks.require(Auth.current(), CONFIG_MANAGE);
         var coordinate = coordinate(ctx);
-        Access.requireWrite(s.grants(), Auth.current(), coordinate.applicationCode());
         s.configs().findByCoordinate(coordinate).ifPresent(c -> s.uow().inTransaction(tx -> {
             s.configs().delete(c, tx.dbTx());
             return null;
         }));
-        ctx.status(204);
-    }
-
-    private static void listAccess(Exchange ctx, State s) {
-        Checks.requireAnchor(Auth.current());
-        Checks.require(Auth.current(), CONFIG_VIEW);
-        ctx.json(new AccessListResponse(s.grants().findByApplication(ctx.pathParam("app")).stream()
-                .map(AccessResponse::from).toList()));
-    }
-
-    private static void grant(Exchange ctx, State s) {
-        Checks.requireAnchor(Auth.current());
-        Checks.require(Auth.current(), CONFIG_UPDATE);
-        var cmd = ctx.bodyAsClass(GrantAccessRequest.class).toCommand(ctx.pathParam("app"));
-        var event = GrantAccess.of(s.grants()).run(s.uow(), cmd, Auth.executionContext());
-        ctx.status(201).json(new CreatedResponse(event.accessId()));
-    }
-
-    private static void revoke(Exchange ctx, State s) {
-        Checks.requireAnchor(Auth.current());
-        Checks.require(Auth.current(), CONFIG_UPDATE);
-        RevokeAccess.of(s.grants()).run(s.uow(), new RevokeAccessCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
@@ -157,9 +118,10 @@ public final class PlatformConfigApi {
                 .orElseThrow(() -> HttpError.notFound("Config", coordinate.path()));
     }
 
-    /// A `SECRET` value is masked for everyone but anchors (spec §4).
+    /// A `SECRET` value is masked for everyone but a `CONFIG_MANAGE` holder
+    /// (spec §A.2) — `CONFIG_VIEW` alone sees the mask.
     private static PlatformConfig visible(AuthContext ac, PlatformConfig c) {
-        return c.isSecret() && !ac.isAnchor() ? c.masked() : c;
+        return c.isSecret() && !ac.hasPermission(CONFIG_MANAGE) ? c.masked() : c;
     }
 
     /// The wire's "absent" for optional strings is `null` or `""`; inside the JVM it is `null`.
@@ -177,13 +139,6 @@ public final class PlatformConfigApi {
             String client = coordinate.clientId() != null ? coordinate.clientId() : blankToNull(clientId);
             return new SetPropertyCommand(coordinate.applicationCode(), coordinate.section(), coordinate.property(),
                     value, valueType, description, client);
-        }
-    }
-
-    /// Body of `POST /api/platform-config/{app}/access`; a missing `canWrite` reads as `false`.
-    public record GrantAccessRequest(String roleCode, boolean canWrite) {
-        public GrantAccessCommand toCommand(String applicationCode) {
-            return new GrantAccessCommand(applicationCode, roleCode, canWrite);
         }
     }
 
@@ -207,30 +162,9 @@ public final class PlatformConfigApi {
         }
     }
 
-    /// One access grant on the wire.
-    public record AccessResponse(
-            String id,
-            String applicationCode,
-            String roleCode,
-            boolean canRead,
-            boolean canWrite,
-            Instant createdAt) {
-
-        public static AccessResponse from(ConfigAccess a) {
-            return new AccessResponse(a.id(), a.applicationCode(), a.roleCode(), a.canRead(), a.canWrite(), a.createdAt());
-        }
-    }
-
     /// `{"items": [...]}` — no pagination.
     public record ConfigListResponse(List<ConfigResponse> items) {
         public ConfigListResponse {
-            items = items == null ? List.of() : List.copyOf(items);
-        }
-    }
-
-    /// `{"items": [...]}` — no pagination.
-    public record AccessListResponse(List<AccessResponse> items) {
-        public AccessListResponse {
             items = items == null ? List.of() : List.copyOf(items);
         }
     }

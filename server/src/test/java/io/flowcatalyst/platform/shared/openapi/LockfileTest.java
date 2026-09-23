@@ -25,9 +25,12 @@ class LockfileTest {
         // +1 path / +1 operation at the b60d75c re-vendor (catch-up-2026-09-22.md slice C1/C2):
         // `POST /api/dispatch-jobs/{id}/sign` (signDispatchJob) — not yet routed by Java,
         // owed to C3; see LockfileCoverageTest#KNOWN_MISSING.
-        assertThat(lock.pathCount()).isEqualTo(189);
+        // -2 paths / -3 operations at the config-permissions.md §A.3 edit: the access-grant
+        // routes (listPlatformConfigAccess, grantPlatformConfigAccess, revokePlatformConfigAccess)
+        // and their AccessListResponse/AccessResponse/GrantAccessRequest schemas are withdrawn.
+        assertThat(lock.pathCount()).isEqualTo(187);
         var ops = lock.operations();
-        assertThat(ops).hasSize(256);
+        assertThat(ops).hasSize(253);
         assertThat(ops).anyMatch(o -> o.method().equals("GET") && o.path().equals("/api/event-types"));
         assertThat(ops).anyMatch(o -> o.path().contains("{id}"));
         assertThat(lock.json().path("openapi").asText()).startsWith("3.");

@@ -144,7 +144,7 @@ public final class Permissions {
 
     // Config
     public static final String ADMIN_CONFIG_READ = "platform:admin:config:view";
-    public static final String ADMIN_CONFIG_UPDATE = "platform:admin:config:update";
+    public static final String ADMIN_CONFIG_MANAGE = "platform:admin:config:manage";
 
     // Batch
     public static final String ADMIN_BATCH_EVENTS_WRITE = "platform:messaging:batch:events-write";

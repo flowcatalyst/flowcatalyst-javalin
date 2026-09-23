@@ -11,9 +11,10 @@ import org.junit.jupiter.params.provider.ValueSource;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/// The aggregates' pure rules (spec §1–2): coordinate → scope derivation,
-/// the defaults of a fresh value / grant, the `set` and `grant` transitions
-/// and the lenient enum reads — no database involved.
+/// The config-value aggregate's pure rules (spec §1–2): coordinate → scope
+/// derivation, the defaults of a fresh value, the `set` transition and the
+/// lenient enum reads — no database involved. The access-grant aggregate
+/// (`ConfigAccess`) is withdrawn (`docs/spec/config-permissions.md` §A.3).
 class PlatformConfigTest {
 
     private static final ConfigCoordinate GLOBAL = ConfigCoordinate.global("platform", "login", "theme");
@@ -103,31 +104,6 @@ class PlatformConfigTest {
         assertThat(masked.description()).isEqualTo("smtp");
         assertThat(masked.updatedAt()).isEqualTo(c.updatedAt());
         assertThat(masked.id()).isEqualTo(c.id());
-    }
-
-    // ── Access grant ───────────────────────────────────────────────────────
-
-    @Test
-    void createIsAReadOnlyGrant() {
-        var a = ConfigAccess.create("app", "auditor");
-        assertThat(a.id()).startsWith("cfa_").hasSize(17);
-        assertThat(a.applicationCode()).isEqualTo("app");
-        assertThat(a.roleCode()).isEqualTo("auditor");
-        assertThat(a.canRead()).isTrue();
-        assertThat(a.canWrite()).isFalse();
-    }
-
-    @Test
-    void grantEscalatesAndDeEscalatesWriteButAlwaysKeepsRead() {
-        var a = ConfigAccess.create("app", "ops");
-        var writer = a.grant(true);
-        assertThat(writer.id()).isEqualTo(a.id());
-        assertThat(writer.canRead()).isTrue();
-        assertThat(writer.canWrite()).isTrue();
-        var reader = writer.grant(false);
-        assertThat(reader.canRead()).isTrue();
-        assertThat(reader.canWrite()).isFalse();
-        assertThat(reader.createdAt()).isEqualTo(a.createdAt());
     }
 
     // ── Stored enum reads are strict (X-06) ─────────────────────────────────

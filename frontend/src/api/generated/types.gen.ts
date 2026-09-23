@@ -4,23 +4,6 @@ export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});
 };
 
-export type AccessListResponse = {
-    /**
-     * A URL to the JSON Schema for this object.
-     */
-    readonly $schema?: string;
-    items: Array<AccessResponse>;
-};
-
-export type AccessResponse = {
-    applicationCode: string;
-    canRead: boolean;
-    canWrite: boolean;
-    createdAt: string;
-    id: string;
-    roleCode: string;
-};
-
 export type AddNoteRequest = {
     /**
      * A URL to the JSON Schema for this object.
@@ -1511,16 +1494,6 @@ export type FireNowResponse = {
     id: string;
     instanceId: string;
     scheduledJobId: string;
-};
-
-export type GrantAccessRequest = {
-    /**
-     * A URL to the JSON Schema for this object.
-     */
-    readonly $schema?: string;
-    canWrite: boolean;
-    roleCode: string;
-    [key: string]: unknown;
 };
 
 export type GrantClientAccessRequest = {
@@ -3170,10 +3143,6 @@ export type WriteInstanceLogRequest = {
     [key: string]: unknown;
 };
 
-export type AccessListResponseWritable = {
-    items: Array<AccessResponse>;
-};
-
 export type AddNoteRequestWritable = {
     category: string;
     text: string;
@@ -4101,12 +4070,6 @@ export type FireNowResponseWritable = {
     id: string;
     instanceId: string;
     scheduledJobId: string;
-};
-
-export type GrantAccessRequestWritable = {
-    canWrite: boolean;
-    roleCode: string;
-    [key: string]: unknown;
 };
 
 export type GrantClientAccessRequestWritable = {
@@ -9071,33 +9034,6 @@ export type RotateOAuthClientSecretResponses = {
 
 export type RotateOAuthClientSecretResponse2 = RotateOAuthClientSecretResponses[keyof RotateOAuthClientSecretResponses];
 
-export type RevokePlatformConfigAccessData = {
-    body?: never;
-    path: {
-        id: string;
-    };
-    query?: never;
-    url: '/api/platform-config/access/{id}';
-};
-
-export type RevokePlatformConfigAccessErrors = {
-    /**
-     * Error
-     */
-    default: ErrorModel;
-};
-
-export type RevokePlatformConfigAccessError = RevokePlatformConfigAccessErrors[keyof RevokePlatformConfigAccessErrors];
-
-export type RevokePlatformConfigAccessResponses = {
-    /**
-     * No Content
-     */
-    204: void;
-};
-
-export type RevokePlatformConfigAccessResponse = RevokePlatformConfigAccessResponses[keyof RevokePlatformConfigAccessResponses];
-
 export type ListPlatformConfigPropertiesData = {
     body?: never;
     path: {
@@ -9124,60 +9060,6 @@ export type ListPlatformConfigPropertiesResponses = {
 };
 
 export type ListPlatformConfigPropertiesResponse = ListPlatformConfigPropertiesResponses[keyof ListPlatformConfigPropertiesResponses];
-
-export type ListPlatformConfigAccessData = {
-    body?: never;
-    path: {
-        app: string;
-    };
-    query?: never;
-    url: '/api/platform-config/{app}/access';
-};
-
-export type ListPlatformConfigAccessErrors = {
-    /**
-     * Error
-     */
-    default: ErrorModel;
-};
-
-export type ListPlatformConfigAccessError = ListPlatformConfigAccessErrors[keyof ListPlatformConfigAccessErrors];
-
-export type ListPlatformConfigAccessResponses = {
-    /**
-     * OK
-     */
-    200: AccessListResponse;
-};
-
-export type ListPlatformConfigAccessResponse = ListPlatformConfigAccessResponses[keyof ListPlatformConfigAccessResponses];
-
-export type GrantPlatformConfigAccessData = {
-    body: GrantAccessRequestWritable;
-    path: {
-        app: string;
-    };
-    query?: never;
-    url: '/api/platform-config/{app}/access';
-};
-
-export type GrantPlatformConfigAccessErrors = {
-    /**
-     * Error
-     */
-    default: ErrorModel;
-};
-
-export type GrantPlatformConfigAccessError = GrantPlatformConfigAccessErrors[keyof GrantPlatformConfigAccessErrors];
-
-export type GrantPlatformConfigAccessResponses = {
-    /**
-     * Created
-     */
-    201: CreatedResponse;
-};
-
-export type GrantPlatformConfigAccessResponse = GrantPlatformConfigAccessResponses[keyof GrantPlatformConfigAccessResponses];
 
 export type ListCorsOriginsData = {
     body?: never;

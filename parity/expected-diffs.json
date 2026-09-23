@@ -761,5 +761,40 @@
     "pointer": "/**",
     "reason": "Java-first: public-route domains have no Go implementation (docs/spec/function-public-routes.md §1, package F slice F1); Go's SPA catch-all or 404 answers instead of Java's 204",
     "ruling": "owner 2026-09-20, function-public-routes.md §1; never retires unless Go builds it"
+  },
+  {
+    "scenario": "platform-config*",
+    "step": "confinement-list-properties-refused",
+    "pointer": "/**",
+    "reason": "CFG-PERM-2026-09-23 (docs/spec/config-permissions.md §A): both sides refuse a principal holding no grant and no config permission, with different envelopes — Go FORBIDDEN 'No … access to platform config for <app>', Java PERMISSION_REQUIRED",
+    "ruling": "CFG-PERM-2026-09-23"
+  },
+  {
+    "scenario": "config:*",
+    "step": "confinement-read-secret-is-masked",
+    "pointer": "/**",
+    "reason": "CFG-PERM-2026-09-23 (docs/spec/config-permissions.md §A): both sides refuse a principal holding no grant and no config permission, with different envelopes — Go FORBIDDEN 'No … access to platform config for <app>', Java PERMISSION_REQUIRED",
+    "ruling": "CFG-PERM-2026-09-23"
+  },
+  {
+    "scenario": "config:*",
+    "step": "confinement-write-forbidden",
+    "pointer": "/**",
+    "reason": "CFG-PERM-2026-09-23 (docs/spec/config-permissions.md §A): both sides refuse a principal holding no grant and no config permission, with different envelopes — Go FORBIDDEN 'No … access to platform config for <app>', Java PERMISSION_REQUIRED",
+    "ruling": "CFG-PERM-2026-09-23"
+  },
+  {
+    "scenario": "config:*",
+    "step": "confinement-delete-forbidden",
+    "pointer": "/**",
+    "reason": "CFG-PERM-2026-09-23 (docs/spec/config-permissions.md §A): both sides refuse a principal holding no grant and no config permission, with different envelopes — Go FORBIDDEN 'No … access to platform config for <app>', Java PERMISSION_REQUIRED",
+    "ruling": "CFG-PERM-2026-09-23"
+  },
+  {
+    "scenario": "config:*",
+    "step": "confinement-read-other-app-forbidden",
+    "pointer": "/**",
+    "reason": "CFG-PERM-2026-09-23 (docs/spec/config-permissions.md §A): both sides refuse a principal holding no grant and no config permission, with different envelopes — Go FORBIDDEN 'No … access to platform config for <app>', Java PERMISSION_REQUIRED",
+    "ruling": "CFG-PERM-2026-09-23"
   }
 ]

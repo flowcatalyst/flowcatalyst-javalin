@@ -1783,3 +1783,21 @@ checked against the Java code on 2026-09-23 and both have a real Java-side gap:
    above it returns silently too — same treatment.
 
 Go `c8ebd8e` is a sqlc regeneration (no behaviour). Go `c224f1a` and `359df6b` are already in Java.
+
+## Config permissions landed; two follow-ups (2026-09-23)
+
+`docs/spec/config-permissions.md` (ruling CFG-PERM-2026-09-23) is on main: config reads need
+`platform:admin:config:view`, writes/deletes `platform:admin:config:manage` (replaces `update`, V17
+renames existing rows), no anchor pass, secrets unmasked only for `manage`; the three access-grant
+routes are gone; an invite sign-in writes a `USER_LOGIN` SUCCESS row.
+
+- **Drop `app_platform_config_access` after cutover.** Java no longer reads or writes it; kept only
+  because Go shares the schema. One migration, once Go is off.
+- **The TS and Laravel SDK copies still carry the three withdrawn endpoints.** They were last
+  generated from Go's spec (`6b9e52b0`, Go `52993a0`), not Java's lockfile, so `make sdk-generate`
+  brings unrelated drift: `$schema` fields in the TS types, and every Laravel endpoint rewritten
+  because `clients/laravel-sdk/composer.lock` is untracked and the generator floats (a newer
+  jane-openapi emits `rawurlencode` / `stripos`). Owed as its own unit: commit the Laravel
+  lockfile (pin the generator), regenerate both from the Java lockfile, review the drift, and
+  decide the SDK version bump (`docs/sdk-release-plan.md`). The Java SDK's copy
+  (`sdk/openapi/openapi.json`) is already in step with the lockfile.

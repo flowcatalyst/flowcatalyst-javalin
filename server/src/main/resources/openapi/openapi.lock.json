@@ -1,63 +1,6 @@
 {
   "components": {
     "schemas": {
-      "AccessListResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "https://example.com/schemas/AccessListResponse.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/AccessResponse"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "type": "object"
-      },
-      "AccessResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "applicationCode": {
-            "type": "string"
-          },
-          "canRead": {
-            "type": "boolean"
-          },
-          "canWrite": {
-            "type": "boolean"
-          },
-          "createdAt": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "roleCode": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "applicationCode",
-          "roleCode",
-          "canRead",
-          "canWrite",
-          "createdAt"
-        ],
-        "type": "object"
-      },
       "AddNoteRequest": {
         "additionalProperties": true,
         "properties": {
@@ -4188,31 +4131,6 @@
           "id",
           "scheduledJobId",
           "instanceId"
-        ],
-        "type": "object"
-      },
-      "GrantAccessRequest": {
-        "additionalProperties": true,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "https://example.com/schemas/GrantAccessRequest.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "canWrite": {
-            "type": "boolean"
-          },
-          "roleCode": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "roleCode",
-          "canWrite"
         ],
         "type": "object"
       },
@@ -16062,40 +15980,6 @@
         ]
       }
     },
-    "/api/platform-config/access/{id}": {
-      "delete": {
-        "operationId": "revokePlatformConfigAccess",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "No Content"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorModel"
-                }
-              }
-            },
-            "description": "Error"
-          }
-        },
-        "summary": "Revoke a platform-config access grant",
-        "tags": [
-          "platform-config"
-        ]
-      }
-    },
     "/api/platform-config/{app}": {
       "get": {
         "operationId": "listPlatformConfigProperties",
@@ -16132,96 +16016,6 @@
           }
         },
         "summary": "List platform-config properties for an application",
-        "tags": [
-          "platform-config"
-        ]
-      }
-    },
-    "/api/platform-config/{app}/access": {
-      "get": {
-        "operationId": "listPlatformConfigAccess",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "app",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccessListResponse"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorModel"
-                }
-              }
-            },
-            "description": "Error"
-          }
-        },
-        "summary": "List access grants for an application",
-        "tags": [
-          "platform-config"
-        ]
-      },
-      "post": {
-        "operationId": "grantPlatformConfigAccess",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "app",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/GrantAccessRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CreatedResponse"
-                }
-              }
-            },
-            "description": "Created"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorModel"
-                }
-              }
-            },
-            "description": "Error"
-          }
-        },
-        "summary": "Grant access to platform-config for a role",
         "tags": [
           "platform-config"
         ]

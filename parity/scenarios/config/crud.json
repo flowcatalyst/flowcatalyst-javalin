@@ -1,8 +1,8 @@
 {
-  "name": "config: single-property get/set/delete, GLOBAL vs CLIENT coordinates, secret masking, and grant-based confinement",
+  "name": "config: single-property get/set/delete, GLOBAL vs CLIENT coordinates, secret masking, and refusal without CONFIG_VIEW",
   "why": "the SPA's per-property config editor and every app reading its own settings go through this coordinate; a wire diff in the query-clientId-overrides-body-clientId rule (spec §4) or the SECRET masking rule would leak a secret to a non-anchor or silently drop a client-scoped write",
   "covers": ["getPlatformConfigProperty", "setPlatformConfigProperty", "deletePlatformConfigProperty",
-             "createClient", "createPrincipal", "createRole", "grantPlatformConfigAccess", "assignPrincipalRoles"],
+             "createClient", "createPrincipal", "createRole", "assignPrincipalRoles"],
   "steps": [
     { "id": "login",
       "request": { "method": "POST", "path": "/auth/login",
@@ -72,12 +72,6 @@
                              "clientManaged": false } },
       "expect": { "status": 201 } },
 
-    { "id": "confinement-grant-read-only",
-      "why": "platform config authorization is a DB-backed per-role grant, not a permission code (spec §3): granting canWrite=false must allow reads and refuse writes",
-      "request": { "method": "POST", "path": "/api/platform-config/parity-${run}/access",
-                   "body": { "roleCode": "parity:cfg-reader-${run}", "canWrite": false } },
-      "expect": { "status": 201 } },
-
     { "id": "confinement-create-principal",
       "request": { "method": "POST", "path": "/api/principals",
                    "body": { "email": "parity-cfgconf-${run}@example.com", "name": "Parity Config Confinement User",
@@ -97,7 +91,7 @@
       "expect": { "status": 200 } },
 
     { "id": "confinement-read-secret-is-masked",
-      "why": "a non-anchor with only a read grant must see the SECRET value masked to *** (spec §4), unlike the anchor read above",
+      "why": "no grant (Go) and no CONFIG_VIEW (Java): refused on both sides; masking for a view-only holder is pinned in PlatformConfigApiTest",
       "request": { "method": "GET", "path": "/api/config/parity-${run}/section-a/secret-one" } },
 
     { "id": "confinement-write-forbidden",
@@ -107,7 +101,7 @@
       "request": { "method": "DELETE", "path": "/api/config/parity-${run}/section-a/secret-one" } },
 
     { "id": "confinement-read-other-app-forbidden",
-      "why": "the grant is scoped to one applicationCode; reading a coordinate under a different, ungranted applicationCode must still be refused",
+      "why": "refused on both sides for the same reason as the steps above",
       "request": { "method": "GET", "path": "/api/config/parity-other-${run}/section-a/prop-one" } }
   ]
 }

@@ -1,8 +1,8 @@
 {
-  "name": "platform-config: the property list and the anchor-only access-grant surface",
-  "why": "the access-grant table is what a role check in every property route reads; a wire diff in the upsert-by-(app,role) rule (spec §1.2) or in the anchor-only gate on the grant routes would let a non-anchor escalate their own read/write access to another application's config",
-  "covers": ["listPlatformConfigProperties", "listPlatformConfigAccess", "grantPlatformConfigAccess",
-             "revokePlatformConfigAccess", "setPlatformConfigProperty", "createClient", "createPrincipal",
+  "name": "platform-config: the property list, and refusal without a grant or CONFIG_VIEW",
+  "why": "CFG-PERM-2026-09-23 (docs/spec/config-permissions.md §A): the access-grant routes are withdrawn and their steps with them; what is left pins the property list, and that a principal holding neither a grant nor CONFIG_VIEW is refused on both sides",
+  "covers": ["listPlatformConfigProperties",
+             "setPlatformConfigProperty", "createClient", "createPrincipal",
              "createRole", "assignPrincipalRoles"],
   "steps": [
     { "id": "login",
@@ -25,52 +25,6 @@
       "request": { "method": "GET", "path": "/api/platform-config/parity-pc-${run}" },
       "unordered": ["/items"] },
 
-    { "id": "list-access-empty",
-      "request": { "method": "GET", "path": "/api/platform-config/parity-pc-${run}/access" },
-      "unordered": ["/items"] },
-
-    { "id": "grant-read-write",
-      "request": { "method": "POST", "path": "/api/platform-config/parity-pc-${run}/access",
-                   "body": { "roleCode": "platform:viewer", "canWrite": true } },
-      "expect": { "status": 201 },
-      "capture": { "accessId": "/id" } },
-
-    { "id": "list-access-after-grant",
-      "request": { "method": "GET", "path": "/api/platform-config/parity-pc-${run}/access" },
-      "unordered": ["/items"] },
-
-    { "id": "regrant-same-role-updates-in-place",
-      "why": "(applicationCode, roleCode) is unique — a second grant for the same pair updates the row in place, including de-escalating canWrite true to false (spec §1.2)",
-      "request": { "method": "POST", "path": "/api/platform-config/parity-pc-${run}/access",
-                   "body": { "roleCode": "platform:viewer", "canWrite": false } },
-      "expect": { "status": 201 } },
-
-    { "id": "list-access-after-regrant",
-      "request": { "method": "GET", "path": "/api/platform-config/parity-pc-${run}/access" },
-      "unordered": ["/items"] },
-
-    { "id": "grant-missing-role-code",
-      "request": { "method": "POST", "path": "/api/platform-config/parity-pc-${run}/access", "body": {} } },
-
-    { "id": "grant-unvalidated-role-code-is-accepted",
-      "why": "roleCode is not checked against iam_roles — bootstrap-before-the-role-exists is intended (spec §1.2)",
-      "request": { "method": "POST", "path": "/api/platform-config/parity-pc-${run}/access",
-                   "body": { "roleCode": "parity:does-not-exist-${run}", "canWrite": false } },
-      "expect": { "status": 201 } },
-
-    { "id": "revoke",
-      "request": { "method": "DELETE", "path": "/api/platform-config/access/${accessId}" } },
-
-    { "id": "list-access-after-revoke",
-      "request": { "method": "GET", "path": "/api/platform-config/parity-pc-${run}/access" },
-      "unordered": ["/items"] },
-
-    { "id": "revoke-unknown",
-      "request": { "method": "DELETE", "path": "/api/platform-config/access/cfa_doesnotexist1" } },
-
-    { "id": "revoke-again-is-not-found",
-      "request": { "method": "DELETE", "path": "/api/platform-config/access/${accessId}" } },
-
     { "id": "confinement-create-client",
       "request": { "method": "POST", "path": "/api/clients",
                    "body": { "name": "Parity Platform-Config Confinement Client", "identifier": "parity-pcconf-${run}" } },
@@ -81,11 +35,6 @@
       "request": { "method": "POST", "path": "/api/roles",
                    "body": { "applicationCode": "parity", "roleName": "pc-conf-${run}", "displayName": "Config Confinement Role",
                              "clientManaged": false } },
-      "expect": { "status": 201 } },
-
-    { "id": "confinement-grant-read-only-so-the-principal-can-see-the-app",
-      "request": { "method": "POST", "path": "/api/platform-config/parity-pc-${run}/access",
-                   "body": { "roleCode": "parity:pc-conf-${run}", "canWrite": false } },
       "expect": { "status": 201 } },
 
     { "id": "confinement-create-principal",
@@ -106,20 +55,9 @@
                    "body": { "email": "parity-pcconf-${run}@example.com", "password": "Correct-Harness-Battery-2381" } },
       "expect": { "status": 200 } },
 
-    { "id": "confinement-list-properties-allowed",
-      "why": "a read grant on this applicationCode is enough for the property list (spec §3), even though the caller is not anchor",
+    { "id": "confinement-list-properties-refused",
+      "why": "the principal holds no grant (Go) and no CONFIG_VIEW (Java): both refuse; the envelopes differ (allow-listed, CFG-PERM-2026-09-23)",
       "request": { "method": "GET", "path": "/api/platform-config/parity-pc-${run}" },
-      "unordered": ["/items"] },
-
-    { "id": "confinement-list-access-forbidden",
-      "why": "the access-grant routes themselves are anchor-only regardless of any config grant (spec §4)",
-      "request": { "method": "GET", "path": "/api/platform-config/parity-pc-${run}/access" } },
-
-    { "id": "confinement-grant-forbidden",
-      "request": { "method": "POST", "path": "/api/platform-config/parity-pc-${run}/access",
-                   "body": { "roleCode": "platform:viewer", "canWrite": true } } },
-
-    { "id": "confinement-revoke-forbidden",
-      "request": { "method": "DELETE", "path": "/api/platform-config/access/${accessId}" } }
+      "unordered": ["/items"] }
   ]
 }

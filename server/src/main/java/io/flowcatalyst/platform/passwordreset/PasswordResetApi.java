@@ -1,13 +1,19 @@
 package io.flowcatalyst.platform.passwordreset;
 
 import io.flowcatalyst.platform.auth.grant.GrantStore;
+import io.flowcatalyst.platform.auth.login.ClientIp;
 import io.flowcatalyst.platform.auth.login.SessionCookie;
 import io.flowcatalyst.platform.auth.mfa.DomainPolicy;
 import io.flowcatalyst.platform.auth.mfa.Mfa;
 import io.flowcatalyst.platform.auth.mfa.MfaToken;
 import io.flowcatalyst.platform.auth.token.TokenIssuer;
 import io.flowcatalyst.platform.emaildomainmapping.MfaMethod;
+import io.flowcatalyst.platform.loginattempt.AttemptOutcome;
+import io.flowcatalyst.platform.loginattempt.AttemptType;
+import io.flowcatalyst.platform.loginattempt.LoginAttempt;
+import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
 import io.flowcatalyst.platform.notify.Notifications;
+import io.flowcatalyst.platform.principal.EmailAddress;
 import io.flowcatalyst.platform.principal.PasswordPolicy;
 import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
@@ -54,10 +60,14 @@ public final class PasswordResetApi {
     ///               confirm route never signs anyone in (today's behaviour, and what every existing test
     ///               constructs) — app-managed-invitations §4
     /// @param cookie the session cookie the login route uses; must never drift from it — see `Platform`
+    /// @param attempts config-permissions.md §B: the trail an invite-confirm session mint is recorded to,
+    ///                 the same store the password login writes through — never null (recording is
+    ///                 best-effort at the call site, not by being absent here)
     public record State(ResetLinks links, ResetTokenRepository tokens, PrincipalRepository principals, UnitOfWork uow,
                         Mfa mfa, MfaToken mfaTokens, DomainPolicy.Evaluator policy, GrantStore grants,
                         Notifications notices, PortalPasswords portal, ApprovalQueue approvals,
-                        boolean requireStrongFactorForReset, Clock clock, TokenIssuer issuer, SessionCookie cookie) {
+                        boolean requireStrongFactorForReset, Clock clock, TokenIssuer issuer, SessionCookie cookie,
+                        LoginAttemptRepository attempts) {
         public State {
             Objects.requireNonNull(links, "links");
             Objects.requireNonNull(tokens, "tokens");
@@ -71,6 +81,7 @@ public final class PasswordResetApi {
             Objects.requireNonNull(portal, "portal");
             Objects.requireNonNull(approvals, "approvals");
             Objects.requireNonNull(clock, "clock");
+            Objects.requireNonNull(attempts, "attempts");
             if ((issuer == null) != (cookie == null)) throw new IllegalArgumentException("issuer and cookie go together");
         }
     }
@@ -392,7 +403,12 @@ public final class PasswordResetApi {
         // app-managed-invitations §4: the principal branch only — the portal
         // branch (confirmPortal) returns before this point and never mints.
         if (shouldAttemptSessionMint(token.purpose(), (String) out.get("status"), s.issuer() != null)) {
-            maybeEstablishSession(ctx, s, token, out);
+            // config-permissions.md §B: an invite sign-in is recorded as a
+            // login, written only when a session was actually minted.
+            switch (maybeEstablishSession(ctx, s, token, out)) {
+                case Result.Ok<Principal, NoSession>(Principal signedIn) -> recordInviteSignIn(s, ctx, signedIn);
+                case Result.Err<Principal, NoSession> _ -> { }
+            }
         }
         ctx.status(200).json(out);
     }
@@ -404,29 +420,67 @@ public final class PasswordResetApi {
         return wired && purpose == ResetToken.Purpose.INVITE && "ok".equals(status);
     }
 
+    /// Why [#maybeEstablishSession] minted no session — each case names the
+    /// principal, so the caller has the context without re-reading anything.
+    sealed interface NoSession {
+        String principalId();
+
+        record PrincipalGone(String principalId) implements NoSession {
+        }
+
+        record DomainRequiresTwoFactor(String principalId) implements NoSession {
+        }
+
+        /// The failure itself is logged where it is caught (infrastructure);
+        /// this carries only that it happened.
+        record MintFailed(String principalId) implements NoSession {
+        }
+    }
+
     /// §4: re-read the principal (absent → nothing); a domain requiring 2FA
     /// never mints here (would bypass the challenge); a mint failure is
     /// logged and leaves the user to sign in normally — the password write
     /// already succeeded either way.
-    private static void maybeEstablishSession(Exchange ctx, State s, ResetToken token, Map<String, Object> out) {
+    private static Result<Principal, NoSession> maybeEstablishSession(Exchange ctx, State s, ResetToken token, Map<String, Object> out) {
         // Best-effort end to end: the password write already succeeded, so a
         // failing principal re-read, policy lookup or mint must not turn the
         // 200 into a 500 — the user simply signs in normally.
         try {
             Optional<Principal> found = s.principals().findById(token.principalId());
             if (found.isEmpty()) {
-                return;
+                return Result.err(new NoSession.PrincipalGone(token.principalId()));
             }
             Principal p = found.get();
             if (s.policy().evaluate(p.email()).requires2fa()) {
-                return;
+                return Result.err(new NoSession.DomainRequiresTwoFactor(p.id()));
             }
             String sessionToken = s.issuer().sessionToken(p.id(), p.email());
             s.cookie().set(ctx, sessionToken);
             out.put("sessionEstablished", true);
+            return Result.ok(p);
         } catch (RuntimeException e) {
             LOG.atWarn().setMessage("session mint after password setup failed")
                     .addKeyValue("principal", token.principalId())
+                    .setCause(e)
+                    .log();
+            return Result.err(new NoSession.MintFailed(token.principalId()));
+        }
+    }
+
+    /// config-permissions.md §B: one `iam_login_attempts` row — `USER_LOGIN`,
+    /// `SUCCESS`, identifier the principal's normalised email, IP and user
+    /// agent as the password login records them (`LoginApi#record` /
+    /// `ClientIp`). Best-effort: a failed write is logged and never changes
+    /// the confirm response — the session was already minted either way.
+    private static void recordInviteSignIn(State s, Exchange ctx, Principal signedIn) {
+        try {
+            String ip = ClientIp.of(ctx);
+            s.attempts().recordAttempt(LoginAttempt.attempt(AttemptType.USER_LOGIN, AttemptOutcome.SUCCESS, null,
+                    EmailAddress.normalise(signedIn.email()), signedIn.id(), ip == null || ip.isBlank() ? null : ip,
+                    ctx.header("User-Agent")));
+        } catch (RuntimeException e) {
+            LOG.atWarn().setMessage("recording invite sign-in attempt failed")
+                    .addKeyValue("principal", signedIn.id())
                     .setCause(e)
                     .log();
         }

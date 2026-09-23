@@ -1,7 +1,6 @@
 package io.flowcatalyst.platform.platformconfig.api;
 
 import tools.jackson.databind.JsonNode;
-import io.flowcatalyst.platform.platformconfig.ConfigAccessRepository;
 import io.flowcatalyst.platform.platformconfig.PlatformConfigRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
@@ -24,50 +23,56 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// The seven platform-config routes end to end through Javalin: the
-/// authenticator's test headers, the anchor / grant gates, secret masking,
-/// the lockfile status codes and body shapes, and the error envelope.
+/// The four platform-config routes end to end through Javalin
+/// (`docs/spec/config-permissions.md` §A): permission gates (`CONFIG_VIEW` /
+/// `CONFIG_MANAGE`) replacing anchor-or-grant, secret masking, the lockfile
+/// status codes and body shapes, the error envelope, and that the three
+/// access-grant routes withdrawn by this unit answer 404.
 @SuppressWarnings("deprecation")
 class PlatformConfigApiTest {
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
     private static final String APP = "pcapi" + RUN;
-    private static final String READER_ROLE = "pc-reader-" + RUN;
-    private static final String WRITER_ROLE = "pc-writer-" + RUN;
     private static final String CLIENT = "cli_pcapi_" + RUN;
 
-    private static final String[] ANCHOR = {
+    private static final String CONFIG_VIEW = "platform:admin:config:view";
+    private static final String CONFIG_MANAGE = "platform:admin:config:manage";
+
+    /// Holds every permission (wildcard) — the general-purpose setup/happy-path
+    /// principal; scope no longer matters to the gate (permissions always come
+    /// from roles — spec `permissions-from-roles.md`).
+    private static final String[] ADMIN = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
             Authenticator.TEST_SCOPE, "ANCHOR",
             Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
-    private static final String[] READER = {
+    /// Holds `CONFIG_VIEW` only — reads succeed, writes refused, secrets masked.
+    private static final String[] VIEWER = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
             Authenticator.TEST_SCOPE, "CLIENT",
             Authenticator.TEST_CLIENTS, CLIENT,
-            Authenticator.TEST_ROLES, READER_ROLE};
-    private static final String[] WRITER = {
+            Authenticator.TEST_PERMISSIONS, CONFIG_VIEW};
+    /// Holds both `CONFIG_VIEW` and `CONFIG_MANAGE` — the seeded `platform:admin`
+    /// shape (spec §A.4): every route succeeds, secrets unmasked.
+    private static final String[] MANAGER = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
             Authenticator.TEST_SCOPE, "CLIENT",
             Authenticator.TEST_CLIENTS, CLIENT,
-            Authenticator.TEST_ROLES, "something-else," + WRITER_ROLE};
+            Authenticator.TEST_PERMISSIONS, CONFIG_VIEW + "," + CONFIG_MANAGE};
+    /// Holds no permission at all.
     private static final String[] NOBODY = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
             Authenticator.TEST_SCOPE, "CLIENT",
             Authenticator.TEST_CLIENTS, CLIENT};
-    /// An anchor holding every permission EXCEPT the config family (spec `reach-only-routes.md` §3);
-    /// only the three grant-management routes (`/access`) carry this gate — see PlatformConfigApi's class doc.
+    /// An ANCHOR-scoped principal holding every permission EXCEPT the config
+    /// family (spec §A.2: "Anchor no longer passes by being anchor"). Pins the
+    /// withdrawal of the old `ac.isAnchor() ||` bypass.
     private static final String[] ANCHOR_NO_CONFIG_PERMS = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
             Authenticator.TEST_SCOPE, "ANCHOR",
             Authenticator.TEST_PERMISSIONS, "platform:messaging:event-type:view"};
-    /// An anchor holding only the specific view code (not the wildcard).
-    private static final String[] ANCHOR_CONFIG_VIEW_ONLY = {
-            Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
-            Authenticator.TEST_SCOPE, "ANCHOR",
-            Authenticator.TEST_PERMISSIONS, "platform:admin:config:view"};
 
     private static final PlatformConfigApi.State state = new PlatformConfigApi.State(
-            new PlatformConfigRepository(TestPg.dataSource()), new ConfigAccessRepository(TestPg.dataSource()),
+            new PlatformConfigRepository(TestPg.dataSource()),
             new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)));
     private static TestHttp http;
 
@@ -81,9 +86,6 @@ class PlatformConfigApiTest {
             routes.before("/api/*", auth);
             PlatformConfigApi.register(routes, state);
         });
-        // The grants every test relies on; (app, role) pairs are unique to this run.
-        grant(READER_ROLE, false);
-        grant(WRITER_ROLE, true);
     }
 
     @AfterAll
@@ -102,23 +104,18 @@ class PlatformConfigApiTest {
     }
 
     private static String property(String section, String property) {
-        return "/api/config/" + APP + "/" + section + "/" + property;
+        return property(APP, section, property);
     }
 
-    private static String grant(String role, boolean canWrite) {
-        var r = http.post("/api/platform-config/" + APP + "/access",
-                "{\"roleCode\":\"" + role + "\",\"canWrite\":" + canWrite + "}", ANCHOR);
-        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
-        var id = json(r).get("id").asText();
-        assertThat(id).startsWith("cfa_");
-        return id;
+    private static String property(String app, String section, String property) {
+        return "/api/config/" + app + "/" + section + "/" + property;
     }
 
     // ── Happy paths ────────────────────────────────────────────────────────
 
     @Test
     void setThenGetThenList() {
-        var set = http.put(property("smtp", "host"), "{\"value\":\"mail.example.com\",\"description\":\"relay\"}", ANCHOR);
+        var set = http.put(property("smtp", "host"), "{\"value\":\"mail.example.com\",\"description\":\"relay\"}", MANAGER);
         assertThat(set.statusCode()).as(set.body()).isEqualTo(200);
         var c = json(set);
         assertThat(c.get("id").asText()).startsWith("pcf_");
@@ -133,146 +130,155 @@ class PlatformConfigApiTest {
         assertThat(c.get("createdAt").asText()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z");
         assertThat(c.get("updatedAt").asText()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z");
 
-        var get = http.get(property("smtp", "host"), ANCHOR);
+        var get = http.get(property("smtp", "host"), ADMIN);
         assertThat(get.statusCode()).isEqualTo(200);
         assertThat(json(get).get("id").asText()).isEqualTo(c.get("id").asText());
 
         // A second set on the same coordinate keeps the id.
-        var again = http.put(property("smtp", "host"), "{\"value\":\"mail2.example.com\"}", ANCHOR);
+        var again = http.put(property("smtp", "host"), "{\"value\":\"mail2.example.com\"}", MANAGER);
         assertThat(again.statusCode()).isEqualTo(200);
         assertThat(json(again).get("id").asText()).isEqualTo(c.get("id").asText());
         assertThat(json(again).get("value").asText()).isEqualTo("mail2.example.com");
         assertThat(json(again).has("description")).as("absent description clears").isFalse();
 
-        var list = http.get("/api/platform-config/" + APP, ANCHOR);
+        var list = http.get("/api/platform-config/" + APP, ADMIN);
         assertThat(list.statusCode()).isEqualTo(200);
         assertThat(json(list).get("items")).anySatisfy(item -> assertThat(item.get("id").asText()).isEqualTo(c.get("id").asText()));
     }
 
     @Test
     void clientIdQueryParameterAddressesTheClientScopedValue() {
-        var global = http.put(property("ui", "colour"), "{\"value\":\"blue\"}", ANCHOR);
+        var global = http.put(property("ui", "colour"), "{\"value\":\"blue\"}", MANAGER);
         assertThat(global.statusCode()).isEqualTo(200);
-        var client = http.put(property("ui", "colour") + "?clientId=" + CLIENT, "{\"value\":\"red\"}", ANCHOR);
+        var client = http.put(property("ui", "colour") + "?clientId=" + CLIENT, "{\"value\":\"red\"}", MANAGER);
         assertThat(client.statusCode()).as(client.body()).isEqualTo(200);
         assertThat(json(client).get("scope").asText()).isEqualTo("CLIENT");
         assertThat(json(client).get("clientId").asText()).isEqualTo(CLIENT);
         assertThat(json(client).get("id").asText()).isNotEqualTo(json(global).get("id").asText());
 
-        assertThat(json(http.get(property("ui", "colour"), ANCHOR)).get("value").asText()).isEqualTo("blue");
-        assertThat(json(http.get(property("ui", "colour") + "?clientId=" + CLIENT, ANCHOR)).get("value").asText()).isEqualTo("red");
+        assertThat(json(http.get(property("ui", "colour"), ADMIN)).get("value").asText()).isEqualTo("blue");
+        assertThat(json(http.get(property("ui", "colour") + "?clientId=" + CLIENT, ADMIN)).get("value").asText()).isEqualTo("red");
         // An empty query value is "absent".
-        assertThat(json(http.get(property("ui", "colour") + "?clientId=", ANCHOR)).get("value").asText()).isEqualTo("blue");
+        assertThat(json(http.get(property("ui", "colour") + "?clientId=", ADMIN)).get("value").asText()).isEqualTo("blue");
 
         // The query parameter wins over the body's clientId; a body clientId is used when the query is absent.
-        var bodyClient = http.put(property("ui", "font"), "{\"value\":\"serif\",\"clientId\":\"" + CLIENT + "\"}", ANCHOR);
+        var bodyClient = http.put(property("ui", "font"), "{\"value\":\"serif\",\"clientId\":\"" + CLIENT + "\"}", MANAGER);
         assertThat(bodyClient.statusCode()).isEqualTo(200);
-        assertThat(json(http.get(property("ui", "font") + "?clientId=" + CLIENT, ANCHOR)).get("value").asText()).isEqualTo("serif");
-        assertThat(http.get(property("ui", "font"), ANCHOR).statusCode()).as("no global value was written").isEqualTo(404);
+        assertThat(json(http.get(property("ui", "font") + "?clientId=" + CLIENT, ADMIN)).get("value").asText()).isEqualTo("serif");
+        assertThat(http.get(property("ui", "font"), ADMIN).statusCode()).as("no global value was written").isEqualTo(404);
     }
 
     @Test
-    void secretsAreMaskedForNonAnchorsOnReadButNotOnSet() {
-        var set = http.put(property("smtp", "password"), "{\"value\":\"hunter2\",\"valueType\":\"SECRET\"}", WRITER);
-        assertThat(set.statusCode()).as(set.body()).isEqualTo(200);
-        assertThat(json(set).get("valueType").asText()).isEqualTo("SECRET");
-        assertThat(json(set).get("value").asText()).as("the set response is the re-read value, unmasked").isEqualTo("hunter2");
-
-        assertThat(json(http.get(property("smtp", "password"), ANCHOR)).get("value").asText()).isEqualTo("hunter2");
-        assertThat(json(http.get(property("smtp", "password"), READER)).get("value").asText()).isEqualTo("***");
-        var list = json(http.get("/api/platform-config/" + APP, READER)).get("items");
-        assertThat(list).anySatisfy(item -> {
-            assertThat(item.get("property").asText()).isEqualTo("password");
-            assertThat(item.get("value").asText()).isEqualTo("***");
-        });
-    }
-
-    @Test
-    void deleteIsIdempotentAndNeedsWriteAccess() {
-        var set = http.put(property("tmp", "gone"), "{\"value\":\"x\"}", ANCHOR);
+    void deleteIsIdempotent() {
+        var set = http.put(property("tmp", "gone"), "{\"value\":\"x\"}", MANAGER);
         assertThat(set.statusCode()).isEqualTo(200);
 
-        var denied = http.delete(property("tmp", "gone"), READER);
-        assertThat(denied.statusCode()).isEqualTo(403);
-        assertThat(json(denied).get("error").asText()).isEqualTo("FORBIDDEN");
-        assertThat(json(denied).get("message").asText()).isEqualTo("No write access to platform config for " + APP);
-
-        var del = http.delete(property("tmp", "gone"), WRITER);
+        var del = http.delete(property("tmp", "gone"), MANAGER);
         assertThat(del.statusCode()).isEqualTo(204);
         assertThat(del.body()).isEmpty();
-        var get = http.get(property("tmp", "gone"), ANCHOR);
+        var get = http.get(property("tmp", "gone"), ADMIN);
         assertThat(get.statusCode()).isEqualTo(404);
         assertThat(json(get).get("error").asText()).isEqualTo("Config_NOT_FOUND");
         assertThat(json(get).get("message").asText()).isEqualTo("Config not found: " + APP + "/tmp/gone");
 
-        assertThat(http.delete(property("tmp", "gone"), WRITER).statusCode()).as("absent coordinate is still 204").isEqualTo(204);
+        assertThat(http.delete(property("tmp", "gone"), MANAGER).statusCode()).as("absent coordinate is still 204").isEqualTo(204);
     }
 
+    // ── Permission gates (spec §A.5) ──────────────────────────────────────
+
+    /// Spec test 1: a non-anchor role with `view` reads any app's property —
+    /// no per-application restriction (spec §A.2, unlike the withdrawn grant
+    /// table) — without it, 403.
     @Test
-    void grantsAreListedGrantedAndRevoked() {
-        String role = "pc-temp-" + RUN;
-        String id = grant(role, true);
+    void nonAnchorWithViewReadsAnyApplicationsPropertyWithoutItIsRefused() {
+        String otherApp = "pcapi-other" + RUN;
+        assertThat(http.put(property(otherApp, "smtp", "host"), "{\"value\":\"x\"}", MANAGER).statusCode()).isEqualTo(200);
+        http.put(property("smtp", "reader-check"), "{\"value\":\"y\"}", MANAGER);
 
-        var list = http.get("/api/platform-config/" + APP + "/access", ANCHOR);
-        assertThat(list.statusCode()).isEqualTo(200);
-        assertThat(json(list).get("items")).anySatisfy(item -> {
-            assertThat(item.get("id").asText()).isEqualTo(id);
-            assertThat(item.get("applicationCode").asText()).isEqualTo(APP);
-            assertThat(item.get("roleCode").asText()).isEqualTo(role);
-            assertThat(item.get("canRead").asBoolean()).isTrue();
-            assertThat(item.get("canWrite").asBoolean()).isTrue();
-            assertThat(item.get("createdAt").asText()).endsWith("Z");
+        var ownApp = http.get(property("smtp", "reader-check"), VIEWER);
+        assertThat(ownApp.statusCode()).as(ownApp.body()).isEqualTo(200);
+        var otherAppGet = http.get(property(otherApp, "smtp", "host"), VIEWER);
+        assertThat(otherAppGet.statusCode()).as("view holds no per-application scope: " + otherAppGet.body()).isEqualTo(200);
+        var otherAppList = http.get("/api/platform-config/" + otherApp, VIEWER);
+        assertThat(otherAppList.statusCode()).isEqualTo(200);
+
+        var denied = http.get(property("smtp", "reader-check"), NOBODY);
+        assertThat(denied.statusCode()).isEqualTo(403);
+        assertThat(json(denied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+        var deniedList = http.get("/api/platform-config/" + APP, NOBODY);
+        assertThat(deniedList.statusCode()).isEqualTo(403);
+    }
+
+    /// Spec test 2: an anchor principal with no config permission code is
+    /// refused on GET and PUT — the old `ac.isAnchor() ||` bypass is gone.
+    /// Mutant: restoring that bypass makes every assertion here pass on a
+    /// 200/200/200 instead, so this is the test that must fail for it.
+    @Test
+    void anchorWithoutConfigPermissionIsRefusedOnGetAndPut() {
+        http.put(property("smtp", "anchor-check"), "{\"value\":\"z\"}", MANAGER);
+
+        var list = http.get("/api/platform-config/" + APP, ANCHOR_NO_CONFIG_PERMS);
+        assertThat(list.statusCode()).as("mutant: ac.isAnchor() bypass restored").isEqualTo(403);
+        assertThat(json(list).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var get = http.get(property("smtp", "anchor-check"), ANCHOR_NO_CONFIG_PERMS);
+        assertThat(get.statusCode()).as("mutant: ac.isAnchor() bypass restored").isEqualTo(403);
+        assertThat(json(get).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var put = http.put(property("smtp", "anchor-check"), "{\"value\":\"zz\"}", ANCHOR_NO_CONFIG_PERMS);
+        assertThat(put.statusCode()).as("mutant: ac.isAnchor() bypass restored").isEqualTo(403);
+        assertThat(json(put).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+    }
+
+    /// Spec test 3: `view` without `manage` — PUT and DELETE refused, and a
+    /// `SECRET` value is masked on read; a `manage` holder sees it unmasked
+    /// (the PUT response itself is always the unmasked re-read — spec §4 open
+    /// question 5, already pinned by `setThenGetThenList`).
+    @Test
+    void viewWithoutManageCannotWriteOrDeleteAndSecretIsMaskedButManageUnmasks() {
+        var set = http.put(property("smtp", "password"), "{\"value\":\"hunter2\",\"valueType\":\"SECRET\"}", MANAGER);
+        assertThat(set.statusCode()).as(set.body()).isEqualTo(200);
+        assertThat(json(set).get("value").asText()).as("the set response is the re-read value, unmasked").isEqualTo("hunter2");
+
+        var putDenied = http.put(property("smtp", "password"), "{\"value\":\"hunter3\"}", VIEWER);
+        assertThat(putDenied.statusCode()).isEqualTo(403);
+        assertThat(json(putDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        var deleteDenied = http.delete(property("smtp", "password"), VIEWER);
+        assertThat(deleteDenied.statusCode()).isEqualTo(403);
+        assertThat(json(deleteDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        assertThat(json(http.get(property("smtp", "password"), MANAGER)).get("value").asText())
+                .as("mutant: CONFIG_MANAGE stops unmasking").isEqualTo("hunter2");
+        assertThat(json(http.get(property("smtp", "password"), VIEWER)).get("value").asText())
+                .as("mutant: view-only stops masking").isEqualTo("***");
+        var list = json(http.get("/api/platform-config/" + APP, VIEWER)).get("items");
+        assertThat(list).anySatisfy(item -> {
+            assertThat(item.get("property").asText()).isEqualTo("password");
+            assertThat(item.get("value").asText()).isEqualTo("***");
         });
+        // The value survived the failed PUT above (still "hunter2", not "hunter3").
+        assertThat(json(http.get(property("smtp", "password"), MANAGER)).get("value").asText()).isEqualTo("hunter2");
+    }
 
-        // Re-granting the same role answers 201 with the same id.
-        assertThat(grant(role, false)).isEqualTo(id);
+    /// Spec test 5: the three access-grant routes are withdrawn; they answer
+    /// 404 like any other unknown route — never the old `ANCHOR_REQUIRED`.
+    @Test
+    void theThreeAccessGrantRoutesAnswer404() {
+        var list = http.get("/api/platform-config/" + APP + "/access", ADMIN);
+        assertThat(list.statusCode()).as("mutant: the access routes were not removed").isEqualTo(404);
 
-        var revoke = http.delete("/api/platform-config/access/" + id, ANCHOR);
-        assertThat(revoke.statusCode()).isEqualTo(204);
-        var again = http.delete("/api/platform-config/access/" + id, ANCHOR);
-        assertThat(again.statusCode()).isEqualTo(404);
-        assertThat(json(again).get("error").asText()).isEqualTo("PlatformConfigAccess_NOT_FOUND");
+        var grant = http.post("/api/platform-config/" + APP + "/access", "{\"roleCode\":\"x\",\"canWrite\":true}", ADMIN);
+        assertThat(grant.statusCode()).isEqualTo(404);
+
+        var revoke = http.delete("/api/platform-config/access/cfa_whatever", ADMIN);
+        assertThat(revoke.statusCode()).isEqualTo(404);
     }
 
     // ── Negative paths ─────────────────────────────────────────────────────
 
     @Test
-    void grantRoutesAreAnchorOnly() {
-        var list = http.get("/api/platform-config/" + APP + "/access", WRITER);
-        assertThat(list.statusCode()).isEqualTo(403);
-        assertThat(json(list).get("error").asText()).isEqualTo("ANCHOR_REQUIRED");
-
-        var grant = http.post("/api/platform-config/" + APP + "/access", "{\"roleCode\":\"x\",\"canWrite\":true}", WRITER);
-        assertThat(grant.statusCode()).isEqualTo(403);
-        assertThat(json(grant).get("error").asText()).isEqualTo("ANCHOR_REQUIRED");
-
-        var revoke = http.delete("/api/platform-config/access/cfa_whatever", WRITER);
-        assertThat(revoke.statusCode()).isEqualTo(403);
-        assertThat(json(revoke).get("error").asText()).isEqualTo("ANCHOR_REQUIRED");
-    }
-
-    @Test
-    void readAndWriteNeedAGrantOrAnchor() {
-        var list = http.get("/api/platform-config/" + APP, NOBODY);
-        assertThat(list.statusCode()).isEqualTo(403);
-        assertThat(json(list).get("error").asText()).isEqualTo("FORBIDDEN");
-        assertThat(json(list).get("message").asText()).isEqualTo("No read access to platform config for " + APP);
-
-        var get = http.get(property("smtp", "host"), NOBODY);
-        assertThat(get.statusCode()).isEqualTo(403);
-        assertThat(json(get).get("error").asText()).isEqualTo("FORBIDDEN");
-
-        // A read grant is not a write grant: the use case refuses before writing.
-        var set = http.put(property("smtp", "readonly"), "{\"value\":\"x\"}", READER);
-        assertThat(set.statusCode()).isEqualTo(403);
-        assertThat(json(set).get("error").asText()).isEqualTo("FORBIDDEN");
-        assertThat(json(set).get("message").asText()).isEqualTo("No write access to platform config for " + APP);
-        assertThat(http.get(property("smtp", "readonly"), ANCHOR).statusCode()).isEqualTo(404);
-
-        // Reads on another application need their own grant.
-        var other = http.get("/api/platform-config/other" + RUN, READER);
-        assertThat(other.statusCode()).isEqualTo(403);
-
+    void unauthenticatedIsRefused() {
         var anon = http.get("/api/platform-config/" + APP);
         assertThat(anon.statusCode()).isEqualTo(403);
         assertThat(json(anon).get("error").asText()).isEqualTo("UNAUTHENTICATED");
@@ -284,38 +290,17 @@ class PlatformConfigApiTest {
         // longer an HTTP-reachable value that is both schema-valid and Java-null: an absent
         // value now 400s VALIDATION before ever reaching SetProperty's own `cmd.value() == null`
         // check (that check is still pinned directly against the operation in
-        // PlatformConfigOperationsTest — "missing value"). roleCode is schema-required too, but
-        // is a plain non-null-checked blank rule, so "" still reaches its domain code.
-        var noValue = http.put(property("smtp", "port"), "{\"description\":\"no value\"}", ANCHOR);
+        // PlatformConfigOperationsTest — "missing value").
+        var noValue = http.put(property("smtp", "port"), "{\"description\":\"no value\"}", MANAGER);
         assertThat(noValue.statusCode()).isEqualTo(400);
         assertThat(json(noValue).get("error").asText()).isEqualTo("VALIDATION");
 
-        var noRole = http.post("/api/platform-config/" + APP + "/access", "{\"roleCode\":\"\",\"canWrite\":true}", ANCHOR);
-        assertThat(noRole.statusCode()).isEqualTo(400);
-        assertThat(json(noRole).get("error").asText()).isEqualTo("ROLE_REQUIRED");
+        var badType = http.put(property("smtp", "port"), "{\"value\":\"x\",\"valueType\":\"NOT_A_TYPE\"}", MANAGER);
+        assertThat(badType.statusCode()).isEqualTo(400);
+        assertThat(json(badType).get("error").asText()).isEqualTo("INVALID_VALUE_TYPE");
 
-        var malformed = http.put(property("smtp", "port"), "{not json", ANCHOR);
+        var malformed = http.put(property("smtp", "port"), "{not json", MANAGER);
         assertThat(malformed.statusCode()).isEqualTo(400);
         assertThat(json(malformed).get("error").asText()).isEqualTo("INVALID_JSON");
-    }
-
-    /// docs/spec/reach-only-routes.md §1/§3: the `/access` grant-management
-    /// routes require CONFIG_VIEW/CONFIG_UPDATE on top of the anchor gate —
-    /// an anchor without it is refused, and CONFIG_VIEW alone (not the
-    /// wildcard) is enough to read. The property routes (list/get/set/delete)
-    /// keep their existing Access-based reach+grant gate, untouched by this
-    /// unit (PlatformConfigApi's class doc explains why).
-    @Test
-    void anchorWithoutConfigPermissionIsRefusedOnTheAccessRoutesButTheSpecificPermissionSucceeds() {
-        var readDenied = http.get("/api/platform-config/" + APP + "/access", ANCHOR_NO_CONFIG_PERMS);
-        assertThat(readDenied.statusCode()).isEqualTo(403);
-        assertThat(json(readDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
-
-        var writeDenied = http.post("/api/platform-config/" + APP + "/access", "{\"roleCode\":\"x\",\"canWrite\":true}", ANCHOR_NO_CONFIG_PERMS);
-        assertThat(writeDenied.statusCode()).isEqualTo(403);
-        assertThat(json(writeDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
-
-        var readAllowed = http.get("/api/platform-config/" + APP + "/access", ANCHOR_CONFIG_VIEW_ONLY);
-        assertThat(readAllowed.statusCode()).as(readAllowed.body()).isEqualTo(200);
     }
 }
