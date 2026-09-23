@@ -1740,3 +1740,30 @@ path is removed (`docs/spec/function-domains-no-dns.md`). Model, for the docs: f
 operator's trusted code; tenants never deploy code; a client-owned function is one that runs for
 that tenant's solutions; the signer allow-list is the operator's CI; ceilings protect a pool from a
 mistake.
+
+## Go catch-up owed: two small auth commits (2026-09-23)
+
+Go `main` moved past the 2026-09-22 catch-up (`b60d75c`). Two commits are not in Java; both were
+checked against the Java code on 2026-09-23 and both have a real Java-side gap:
+
+1. **Go `7ab071c` — an edited IdP secret takes effect on the next login, not the next restart.**
+   Go's bridge cached the resolved OIDC client per `issuer|clientId` with no invalidation and no
+   TTL; a secret saved after first use never reached the process (prod: `AADSTS7000218` until
+   restart). Go widened the cache key to cover every field that shapes the client (issuer, client
+   id, secret ref, multi-tenant, issuer pattern) and logs a provider that resolves with no secret.
+   **Java is partly protected and partly not**: `OidcClients.client(idp)` re-checks `sameSecret` on
+   every cache hit and has a TTL, so the exact prod symptom does not reproduce — but the key is
+   still `issuerUrl|clientId`, so an edit to `oidcMultiTenant` / the issuer pattern / other shaping
+   fields serves a stale client until the TTL expires, and **`OidcClients.invalidate(String
+   identityProviderId)` has no caller anywhere in `server/src` (main or test)** — ruling Q1's
+   mechanism is dead code. Fix: widen the key as Go did (then `invalidate` becomes unnecessary and
+   should be deleted rather than left uncalled), or wire `invalidate` into the IdP update
+   operation. Pin with a test that edits each shaping field and asserts a fresh client.
+2. **Go `89f1a08` — a reset request for an ineligible account logs why no email was sent.**
+   `PasswordResetApi.request`'s ineligible branch (`!p.isUser() || p.isFederated() || no email`)
+   returns silently, so "no reset email arrived" cannot be told from a delivery failure; the
+   neighbouring branches (unknown address, send failure) both log. Add an INFO with the principal
+   id and the reason class, never the address. The strong-factor "queued for approval" branch
+   above it returns silently too — same treatment.
+
+Go `c8ebd8e` is a sqlc regeneration (no behaviour). Go `c224f1a` and `359df6b` are already in Java.
