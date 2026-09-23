@@ -236,9 +236,9 @@ Idiom checklist (steps 2 and 3):
   isolation makes it unnecessary. The retry policies it guarded are kept
   as explicit, named policy objects (records).
 - Errors split by kind: expected outcomes (rejected, deferred, backpressure)
-  are sealed result types returned and switched on; genuinely exceptional
-  conditions are exceptions. Not Either-everywhere, not
-  exceptions-for-control-flow.
+  are sealed result types returned and switched on (`Result<T, E>` with a
+  sealed `E` — see the rule below); genuinely exceptional conditions are
+  exceptions. Not exceptions-for-control-flow.
 - Java-shaped structure: packages by component; records for every data
   carrier; the hand-wired `Server`/`Platform` composition root; JFR events
   (`jdk.jfr.Event`) at the component's own semantic points (message
@@ -257,6 +257,18 @@ Step 3 is a reviewer's job, not the author's second look — use a fresh
 reader (or agent) with the spec and the checklist.
 
 Rules promoted from audits (recurring findings become rules here):
+- **Expected failure is a `Result<T, E>`** (`io.flowcatalyst.sdk.result`,
+  owner rule 2026-09-23). `E` is a sealed interface of records and the
+  records are the context — never `Result<T, String>`, never a nullable or
+  `Optional<String>` "reason". Crossing a layer, `mapError` into a case of the
+  upper error type that holds the lower one, so the why reaches whoever logs
+  or answers it. A member every case must state (a log `reason`, a code) is
+  abstract, not defaulted. Exceptions stay for infrastructure failure, and
+  the envelope keeps `UseCaseException` from an operation's phases and
+  `Checks.require` at a route — `Result.orElseThrow` is the bridge there.
+  Existing per-decision sealed outcomes (`Decryption`, `Verification`) are
+  fine as they are; move them to `Result` when touched, not in a sweep. Model:
+  `PasswordResetApi.resetEligibility`.
 - **Outcomes, not exceptions, at verification boundaries.** A check whose
   negative result is routine (token verification, password verification,
   idempotency/dedup hits, optimistic-lock misses) returns a sealed outcome

@@ -22,7 +22,11 @@ import io.flowcatalyst.platform.identityprovider.IdentityProviderRepository;
 import io.flowcatalyst.platform.identityprovider.IdentityProviderType;
 import io.flowcatalyst.platform.mail.Mail;
 import io.flowcatalyst.platform.notify.Notifications;
+import io.flowcatalyst.platform.principal.EmailAddress;
+import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
+import io.flowcatalyst.platform.principal.PrincipalType;
+import io.flowcatalyst.platform.principal.UserScope;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.publicapi.EmailTheme;
 import io.flowcatalyst.platform.shared.TestHttp;
@@ -36,6 +40,7 @@ import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
+import io.flowcatalyst.sdk.result.Result;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.testpg.TestPg;
 import ch.qos.logback.classic.Level;
@@ -193,6 +198,28 @@ class PasswordResetApiTest {
         user(federated, null, "OIDC");
         http.post("/auth/password-reset/request", Json.write(Map.of("email", federated)));
         assertThat(SENT).as("a federated identity is ineligible").isEmpty();
+    }
+
+    /// Each ineligible case carries its own context; an eligible principal
+    /// comes back as itself.
+    @Test
+    void resetEligibilityNamesWhyAndForWhom() {
+        var user = Principal.newUser(
+                EmailAddress.parse("ok-" + RUN + "@example.com"),
+                UserScope.ANCHOR);
+        assertThat(PasswordResetApi.resetEligibility(user)).isEqualTo(Result.ok(user));
+
+        var service = Principal.newService("sac_1", "svc");
+        assertThat(PasswordResetApi.resetEligibility(service)).isEqualTo(Result.err(
+                new PasswordResetApi.ResetIneligible.NotAUser(service.id(), PrincipalType.SERVICE)));
+
+        var federated = user.withProvider("OIDC");
+        assertThat(PasswordResetApi.resetEligibility(federated))
+                .isEqualTo(Result.err(new PasswordResetApi.ResetIneligible.Federated(user.id())));
+
+        var noEmail = Principal.portalSubject("prn_noemail", " ", "No Email", Instant.now());
+        assertThat(PasswordResetApi.resetEligibility(noEmail))
+                .isEqualTo(Result.err(new PasswordResetApi.ResetIneligible.NoEmail("prn_noemail")));
     }
 
     /// Go `89f1a08`: an ineligible account, and one sent to the approval

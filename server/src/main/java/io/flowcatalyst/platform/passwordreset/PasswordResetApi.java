@@ -11,11 +11,13 @@ import io.flowcatalyst.platform.notify.Notifications;
 import io.flowcatalyst.platform.principal.PasswordPolicy;
 import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
+import io.flowcatalyst.platform.principal.PrincipalType;
 import io.flowcatalyst.platform.principal.operations.ResetPassword;
 import io.flowcatalyst.platform.principal.operations.ResetPasswordCommand;
 import io.flowcatalyst.platform.shared.auth.PasswordHash;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.sdk.result.Result;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
@@ -132,17 +134,19 @@ public final class PasswordResetApi {
                     .log();
             return;
         }
-        Principal p = found.get();
         // Silent to the caller, never silent in the logs: "no reset email
         // arrived" must be told apart from a delivery failure (Go `89f1a08`).
         // The reason is a class, never the address.
-        Optional<String> ineligible = ineligibleForReset(p);
-        if (ineligible.isPresent()) {
-            LOG.atInfo().setMessage("password reset requested for an ineligible account; no email sent")
-                    .addKeyValue("principal", p.id())
-                    .addKeyValue("reason", ineligible.get())
-                    .log();
-            return;
+        Principal p;
+        switch (resetEligibility(found.get())) {
+            case Result.Ok<Principal, ResetIneligible>(Principal eligible) -> p = eligible;
+            case Result.Err<Principal, ResetIneligible>(ResetIneligible why) -> {
+                LOG.atInfo().setMessage("password reset requested for an ineligible account; no email sent")
+                        .addKeyValue("principal", why.principalId())
+                        .addKeyValue("reason", why.reason())
+                        .log();
+                return;
+            }
         }
         boolean strong = s.mfa().confirmed(p.id()).contains(MfaMethod.TOTP);
         if (!strong && s.requireStrongFactorForReset()) {
@@ -164,22 +168,49 @@ public final class PasswordResetApi {
         }
     }
 
-    /// Why a self-service reset cannot be issued for `p`, or empty when it
-    /// can — the eligibility rule's own clauses, in order.
-    /// `findByEmail` returns only USER principals with that address, so
-    /// today only the federated clause is reachable; the other two stay so
-    /// the rule does not silently depend on how the lookup is written.
-    static Optional<String> ineligibleForReset(Principal p) {
+    /// Why a self-service reset cannot be issued — the eligibility rule's own
+    /// clauses, each carrying what an operator needs to act on it. `reason`
+    /// is abstract so every case states its own.
+    sealed interface ResetIneligible {
+        String principalId();
+
+        String reason();
+
+        record NotAUser(String principalId, PrincipalType type) implements ResetIneligible {
+            public String reason() {
+                return "not a USER principal (" + type + ")";
+            }
+        }
+
+        record Federated(String principalId) implements ResetIneligible {
+            public String reason() {
+                return "OIDC-federated (signs in through an external identity provider; has no platform password)";
+            }
+        }
+
+        record NoEmail(String principalId) implements ResetIneligible {
+            public String reason() {
+                return "no email address on the account";
+            }
+        }
+    }
+
+    /// `p` itself when a self-service reset may be issued, else why not, in
+    /// the rule's order. `findByEmail` returns only USER principals with that
+    /// address, so today only [ResetIneligible.Federated] is reachable; the
+    /// other two stay so the rule does not silently depend on how the lookup
+    /// is written.
+    static Result<Principal, ResetIneligible> resetEligibility(Principal p) {
         if (!p.isUser()) {
-            return Optional.of("not a USER principal");
+            return Result.err(new ResetIneligible.NotAUser(p.id(), p.type()));
         }
         if (p.isFederated()) {
-            return Optional.of("OIDC-federated (signs in through an external identity provider; has no platform password)");
+            return Result.err(new ResetIneligible.Federated(p.id()));
         }
         if (p.email() == null || p.email().isBlank()) {
-            return Optional.of("no email address on the account");
+            return Result.err(new ResetIneligible.NoEmail(p.id()));
         }
-        return Optional.empty();
+        return Result.ok(p);
     }
 
     // ── password-setup/request (app-managed-invitations §3) ─────────────────
