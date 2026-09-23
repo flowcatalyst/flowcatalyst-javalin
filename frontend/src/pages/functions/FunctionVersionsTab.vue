@@ -7,6 +7,7 @@ import { toast } from "@/utils/errorBus";
 import { useConfirm } from "primevue/useconfirm";
 import {
 	functionsApi,
+	type AliasResponse,
 	type Manifest,
 	type PublishResponse,
 	type VersionResponse,
@@ -42,11 +43,14 @@ const manifestByVersion = ref<Record<number, Manifest | null>>({});
 const showPublishDrawer = ref(false);
 const highlightVersion = ref<number | null>(null);
 
+const aliases = ref<AliasResponse[]>([]);
+const aliasesLoading = ref(true);
+
 watch(
 	() => props.address,
 	async (addr) => {
 		if (!addr) return;
-		await loadVersions(addr);
+		await Promise.all([loadVersions(addr), loadAliases(addr)]);
 	},
 	{ immediate: true },
 );
@@ -63,6 +67,17 @@ async function loadVersions(addr: string) {
 		versions.value = [];
 	} finally {
 		loading.value = false;
+	}
+}
+
+async function loadAliases(addr: string) {
+	aliasesLoading.value = true;
+	try {
+		aliases.value = await functionsApi.listAliases(addr);
+	} catch {
+		aliases.value = [];
+	} finally {
+		aliasesLoading.value = false;
 	}
 }
 
@@ -94,24 +109,64 @@ function canRetireRow(v: VersionResponse): boolean {
 	return !v.live && v.state !== "RETIRED";
 }
 
-function confirmPromote(v: VersionResponse) {
+// Promote opens a small dialog (not a bare confirm) because a named alias
+// needs a name — `alias` defaults to `live`, matching `fn promote --alias`'s
+// own default (spec `function-zones-and-aliases.md` §6). `live` still
+// applies its manifest immediately (wiring materialised); any other alias
+// is HTTP-only.
+const showPromoteDialog = ref(false);
+const promoteTarget = ref<VersionResponse | null>(null);
+const promoteAliasName = ref("live");
+const promoting = ref(false);
+
+const promoteAliasValid = computed(() =>
+	/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(promoteAliasName.value.trim()),
+);
+
+function openPromoteDialog(v: VersionResponse) {
+	promoteTarget.value = v;
+	promoteAliasName.value = "live";
+	showPromoteDialog.value = true;
+}
+
+async function submitPromote() {
+	const v = promoteTarget.value;
+	if (!v || !promoteAliasValid.value) return;
+	const alias = promoteAliasName.value.trim();
+	promoting.value = true;
+	try {
+		await functionsApi.promote(props.address, v.version, alias);
+		toast.success("Success", `Version ${v.version} promoted to ${alias}`);
+		showPromoteDialog.value = false;
+		await Promise.all([loadVersions(props.address), loadAliases(props.address)]);
+		emit("changed");
+	} catch {
+		// errors surface via the global error toast
+	} finally {
+		promoting.value = false;
+	}
+}
+
+function canDeleteAlias(a: AliasResponse): boolean {
+	return a.alias !== "live";
+}
+
+function confirmDeleteAlias(a: AliasResponse) {
 	confirm.require({
-		message:
-			`Promote version ${v.version} to live? This applies its manifest immediately — ` +
-			"pools, subscriptions, schedules and public routes are created, updated or removed " +
-			"to match it.",
-		header: "Promote Version",
-		icon: "pi pi-arrow-up-right",
-		acceptLabel: "Promote",
-		accept: () => promote(v),
+		message: `Remove alias "${a.alias}"? Anything still calling it stops working immediately.`,
+		header: "Remove Alias",
+		icon: "pi pi-exclamation-triangle",
+		acceptLabel: "Remove",
+		acceptClass: "p-button-danger",
+		accept: () => deleteAlias(a),
 	});
 }
 
-async function promote(v: VersionResponse) {
+async function deleteAlias(a: AliasResponse) {
 	try {
-		await functionsApi.promoteAlias(props.address, "live", { version: v.version });
-		toast.success("Success", `Version ${v.version} promoted to live`);
-		await loadVersions(props.address);
+		await functionsApi.deleteAlias(props.address, a.alias);
+		toast.success("Success", `Alias ${a.alias} removed`);
+		await loadAliases(props.address);
 		emit("changed");
 	} catch {
 		// errors surface via the global error toast
@@ -237,7 +292,7 @@ function rowClass(data: VersionResponse) {
               size="small"
               text
               :disabled="!canPromoteRow(data)"
-              @click="confirmPromote(data)"
+              @click="openPromoteDialog(data)"
             />
             <Button
               v-if="canPublish"
@@ -263,12 +318,78 @@ function rowClass(data: VersionResponse) {
       </template>
     </DataTable>
 
+    <h3 class="aliases-heading">Aliases</h3>
+    <ProgressSpinner v-if="aliasesLoading" style="width: 24px; height: 24px" />
+    <p v-else-if="aliases.length === 0" class="versions-empty">No aliases yet.</p>
+    <DataTable v-else :value="aliases" data-key="alias">
+      <Column header="Alias">
+        <template #body="{ data }">
+          <span>{{ data.alias }}</span>
+          <Tag v-if="data.alias === 'live'" value="LIVE" severity="success" class="live-tag" />
+        </template>
+      </Column>
+      <Column header="Version">
+        <template #body="{ data }">v{{ data.version }}</template>
+      </Column>
+      <Column header="Updated">
+        <template #body="{ data }">{{ formatDate(data.updatedAt) }} by {{ data.updatedBy }}</template>
+      </Column>
+      <Column header="Actions">
+        <template #body="{ data }">
+          <Button
+            v-if="canPromote"
+            label="Delete"
+            size="small"
+            text
+            severity="danger"
+            :disabled="!canDeleteAlias(data)"
+            v-tooltip="canDeleteAlias(data) ? undefined : 'live cannot be removed'"
+            @click="confirmDeleteAlias(data)"
+          />
+        </template>
+      </Column>
+    </DataTable>
+
     <PublishVersionDrawer
       v-if="showPublishDrawer"
       :address="address"
       @close="showPublishDrawer = false"
       @published="onPublished"
     />
+
+    <Dialog
+      v-model:visible="showPromoteDialog"
+      header="Point Alias"
+      modal
+      :style="{ width: '26rem' }"
+    >
+      <p v-if="promoteTarget" class="promote-intro">
+        Point an alias at version {{ promoteTarget.version }}.
+        <template v-if="promoteAliasName.trim() === 'live'">
+          This applies its manifest immediately — pools, subscriptions, schedules and public
+          routes are created, updated or removed to match it.
+        </template>
+        <template v-else>
+          Named aliases are HTTP-only — no wiring changes, no manifest applied.
+        </template>
+      </p>
+      <div class="field">
+        <label for="promoteAlias">Alias name</label>
+        <InputText id="promoteAlias" v-model="promoteAliasName" class="w-full" autofocus />
+        <small v-if="!promoteAliasValid" class="field-error">
+          1-63 characters of a-z, 0-9 and '-', not starting or ending with '-'.
+        </small>
+      </div>
+      <template #footer>
+        <Button label="Cancel" text @click="showPromoteDialog = false" />
+        <Button
+          label="Promote"
+          :disabled="!promoteAliasValid || promoting"
+          :loading="promoting"
+          @click="submitPromote"
+        />
+      </template>
+    </Dialog>
   </div>
 </template>
 
@@ -282,6 +403,34 @@ function rowClass(data: VersionResponse) {
 .versions-empty {
   color: #64748b;
   font-size: 13px;
+}
+
+.aliases-heading {
+  margin: 24px 0 12px;
+  font-size: 15px;
+}
+
+.promote-intro {
+  font-size: 13px;
+  color: #475569;
+  margin-top: 0;
+}
+
+.field {
+  margin-bottom: 16px;
+}
+
+.field label {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.field-error {
+  color: #dc2626;
+  display: block;
+  margin-top: 4px;
 }
 
 .live-tag {

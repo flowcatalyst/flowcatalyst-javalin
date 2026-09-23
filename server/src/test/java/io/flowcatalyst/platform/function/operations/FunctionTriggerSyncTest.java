@@ -208,6 +208,15 @@ class FunctionTriggerSyncTest {
                 .run(uow, new PromoteCommand(address, Function.LIVE, version), EC));
     }
 
+    /// A1 (spec `function-zones-and-aliases.md` §2, §8): promotes a NAMED
+    /// (non-`live`) alias — the one path [SYNC] must never reconcile wiring
+    /// for.
+    private static AliasChanged promoteNamedAlias(FunctionAddress address, String alias, int version) {
+        markReady(address, version);
+        return Auth.runAs(ANCHOR, () -> PromoteVersion.of(functions, versions, SYNC, settings)
+                .run(uow, new PromoteCommand(address, alias, version), EC));
+    }
+
     /// `PromoteVersion` requires `READY` (R3) — every test here promotes
     /// straight after publishing, so the promote helper marks the target
     /// version ready first rather than repeating this at every call site.
@@ -1056,6 +1065,63 @@ class FunctionTriggerSyncTest {
                 .map(TriggerObject::objectId).map(id -> subscriptions.findById(id).orElseThrow())
                 .map(s -> s.eventTypes().get(0).eventTypeCode()).toList();
         assertThat(rollbackEventTypes).as("rollback restores v1's set").containsExactlyInAnyOrder(keepType, dropType);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // A1 — promoting a NAMED alias runs no wiring reconciliation at all
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// spec §2: "no wiring change — HTTP-only by ruling". Publishes v1 (with
+    /// subscriptions + a scheduled job + a pool) and promotes it to `live` —
+    /// the normal wiring materialises. Then publishes v2 with a DIFFERENT
+    /// trigger set and promotes a NAMED alias (`qa`) to it. The mutant this
+    /// pins ("apply live's wiring" to a named-alias promote) would make
+    /// `linked(f)` change to v2's set, or `live` silently move — this test
+    /// asserts BOTH stay exactly as v1 left them, and that `qa` itself really
+    /// did move (so the pin is not vacuous — the promote itself worked).
+    @Test
+    void promotingANamedAliasRunsNoWiringAndLeavesLiveAndWiringUnchanged() {
+        String appId = persistApplication("a1");
+        persistServiceAccount(appId, "secret-" + fresh(), true);
+        String liveType = "fts:a1:x:live-" + fresh();
+        String qaType = "fts:a1:x:qa-" + fresh();
+        persistEventType(liveType);
+        persistEventType(qaType);
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+
+        JsonNode m1 = manifest("default", false, 3, List.of(sub(liveType, "/events/live")), List.of(sched("0 0 * * * *", "/jobs/live")));
+        PublishVersion.Result p1 = publish(f.address(), "a1-v1", m1);
+        promote(f.address(), p1.version().version());
+
+        List<TriggerObject> afterLive = linked(f);
+        assertThat(afterLive).as("v1's wiring materialised on live").hasSize(3); // pool + sub + job
+        List<String> afterLiveObjectIds = afterLive.stream().map(TriggerObject::objectId).sorted().toList();
+        String liveVersionIdBefore = functions.findById(f.id()).orElseThrow().liveVersionId().orElseThrow();
+
+        // v2: a DIFFERENT trigger set entirely, promoted only to the NAMED alias `qa`.
+        JsonNode m2 = manifest("other", false, 9, List.of(sub(qaType, "/events/qa")), List.of());
+        PublishVersion.Result p2 = publish(f.address(), "a1-v2", m2);
+        promoteNamedAlias(f.address(), "qa", p2.version().version());
+
+        // The trigger-object set is byte-for-byte the same set of rows — count AND identity —
+        // as it was after the live promote: no create, no delete, no update.
+        List<TriggerObject> afterQa = linked(f);
+        assertThat(afterQa).as("mutant: reconcile wiring for a named-alias promote too").hasSize(3);
+        assertThat(afterQa.stream().map(TriggerObject::objectId).sorted().toList())
+                .as("mutant: the trigger-object rows themselves changed").isEqualTo(afterLiveObjectIds);
+        assertThat(subscriptions.findByApplicationCode("fts" + "a1" + RUN))
+                .as("mutant: v2's subscription materialised").extracting(s -> s.eventTypes().get(0).eventTypeCode())
+                .containsExactly(liveType);
+
+        // live itself did not move.
+        Function reloaded = functions.findById(f.id()).orElseThrow();
+        assertThat(reloaded.liveVersionId()).as("mutant: promoting qa also moved live")
+                .contains(liveVersionIdBefore);
+
+        // The promote itself was real: qa now points at v2 (not vacuous).
+        String qaVersionId = reloaded.aliases().stream().filter(a -> a.alias().equals("qa")).findFirst()
+                .orElseThrow().versionId();
+        assertThat(qaVersionId).isEqualTo(p2.version().id());
     }
 
     @Test

@@ -459,6 +459,29 @@ when you *do* want to test the real signature path). The platform itself **never
 versioned URL into a subscription, scheduled job or route — every delivery always targets the
 `live` alias, so promoting or rolling back never has to rewrite anything downstream.
 
+### Aliases
+
+An alias is a named pointer from a function to one of its `READY` versions — `live` is the one every
+subscription, scheduled job, pool and public route the manifest declares actually follows; any other
+name (`qa`, `staging`, …) is **HTTP-only**: pointing it at a version, or moving it, changes nothing
+downstream — no wiring is created, updated or removed. It exists so a caller who already knows how to
+address a function by name (`fn invoke acme.default.hello`, a versioned webhook path, a future
+alias-prefixed hostname) can reach a specific candidate without touching `live`.
+
+```sh
+fcdev fn promote acme.default.hello --version 7 --alias qa --wait 60s
+fcdev fn alias list acme.default.hello
+fcdev fn alias delete acme.default.hello qa
+```
+
+Rules: any name matching `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$` (1–63 characters, `a-z`/`0-9`/`-`,
+never starting or ending with `-`) works, `--alias` defaults to `live` when omitted. The target must
+be `READY` — the same rule `live` gets — not `RETIRED`, and the function must not be `DISABLED`.
+Pointing an alias at the version it already names is a no-op error (`ALIAS_UNCHANGED`); two
+*different* aliases may legitimately point at the same version at once. `live` cannot be deleted
+(`fn alias delete … live` fails with `ALIAS_PROTECTED` — promote another version instead); retiring a
+version a named alias still points at is refused too, naming the alias, until it is moved or removed.
+
 ### `fcdev fn` reference
 
 Global options (every subcommand accepts these): `--platform-url`, `--client-id`/`--client-secret`
@@ -469,10 +492,11 @@ two forms, or a two-part address, is a usage error (exit 2).
 | Command | Does |
 |---|---|
 | `fn publish <jar> [<address>] --manifest <file>` | sha256's the jar; **uploads it through the platform** (`PUT .../artifacts/{digest}`) and publishes the returned `platform://…` ref — the default, local dev and a deployed platform alike; `--artifact-ref oci://…` + `--bundle` publishes by reference instead (opt-in, for a team running its own registry). Creates the function on first publish unless `--no-create` |
-| `fn promote <address> --version <n> [--wait 60s]` | polls for `READY`, then promotes; `--wait 0` promotes immediately |
-| `fn deploy <jar> [<address>] --manifest <file> [--wait 60s]` | publish + promote in one step — what `watch` runs each cycle |
-| `fn status [<address>]` | versions, live alias, hosts (with per-host loaded state/error), wiring |
-| `fn versions [<address>]`, `fn retire [<address>] --version <n>` | list / retire a version (refuses the live one) |
+| `fn promote <address> --version <n> [--alias <name>] [--wait 60s]` | polls for `READY`, then promotes; `--alias` defaults to `live` (any other name is HTTP-only, no wiring change); `--wait 0` promotes immediately |
+| `fn deploy <jar> [<address>] --manifest <file> [--wait 60s]` | publish + promote (always `live`) in one step — what `watch` runs each cycle |
+| `fn status [<address>]` | versions, every alias, hosts (with per-host loaded state/error), wiring |
+| `fn versions [<address>]`, `fn retire [<address>] --version <n>` | list / retire a version (refuses the live one, or one a named alias still points at) |
+| `fn alias list [<address>]`, `fn alias delete [<address>] <alias>` | list every alias; delete a named one (`live` refuses with `ALIAS_PROTECTED`) |
 | `fn config get\|set [<address>] [KEY=VALUE…] [--manifest <file>] [--client <id>] [--no-create]` | `set` is read-modify-write of the whole map. Config and secrets belong to a **function**, so `set` creates it first when its address 404s — the way `fn publish` does, from `--manifest` (default: `manifest.json` in the working directory, when present) — so `set` → `deploy` now works with no `fn publish` first; `--no-create` fails instead (exit 1), and a 404 with no manifest to create from fails naming `--manifest`. `get` never creates. Promote still refuses with `SETTINGS_MISSING` until every declared key has a value |
 | `fn secret set [<address>] <KEY> [--from-file <file>] [--manifest <file>] [--client <id>] [--no-create]`, `fn secret list\|delete` | the value is **never** a CLI argument — stdin (no echo at a TTY) or `--from-file` only. The CLI treats the value as a secret-manager reference (`aws-sm://`, `aws-ps://`, `gcp-sm://`, `vault://`, `env://`) unless prefixed **`encrypt:`**, which stores the plaintext encrypted at rest (`INVALID_SECRET_REF` otherwise); the prefix is stripped and the function receives the plain value. The admin UI and the raw `PUT …/secrets/{key}` take the plain value with no prefix — `encrypt:` is the CLI's convention only. `set` creates the function on a 404 for its address, same as `fn config set`; `list` never creates |
 | `fn invoke <address>[:<version>] [--path /x] [--method POST] [--body <file>\|-] [-H k:v…] [--host-url] [--webhook --signing-secret <secret>]` | calls the function **host** directly, never the platform |

@@ -634,21 +634,27 @@ class FunctionApiTest {
     }
 
     @Test
-    void promoteAliasUnsupportedAndListAliasesRoutesWork() {
+    void promoteAliasInvalidAndListAliasesRoutesWork() {
         testApplication("promote", "promote-" + RUN);
         create("promote-" + RUN, "svc", "fn", null);
         String address = "promote-" + RUN + ".svc.fn";
         publishHttp(address, "pr1", MINIMAL_MANIFEST);
 
-        // Review fix, slice B3: alias validity is checked BEFORE version state, in
-        // PromoteVersion's own `validate` phase — an unsupported alias on a version that is
-        // not yet ready is 400 ALIAS_UNSUPPORTED, never 409 VERSION_NOT_READY.
-        var badAliasNotReady = http.put("/api/functions/" + address + "/aliases/canary", "{\"version\":1}", ANCHOR);
+        // Review fix, slice B3 (carried into function-zones-and-aliases.md §2): alias-name
+        // validity is checked BEFORE version state, in PromoteVersion's own `validate`
+        // phase — an ill-formed alias on a version that is not yet ready is 400
+        // ALIAS_INVALID, never 409 VERSION_NOT_READY.
+        var badAliasNotReady = http.put("/api/functions/" + address + "/aliases/BAD_NAME", "{\"version\":1}", ANCHOR);
         assertThat(badAliasNotReady.statusCode())
                 .as("mutant: check version state before alias validity").isEqualTo(400);
-        assertThat(json(badAliasNotReady).get("error").asString()).isEqualTo("ALIAS_UNSUPPORTED");
+        assertThat(json(badAliasNotReady).get("error").asString()).isEqualTo("ALIAS_INVALID");
 
-        // The one supported alias, still not ready, reaches the version-state guard instead.
+        // A well-formed NAMED alias, still not ready, reaches the version-state guard exactly
+        // like `live` does (spec §2: "the same R3 rule").
+        var namedNotReady = http.put("/api/functions/" + address + "/aliases/qa", "{\"version\":1}", ANCHOR);
+        assertThat(namedNotReady.statusCode()).isEqualTo(409);
+        assertThat(json(namedNotReady).get("error").asString()).isEqualTo("VERSION_NOT_READY");
+
         var notReady = http.put("/api/functions/" + address + "/aliases/live", "{\"version\":1}", ANCHOR);
         assertThat(notReady.statusCode()).isEqualTo(409);
         assertThat(json(notReady).get("error").asString()).isEqualTo("VERSION_NOT_READY");
@@ -661,11 +667,11 @@ class FunctionApiTest {
             return null;
         });
 
-        // §8 P12 / spec §5.2: any alias but `live` is still 400 ALIAS_UNSUPPORTED once ready —
-        // Function.requireSupportedAlias is the rule's one home, reached both ways.
-        var badAlias = http.put("/api/functions/" + address + "/aliases/canary", "{\"version\":1}", ANCHOR);
+        // An ill-formed alias name is still 400 ALIAS_INVALID once ready —
+        // Function.requireValidAliasName is the rule's one home, reached both ways.
+        var badAlias = http.put("/api/functions/" + address + "/aliases/BAD_NAME", "{\"version\":1}", ANCHOR);
         assertThat(badAlias.statusCode()).isEqualTo(400);
-        assertThat(json(badAlias).get("error").asString()).isEqualTo("ALIAS_UNSUPPORTED");
+        assertThat(json(badAlias).get("error").asString()).isEqualTo("ALIAS_INVALID");
 
         var promoted = http.put("/api/functions/" + address + "/aliases/live", "{\"version\":1}", ANCHOR);
         assertThat(promoted.statusCode()).as(promoted.body()).isEqualTo(200);
@@ -674,10 +680,14 @@ class FunctionApiTest {
         assertThat(body.get("version").asInt()).isEqualTo(1);
         assertThat(body.has("previousVersion")).as("first promotion has none").isFalse();
 
+        // Now the same READY version as a NAMED alias too.
+        var qaPromoted = http.put("/api/functions/" + address + "/aliases/qa", "{\"version\":1}", ANCHOR);
+        assertThat(qaPromoted.statusCode()).as(qaPromoted.body()).isEqualTo(200);
+        assertThat(json(qaPromoted).get("alias").asString()).isEqualTo("qa");
+
         var aliases = json(http.get("/api/functions/" + address + "/aliases", ANCHOR));
-        assertThat(aliases).hasSize(1);
-        assertThat(aliases.get(0).get("alias").asString()).isEqualTo("live");
-        assertThat(aliases.get(0).get("version").asInt()).isEqualTo(1);
+        assertThat(aliases).as("both live and qa are listed").hasSize(2);
+        assertThat(aliases).extracting(a -> a.get("alias").asString()).containsExactlyInAnyOrder("live", "qa");
 
         // FunctionResponse.live.version is a wire INTEGER (review fix, slice B3), not a string.
         var fn = json(http.get("/api/functions/" + address, ANCHOR));
@@ -685,6 +695,43 @@ class FunctionApiTest {
                 .as("mutant: emit live.version as a string on the wire").isTrue();
         assertThat(fn.get("live").get("version").asInt()).isEqualTo(1);
         assertThat(fn.get("live").get("versionId").asString()).isEqualTo(v1.id());
+    }
+
+    /// A2 (spec §2): `DELETE …/aliases/{alias}` — `live` is protected, an
+    /// unknown alias is 404, and a real named alias is removed (204) and
+    /// gone from the list afterward.
+    @Test
+    void deleteAliasProtectsLiveRefusesUnknownAndRemovesANamedAlias() {
+        testApplication("deletealias", "deletealias-" + RUN);
+        create("deletealias-" + RUN, "svc", "fn", null);
+        String address = "deletealias-" + RUN + ".svc.fn";
+        publishHttp(address, "da1", MINIMAL_MANIFEST);
+
+        var f = functions.findByAddress(io.flowcatalyst.platform.function.FunctionAddress.parse(address)).orElseThrow();
+        var v1 = versions.findByFunctionAndVersion(f.id(), 1).orElseThrow();
+        uow.inTransaction(tx -> {
+            versions.persist(v1.markReady(java.time.Instant.now()), tx.dbTx());
+            return null;
+        });
+        http.put("/api/functions/" + address + "/aliases/live", "{\"version\":1}", ANCHOR);
+        http.put("/api/functions/" + address + "/aliases/qa", "{\"version\":1}", ANCHOR);
+
+        var protectedLive = http.delete("/api/functions/" + address + "/aliases/live", ANCHOR);
+        assertThat(protectedLive.statusCode()).isEqualTo(409);
+        assertThat(json(protectedLive).get("error").asString()).isEqualTo("ALIAS_PROTECTED");
+        assertThat(json(http.get("/api/functions/" + address + "/aliases", ANCHOR)))
+                .as("mutant: live removed anyway").hasSize(2);
+
+        var unknown = http.delete("/api/functions/" + address + "/aliases/nosuch", ANCHOR);
+        assertThat(unknown.statusCode()).isEqualTo(404);
+        assertThat(json(unknown).get("error").asString()).isEqualTo("Alias_NOT_FOUND");
+
+        var deleted = http.delete("/api/functions/" + address + "/aliases/qa", ANCHOR);
+        assertThat(deleted.statusCode()).as(deleted.body()).isEqualTo(204);
+
+        var aliasesAfter = json(http.get("/api/functions/" + address + "/aliases", ANCHOR));
+        assertThat(aliasesAfter).as("mutant: qa still listed after deletion")
+                .hasSize(1).extracting(a -> a.get("alias").asString()).containsExactly("live");
     }
 
     // ── P10: over-ceiling manifest, rejected using the OWNER's ceilings ──────

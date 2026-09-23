@@ -410,15 +410,145 @@ class PublishPromoteRetireTest {
     // ── Review fix, slice B3: alias validity is checked BEFORE version state ──
 
     @Test
-    void anUnsupportedAliasOnAnUnreadyVersionIsAliasUnsupportedNotVersionNotReady() {
+    void anInvalidAliasNameOnAnUnreadyVersionIsAliasInvalidNotVersionNotReady() {
         Function f = createFunction("aliasorder", new FunctionOwner.Platform());
         publish(ANCHOR, f.address(), "v1"); // version 1, still PUBLISHED — never marked ready
 
         // The mutant this pins: if PromoteVersion guarded version state before alias validity
         // (or duplicated the check in `execute` instead of `validate`), this would surface as
-        // 409 VERSION_NOT_READY instead of 400 ALIAS_UNSUPPORTED.
-        assertUseCaseError(() -> promote(ANCHOR, f.address(), "canary", 1),
-                UseCaseError.Validation.class, "ALIAS_UNSUPPORTED");
+        // 409 VERSION_NOT_READY instead of 400 ALIAS_INVALID.
+        assertUseCaseError(() -> promote(ANCHOR, f.address(), "CANARY", 1),
+                UseCaseError.Validation.class, "ALIAS_INVALID");
+    }
+
+    // ── spec `function-zones-and-aliases.md` §2: named aliases ──────────────
+
+    /// A1: a well-formed named alias, once its target is `READY`, is
+    /// accepted — pins that the READY rule (R3) applies to a named alias
+    /// exactly as it does to `live` (mutant: skip the R3 guard for a named
+    /// alias).
+    @Test
+    void promotingANamedAliasRequiresReadyJustLikeLive() {
+        Function f = createFunction("namedalias", new FunctionOwner.Platform());
+        var v1 = publish(ANCHOR, f.address(), "v1").version();
+
+        assertUseCaseError(() -> promote(ANCHOR, f.address(), "qa", 1), UseCaseError.Conflict.class, "VERSION_NOT_READY");
+
+        markReady(v1);
+        AliasChanged event = promote(ANCHOR, f.address(), "qa", 1);
+        assertThat(event.alias()).isEqualTo("qa");
+        assertThat(event.previousVersionId()).as("qa's first promotion has no previous target").isNull();
+
+        // live is untouched by a named-alias promote.
+        assertThat(functions.findById(f.id()).orElseThrow().liveVersionId()).isEmpty();
+    }
+
+    /// A named alias refuses a RETIRED target, distinctly from
+    /// `VERSION_NOT_READY` — the same rule `live` gets (spec §2's own R3
+    /// paragraph).
+    @Test
+    void promotingANamedAliasToARetiredVersionConflicts() {
+        Function f = createFunction("namedretired", new FunctionOwner.Platform());
+        var v1 = publish(ANCHOR, f.address(), "v1").version();
+        markReady(v1);
+        promote(ANCHOR, f.address(), Function.LIVE, 1); // v1 becomes live so it CAN be retired later
+        var v2 = publish(ANCHOR, f.address(), "v2").version();
+        markReady(v2);
+        promote(ANCHOR, f.address(), Function.LIVE, 2); // v1 no longer live
+        retire(ANCHOR, f.address(), 1);
+
+        assertUseCaseError(() -> promote(ANCHOR, f.address(), "qa", 1), UseCaseError.Conflict.class, "VERSION_RETIRED");
+    }
+
+    /// Re-pointing a named alias at the version it already names is refused
+    /// — but only for THAT alias; a different alias pointing at the same
+    /// version is unaffected (mutant: compare against `live`'s target
+    /// instead of the alias being promoted).
+    @Test
+    void promotingANamedAliasToItsOwnCurrentVersionConflictsButAnotherAliasIsUnaffected() {
+        Function f = createFunction("namedunchanged", new FunctionOwner.Platform());
+        var v1 = publish(ANCHOR, f.address(), "v1").version();
+        markReady(v1);
+        promote(ANCHOR, f.address(), Function.LIVE, 1);
+        promote(ANCHOR, f.address(), "qa", 1);
+
+        assertUseCaseError(() -> promote(ANCHOR, f.address(), "qa", 1), UseCaseError.Conflict.class, "ALIAS_UNCHANGED");
+        // live already pointed at v1 too — re-promoting live to v1 must independently conflict,
+        // not be silently skipped because qa's check ran first.
+        assertUseCaseError(() -> promote(ANCHOR, f.address(), Function.LIVE, 1), UseCaseError.Conflict.class, "ALIAS_UNCHANGED");
+    }
+
+    // ── RemoveAlias (spec §2) ─────────────────────────────────────────────
+
+    private static FunctionEvents.AliasRemoved removeAlias(AuthContext ac, FunctionAddress address, String alias) {
+        return Auth.runAs(ac, () -> RemoveAlias.of(functions, versions)
+                .run(uow, new RemoveAliasCommand(address, alias), EC));
+    }
+
+    /// A2: `live` can never be removed; a named alias is removed and gone
+    /// from the aggregate afterward (mutant: allow removing `live`, or
+    /// remove without checking the alias exists).
+    @Test
+    void removeAliasProtectsLiveDeletesNamedAndRefusesUnknown() {
+        Function f = createFunction("removealias", new FunctionOwner.Platform());
+        var v1 = publish(ANCHOR, f.address(), "v1").version();
+        markReady(v1);
+        promote(ANCHOR, f.address(), Function.LIVE, 1);
+        promote(ANCHOR, f.address(), "qa", 1);
+
+        assertUseCaseError(() -> removeAlias(ANCHOR, f.address(), Function.LIVE), UseCaseError.Conflict.class, "ALIAS_PROTECTED");
+        assertThat(functions.findById(f.id()).orElseThrow().aliases()).as("mutant: live removed anyway").hasSize(2);
+
+        FunctionEvents.AliasRemoved removed = removeAlias(ANCHOR, f.address(), "qa");
+        assertThat(removed.alias()).isEqualTo("qa");
+        assertThat(removed.versionId()).isEqualTo(v1.id());
+        Function afterRemove = functions.findById(f.id()).orElseThrow();
+        assertThat(afterRemove.aliases()).as("mutant: qa still present after removal")
+                .hasSize(1).extracting(Function.FunctionAlias::alias).containsExactly(Function.LIVE);
+
+        assertUseCaseError(() -> removeAlias(ANCHOR, f.address(), "qa"), UseCaseError.NotFound.class, "Alias_NOT_FOUND");
+    }
+
+    @Test
+    void removeAliasWritesOneAliasRemovedEventAndOneAuditRow() {
+        Function f = createFunction("removeevent", new FunctionOwner.Platform());
+        var v1 = publish(ANCHOR, f.address(), "v1").version();
+        markReady(v1);
+        promote(ANCHOR, f.address(), "qa", 1);
+
+        removeAlias(ANCHOR, f.address(), "qa");
+
+        var events = eventsFor("platform.function." + f.id(), FunctionEvents.ALIAS_REMOVED);
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst().get("message_group")).as("mutant: wrong message group")
+                .isEqualTo("platform:function:" + f.id());
+        assertThat(auditsFor(f.id(), "RemoveAliasCommand")).as("mutant: wrong/no audit row").hasSize(1);
+    }
+
+    // ── A3: retire refuses a version a named alias still points at ──────────
+
+    /// spec §2: retiring a version a NAMED alias still points at is refused,
+    /// naming the alias — distinctly from `VERSION_IS_LIVE` — and succeeds
+    /// once the alias is moved elsewhere (mutant: skip the check entirely).
+    @Test
+    void retireRefusesAVersionANamedAliasPointsAtNamingItAndSucceedsOnceMoved() {
+        Function f = createFunction("retirealiased", new FunctionOwner.Platform());
+        var v1 = publish(ANCHOR, f.address(), "v1").version();
+        markReady(v1);
+        promote(ANCHOR, f.address(), "qa", 1);
+
+        assertUseCaseError(() -> retire(ANCHOR, f.address(), 1), UseCaseError.Conflict.class, "VERSION_ALIASED");
+        assertThatThrownBy(() -> retire(ANCHOR, f.address(), 1)).hasMessageContaining("qa");
+        assertThat(versions.findByFunctionAndVersion(f.id(), 1).orElseThrow().state())
+                .as("mutant: retire anyway").isInstanceOf(FunctionVersion.VersionState.Ready.class);
+
+        var v2 = publish(ANCHOR, f.address(), "v2").version();
+        markReady(v2);
+        promote(ANCHOR, f.address(), "qa", 2); // move qa off v1
+
+        retire(ANCHOR, f.address(), 1); // now succeeds
+        assertThat(versions.findByFunctionAndVersion(f.id(), 1).orElseThrow().state())
+                .isInstanceOf(FunctionVersion.VersionState.Retired.class);
     }
 
     // ── X3 (function-context.md §1): promote refuses SETTINGS_MISSING, one source at a time ──

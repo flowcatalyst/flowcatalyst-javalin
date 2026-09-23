@@ -27,7 +27,7 @@ import java.util.concurrent.Callable;
 /// THIS instance (picocli populates the option on the object that declared
 /// it, not on each subcommand), which is what {@link #of(CommandSpec)} is
 /// for.
-@Command(name = "fn", description = "Manage functions: publish, promote, deploy, status, versions, retire, config, secret, invoke, watch, domain",
+@Command(name = "fn", description = "Manage functions: publish, promote, deploy, status, versions, retire, config, secret, invoke, watch, domain, alias",
         sortOptions = false,
         subcommands = {
                 PublishCommand.class,
@@ -41,6 +41,7 @@ import java.util.concurrent.Callable;
                 InvokeCommand.class,
                 WatchCommand.class,
                 DomainCommand.class,
+                AliasCommand.class,
                 CommandLine.HelpCommand.class})
 public final class FnCommand implements Callable<Integer> {
 

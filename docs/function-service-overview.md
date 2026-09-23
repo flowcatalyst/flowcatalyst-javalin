@@ -73,7 +73,9 @@ service adds no new delivery path.
    the manifest **materialises**: the platform creates the function's dispatch pool, its
    subscriptions (source `FUNCTION`), its scheduled jobs and its public routes from the manifest,
    and deletes whatever the previous manifest declared and this one no longer does. Promote also
-   refuses if a declared config or secret key has no value.
+   refuses if a declared config or secret key has no value. `PUT …/aliases/{name}` for any OTHER
+   name points a **named alias** at a `READY` version too, but is HTTP-only — no wiring change —
+   and `live` is never touched (`fn promote --alias <name>`, `docs/functions.md` §"Aliases").
 5. **Run**: hosts in the pool see the new live version in desired state, load it (**new before
    old**, so an address is never without a version), route to it, and drain the old one.
 6. **Retire** a version, or **delete** the function (cascades to versions, aliases, routes,
@@ -262,7 +264,7 @@ Full detail: `docs/deployments.md` §4.
 ## Glossary
 
 - **address** — `application.service.name`, the function's identity; three DNS labels.
-- **alias** — a named pointer to a version; `live` is the one that serves.
+- **alias** — a named pointer to a version; `live` is the one every host actually serves and wires up. Any other name is a valid alias too, but HTTP-only — no wiring, `live` untouched (`docs/functions.md` §"Aliases").
 - **candidate** — a `PUBLISHED` version carried in desired state so hosts can prove it loadable before promote.
 - **desired state** — the document a host fetches: which versions to run, with their config, secrets, signer and public routes.
 - **pool** — a named group of hosts; a manifest picks one; one ECS service per pool.

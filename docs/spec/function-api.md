@@ -78,6 +78,7 @@ through `operations/Access`:
 | `platform:function:version:ready` | `functionId, address, versionId, version, hostId` |
 | `platform:function:version:retired` | `functionId, address, versionId, version` |
 | `platform:function:alias:changed` | `functionId, address, alias, versionId, version, previousVersionId?` |
+| `platform:function:alias:removed` | `functionId, address, alias, versionId, version` |
 | `platform:function:policy:updated` | `owner` (`platform` or the client id), `signerCount` — never the signer list's secrets; there are none, but the rule is "counts, not contents" for policy events |
 
 No component shadows a `DomainEvent` accessor (`DomainEventContractTest`). `address` is the rendered
@@ -189,13 +190,28 @@ finds no version row and no event.
   `{id, version, state, digest, artifactRef, pool, warm, signer?, publishedBy, publishedAt, readyAt?, retiredAt?, live: bool}`.
   `GET …/versions/{v}` adds `manifest`. `{v}` not a positive integer ⇒ 400 `VERSION_INVALID`.
 - `POST …/versions/{v}/retire` — `RetireVersion` / `RetireCommand`. The function's live version ⇒
-  conflict `VERSION_IS_LIVE` ("promote another version first"). `FunctionVersion.retire`. 200 with the
-  version. Event `version:retired`.
-- `PUT …/aliases/live` — `PromoteVersion` / `PromoteCommand`, body `{version}`. **R3: the version must
-  be `READY`**, else conflict `VERSION_NOT_READY` — "version <n> has not been verified by any host in
-  pool '<pool>' yet". Then `Function.promote` (its own errors: `VERSION_RETIRED`, `FUNCTION_DISABLED`,
-  `ALIAS_UNCHANGED`). 200 `{alias, version, versionId, previousVersion?}`. Event `alias:changed`.
-  `PUT …/aliases/<anything else>` ⇒ 400 `ALIAS_UNSUPPORTED`. `GET …/aliases` lists them.
+  conflict `VERSION_IS_LIVE` ("promote another version first"). A version a NAMED alias still points
+  at (spec `function-zones-and-aliases.md` §2) ⇒ conflict `VERSION_ALIASED`, naming the aliases
+  ("aliases qa, staging point at this version; move or remove them first") — checked separately from
+  `VERSION_IS_LIVE`, since `live` never reaches this check (it already refused above).
+  `FunctionVersion.retire`. 200 with the version. Event `version:retired`.
+- `PUT …/aliases/{alias}` — `PromoteVersion` / `PromoteCommand`, body `{version}` (spec
+  `function-zones-and-aliases.md` §2). `{alias}` is `live`, or any name matching `fn_aliases`' check
+  constraint (`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`); anything else ⇒ 400 `ALIAS_INVALID`, checked
+  BEFORE the version is even loaded (`Function.requireValidAliasName` is the one home of the rule).
+  **R3: the version must be `READY`**, else conflict `VERSION_NOT_READY` — "version <n> has not been
+  verified by any host in pool '<pool>' yet" — the same rule for `live` and for a named alias alike.
+  Then `Function.promote` (its own errors: `VERSION_RETIRED`, `FUNCTION_DISABLED`, `ALIAS_UNCHANGED`
+  — compared against what THIS alias, not `live`, currently points at, so two different aliases may
+  legitimately name the same version). 200 `{alias, version, versionId, previousVersion?}`. Event
+  `alias:changed`. **Wiring (`TriggerSync.onPromote`) runs ONLY for `live`** — promoting a named alias
+  is HTTP-only, by ruling: no pool/subscription/schedule/public-route change, ever.
+- `DELETE …/aliases/{alias}` — `RemoveAlias` / `RemoveAliasCommand`, 204. `live` ⇒ conflict
+  `ALIAS_PROTECTED` ("promote another version; live cannot be removed") — the function's wiring
+  follows `live`, so it can never simply vanish. An unknown alias ⇒ 404 `Alias_NOT_FOUND`. A plain
+  `Operation` (never `TxOperation`): removing a named alias never touches `TriggerSync` either. Event
+  `alias:removed` (`functionId, address, alias, versionId, version`).
+- `GET …/aliases` lists every alias, `live` and named alike, unchanged shape.
   Rollback is promoting an older `READY` version; there is no separate operation.
 
 ## 6. Control plane — `FunctionControlApi`
@@ -210,9 +226,14 @@ Both routes: `requireAnchor` + `FUNCTION_HOST_CONTROL`; 401 without a credential
 { "pool": "default",
   "functions": [ { "address": "billing.invoices.create", "functionId": "fnc_…", "versionId": "fnv_…",
                    "version": 12, "role": "live", "mode": "lazy", "digest": "sha256:…",
-                   "artifactRef": "oci://…", "signatureBundle": "…", "manifest": { … } } ],
+                   "artifactRef": "oci://…", "signatureBundle": "…", "manifest": { … },
+                   "aliases": [ "qa" ] } ],
   "unload": [ { "address": "billing.invoices.create", "version": 9 } ] }
 ```
+
+`aliases` (spec `function-zones-and-aliases.md` §5): the NAMED (non-`live`) aliases pointing at
+THIS entry's version, sorted, `[]` when none — a version aliased but not otherwise `live`/`candidate`
+is not yet listed here (that is J3's `role: "alias"` work).
 
 - For every `ACTIVE` function: its `live` version (`role: live`) and — **R3** — its newest
   `PUBLISHED` version if that is newer than live (`role: candidate`; a host fetches and verifies a

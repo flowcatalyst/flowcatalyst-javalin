@@ -156,8 +156,30 @@ export const functionsApi = {
 		);
 	},
 
+	/**
+	 * Convenience wrapper over `promoteAlias` for the Versions tab's promote
+	 * drawer: `alias` defaults to `live` (spec `function-zones-and-aliases.md`
+	 * §6, matching `fn promote --alias`'s own default) — any other name is a
+	 * NAMED alias, HTTP-only (no wiring change).
+	 */
+	promote(
+		address: string,
+		version: number,
+		alias: string = "live",
+	): Promise<PromoteResponse> {
+		return functionsApi.promoteAlias(address, alias, { version });
+	},
+
 	listAliases(address: string): Promise<AliasResponse[]> {
 		return apiFetch(`/functions/${encodeURIComponent(address)}/aliases`);
+	},
+
+	/** 204 No Content on the wire — reload the alias list from `listAliases` after. */
+	deleteAlias(address: string, alias: string): Promise<void> {
+		return apiFetch(
+			`/functions/${encodeURIComponent(address)}/aliases/${encodeURIComponent(alias)}`,
+			{ method: "DELETE" },
+		);
 	},
 
 	/**

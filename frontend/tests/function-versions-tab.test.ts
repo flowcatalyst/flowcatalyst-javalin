@@ -11,7 +11,7 @@ import { createPinia, setActivePinia, type Pinia } from "pinia";
 import PrimeVue from "primevue/config";
 import ConfirmationService from "primevue/confirmationservice";
 import { useAuthStore } from "@/stores/auth";
-import type { VersionResponse } from "@/api/functions";
+import type { AliasResponse, VersionResponse } from "@/api/functions";
 
 if (typeof window !== "undefined" && !window.matchMedia) {
 	window.matchMedia = ((query: string) => ({
@@ -30,7 +30,15 @@ const mocks = vi.hoisted(() => ({
 	listVersions: vi.fn(),
 	getVersion: vi.fn(),
 	promoteAlias: vi.fn(),
+	// The component calls `functionsApi.promote` (the alias-defaulting
+	// wrapper), not `promoteAlias` directly — mocked at that boundary so the
+	// assertion pins what the COMPONENT actually calls, not an implementation
+	// detail one module away (`promote` delegates to `promoteAlias`
+	// internally, but that self-reference is not visible to this mock).
+	promote: vi.fn(),
 	retireVersion: vi.fn(),
+	listAliases: vi.fn(),
+	deleteAlias: vi.fn(),
 }));
 
 vi.mock("@/api/functions", async (importOriginal) => {
@@ -42,7 +50,10 @@ vi.mock("@/api/functions", async (importOriginal) => {
 			listVersions: mocks.listVersions,
 			getVersion: mocks.getVersion,
 			promoteAlias: mocks.promoteAlias,
+			promote: mocks.promote,
 			retireVersion: mocks.retireVersion,
+			listAliases: mocks.listAliases,
+			deleteAlias: mocks.deleteAlias,
 		},
 	};
 });
@@ -86,6 +97,22 @@ const liveVersion: VersionResponse = {
 	live: true,
 };
 
+const liveAlias: AliasResponse = {
+	alias: "live",
+	version: 3,
+	versionId: "ver_3",
+	updatedBy: "user_1",
+	updatedAt: "2026-09-03T00:00:00Z",
+};
+
+const namedAlias: AliasResponse = {
+	alias: "qa",
+	version: 1,
+	versionId: "ver_1",
+	updatedBy: "user_1",
+	updatedAt: "2026-09-04T00:00:00Z",
+};
+
 let pinia: Pinia;
 
 async function mountTab() {
@@ -127,14 +154,20 @@ describe("FunctionVersionsTab — Promote/Retire gating (U5)", () => {
 		mocks.listVersions.mockReset();
 		mocks.getVersion.mockReset();
 		mocks.promoteAlias.mockReset();
+		mocks.promote.mockReset();
 		mocks.retireVersion.mockReset();
+		mocks.listAliases.mockReset();
+		mocks.deleteAlias.mockReset();
 		mocks.listVersions.mockResolvedValue([readyNotLive, publishedNotReady, liveVersion]);
+		mocks.listAliases.mockResolvedValue([liveAlias, namedAlias]);
+		mocks.promote.mockResolvedValue({ alias: "live", version: 1, versionId: "ver_1" });
 	});
 
 	it("enables Promote only for the READY, non-live version and disables it for a PUBLISHED (not-ready) version", async () => {
 		const wrapper = await mountTab();
 
-		const rows = wrapper.findAll("tbody > tr");
+		// Two tables now render (versions, then aliases) — scope to the first.
+		const rows = wrapper.findAll("table")[0].findAll("tbody > tr");
 		expect(rows.length).toBe(3);
 
 		// v1 = READY, not live → Promote enabled.
@@ -152,7 +185,7 @@ describe("FunctionVersionsTab — Promote/Retire gating (U5)", () => {
 
 	it("disables Promote for the version that is already live — the platform would answer ALIAS_UNCHANGED", async () => {
 		const wrapper = await mountTab();
-		const liveRow = wrapper.findAll("tbody > tr").find((r) => r.text().includes("v3"));
+		const liveRow = wrapper.findAll("table")[0].findAll("tbody > tr").find((r) => r.text().includes("v3"));
 		const promoteLive = liveRow?.findAll("button").find((b) => b.text() === "Promote");
 		expect(promoteLive).toBeTruthy();
 		expect(promoteLive?.attributes("disabled")).toBeDefined();
@@ -161,7 +194,7 @@ describe("FunctionVersionsTab — Promote/Retire gating (U5)", () => {
 	it("disables Retire for the live version even though it is READY", async () => {
 		const wrapper = await mountTab();
 
-		const rows = wrapper.findAll("tbody > tr");
+		const rows = wrapper.findAll("table")[0].findAll("tbody > tr");
 		const liveRow = rows.find((r) => r.text().includes("v3"));
 		const retireLive = liveRow?.findAll("button").find((b) => b.text() === "Retire");
 		expect(retireLive).toBeTruthy();
@@ -172,5 +205,50 @@ describe("FunctionVersionsTab — Promote/Retire gating (U5)", () => {
 		const retire1 = row1?.findAll("button").find((b) => b.text() === "Retire");
 		expect(retire1).toBeTruthy();
 		expect(retire1?.attributes("disabled")).toBeUndefined();
+	});
+
+	// spec `function-zones-and-aliases.md` §6: the Promote drawer opens with
+	// an alias field (defaulting to `live`) and sends whatever name is typed
+	// — mutant: ignore the field and always promote `live`.
+	it("promote dialog sends the typed alias name, not always live", async () => {
+		const wrapper = await mountTab();
+		const row1 = wrapper.findAll("table")[0].findAll("tbody > tr").find((r) => r.text().includes("v1"));
+		const promote1 = row1?.findAll("button").find((b) => b.text() === "Promote");
+		await promote1?.trigger("click");
+		await flushPromises();
+
+		const dialog = wrapper.find(".p-dialog");
+		expect(dialog.exists()).toBe(true);
+		const input = dialog.find("#promoteAlias");
+		expect(input.exists()).toBe(true);
+		expect((input.element as HTMLInputElement).value).toBe("live");
+
+		await input.setValue("qa");
+		const dialogPromote = dialog.findAll("button").find((b) => b.text() === "Promote");
+		await dialogPromote?.trigger("click");
+		await flushPromises();
+
+		expect(mocks.promote).toHaveBeenCalledWith("acme.default.hello", 1, "qa");
+	});
+
+	// U1 (spec §8): the Aliases table disables Delete for `live` and enables
+	// it for a named alias — mutant: gate both the same way (always
+	// enabled/always disabled).
+	it("disables the alias Delete button for live and enables it for a named alias", async () => {
+		const wrapper = await mountTab();
+
+		const aliasTables = wrapper.findAll("table");
+		const aliasesTable = aliasTables[aliasTables.length - 1];
+		const aliasRows = aliasesTable.findAll("tbody > tr");
+
+		const liveRow = aliasRows.find((r) => r.text().includes("live"));
+		const liveDelete = liveRow?.findAll("button").find((b) => b.text() === "Delete");
+		expect(liveDelete).toBeTruthy();
+		expect(liveDelete?.attributes("disabled")).toBeDefined();
+
+		const qaRow = aliasRows.find((r) => r.text().includes("qa"));
+		const qaDelete = qaRow?.findAll("button").find((b) => b.text() === "Delete");
+		expect(qaDelete).toBeTruthy();
+		expect(qaDelete?.attributes("disabled")).toBeUndefined();
 	});
 });

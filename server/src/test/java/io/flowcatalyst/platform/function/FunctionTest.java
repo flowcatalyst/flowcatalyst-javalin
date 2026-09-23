@@ -107,12 +107,87 @@ class FunctionTest {
 
     // ── promote ────────────────────────────────────────────────────────────
 
+    /// spec `function-zones-and-aliases.md` §2: any alias matching
+    /// `fn_aliases`' check constraint is now accepted — this pins that a
+    /// well-formed NAMED alias (not `live`) is no longer rejected outright.
     @Test
-    void promoteAnyAliasButLiveIsRejected() {
+    void promoteANamedAliasSucceeds() {
         Function f = newFunction();
         FunctionVersion v = versionOf(f, 1);
-        assertCode(() -> f.promote("canary", v, "prn_1", Instant.now()),
-                UseCaseError.Validation.class, "ALIAS_UNSUPPORTED");
+        Function.Promoted promoted = f.promote("canary", v, "prn_1", Instant.now());
+        assertThat(promoted.previousVersionId()).isNull();
+        assertThat(promoted.function().aliases()).hasSize(1);
+        assertThat(promoted.function().aliases().get(0).alias()).isEqualTo("canary");
+        assertThat(promoted.function().liveVersionId()).as("a named alias never touches live").isEmpty();
+    }
+
+    /// mutant: accept an alias name the `fn_aliases` check constraint would
+    /// reject (uppercase, leading/trailing `-`, or over 63 characters).
+    @Test
+    void promoteWithAnInvalidAliasNameIsRejected() {
+        Function f = newFunction();
+        FunctionVersion v = versionOf(f, 1);
+        assertCode(() -> f.promote("QA", v, "prn_1", Instant.now()), UseCaseError.Validation.class, "ALIAS_INVALID");
+        assertCode(() -> f.promote("-x", v, "prn_1", Instant.now()), UseCaseError.Validation.class, "ALIAS_INVALID");
+        assertCode(() -> f.promote("x-", v, "prn_1", Instant.now()), UseCaseError.Validation.class, "ALIAS_INVALID");
+        assertCode(() -> f.promote("a".repeat(64), v, "prn_1", Instant.now()),
+                UseCaseError.Validation.class, "ALIAS_INVALID");
+    }
+
+    /// mutant: compare `ALIAS_UNCHANGED` against `live`'s current target
+    /// instead of the alias actually being promoted — before the fix, once
+    /// `live` pointed at v1, promoting the UNRELATED `qa` alias to v1 for the
+    /// first time would wrongly conflict.
+    @Test
+    void promotingADifferentNamedAliasToLivesCurrentVersionIsNotAliasUnchanged() {
+        Function f = newFunction();
+        FunctionVersion v1 = versionOf(f, 1);
+        Function afterLive = f.promote(Function.LIVE, v1, "prn_1", Instant.now()).function();
+
+        Function.Promoted qaPromoted = afterLive.promote("qa", v1, "prn_1", Instant.now());
+        assertThat(qaPromoted.previousVersionId()).as("qa had no previous target of its own").isNull();
+        assertThat(qaPromoted.function().aliases()).hasSize(2);
+    }
+
+    @Test
+    void promotingTheSameNamedAliasToItsCurrentVersionConflicts() {
+        Function f = newFunction();
+        FunctionVersion v1 = versionOf(f, 1);
+        Function afterQa = f.promote("qa", v1, "prn_1", Instant.now()).function();
+        assertCode(() -> afterQa.promote("qa", v1, "prn_1", Instant.now()),
+                UseCaseError.Conflict.class, "ALIAS_UNCHANGED");
+    }
+
+    // ── removeAlias ────────────────────────────────────────────────────────
+
+    @Test
+    void removingLiveIsProtected() {
+        Function f = newFunction();
+        FunctionVersion v1 = versionOf(f, 1);
+        Function afterLive = f.promote(Function.LIVE, v1, "prn_1", Instant.now()).function();
+        assertCode(() -> afterLive.removeAlias(Function.LIVE, Instant.now()),
+                UseCaseError.Conflict.class, "ALIAS_PROTECTED");
+        assertThat(afterLive.aliases()).as("mutant: remove live anyway").hasSize(1);
+    }
+
+    @Test
+    void removingAnUnknownAliasIs404() {
+        Function f = newFunction();
+        assertCode(() -> f.removeAlias("nosuch", Instant.now()), UseCaseError.NotFound.class, "Alias_NOT_FOUND");
+    }
+
+    @Test
+    void removingANamedAliasDropsItAndKeepsOthers() {
+        Function f = newFunction();
+        FunctionVersion v1 = versionOf(f, 1);
+        Function withBoth = f.promote(Function.LIVE, v1, "prn_1", Instant.now()).function()
+                .promote("qa", v1, "prn_1", Instant.now()).function();
+        assertThat(withBoth.aliases()).hasSize(2);
+
+        Function.Removed removed = withBoth.removeAlias("qa", Instant.now());
+        assertThat(removed.versionId()).isEqualTo(v1.id());
+        assertThat(removed.function().aliases()).as("mutant: drop the wrong alias, or drop nothing")
+                .hasSize(1).extracting(Function.FunctionAlias::alias).containsExactly(Function.LIVE);
     }
 
     @Test

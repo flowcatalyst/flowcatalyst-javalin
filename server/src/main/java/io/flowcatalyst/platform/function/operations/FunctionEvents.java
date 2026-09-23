@@ -31,6 +31,7 @@ public final class FunctionEvents {
     public static final String VERSION_READY = "platform:function:version:ready";
     public static final String VERSION_RETIRED = "platform:function:version:retired";
     public static final String ALIAS_CHANGED = "platform:function:alias:changed";
+    public static final String ALIAS_REMOVED = "platform:function:alias:removed";
     public static final String POLICY_UPDATED = "platform:function:policy:updated";
     public static final String CONFIG_UPDATED = "platform:function:config:updated";
     public static final String SECRET_SET = "platform:function:secret:set";
@@ -273,6 +274,27 @@ public final class FunctionEvents {
         }
 
         private record Data(String functionId, String address, String key) {
+        }
+    }
+
+    /// `{functionId, address, alias, versionId, version}` (spec
+    /// `function-zones-and-aliases.md` §2) — `RemoveAlias`. `live` never
+    /// reaches this event ([Function#removeAlias] refuses it with
+    /// `ALIAS_PROTECTED` before any write).
+    public record AliasRemoved(EventMetadata metadata, String functionId, String address, String alias,
+                               String versionId, int version) implements DomainEvent {
+
+        public static AliasRemoved of(ExecutionContext ec, Function f, String alias, FunctionVersion v) {
+            return new AliasRemoved(metadataFor(ec, ALIAS_REMOVED, f.id()), f.id(), f.address().render(), alias,
+                    v.id(), v.version());
+        }
+
+        @Override
+        public Object data() {
+            return new Data(functionId, address, alias, versionId, version);
+        }
+
+        private record Data(String functionId, String address, String alias, String versionId, int version) {
         }
     }
 

@@ -15,14 +15,16 @@ import java.util.concurrent.Callable;
 import java.util.function.LongConsumer;
 import java.util.function.LongSupplier;
 
-/// `fn promote <address> --version <n> [--wait 60s]` (spec §2, §4 E5): waits
-/// (polling `GET …/status` once a second) for that version to become
-/// `READY`, then `PUT …/aliases/live`; `--wait 0` skips the wait and
-/// promotes immediately (the platform's own `VERSION_NOT_READY` conflict is
-/// then just an ordinary error). On timeout: each host's `{hostId, state,
-/// error}` for that version, and exit 1 — promote is never called. The
-/// actual work is [Promoter#promote] — shared with `fn deploy`.
-@Command(name = "promote", description = "Promote a version to live, waiting for it to become READY", sortOptions = false)
+/// `fn promote <address> --version <n> [--alias <name>] [--wait 60s]` (spec
+/// §2, §4 E5, `function-zones-and-aliases.md` §6): waits (polling `GET
+/// …/status` once a second) for that version to become `READY`, then `PUT
+/// …/aliases/{alias}` (`--alias` defaults to `live`); `--wait 0` skips the
+/// wait and promotes immediately (the platform's own `VERSION_NOT_READY`
+/// conflict is then just an ordinary error). On timeout: each host's
+/// `{hostId, state, error}` for that version, and exit 1 — promote is never
+/// called. The actual work is [Promoter#promote] — shared with `fn deploy`,
+/// which always promotes `live`.
+@Command(name = "promote", description = "Promote a version to an alias (default: live), waiting for it to become READY", sortOptions = false)
 public final class PromoteCommand implements Callable<Integer> {
 
     @Option(names = {"-h", "--help"}, usageHelp = true, description = "show this help and exit")
@@ -33,6 +35,10 @@ public final class PromoteCommand implements Callable<Integer> {
 
     @Option(names = "--version", required = true, paramLabel = "<n>", description = "the version to promote")
     int version;
+
+    @Option(names = "--alias", paramLabel = "<name>", defaultValue = Promoter.LIVE,
+            description = "the alias to point at the version (default: ${DEFAULT-VALUE})")
+    String alias;
 
     @Option(names = "--wait", paramLabel = "<duration>", defaultValue = "60s", converter = DurationConverter.class,
             description = "how long to wait for READY before giving up (0 = promote immediately; default: ${DEFAULT-VALUE})")
@@ -62,7 +68,7 @@ public final class PromoteCommand implements Callable<Integer> {
             String addr = addressOpts.resolve(address);
             FnClient platform = root.client();
             FunctionApi.PromoteResponse promoted =
-                    Promoter.promote(spec, root, platform, addr, version, wait, clockMillis, sleepMillis);
+                    Promoter.promote(spec, root, platform, addr, alias, version, wait, clockMillis, sleepMillis);
             if (promoted == null) {
                 return 1;
             }
@@ -74,7 +80,7 @@ public final class PromoteCommand implements Callable<Integer> {
     private void print(FnCommand root, String address, FunctionApi.PromoteResponse promoted) {
         var out = spec.commandLine().getOut();
         switch (root.output()) {
-            case TEXT -> out.printf("%s: version %d is now live%n", address, promoted.version());
+            case TEXT -> out.printf("%s: version %d is now %s%n", address, promoted.version(), promoted.alias());
             case JSON -> out.println(Json.write(promoted));
         }
     }

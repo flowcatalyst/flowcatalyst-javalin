@@ -1,6 +1,7 @@
 [
   "DELETE /api/function-domains/{hostname}",
   "DELETE /api/functions/{address}",
+  "DELETE /api/functions/{address}/aliases/{alias}",
   "DELETE /api/functions/{address}/secrets/{key}",
   "DELETE /auth/2fa/methods/{method}",
   "DELETE /auth/2fa/trusted-devices/{id}",

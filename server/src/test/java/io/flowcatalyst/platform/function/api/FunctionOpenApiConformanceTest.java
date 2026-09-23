@@ -335,6 +335,28 @@ class FunctionOpenApiConformanceTest {
         // 13. listFunctionAliases
         call("listFunctionAliases", http.get("/api/functions/" + address + "/aliases", FULL), 200, null);
 
+        // 13b/13c/13d (spec function-zones-and-aliases.md §2): a NAMED alias — point `qa`
+        // at v1 (already READY), confirm it is listed, then remove it.
+        JsonNode promotedQa = call("promoteFunctionAlias",
+                http.put("/api/functions/" + address + "/aliases/qa", "{\"version\":1}", FULL), 200, "{\"version\":1}");
+        assertThat(promotedQa.get("alias").asText()).isEqualTo("qa");
+
+        JsonNode aliasesWithQa = call("listFunctionAliases", http.get("/api/functions/" + address + "/aliases", FULL), 200, null);
+        assertThat(aliasesWithQa).hasSize(2);
+
+        call("deleteFunctionAlias", http.delete("/api/functions/" + address + "/aliases/qa", FULL), 204, null);
+        JsonNode aliasesAfterDelete = call("listFunctionAliases", http.get("/api/functions/" + address + "/aliases", FULL), 200, null);
+        assertThat(aliasesAfterDelete).hasSize(1);
+
+        // O4 (deleteFunctionAlias family): live is protected, and an unknown alias is 404.
+        var deleteLiveProtected = http.delete("/api/functions/" + address + "/aliases/live", FULL);
+        assertThat(deleteLiveProtected.statusCode()).isEqualTo(409);
+        assertErrorConforms("deleteFunctionAlias", 409, Json.MAPPER.readTree(deleteLiveProtected.body()));
+
+        var deleteUnknown = http.delete("/api/functions/" + address + "/aliases/nosuch", FULL);
+        assertThat(deleteUnknown.statusCode()).isEqualTo(404);
+        assertErrorConforms("deleteFunctionAlias", 404, Json.MAPPER.readTree(deleteUnknown.body()));
+
         // 14. getFunctionStatus
         call("getFunctionStatus", http.get("/api/functions/" + address + "/status", FULL), 200, null);
 

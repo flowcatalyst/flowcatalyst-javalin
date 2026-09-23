@@ -797,7 +797,7 @@
             }
           },
           "409": {
-            "description": "VERSION_IS_LIVE",
+            "description": "VERSION_IS_LIVE, VERSION_ALIASED",
             "content": {
               "application/json": {
                 "schema": {
@@ -820,8 +820,8 @@
         "tags": [
           "function-versions"
         ],
-        "summary": "Promote a version to an alias (today always `live`)",
-        "description": "Requires `platform:function:alias:promote`.",
+        "summary": "Promote a version to an alias (`live` or any named alias)",
+        "description": "Requires `platform:function:alias:promote`. `live` keeps its full semantics (R3 READY check, wiring materialised); any other alias name is HTTP-only — no wiring change.",
         "parameters": [
           {
             "name": "address",
@@ -836,7 +836,7 @@
             "name": "alias",
             "in": "path",
             "required": true,
-            "description": "the alias name (today always `live`)",
+            "description": "the alias name — `live`, or any name matching `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`",
             "schema": {
               "type": "string"
             }
@@ -864,7 +864,7 @@
             }
           },
           "400": {
-            "description": "ALIAS_UNSUPPORTED",
+            "description": "ALIAS_INVALID",
             "content": {
               "application/json": {
                 "schema": {
@@ -895,6 +895,74 @@
           },
           "409": {
             "description": "VERSION_NOT_READY, VERSION_RETIRED, FUNCTION_DISABLED, ALIAS_UNCHANGED, SETTINGS_MISSING",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "deleteFunctionAlias",
+        "tags": [
+          "function-versions"
+        ],
+        "summary": "Remove a named alias",
+        "description": "Requires `platform:function:alias:promote`. `live` can never be removed.",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "the function's `application.service.name` address",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "alias",
+            "in": "path",
+            "required": true,
+            "description": "the alias name to remove",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "403": {
+            "description": "PERMISSION_REQUIRED",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Function_NOT_FOUND, Alias_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ALIAS_PROTECTED",
             "content": {
               "application/json": {
                 "schema": {
@@ -4137,6 +4205,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "the named (non-`live`) aliases pointing at this version, sorted; empty when none"
           }
         },
         "required": [
@@ -4152,7 +4227,8 @@
           "applicationId",
           "config",
           "secrets",
-          "missingSettings"
+          "missingSettings",
+          "aliases"
         ],
         "additionalProperties": false
       },

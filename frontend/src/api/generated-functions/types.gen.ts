@@ -501,6 +501,10 @@ export type DesiredStateFunctionEntry = {
         [key: string]: string;
     };
     missingSettings: Array<string>;
+    /**
+     * the named (non-`live`) aliases pointing at this version, sorted; empty when none
+     */
+    aliases: Array<string>;
 };
 
 export type DesiredStateDocument = {
@@ -922,7 +926,7 @@ export type RetireFunctionVersionErrors = {
      */
     404: ErrorResponse;
     /**
-     * VERSION_IS_LIVE
+     * VERSION_IS_LIVE, VERSION_ALIASED
      */
     409: ErrorResponse;
 };
@@ -938,6 +942,48 @@ export type RetireFunctionVersionResponses = {
 
 export type RetireFunctionVersionResponse = RetireFunctionVersionResponses[keyof RetireFunctionVersionResponses];
 
+export type DeleteFunctionAliasData = {
+    body?: never;
+    path: {
+        /**
+         * the function's `application.service.name` address
+         */
+        address: string;
+        /**
+         * the alias name to remove
+         */
+        alias: string;
+    };
+    query?: never;
+    url: '/api/functions/{address}/aliases/{alias}';
+};
+
+export type DeleteFunctionAliasErrors = {
+    /**
+     * PERMISSION_REQUIRED
+     */
+    403: ErrorResponse;
+    /**
+     * Function_NOT_FOUND, Alias_NOT_FOUND
+     */
+    404: ErrorResponse;
+    /**
+     * ALIAS_PROTECTED
+     */
+    409: ErrorResponse;
+};
+
+export type DeleteFunctionAliasError = DeleteFunctionAliasErrors[keyof DeleteFunctionAliasErrors];
+
+export type DeleteFunctionAliasResponses = {
+    /**
+     * Removed
+     */
+    204: void;
+};
+
+export type DeleteFunctionAliasResponse = DeleteFunctionAliasResponses[keyof DeleteFunctionAliasResponses];
+
 export type PromoteFunctionAliasData = {
     body: PromoteRequest;
     path: {
@@ -946,7 +992,7 @@ export type PromoteFunctionAliasData = {
          */
         address: string;
         /**
-         * the alias name (today always `live`)
+         * the alias name — `live`, or any name matching `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`
          */
         alias: string;
     };
@@ -956,7 +1002,7 @@ export type PromoteFunctionAliasData = {
 
 export type PromoteFunctionAliasErrors = {
     /**
-     * ALIAS_UNSUPPORTED
+     * ALIAS_INVALID
      */
     400: ErrorResponse;
     /**

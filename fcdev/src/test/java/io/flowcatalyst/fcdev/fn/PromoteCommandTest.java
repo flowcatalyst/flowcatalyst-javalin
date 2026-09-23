@@ -111,4 +111,46 @@ class PromoteCommandTest {
             assertThat(statusCalls.get()).as("--wait 0 must never poll status").isZero();
         }
     }
+
+    /// `--alias <name>` (spec `function-zones-and-aliases.md` §6): the PUT
+    /// goes to `.../aliases/qa`, never `.../aliases/live` — mutant: ignore
+    /// the flag and always promote `live`.
+    @Test
+    void aliasFlagPromotesTheNamedAliasNotLive() throws Exception {
+        try (var platform = FakePlatform.start()) {
+            AtomicInteger liveCalls = new AtomicInteger();
+            AtomicInteger qaCalls = new AtomicInteger();
+            platform.on("PUT", "/api/functions/app.svc.fn/aliases/live", ex -> {
+                liveCalls.incrementAndGet();
+                FakePlatform.writeJson(ex, 200, Map.of("alias", "live", "version", 1, "versionId", "fnv_1"));
+            });
+            platform.on("PUT", "/api/functions/app.svc.fn/aliases/qa", ex -> {
+                qaCalls.incrementAndGet();
+                FakePlatform.writeJson(ex, 200, Map.of("alias", "qa", "version", 1, "versionId", "fnv_1"));
+            });
+
+            var r = FnCliTestSupport.run(env(platform), "fn", "promote", "app.svc.fn", "--version", "1",
+                    "--alias", "qa", "--wait", "0");
+            assertThat(r.exit()).as(r.err()).isZero();
+            assertThat(qaCalls.get()).as("mutant: --alias ignored, still promotes live").isEqualTo(1);
+            assertThat(liveCalls.get()).as("mutant: promotes both live and the named alias").isZero();
+        }
+    }
+
+    /// `--alias` omitted defaults to `live` — the pre-existing behaviour is
+    /// unchanged (mutant: default to something other than `live`).
+    @Test
+    void aliasFlagDefaultsToLive() throws Exception {
+        try (var platform = FakePlatform.start()) {
+            AtomicInteger liveCalls = new AtomicInteger();
+            platform.on("PUT", "/api/functions/app.svc.fn/aliases/live", ex -> {
+                liveCalls.incrementAndGet();
+                FakePlatform.writeJson(ex, 200, Map.of("alias", "live", "version", 1, "versionId", "fnv_1"));
+            });
+
+            var r = FnCliTestSupport.run(env(platform), "fn", "promote", "app.svc.fn", "--version", "1", "--wait", "0");
+            assertThat(r.exit()).as(r.err()).isZero();
+            assertThat(liveCalls.get()).isEqualTo(1);
+        }
+    }
 }

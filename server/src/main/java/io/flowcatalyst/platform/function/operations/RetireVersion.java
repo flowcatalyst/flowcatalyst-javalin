@@ -11,12 +11,15 @@ import io.flowcatalyst.sdk.usecase.op.Operation;
 import io.flowcatalyst.sdk.usecase.op.Plan;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 
-/// Retires a version (spec `function-api.md` §5.2). `Authorize: Public` —
-/// load-or-404 + reach is [Access#byAddress], run in `execute`. The
-/// function's LIVE version may never be retired — "promote another version
-/// first" — checked via [Function#isLive], which is why this operation loads
+/// Retires a version (spec `function-api.md` §5.2, `function-zones-and-aliases.md`
+/// §2). `Authorize: Public` — load-or-404 + reach is [Access#byAddress], run
+/// in `execute`. The function's LIVE version may never be retired —
+/// "promote another version first" — checked via [Function#isLive]; a
+/// version any NAMED alias still points at may never be retired either —
+/// "move or remove them first" — both checks are why this operation loads
 /// the function even though it only writes the version aggregate.
 public final class RetireVersion {
 
@@ -36,6 +39,18 @@ public final class RetireVersion {
 
                     if (f.isLive(v.id())) {
                         throw UseCaseException.conflict("VERSION_IS_LIVE", "promote another version first");
+                    }
+
+                    // spec §2 (A3): a NAMED alias still pointing at this version blocks retirement
+                    // too — named, plural, so the operator knows exactly what to move first.
+                    List<String> pointingAliases = f.aliases().stream()
+                            .filter(a -> a.versionId().equals(v.id()))
+                            .map(Function.FunctionAlias::alias)
+                            .sorted()
+                            .toList();
+                    if (!pointingAliases.isEmpty()) {
+                        throw UseCaseException.conflict("VERSION_ALIASED", "aliases " + String.join(", ", pointingAliases)
+                                + " point at this version; move or remove them first");
                     }
 
                     FunctionVersion retired = v.retire(Instant.now());

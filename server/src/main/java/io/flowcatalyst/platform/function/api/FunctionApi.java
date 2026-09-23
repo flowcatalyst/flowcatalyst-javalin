@@ -34,6 +34,8 @@ import io.flowcatalyst.platform.function.operations.PromoteCommand;
 import io.flowcatalyst.platform.function.operations.PromoteVersion;
 import io.flowcatalyst.platform.function.operations.PublishCommand;
 import io.flowcatalyst.platform.function.operations.PublishVersion;
+import io.flowcatalyst.platform.function.operations.RemoveAlias;
+import io.flowcatalyst.platform.function.operations.RemoveAliasCommand;
 import io.flowcatalyst.platform.function.operations.RetireCommand;
 import io.flowcatalyst.platform.function.operations.RetireVersion;
 import io.flowcatalyst.platform.function.operations.SetConfigCommand;
@@ -117,6 +119,7 @@ import static io.flowcatalyst.platform.shared.auth.Permission.FUNCTION_VIEW;
 /// | GET | `/api/functions/{address}/versions/{version}` | 200 [VersionResponse] (+ `manifest`) |
 /// | POST | `/api/functions/{address}/versions/{version}/retire` | 200 [VersionResponse] |
 /// | PUT | `/api/functions/{address}/aliases/{alias}` | 200 [PromoteResponse] |
+/// | DELETE | `/api/functions/{address}/aliases/{alias}` | 204 |
 /// | GET | `/api/functions/{address}/aliases` | 200 `[`[AliasResponse]`]` |
 ///
 /// `GET /api/functions/{address}/status` (spec §6.3, work package B2) is
@@ -180,6 +183,7 @@ public final class FunctionApi {
         routes.get("/api/functions/{address}/versions/{version}", Auth.scoped(ctx -> getVersion(ctx, s)));
         write.post("/api/functions/{address}/versions/{version}/retire", Auth.scoped(ctx -> retire(ctx, s)));
         write.put("/api/functions/{address}/aliases/{alias}", Auth.scoped(ctx -> promote(ctx, s)));
+        write.delete("/api/functions/{address}/aliases/{alias}", Auth.scoped(ctx -> removeAlias(ctx, s)));
         routes.get("/api/functions/{address}/aliases", Auth.scoped(ctx -> listAliases(ctx, s)));
         // spec `function-artifact-upload.md` §3: streamed, never buffered (Routes.putStreaming).
         // Deliberately NOT `write`: API_WRITE pins a connection for the whole request, and
@@ -359,10 +363,14 @@ public final class FunctionApi {
         ctx.json(VersionResponse.summary(v, f.isLive(v.id())));
     }
 
-    /// spec §5.2: `PUT /api/functions/{address}/aliases/{alias}`. The `{alias}`
-    /// segment is passed straight through to `Function.promote`, which is the
-    /// ONE place `ALIAS_UNSUPPORTED` is decided (spec §6.1's own doc) — no
-    /// duplicate check here, so the two paths can never disagree.
+    /// spec `function-zones-and-aliases.md` §2: `PUT
+    /// /api/functions/{address}/aliases/{alias}`. `{alias}` is any name
+    /// matching `fn_aliases`' check constraint — `live` keeps its full
+    /// semantics (R3, wiring); any other name is HTTP-only (no `TriggerSync`
+    /// call, see `PromoteVersion`'s own doc). The `{alias}` segment is passed
+    /// straight through to `Function.promote`, which is the ONE place
+    /// `ALIAS_INVALID` is decided — no duplicate check here, so the two paths
+    /// can never disagree.
     private static void promote(Exchange ctx, State s) {
         Checks.require(Auth.current(), FUNCTION_PROMOTE);
         FunctionAddress address = parseAddress(ctx.pathParam("address"));
@@ -373,6 +381,19 @@ public final class FunctionApi {
         Integer previousVersion = event.previousVersionId() == null ? null
                 : s.versions().findById(event.previousVersionId()).map(FunctionVersion::version).orElse(null);
         ctx.json(new PromoteResponse(event.alias(), event.version(), event.versionId(), previousVersion));
+    }
+
+    /// spec `function-zones-and-aliases.md` §2: `DELETE
+    /// /api/functions/{address}/aliases/{alias}` — 204. `live` is refused
+    /// (`ALIAS_PROTECTED`, 409) and an unknown alias is 404 `Alias_NOT_FOUND`,
+    /// both decided by `Function.removeAlias`, the one home of this rule.
+    private static void removeAlias(Exchange ctx, State s) {
+        Checks.require(Auth.current(), FUNCTION_PROMOTE);
+        FunctionAddress address = parseAddress(ctx.pathParam("address"));
+        String alias = ctx.pathParam("alias");
+        RemoveAlias.of(s.repo(), s.versions())
+                .run(s.uow(), new RemoveAliasCommand(address, alias), Auth.executionContext());
+        ctx.status(204);
     }
 
     /// spec §5.2: `GET /api/functions/{address}/aliases`.

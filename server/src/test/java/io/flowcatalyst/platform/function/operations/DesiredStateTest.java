@@ -293,6 +293,48 @@ class DesiredStateTest {
         assertThat(doc.functions().getFirst().mode()).isEqualTo("warm");
     }
 
+    /// spec `function-zones-and-aliases.md` §5: `[]`, never omitted, when no
+    /// named alias points at this entry's version (mutant: drop the field
+    /// entirely, which `additionalProperties: false` in the OpenAPI schema
+    /// and the `required` list both also guard).
+    @Test
+    void liveEntryCarriesEmptyAliasesWhenNoneNamed() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        Function f = createFunction("noalias" + fresh());
+        FunctionVersion v = publish(f, 1, manifestForPool(pool.value(), false));
+        promote(f, v);
+
+        DesiredState.Document doc = DESIRED.build(pool, Instant.now());
+        assertThat(doc.functions().getFirst().aliases()).isEmpty();
+    }
+
+    /// spec §5: every NAMED (non-`live`) alias pointing at an entry's
+    /// version is carried, sorted — and a candidate's own (empty) alias list
+    /// is unaffected by aliases pointing at `live`'s version (mutant: carry
+    /// unsorted, or carry `live` itself, or leak them onto the wrong entry).
+    @Test
+    void liveEntryCarriesItsNamedAliasesSortedAndTheCandidateDoesNotInheritThem() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        Function f = createFunction("aliassort" + fresh());
+        FunctionVersion v1 = publish(f, 1, manifestForPool(pool.value(), false));
+        save(v1.markReady(Instant.now()));
+        f = promote(f, v1);
+        // Two named aliases on v1, promoted out of alphabetical order.
+        f = f.promote("zz", v1, "prn_promoter", Instant.now()).function();
+        f = f.promote("aa", v1, "prn_promoter", Instant.now()).function();
+        save(f);
+        FunctionVersion v2 = publish(f, 2, manifestForPool(pool.value(), false)); // newer candidate, no aliases of its own
+
+        DesiredState.Document doc = DESIRED.build(pool, Instant.now());
+        assertThat(doc.functions()).hasSize(2);
+        DesiredState.FunctionEntry live = doc.functions().get(0);
+        DesiredState.FunctionEntry candidate = doc.functions().get(1);
+        assertThat(live.role()).isEqualTo("live");
+        assertThat(live.aliases()).as("mutant: unsorted, or live itself included").containsExactly("aa", "zz");
+        assertThat(candidate.role()).isEqualTo("candidate");
+        assertThat(candidate.aliases()).as("mutant: aliases pointing at v1 leaked onto v2's entry").isEmpty();
+    }
+
     // ── P13: newer candidate ──────────────────────────────────────────────
 
     @Test

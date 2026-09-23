@@ -4,14 +4,16 @@ import io.flowcatalyst.platform.function.FunctionAddress;
 
 import java.util.Objects;
 
-/// `PUT /api/functions/{address}/aliases/live` (spec `function-api.md`
-/// §5.2). `alias` is carried here (not hard-coded to [io.flowcatalyst.platform.function.Function#LIVE])
-/// so the API's `ALIAS_UNSUPPORTED` check for any other `{alias}` path
-/// segment stays the handler's own 400, never reaching this command.
+/// `PUT /api/functions/{address}/aliases/{alias}` (spec
+/// `function-zones-and-aliases.md` §2). `alias` is carried straight through
+/// from the path — `live` or any name matching `fn_aliases`' check
+/// constraint; anything else is 400 `ALIAS_INVALID`, decided by
+/// [io.flowcatalyst.platform.function.Function#requireValidAliasName], the
+/// rule's one home (`PromoteVersion`'s `validate` phase calls it before this
+/// command is even built).
 ///
 /// @param address the target function; from the path
-/// @param alias   the path segment; always `live` by the time this command
-///                is built — anything else is rejected before construction
+/// @param alias   the alias to point at `version`; from the path
 /// @param version the version number to promote; from the body
 public record PromoteCommand(FunctionAddress address, String alias, int version) {
     public PromoteCommand {

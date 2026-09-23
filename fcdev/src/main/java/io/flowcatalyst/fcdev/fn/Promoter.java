@@ -14,11 +14,15 @@ import java.util.function.LongConsumer;
 import java.util.function.LongSupplier;
 
 /// The shared promote logic behind `fn promote` and `fn deploy` (spec §2,
-/// §4 E5): poll `GET …/status` once a second until `version` is `READY`,
-/// then `PUT …/aliases/live`; `wait` zero skips the wait entirely (the
-/// platform's own `VERSION_NOT_READY` is then just an ordinary error); a
-/// timeout never calls promote.
+/// §4 E5, `function-zones-and-aliases.md` §6): poll `GET …/status` once a
+/// second until `version` is `READY`, then `PUT …/aliases/{alias}`; `wait`
+/// zero skips the wait entirely (the platform's own `VERSION_NOT_READY` is
+/// then just an ordinary error); a timeout never calls promote. `fn deploy`
+/// and `fn watch` always promote `live` — only `fn promote` exposes
+/// `--alias`.
 final class Promoter {
+
+    static final String LIVE = "live";
 
     private Promoter() {
     }
@@ -28,6 +32,15 @@ final class Promoter {
     ///         so the caller just needs to exit 1
     static FunctionApi.PromoteResponse promote(CommandSpec spec, FnCommand root, FnClient platform, String address,
                                                 int version, Duration wait, LongSupplier clockMillis,
+                                                LongConsumer sleepMillis) {
+        return promote(spec, root, platform, address, LIVE, version, wait, clockMillis, sleepMillis);
+    }
+
+    /// @return the promote response on success, or `null` on a timeout — the
+    ///         timeout message was already printed to `spec`'s err writer,
+    ///         so the caller just needs to exit 1
+    static FunctionApi.PromoteResponse promote(CommandSpec spec, FnCommand root, FnClient platform, String address,
+                                                String alias, int version, Duration wait, LongSupplier clockMillis,
                                                 LongConsumer sleepMillis) {
         if (!wait.isZero()) {
             long deadline = clockMillis.getAsLong() + wait.toMillis();
@@ -42,7 +55,7 @@ final class Promoter {
             }
         }
         var body = new FunctionApi.PromoteRequest(version);
-        JsonNode response = platform.put("/api/functions/" + address + "/aliases/live", Json.MAPPER.valueToTree(body));
+        JsonNode response = platform.put("/api/functions/" + address + "/aliases/" + alias, Json.MAPPER.valueToTree(body));
         return Json.MAPPER.convertValue(response, FunctionApi.PromoteResponse.class);
     }
 

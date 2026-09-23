@@ -101,7 +101,7 @@ public final class DesiredState {
             FunctionVersion live = f.liveVersionId().map(liveVersions::get).orElse(null);
             if (live != null && live.manifest().pool().equals(pool)) {
                 entries.add(FunctionEntry.of(f, live, "live", signingSecretFor(f, live, secretByApplication),
-                        configAndSecretsFor(f, live)));
+                        configAndSecretsFor(f, live), namedAliasesFor(f, live)));
                 liveInPool.add(f);
             }
             FunctionVersion candidate = candidates.get(f.id());
@@ -109,7 +109,8 @@ public final class DesiredState {
                     && (live == null || candidate.version() > live.version())
                     && candidate.manifest().pool().equals(pool)) {
                 entries.add(FunctionEntry.of(f, candidate, "candidate",
-                        signingSecretFor(f, candidate, secretByApplication), configAndSecretsFor(f, candidate)));
+                        signingSecretFor(f, candidate, secretByApplication), configAndSecretsFor(f, candidate),
+                        namedAliasesFor(f, candidate)));
             }
         }
         entries.sort(Comparator.comparing(FunctionEntry::address).thenComparingInt(FunctionEntry::version));
@@ -245,6 +246,19 @@ public final class DesiredState {
         return manifest.endpoints().stream().anyMatch(e -> e.auth() == EndpointAuth.WEBHOOK);
     }
 
+    /// spec `function-zones-and-aliases.md` §5: the NAMED (non-`live`)
+    /// aliases pointing at `v`, sorted — `[]` when none. Only ever called for
+    /// an entry `#build` is already emitting (`live` or `candidate`); a
+    /// version aliased but NOT otherwise present is J3's job, not this
+    /// package's.
+    private static List<String> namedAliasesFor(Function f, FunctionVersion v) {
+        return f.aliases().stream()
+                .filter(a -> !Function.LIVE.equals(a.alias()) && a.versionId().equals(v.id()))
+                .map(Function.FunctionAlias::alias)
+                .sorted()
+                .toList();
+    }
+
     /// Spec §1: an entry's `config`/`secrets` are restricted to the keys
     /// `v`'s OWN manifest declares — a host never receives a value the
     /// version did not ask for — and `missingSettings` names every declared
@@ -331,10 +345,10 @@ public final class DesiredState {
                                 String mode, String digest, String artifactRef, String signatureBundle,
                                 JsonNode manifest, SignerView signer, String webhookSigningSecret,
                                 String applicationId, String clientId, Map<String, String> config,
-                                Map<String, String> secrets, List<String> missingSettings) {
+                                Map<String, String> secrets, List<String> missingSettings, List<String> aliases) {
 
         static FunctionEntry of(Function f, FunctionVersion v, String role, String webhookSigningSecret,
-                Settings settings) {
+                Settings settings, List<String> aliases) {
             String mode = "candidate".equals(role) ? "lazy" : (v.manifest().warm() ? "warm" : "lazy");
             boolean platformOwned = f.owner() instanceof FunctionOwner.Platform;
             // applicationId is always carried — a platform-owned function still belongs to an
@@ -344,7 +358,7 @@ public final class DesiredState {
             return new FunctionEntry(f.address().render(), f.id(), v.id(), v.version(), role, mode,
                     v.digest().value(), v.artifactRef(), v.signatureBundle(), v.manifest().toJson(),
                     SignerView.from(v.signer()), webhookSigningSecret, applicationId, clientId,
-                    settings.config(), settings.secrets(), settings.missingSettings());
+                    settings.config(), settings.secrets(), settings.missingSettings(), aliases);
         }
 
         /// Masks the signing secret AND `secrets` (spec §6: "the host never
@@ -365,7 +379,7 @@ public final class DesiredState {
                     + ", webhookSigningSecret=" + (webhookSigningSecret == null ? "null" : "<redacted>")
                     + ", applicationId=" + applicationId + ", clientId=" + clientId + ", config=" + config
                     + ", secrets=" + (secrets.isEmpty() ? "{}" : secrets.keySet() + " (values redacted)")
-                    + ", missingSettings=" + missingSettings + "]";
+                    + ", missingSettings=" + missingSettings + ", aliases=" + aliases + "]";
         }
     }
 

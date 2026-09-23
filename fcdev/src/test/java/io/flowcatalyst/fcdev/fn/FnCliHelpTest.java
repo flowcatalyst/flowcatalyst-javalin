@@ -19,7 +19,7 @@ class FnCliHelpTest {
         var r = FnCliTestSupport.run(Map.of(), "fn", "--help");
         assertThat(r.exit()).isZero();
         for (var name : new String[]{"publish", "promote", "deploy", "status", "versions", "retire",
-                "config", "secret", "invoke", "watch"}) {
+                "config", "secret", "invoke", "watch", "alias"}) {
             assertThat(r.out()).as(name).contains(name);
         }
     }
@@ -80,6 +80,7 @@ class FnCliHelpTest {
             platform.on("GET", "/api/functions/a.b.c/status", ex -> FakePlatform.writeJson(ex, 200, Map.of(
                     "address", "a.b.c", "status", "ACTIVE", "versions", java.util.List.of(),
                     "hosts", java.util.List.of(), "wiring", java.util.List.of())));
+            platform.on("GET", "/api/functions/a.b.c/aliases", ex -> FakePlatform.writeJson(ex, 200, java.util.List.of()));
             var env = new HashMap<String, String>();
             env.put("FLOWCATALYST_PLATFORM_URL", platform.baseUrl());
             env.put("FLOWCATALYST_CLIENT_ID", "id");
