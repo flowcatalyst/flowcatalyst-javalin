@@ -6,6 +6,17 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## Trust model clarified; DNS verification of domain claims removed (2026-09-23, afternoon)
+
+Owner: "tenants can't deploy their own functions. We deploy our own functions that run for our
+tenant solutions." The pool-ownership gate was withdrawn before it was built (`fd9752d4`) and TXT
+verification of domain claims removed (`10aa6369`, spec `docs/spec/function-domains-no-dns.md`,
+V16 drops the two columns; `PUBLIC_HOSTNAME_NOT_CLAIMED`; `fn domain verify` and the SPA's DNS panel
+gone; the additive-migrations gate now exempts Java-only tables per statement). A claim is
+verified by being made; point the CNAME (or the wildcard) at the load balancer. Server 5164 ·
+fcdev 225 · SPA 47 · e2e 54/54 on the rebuilt jar (`972dfeba`). The declared-access-policies
+task is deferred (backlog). Next: the manifest authoring aids.
+
 ## Package J landed: zone claims, named aliases, alias-prefixed hostnames (2026-09-23)
 
 On `main`: J1 `bc1be581` (a claim covers its zone; claims never nest; verify/release/publish resolve
