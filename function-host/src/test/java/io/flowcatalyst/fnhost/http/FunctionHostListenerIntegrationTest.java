@@ -429,31 +429,20 @@ class FunctionHostListenerIntegrationTest {
         }
     }
 
-    /// **F11** (`docs/spec/function-public-routes.md` §6): claim → verify →
-    /// publish with `public` → promote → reconcile → `GET` on the PUBLIC
-    /// port with `Host: <hostname>` reaches the function with `path=/x`, and
-    /// the SAME function by address on the PRIVATE port sees the same path.
-    ///
-    /// Ambiguity/choice (task brief): `Platform`'s `FunctionDomainApi` wires
-    /// a fixed `JndiTxtResolver` at `Server`'s own composition root
-    /// (`io/flowcatalyst/server/Platform.java`) with no test seam to inject
-    /// a fake — there is no way to hand a fake `TxtResolver` into a real
-    /// `Server` from here. Per the task brief's own fallback, this test uses
-    /// a `.localhost` hostname under dev mode instead (`FLOWCATALYST_DEV_MODE=true`
-    /// is already set for this whole class in `@BeforeAll`): `ClaimFunctionDomain`
-    /// auto-verifies a hostname whose LAST LABEL is exactly `localhost`, no
-    /// DNS at all (spec §1, §6 F3) — so the claim step's response already
-    /// reports `VERIFIED` and there is no separate `verify` HTTP call to make.
+    /// **F11** (`docs/spec/function-public-routes.md` §6): claim → publish
+    /// with `public` → promote → reconcile → `GET` on the PUBLIC port with
+    /// `Host: <hostname>` reaches the function with `path=/x`, and the SAME
+    /// function by address on the PRIVATE port sees the same path. A claim is
+    /// verified by being made (`function-domains-no-dns.md`), so there is no
+    /// verify step and no verification state to assert.
     @Test
     void publicRouteReachesTheFunctionAndThePrivateEntrySeesTheSamePath(@TempDir Path dir) throws Exception {
         DnsLabel pool = new DnsLabel("f11pool" + RUN);
         FunctionAddress address = FunctionAddress.of(new DnsLabel("f11" + RUN), new DnsLabel("svc"), new DnsLabel("fn"));
         String hostname = "f11-" + RUN + ".localhost";
 
-        // ── claim (dev-mode .localhost auto-verifies at claim time — no separate verify call) ──
         JsonNode claimed = adminPost("/api/function-domains", obj("hostname", hostname), 201);
-        assertThat(claimed.path("verification").path("state").asString())
-                .as("mutant: .localhost must auto-verify under dev mode").isEqualTo("VERIFIED");
+        assertThat(claimed.path("hostname").asString()).isEqualTo(hostname);
 
         // ── the function itself, platform-owned (same convention as H15/X10 above) ──
         String appCode = "f11-app-" + RUN;
