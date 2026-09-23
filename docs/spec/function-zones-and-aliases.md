@@ -3,8 +3,9 @@
 Owner rulings 2026-09-22 (`docs/backlog.md` §"Function domains: zone claims and alias prefixes"):
 a claim covers a zone; alias prefixes are **opt-in per route**; aliases are **HTTP-only**. Amends
 `function-public-routes.md` §1–§3, `function-api.md` §5 and §6.1, `function-registry.md` §4.1/§4.3,
-`function-developer-surface.md` §2, `function-ui.md`. Draft — not yet scheduled; the five backlog
-units in `function-backlog-2026-09-22.md` land first.
+`function-developer-surface.md` §2, `function-ui.md`. **Implemented** — J1 zones `bc1be581`, J2
+named aliases `f8269fba`, J3 alias prefixes `f7c453a8`, J4 e2e + docs (this change — commit hash
+filled in once it lands, per this repo's own convention of citing landed commits by id).
 
 ## 0. What changes, in one paragraph
 
@@ -122,23 +123,26 @@ macOS/Linux, so `qa-hello.localhost:8091` works with no setup.
 
 ## 8. Load-bearing behaviours (one mutant per condition; absence as well as presence)
 
-| # | Behaviour | Mutant |
-|---|---|---|
-| Z1 | claim `acme.com`; publish with `myapp.acme.com` succeeds; with `myapp.other.com` ⇒ `PUBLIC_HOSTNAME_NOT_VERIFIED` | equality instead of covering |
-| Z2 | claim `api.acme.com` after `acme.com` (any owner) ⇒ `DOMAIN_TAKEN`; and the reverse order | drop either direction |
-| Z3 | a one-label claim ⇒ `DOMAIN_INVALID` | drop the label count |
-| Z4 | release `acme.com` while `myapp.acme.com` is routed ⇒ `DOMAIN_IN_USE` | equality instead of covering |
-| Z5 | `GET /api/function-domains/qa-myapp.acme.com` ⇒ the `acme.com` claim; another client's ⇒ 404 | — |
-| A1 | `PUT …/aliases/qa {version: 2}` with v2 READY ⇒ 200; v2 PUBLISHED ⇒ `VERSION_NOT_READY`; wiring (subscriptions, schedules, routes) unchanged after it — assert the trigger objects' count and the live pointer | apply live's wiring |
-| A2 | delete `live` ⇒ `ALIAS_PROTECTED`; delete `qa` ⇒ 204 and gone from the list | — |
-| A3 | retire the version `qa` points at ⇒ `VERSION_ALIASED` naming `qa` | skip the check |
-| P1 | manifest `aliasPrefixes: ["live"]` / duplicate / `"QA"` ⇒ `ROUTE_INVALID`; `[]` and absent accepted | — |
-| P2 | route table: exact `myapp.acme.com` ⇒ live; `qa-myapp.acme.com` with `qa` opted in ⇒ alias `qa`; without ⇒ 404; `qa-my-app.acme.com` splits at the first `-`; an exact route on `qa-myapp.acme.com` beats the derivation | each rule |
-| P3 | end to end on the host: v1 live, v2 aliased `qa` with a different response body; `Host: qa-hello.localhost` returns v2's body, `Host: hello.localhost` v1's; `Host: staging-hello.localhost` 404 | resolve by address only |
-| D1 | desired state: the aliased-only version appears with `role: alias`, `aliases: ["qa"]`, and is not in `unload` | drop it from `functions` |
-| D2 | the reconciler serves `role: alias` and still only verifies `candidate` | serve candidates |
-| U1 | SPA vitest: alias promote drawer, aliases table, derived hostnames shown | — |
-| E1 | e2e: claim `hello.localhost`, deploy with `aliasPrefixes: ["qa"]`, point `qa` at v1, curl `qa-hello.localhost:8091/healthz` ⇒ 200 | — |
+Test column: blank where no single named test was found pinning the row (see J4 hand-off) rather
+than guessing.
+
+| # | Behaviour | Mutant | Test |
+|---|---|---|---|
+| Z1 | claim `acme.com`; publish with `myapp.acme.com` succeeds; with `myapp.other.com` ⇒ `PUBLIC_HOSTNAME_NOT_VERIFIED` | equality instead of covering | `FunctionTriggerSyncTest#publishSucceedsWithAHostnameCoveredByAZoneClaimOfTheSameOwner` / `#publishRefusesAHostnameUnderAnUnrelatedApex` |
+| Z2 | claim `api.acme.com` after `acme.com` (any owner) ⇒ `DOMAIN_TAKEN`; and the reverse order | drop either direction | `FunctionDomainApiTest#claimOfASubHostnameAfterTheApexIsAlreadyClaimedIsDomainTaken` / `#claimOfTheApexAfterASubHostnameIsAlreadyClaimedIsDomainTaken` (`#claimNestingIsRefusedEvenForTheSameOwner` too) |
+| Z3 | a one-label claim ⇒ rejected | drop the label count | `HostnameTest#labelsRejected` (`"localhost"` case) — **note**: implemented as `HOSTNAME_INVALID` via `Hostname.parse`'s own ≥2-label floor, not a distinct `DOMAIN_INVALID` code as this spec originally drafted (`ClaimFunctionDomain`'s own doc comment records the decision); no claim-route-specific test was added since the floor is enforced before the operation runs |
+| Z4 | release `acme.com` while `myapp.acme.com` is routed ⇒ `DOMAIN_IN_USE` | equality instead of covering | `FunctionDomainApiTest#releaseOfAZoneIsDomainInUseWhileADeeperHostnameIsRouted` |
+| Z5 | `GET /api/function-domains/qa-myapp.acme.com` ⇒ the `acme.com` claim; another client's ⇒ 404 | — | `FunctionDomainApiTest#z5GetDomainByADeeperHostnameResolvesToTheZonesClaimReachableIs200OutOfReachIs404` |
+| A1 | `PUT …/aliases/qa {version: 2}` with v2 READY ⇒ 200; v2 PUBLISHED ⇒ `VERSION_NOT_READY`; wiring (subscriptions, schedules, routes) unchanged after it — assert the trigger objects' count and the live pointer | apply live's wiring | `PublishPromoteRetireTest#promotingANamedAliasRequiresReadyJustLikeLive` / `#promotingANamedAliasRunsNoWiringAndLeavesLiveAndWiringUnchanged` |
+| A2 | delete `live` ⇒ `ALIAS_PROTECTED`; delete `qa` ⇒ 204 and gone from the list | — | `FunctionApiTest#deleteAliasProtectsLiveRefusesUnknownAndRemovesANamedAlias` (`FunctionTest#removingLiveIsProtected` / `#removingANamedAliasDropsItAndKeepsOthers` at the domain-model level) |
+| A3 | retire the version `qa` points at ⇒ `VERSION_ALIASED` naming `qa` | skip the check | `PublishPromoteRetireTest#retireRefusesAVersionANamedAliasPointsAtNamingItAndSucceedsOnceMoved` |
+| P1 | manifest `aliasPrefixes: ["live"]` / duplicate / `"QA"` ⇒ `ROUTE_INVALID`; `[]` and absent accepted | — | `ManifestTest#aliasPrefixesRejectsLive` / `#aliasPrefixesRejectsDuplicate` / `#aliasPrefixesRejectsUppercase` / `#aliasPrefixesAbsentDefaultsEmpty` / `#aliasPrefixesEmptyArrayAccepted` |
+| P2 | route table: exact `myapp.acme.com` ⇒ live; `qa-myapp.acme.com` with `qa` opted in ⇒ alias `qa`; without ⇒ 404; `qa-my-app.acme.com` splits at the first `-`; an exact route on `qa-myapp.acme.com` beats the derivation | each rule | `PublicRouteTableTest#aliasPrefixOptedInResolvesToTheBaseHostnamesRoute` / `#aliasPrefixNotOptedInIsNoMatch` / `#aliasPrefixSplitsAtTheFirstDash` / `#anExactRouteOnTheDerivedHostnameBeatsTheDerivation` / `#derivationAppliesOnlyOneLevel` / `#noDashInFirstLabelNeverDerives` |
+| P3 | end to end on the host: v1 live, v2 aliased `qa` with a different response body; `Host: qa-hello.localhost` returns v2's body, `Host: hello.localhost` v1's; `Host: staging-hello.localhost` 404 | resolve by address only | `FnHttpServerPublicListenerTest#aliasPrefixedHostnameServesTheAliasedVersionExactServesLiveUnoptedInPrefixIs404` |
+| D1 | desired state: the aliased-only version appears with `role: alias`, `aliases: ["qa"]`, and is not in `unload` | drop it from `functions` | `DesiredStateTest#anAliasOnlyVersionAppearsWithRoleAliasIsNeverUnloadedAndCarriesItsAliasesSorted` |
+| D2 | the reconciler serves `role: alias` and still only verifies `candidate` | serve candidates | `ReconcilerTest#entryForAliasResolvesAnAliasEntryButNeverACandidateEvenIfItCarriesTheAliasName` |
+| U1 | SPA vitest: alias promote drawer, aliases table, derived hostnames shown | — | `frontend/tests/function-versions-tab.test.ts` "promote dialog sends the typed alias name, not always live" / "disables the alias Delete button for live and enables it for a named alias" / "keeps Promote enabled for the live version, but disables the dialog's own submit only for an alias that already points there" (J4 fix: `canPromoteRow` originally gated the whole row on `!v.live`, which blocked pointing any OTHER alias at an already-live version — moved the ALIAS_UNCHANGED check into the dialog, per-alias); `frontend/tests/function-public-routes-tab.test.ts` "renders each opted-in alias prefix's derived hostname" |
+| E1 | e2e: claim `hello.localhost`, deploy with `aliasPrefixes: ["qa"]`, point `qa` at v1, curl `qa-hello.localhost:8091/healthz` ⇒ 200 | — | `e2e/tests/functions.spec.ts` "functions › claim a domain, publish, configure, promote, and reach the function" (package J4) |
 
 ## 9. Slices
 

@@ -183,12 +183,38 @@ describe("FunctionVersionsTab — Promote/Retire gating (U5)", () => {
 		expect(promote2?.attributes("disabled")).toBeDefined();
 	});
 
-	it("disables Promote for the version that is already live — the platform would answer ALIAS_UNCHANGED", async () => {
+	// package J2/J4 (spec `function-zones-and-aliases.md` §2: "two different
+	// aliases may legitimately name the same version at once"): the ROW-level
+	// Promote action stays enabled for the live version too, because a
+	// DIFFERENT named alias (e.g. "qa") might still want to point at it — only
+	// the DIALOG's own submit is disabled, and only once the typed alias is
+	// one that already names this exact version (ALIAS_UNCHANGED). Mutant:
+	// gate on `v.live` again — this fails because it would disable Promote
+	// for v3 outright, never even opening the dialog to prove the per-alias
+	// distinction.
+	it("keeps Promote enabled for the live version, but disables the dialog's own submit only for an alias that already points there", async () => {
 		const wrapper = await mountTab();
 		const liveRow = wrapper.findAll("table")[0].findAll("tbody > tr").find((r) => r.text().includes("v3"));
 		const promoteLive = liveRow?.findAll("button").find((b) => b.text() === "Promote");
 		expect(promoteLive).toBeTruthy();
-		expect(promoteLive?.attributes("disabled")).toBeDefined();
+		expect(promoteLive?.attributes("disabled")).toBeUndefined();
+
+		await promoteLive?.trigger("click");
+		await flushPromises();
+
+		const dialog = wrapper.find(".p-dialog");
+		expect(dialog.exists()).toBe(true);
+
+		// Default alias is "live", which already points at v3 (ver_3) —
+		// ALIAS_UNCHANGED — the dialog's own submit is disabled.
+		const submitDefault = dialog.findAll("button").find((b) => b.text() === "Promote");
+		expect(submitDefault?.attributes("disabled")).toBeDefined();
+
+		// "qa" points at v1 (ver_1), not v3 — typing it re-enables submit.
+		const input = dialog.find("#promoteAlias");
+		await input.setValue("qa");
+		const submitQa = dialog.findAll("button").find((b) => b.text() === "Promote");
+		expect(submitQa?.attributes("disabled")).toBeUndefined();
 	});
 
 	it("disables Retire for the live version even though it is READY", async () => {
@@ -209,7 +235,13 @@ describe("FunctionVersionsTab — Promote/Retire gating (U5)", () => {
 
 	// spec `function-zones-and-aliases.md` §6: the Promote drawer opens with
 	// an alias field (defaulting to `live`) and sends whatever name is typed
-	// — mutant: ignore the field and always promote `live`.
+	// — mutant: ignore the field and always promote `live`. Types "staging",
+	// not "qa" — the fixture's own `namedAlias` already points "qa" at v1, so
+	// typing "qa" here would hit the dialog's ALIAS_UNCHANGED no-op guard
+	// (`promoteWouldBeNoOp`, its own separately-pinned behaviour) and never
+	// reach `functionsApi.promote` at all, which would make this assertion
+	// pass for the wrong reason (or not run) rather than pinning "the typed
+	// name is sent".
 	it("promote dialog sends the typed alias name, not always live", async () => {
 		const wrapper = await mountTab();
 		const row1 = wrapper.findAll("table")[0].findAll("tbody > tr").find((r) => r.text().includes("v1"));
@@ -223,12 +255,13 @@ describe("FunctionVersionsTab — Promote/Retire gating (U5)", () => {
 		expect(input.exists()).toBe(true);
 		expect((input.element as HTMLInputElement).value).toBe("live");
 
-		await input.setValue("qa");
+		await input.setValue("staging");
 		const dialogPromote = dialog.findAll("button").find((b) => b.text() === "Promote");
+		expect(dialogPromote?.attributes("disabled")).toBeUndefined();
 		await dialogPromote?.trigger("click");
 		await flushPromises();
 
-		expect(mocks.promote).toHaveBeenCalledWith("acme.default.hello", 1, "qa");
+		expect(mocks.promote).toHaveBeenCalledWith("acme.default.hello", 1, "staging");
 	});
 
 	// U1 (spec §8): the Aliases table disables Delete for `live` and enables

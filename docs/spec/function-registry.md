@@ -409,13 +409,16 @@ Components: `id`, `applicationId`, `address` (`FunctionAddress`), `owner` (`Func
   `ACTIVE`, no aliases. It takes the parsed address (CONVENTIONS: the type carries the proof).
 - `describe(String description, Instant now)` — the only editable field.
 - `disable(now)` / `enable(now)` — conflict `FUNCTION_ALREADY_DISABLED` / `FUNCTION_ALREADY_ACTIVE`.
-- `promote(String alias, FunctionVersion version, String principalId, Instant now)`:
-  alias other than `live` ⇒ validation `ALIAS_UNSUPPORTED` (design §10.6); `version.functionId()` not
-  this function ⇒ validation `VERSION_NOT_OF_FUNCTION`; version `RETIRED` ⇒ conflict
-  `VERSION_RETIRED`; function `DISABLED` ⇒ conflict `FUNCTION_DISABLED`; already pointing at that
-  version ⇒ conflict `ALIAS_UNCHANGED`. Returns `Promoted(Function function, String
-  previousVersionId)` — `previousVersionId` null on first promotion. **It does not require `READY`**
-  — see Q3.
+- `promote(String alias, FunctionVersion version, String principalId, Instant now)` (package J2,
+  `function-zones-and-aliases.md` §2): **any** alias name matching `ALIAS_PATTERN` ⇒ validation
+  `ALIAS_INVALID` if it doesn't; `version.functionId()` not this function ⇒ validation
+  `VERSION_NOT_OF_FUNCTION`; version `RETIRED` ⇒ conflict `VERSION_RETIRED`; function `DISABLED` ⇒
+  conflict `FUNCTION_DISABLED`; already pointing at that version ⇒ conflict `ALIAS_UNCHANGED`
+  (compares against what THIS alias currently points at, not `live`). Returns `Promoted(Function
+  function, String previousVersionId)` — `previousVersionId` null on first promotion. **It does not
+  require `READY`** — see Q3; `PromoteVersion`'s `execute` phase is where the `VERSION_NOT_READY`
+  guard lives, for `live` and a named alias alike. A named alias is HTTP-only — no wiring change,
+  `live` untouched.
 - `Optional<String> liveVersionId()`; `boolean isLive(String versionId)`.
 - **There is no transition that changes `applicationId`, `address`, `owner` or `runtime`**
   (design §10.17), and the repository's upsert `SET` list omits those columns, so even a hand-built

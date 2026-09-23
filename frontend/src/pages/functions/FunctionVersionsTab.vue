@@ -98,12 +98,18 @@ function prettyManifest(version: number): string {
 	return JSON.stringify(manifest, null, 2);
 }
 
-// Promote: enabled only for a READY version (U5). Retire: never for the
-// live version (also U5) and never for one already RETIRED.
+// Promote: enabled for any READY version (U5), INCLUDING the live one — a
+// different, named alias (package J2) may still want to point at exactly
+// the version that is already live (spec `function-zones-and-aliases.md`
+// §2: "two different aliases may legitimately name the same version at
+// once"), so the row-level action can't rule that out without knowing which
+// alias the operator is about to type. The one case that IS a guaranteed
+// no-op — promoting an alias to the version it already names — is caught
+// per-alias, inside the dialog itself (see `promoteWouldBeNoOp` below), not
+// here. Retire: never for the live version (also U5) and never for one
+// already RETIRED.
 function canPromoteRow(v: VersionResponse): boolean {
-	// READY and not already the live one — promoting the live version is the
-	// platform's ALIAS_UNCHANGED conflict, which is not an error worth offering.
-	return v.state === "READY" && !v.live;
+	return v.state === "READY";
 }
 function canRetireRow(v: VersionResponse): boolean {
 	return !v.live && v.state !== "RETIRED";
@@ -123,6 +129,18 @@ const promoteAliasValid = computed(() =>
 	/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(promoteAliasName.value.trim()),
 );
 
+// The one guaranteed ALIAS_UNCHANGED case (spec §2): the typed alias
+// already points at the target version's own id. Computed against the
+// loaded `aliases` list, not `v.live` — `live` already pointing here says
+// nothing about where a DIFFERENT alias currently points.
+const promoteWouldBeNoOp = computed(() => {
+	const v = promoteTarget.value;
+	if (!v) return false;
+	const alias = promoteAliasName.value.trim();
+	const current = aliases.value.find((a) => a.alias === alias);
+	return current?.versionId === v.id;
+});
+
 function openPromoteDialog(v: VersionResponse) {
 	promoteTarget.value = v;
 	promoteAliasName.value = "live";
@@ -131,7 +149,7 @@ function openPromoteDialog(v: VersionResponse) {
 
 async function submitPromote() {
 	const v = promoteTarget.value;
-	if (!v || !promoteAliasValid.value) return;
+	if (!v || !promoteAliasValid.value || promoteWouldBeNoOp.value) return;
 	const alias = promoteAliasName.value.trim();
 	promoting.value = true;
 	try {
@@ -379,12 +397,15 @@ function rowClass(data: VersionResponse) {
         <small v-if="!promoteAliasValid" class="field-error">
           1-63 characters of a-z, 0-9 and '-', not starting or ending with '-'.
         </small>
+        <small v-else-if="promoteWouldBeNoOp" class="field-error">
+          Alias "{{ promoteAliasName.trim() }}" already points at version {{ promoteTarget?.version }}.
+        </small>
       </div>
       <template #footer>
         <Button label="Cancel" text @click="showPromoteDialog = false" />
         <Button
           label="Promote"
-          :disabled="!promoteAliasValid || promoting"
+          :disabled="!promoteAliasValid || promoting || promoteWouldBeNoOp"
           :loading="promoting"
           @click="submitPromote"
         />

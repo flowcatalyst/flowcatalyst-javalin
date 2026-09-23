@@ -6,8 +6,8 @@
 // examples/function-hello manifest in-memory, polling out-of-band host
 // state, and two documented workarounds for UI gaps H4 discovered (see the
 // big comment below).
-import type { Page } from "@playwright/test";
-import { bareInput, expect, submitDrawer } from "./catalogue.js";
+import type { Locator, Page } from "@playwright/test";
+import { bareInput, confirmWithHeader, dialogWithHeader, expect, submitDrawer } from "./catalogue.js";
 
 /// The three-label address `applicationCode.serviceName.name` this flow
 /// exercises — fixed, not `unique()`-suffixed, because it must match the
@@ -21,6 +21,14 @@ export const FN_NAME = "hello";
 export const FN_ADDRESS = `${FN_APPLICATION_CODE}.${FN_SERVICE_NAME}.${FN_NAME}`;
 
 export const FN_DOMAIN_HOSTNAME = "hello.localhost";
+
+/// Package J3's derived-hostname prefix this flow opts into (see
+/// `helloManifestWithPublicRoute`'s `aliasPrefixes`) and its never-opted-in
+/// counterpart, used to prove the negative (spec §8 row P3/E1: an
+/// unopted-in prefix stays 404).
+export const FN_ALIAS_PREFIX = "qa";
+export const FN_ALIAS_HOSTNAME = `${FN_ALIAS_PREFIX}-${FN_DOMAIN_HOSTNAME}`;
+export const FN_UNOPTED_PREFIX_HOSTNAME = `staging-${FN_DOMAIN_HOSTNAME}`;
 
 /// `fcdev start`'s function-host public listener default (`--fn-public-port`,
 /// docs/functions.md §6a / docs/spec/function-developer-surface.md §1) —
@@ -71,7 +79,11 @@ export function helloManifestWithPublicRoute(): Record<string, unknown> {
             },
         ],
         // The one addition over the sample's own manifest.json (task step 4).
-        public: [{ hostname: FN_DOMAIN_HOSTNAME }],
+        // `aliasPrefixes: ["qa"]` opts this route into package J3's derived
+        // hostname (`qa-hello.localhost`) — the J4 e2e flow points the `qa`
+        // alias at the published version and reaches it that way, and
+        // checks `staging-hello.localhost` (never opted in) stays 404.
+        public: [{ hostname: FN_DOMAIN_HOSTNAME, aliasPrefixes: ["qa"] }],
         config: ["GREETING"],
         secrets: ["API_KEY"],
     };
@@ -196,5 +208,100 @@ export async function waitForHostState(
         await page.reload();
         await page.getByRole("tab", { name: "Overview", exact: true }).click();
         await expect(page.getByText(`v${version} ${state}`, { exact: true })).toBeVisible();
+    }).toPass({ timeout: timeoutMs, intervals: [1000, 2000, 3000, 5000] });
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Package J2/J4: the Versions tab now renders TWO `<table>`s (versions, then
+// Aliases — `FunctionVersionsTab.vue`), and once any promote has happened
+// both can contain a row with the SAME text (e.g. "v1" is both a version
+// row's own Version column AND an alias row's Version column). A bare
+// `.versions-tab tr` locator, as this file's original code used for
+// pre-J2/J4 assertions made before any alias existed, is a strict-mode
+// violation once that second table has rows — confirmed against
+// `frontend/tests/function-versions-tab.test.ts`'s own
+// `wrapper.findAll("table")[0]` / `[...].length - 1]` scoping idiom, which
+// these mirror. Every locator below is scoped to ONE of the two tables.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// The Versions tab's OWN table (`.versions-tab`'s first `<table>`).
+export function versionsTable(page: Page): Locator {
+    return page.locator(".versions-tab table").first();
+}
+
+/// The Aliases table (`.versions-tab`'s second `<table>`, package J2) —
+/// only present once at least one alias (at minimum `live`) exists.
+export function aliasesTable(page: Page): Locator {
+    return page.locator(".versions-tab table").last();
+}
+
+/// Promotes `version` to `alias` through the real Promote dialog
+/// (`FunctionVersionsTab.vue`'s "Point Alias" `<Dialog>`, package J2) — a
+/// plain PrimeVue `<Dialog>` (`role="dialog"`), NOT a `confirm.require`
+/// popup, because it needs a text field (the alias name, which defaults to
+/// `live`); this always types the wanted name explicitly so one helper
+/// covers both the `live` promote and a named alias like `qa`.
+export async function promoteViaDialog(page: Page, version: number, alias: string): Promise<void> {
+    const row = versionsTable(page).locator("tbody tr", { hasText: `v${version}` });
+    await row.getByRole("button", { name: "Promote", exact: true }).click();
+
+    const dialog = dialogWithHeader(page, "Point Alias");
+    await expect(dialog).toBeVisible();
+    const aliasInput = dialog.locator("#promoteAlias");
+    await aliasInput.fill(alias);
+
+    const promoteResponse = page.waitForResponse(
+        (r) =>
+            new URL(r.url()).pathname === `/api/functions/${FN_ADDRESS}/aliases/${alias}` &&
+            r.request().method() === "PUT",
+    );
+    await dialog.getByRole("button", { name: "Promote", exact: true }).click();
+    const promoteRes = await promoteResponse;
+    const promoteResBody = await promoteRes.text().catch(() => "<body discarded by the browser after navigation>");
+    expect(promoteRes.ok(), promoteResBody).toBe(true);
+    await expect(dialog).toBeHidden();
+}
+
+/// Deletes a named alias through the Aliases table's own Delete button and
+/// the `confirm.require(...)` popup it opens ("Remove Alias" header,
+/// `FunctionVersionsTab.vue`'s `confirmDeleteAlias`) — scoped to the ONE
+/// row for `alias` so a still-present, merely-disabled `live` row's own
+/// Delete button (same label) can never collide with this click.
+export async function deleteAliasViaUi(page: Page, alias: string): Promise<void> {
+    const row = aliasesTable(page).locator("tbody tr", { hasText: alias });
+    await row.getByRole("button", { name: "Delete", exact: true }).click();
+
+    const dialog = confirmWithHeader(page, "Remove Alias");
+    await expect(dialog).toBeVisible();
+
+    const deleteResponse = page.waitForResponse(
+        (r) =>
+            new URL(r.url()).pathname === `/api/functions/${FN_ADDRESS}/aliases/${alias}` &&
+            r.request().method() === "DELETE",
+    );
+    await dialog.getByRole("button", { name: "Remove", exact: true }).click();
+    const deleteRes = await deleteResponse;
+    expect(deleteRes.ok(), await deleteRes.text().catch(() => "<body discarded by the browser after navigation>")).toBe(true);
+    await expect(dialog).toBeHidden();
+}
+
+/// Polls a request to the function host's PUBLIC listener until it returns
+/// `expectedStatus`. Unlike [waitForVersionState]/[waitForHostState] (which
+/// reload the SPA and re-read the DOM), this polls the actual HTTP
+/// endpoint, because the alias-prefixed hostname (package J3) only becomes
+/// reachable once the fcdev host's own reconcile loop (every 15 s,
+/// docs/function-service-overview.md §7) has picked up the desired
+/// document's updated `aliases` list for the pointed-at version — there is
+/// no SPA-visible state to poll instead. Same bounded-retry idiom (`toPass`,
+/// no fixed sleep) as the DOM-polling helpers above.
+export async function waitForPublicRouteStatus(
+    page: Page,
+    url: string,
+    expectedStatus: number,
+    timeoutMs: number,
+): Promise<void> {
+    await expect(async () => {
+        const res = await page.request.get(url);
+        expect(res.status(), await res.text().catch(() => "")).toBe(expectedStatus);
     }).toPass({ timeout: timeoutMs, intervals: [1000, 2000, 3000, 5000] });
 }

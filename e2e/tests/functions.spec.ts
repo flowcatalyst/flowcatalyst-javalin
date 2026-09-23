@@ -35,7 +35,6 @@ import {
     test,
     expect,
     bareInput,
-    confirmedAction,
     rowWithText,
     submitDrawer,
     createApplication,
@@ -44,14 +43,22 @@ import {
 } from "../fixtures/catalogue.js";
 import {
     FN_ADDRESS,
+    FN_ALIAS_HOSTNAME,
+    FN_ALIAS_PREFIX,
     FN_APPLICATION_CODE,
     FN_DOMAIN_HOSTNAME,
     FN_NAME,
     FN_PUBLIC_PORT,
+    FN_UNOPTED_PREFIX_HOSTNAME,
+    aliasesTable,
     createFunctionViaUi,
+    deleteAliasViaUi,
     helloManifestWithPublicRoute,
+    promoteViaDialog,
     setConfigAndSecretViaUi,
+    versionsTable,
     waitForHostState,
+    waitForPublicRouteStatus,
     waitForVersionState,
 } from "../fixtures/functions.js";
 
@@ -179,12 +186,20 @@ expect(publishRes.ok(), publishResBody).toBe(true);
         await setConfigAndSecretViaUi(page, FN_ADDRESS, GREETING_VALUE, API_KEY_VALUE);
 
         // ── 6. Wait for READY (the in-process fcdev host's own reconcile
-        // loop), then Promote through the real UI. ─────────────────────────
+        // loop), then Promote through the real UI — the Versions tab's
+        // "Point Alias" dialog (package J2), defaulting to `live`. ─────────
         const pollBudgetMs = Math.max(15_000, Math.floor(test.info().timeout * 0.35));
         await waitForVersionState(page, published.version, "READY", pollBudgetMs);
 
-        await confirmedAction(page, "Promote", "Promote Version", "Promote");
-        await expect(page.locator(".versions-tab tr", { hasText: `v${published.version}` }).getByText("LIVE")).toBeVisible();
+        await promoteViaDialog(page, published.version, "live");
+        // Scoped to the versions table specifically (not a bare
+        // `.versions-tab tr`): once this promote lands, the Aliases table
+        // below ALSO renders a row containing both `v{n}` and a "LIVE" tag
+        // for the `live` alias — an unscoped locator would match both and
+        // violate Playwright's strict mode.
+        await expect(
+            versionsTable(page).locator("tbody tr", { hasText: `v${published.version}` }).getByText("LIVE"),
+        ).toBeVisible();
 
         // ── Hosts panel (Overview tab) shows LOADED after reload. ───────────
         await waitForHostState(page, published.version, "LOADED", pollBudgetMs);
@@ -208,5 +223,59 @@ expect(publishRes.ok(), publishResBody).toBe(true);
         // ── 7. The function is actually reachable on its public route. ──────
         const healthRes = await page.request.get(`http://${FN_DOMAIN_HOSTNAME}:${FN_PUBLIC_PORT}/healthz`);
         expect(healthRes.status(), await healthRes.text().catch(() => "")).toBe(200);
+
+        // ── 8. Package J2/J3/J4: point the NAMED alias "qa" at the SAME
+        // version through the Versions tab's Promote dialog — HTTP-only, no
+        // wiring change (spec `function-zones-and-aliases.md` §2). The
+        // dialog's row-level trigger stays enabled even though this version
+        // is already live: `canPromoteRow` only gates on READY state, not
+        // `v.live` — a different alias legitimately naming the same version
+        // is not the platform's ALIAS_UNCHANGED conflict (only re-promoting
+        // `qa` to a version it ALREADY names would be, and the dialog itself
+        // guards that case, `promoteWouldBeNoOp`). The Aliases table gains a
+        // "qa" row alongside "live"; `live`'s own Delete stays disabled (it
+        // can never be removed), `qa`'s is enabled. ─────────────────────────
+        await page.getByRole("tab", { name: "Versions", exact: true }).click();
+        await promoteViaDialog(page, published.version, FN_ALIAS_PREFIX);
+
+        const qaAliasRow = aliasesTable(page).locator("tbody tr", { hasText: FN_ALIAS_PREFIX });
+        await expect(qaAliasRow).toBeVisible();
+        await expect(qaAliasRow.getByText(`v${published.version}`, { exact: true })).toBeVisible();
+
+        const liveAliasRow = aliasesTable(page).locator("tbody tr", { hasText: "live" });
+        await expect(liveAliasRow.getByRole("button", { name: "Delete", exact: true })).toBeDisabled();
+        await expect(qaAliasRow.getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
+
+        // ── 9. Public Routes tab: the opted-in alias prefix's derived
+        // hostname renders next to hello.localhost's own route row (package
+        // J3's "Alias Prefixes" column, `FunctionPublicRoutesTab.vue`). ─────
+        await page.getByRole("tab", { name: "Public Routes", exact: true }).click();
+        const publicRouteRow = rowWithText(page, FN_DOMAIN_HOSTNAME);
+        await expect(publicRouteRow.getByText(FN_ALIAS_HOSTNAME, { exact: true })).toBeVisible();
+
+        // ── 10. The alias-prefixed hostname is actually reachable once the
+        // fcdev host's own reconcile loop (every 15 s) has picked up the
+        // pointed alias; the exact hostname's OWN prefix that was never
+        // opted in ("staging") stays 404 throughout — proving the match is
+        // driven by the route's own `aliasPrefixes`, not by any hostname
+        // ending in "-hello.localhost". ─────────────────────────────────────
+        await waitForPublicRouteStatus(
+            page,
+            `http://${FN_ALIAS_HOSTNAME}:${FN_PUBLIC_PORT}/healthz`,
+            200,
+            pollBudgetMs,
+        );
+        const stagingRes = await page.request.get(`http://${FN_UNOPTED_PREFIX_HOSTNAME}:${FN_PUBLIC_PORT}/healthz`);
+        expect(stagingRes.status(), await stagingRes.text().catch(() => "")).toBe(404);
+
+        // ── 11. Delete the "qa" alias through the Aliases table; "live"'s
+        // Delete button stays disabled the whole time (it protects the one
+        // alias that can never be removed), and the "qa" row disappears. ───
+        await page.getByRole("tab", { name: "Versions", exact: true }).click();
+        await expect(
+            aliasesTable(page).locator("tbody tr", { hasText: "live" }).getByRole("button", { name: "Delete", exact: true }),
+        ).toBeDisabled();
+        await deleteAliasViaUi(page, FN_ALIAS_PREFIX);
+        await expect(aliasesTable(page).locator("tbody tr", { hasText: FN_ALIAS_PREFIX })).toHaveCount(0);
     });
 });
