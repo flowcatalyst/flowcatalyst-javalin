@@ -1710,3 +1710,20 @@ reuse handing a just-freed port to the next server while the old `HttpServer.clo
 flight?). Next: run the class with `-Dvertx.logger-delegate-factory-class-name` debug on the
 connection lifecycle, or make the harness log the server's `connectionHandler` close events with
 the port, and diff against the failing test's port.
+
+## Declared access policies on the operation envelope (proposed 2026-09-23, **deferred by owner**)
+
+A task proposed replacing the 130 `Authorize.publicAccess()` sites with a typed, declared
+`AccessPolicy` enforced once in the envelope, a `Public` allowlist, an ArchUnit rule and a
+registry-driven "no principal ⇒ forbidden" test, plus Postgres RLS via a `TenantTx`. Assessment:
+the premise "most operations are effectively public" is false — authorisation lives in the HTTP
+layer (348 `Auth.scoped` handlers, 373 `Checks.*` gates over 445 routes, audited against Go on
+2026-09-13) and in the reach checks inside `execute`; the real defect is that the envelope's
+`authorize` step is dead and authorisation is split across three places. Worth doing later, in
+this shape: `Requires(Permission…)` + a named `reach` step on the operation, enforced in the
+envelope; `Public` allowlisted; missing policy a boot failure; ArchUnit forbids `Checks` outside
+the envelope; a **route-registry** test (not hand-written) calls every route with no principal and
+with a no-reach client principal. **RLS/TenantTx: not for the platform** — the reach model is not
+one-tenant-per-request (anchor, client links, applications, platform-owned NULL rows), the schema
+is shared with Go, and it would duplicate the reach check rather than add one; it fits a function's
+own database. Owner 2026-09-23: defer.
