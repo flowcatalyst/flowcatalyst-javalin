@@ -43,7 +43,7 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
     }
 
     public enum Role {
-        LIVE, CANDIDATE
+        LIVE, CANDIDATE, ALIAS
     }
 
     public enum Mode {
@@ -68,11 +68,15 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
     /// D4b, a later slice) — read leniently like everything else: an absent
     /// or malformed `config`/`secrets` object reads as empty rather than
     /// failing the entry, and a non-string `missingSettings` entry is dropped.
+    /// @param aliases the named (non-`live`) aliases pointing at this
+    ///                entry's version (spec `function-zones-and-aliases.md`
+    ///                §5), sorted; `[]` when none — parsed leniently like
+    ///                everything else here: a non-string entry is dropped.
     public record Entry(FunctionAddress address, String functionId, String versionId, int version, Role role,
                          Mode mode, Digest digest, String artifactRef, String signatureBundle,
                          SignerIdentity signer, Manifest manifest, String webhookSigningSecret,
                          String applicationId, String clientId, Map<String, String> config,
-                         Map<String, String> secrets, List<String> missingSettings) {
+                         Map<String, String> secrets, List<String> missingSettings, List<String> aliases) {
         public Entry {
             Objects.requireNonNull(address, "address");
             Objects.requireNonNull(functionId, "functionId");
@@ -85,6 +89,7 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
             config = config == null ? Map.of() : Map.copyOf(config);
             secrets = secrets == null ? Map.of() : Map.copyOf(secrets);
             missingSettings = missingSettings == null ? List.of() : List.copyOf(missingSettings);
+            aliases = aliases == null ? List.of() : List.copyOf(aliases);
         }
 
         /// Masks the signing secret AND `secrets` (spec §6: "the host never
@@ -102,7 +107,7 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
                     + ", webhookSigningSecret=" + (webhookSigningSecret == null ? "null" : "<redacted>")
                     + ", applicationId=" + applicationId + ", clientId=" + clientId + ", config=" + config
                     + ", secrets=" + (secrets.isEmpty() ? "{}" : secrets.keySet() + " (values redacted)")
-                    + ", missingSettings=" + missingSettings + "]";
+                    + ", missingSettings=" + missingSettings + ", aliases=" + aliases + "]";
         }
     }
 
@@ -115,13 +120,16 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
     }
 
     /// One entry of the top-level `publicRoutes` (spec
-    /// `function-public-routes.md` §2): `{hostname, pathPrefix, address}`.
-    /// Parsed here, no caller yet — the public listener is slice F2.
-    public record PublicRouteRef(String hostname, String pathPrefix, FunctionAddress address) {
+    /// `function-public-routes.md` §2, amended
+    /// `function-zones-and-aliases.md` §3): `{hostname, pathPrefix, address,
+    /// aliasPrefixes}`.
+    public record PublicRouteRef(String hostname, String pathPrefix, FunctionAddress address,
+                                 List<String> aliasPrefixes) {
         public PublicRouteRef {
             Objects.requireNonNull(hostname, "hostname");
             Objects.requireNonNull(pathPrefix, "pathPrefix");
             Objects.requireNonNull(address, "address");
+            aliasPrefixes = aliasPrefixes == null ? List.of() : List.copyOf(aliasPrefixes);
         }
     }
 
@@ -192,7 +200,8 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
         String hostname = requireText(node, "hostname");
         String pathPrefix = requireText(node, "pathPrefix");
         FunctionAddress address = FunctionAddress.parse(requireText(node, "address"));
-        return new PublicRouteRef(hostname, pathPrefix, address);
+        List<String> aliasPrefixes = readStringListField(node.path("aliasPrefixes"));
+        return new PublicRouteRef(hostname, pathPrefix, address, aliasPrefixes);
     }
 
     private static Entry parseEntry(JsonNode node) {
@@ -217,8 +226,10 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
         Map<String, String> config = readStringMap(node.path("config"));
         Map<String, String> secrets = readStringMap(node.path("secrets"));
         List<String> missingSettings = readStringListField(node.path("missingSettings"));
+        List<String> aliases = readStringListField(node.path("aliases"));
         return new Entry(address, functionId, versionId, version, role, mode, digest, artifactRef, signatureBundle,
-                signer, manifest, webhookSigningSecret, applicationId, clientId, config, secrets, missingSettings);
+                signer, manifest, webhookSigningSecret, applicationId, clientId, config, secrets, missingSettings,
+                aliases);
     }
 
     /// Tolerant object-of-strings reader (spec §1.1): not an object, or any
@@ -263,6 +274,7 @@ public record DesiredDocument(List<Entry> functions, List<UnloadRef> unload, Lis
         return switch (raw) {
             case "live" -> Role.LIVE;
             case "candidate" -> Role.CANDIDATE;
+            case "alias" -> Role.ALIAS;
             default -> throw new IllegalArgumentException("unrecognised role: " + raw);
         };
     }

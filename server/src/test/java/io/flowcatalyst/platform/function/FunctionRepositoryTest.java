@@ -278,13 +278,13 @@ class FunctionRepositoryTest {
         Hostname routeHost2 = Hostname.parse("m18b-" + fresh() + ".acme.com");
         UOW.inTransaction(tx -> {
             ROUTE_REPO.replaceForFunction(f1.id(), List.of(
-                    FunctionRoute.of(f1.id(), routeHost1, RoutePattern.parse("/m18-" + fresh()), Instant.now())),
+                    FunctionRoute.of(f1.id(), routeHost1, RoutePattern.parse("/m18-" + fresh()), List.of(), Instant.now())),
                     tx.dbTx());
             return null;
         });
         UOW.inTransaction(tx -> {
             ROUTE_REPO.replaceForFunction(f2.id(), List.of(
-                    FunctionRoute.of(f2.id(), routeHost2, RoutePattern.parse("/m18-" + fresh()), Instant.now())),
+                    FunctionRoute.of(f2.id(), routeHost2, RoutePattern.parse("/m18-" + fresh()), List.of(), Instant.now())),
                     tx.dbTx());
             return null;
         });

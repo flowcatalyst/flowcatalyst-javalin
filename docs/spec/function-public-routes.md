@@ -38,6 +38,14 @@ Reach for a domain is its owner's, exactly as for a function (`function-api.md` 
 
 ## 2. Route sync (slice F1)
 
+> **Amended by `function-zones-and-aliases.md` §3 (package J3, 2026-09):** a `public[]` entry may
+> opt into `aliasPrefixes` (DNS labels, never `live`, no duplicates — `PUBLIC_ROUTE_INVALID` naming
+> the offender); `fn_routes` gains `alias_prefixes TEXT[] NOT NULL DEFAULT '{}'` (V15), copied
+> verbatim from the manifest and included in `sameRoutes`'s own change-detection key — a manifest
+> edit that ONLY adds or removes a prefix still rewrites the row at promote. Derived hostnames
+> (`qa-myapp.acme.com`) are never stored and never checked for conflicts at publish (§3 below: an
+> exact route always wins over the derivation, so there is nothing to conflict).
+
 Joins I2's promote-time reconciliation (`FunctionTriggerSync`), same transaction, same rules:
 **validated at publish, materialised at promote, removed at delete, untouched by disable** (a disabled
 function answers 404 by address already; its routes stay reserved).
@@ -56,9 +64,10 @@ function answers 404 by address already; its routes stay reserved).
   `api.acme.com` + `/billing` may belong to two functions; the longest matching prefix wins (whole
   segments: `/billing` matches `/billing` and `/billing/x`, not `/billingx`). Equal pairs are the
   conflict above.
-- **Desired state** gains a top-level `publicRoutes: [{hostname, pathPrefix, address}]` for functions
-  whose live version is in the requested pool, sorted (hostname, pathPrefix) — deterministic bytes.
-  `GET /api/function-routes?hostname=&address=` lists them (`FUNCTION_VIEW`, reach-filtered).
+- **Desired state** gains a top-level `publicRoutes: [{hostname, pathPrefix, address, aliasPrefixes}]`
+  for functions whose live version is in the requested pool, sorted (hostname, pathPrefix) —
+  deterministic bytes. `GET /api/function-routes?hostname=&address=` lists them (`FUNCTION_VIEW`,
+  reach-filtered), same shape.
 
 ## 3. The public listener (slice F2, host)
 
@@ -70,16 +79,30 @@ function-path are found:
 1. `Host` header (or `:authority`): lower-cased, port stripped, must parse as a `Hostname` ⇒ else
    `404 NOT_FOUND`. `X-Forwarded-Host` is **ignored** — the load balancer forwards `Host`; honouring a
    client-settable header would let anyone choose their route.
-2. Longest-prefix match over that hostname's `publicRoutes` ⇒ `(address, prefix)`; none ⇒ `404`.
+2. Longest-prefix match over that hostname's `publicRoutes` ⇒ `(address, prefix, alias="live")`.
+   **Amended by `function-zones-and-aliases.md` §4 (package J3):** when there is no exact match AND
+   the hostname's first label contains a `-`, split it at the FIRST `-` into a candidate alias name
+   `p` and the rest; look the rest (+ the other labels) up the same way — if it has routes and the
+   winning route's own `aliasPrefixes` contains `p`, that is the match with `alias = p`; otherwise
+   (no base route, or `p` not opted in) `404`. One level only. No match at all (exact or derived) ⇒
+   `404`.
 3. function-path = the request path with the prefix stripped (prefix `/billing`, path `/billing/x` ⇒
-   `/x`; path `/billing` ⇒ `/`). `Request.originalHost`/`originalPath` carry what arrived.
+   `/x`; path `/billing` ⇒ `/`). `Request.originalHost`/`originalPath` carry what arrived — the
+   PREFIXED hostname as it arrived, for an aliased call too.
 4. **`/functions/…` is not special here**: it is matched like any other path, so it is 404 unless a
    function really owns that prefix on that hostname. There is no by-address access and **no versioned
    access** on the public listener. An inbound `X-FlowCatalyst-Function` header is dropped before the
    function sees the request (design §4a rule 1).
-5. Then D3's pipeline: endpoint match on the function-path, body cap, the endpoint's `auth`, permits,
-   load, invoke, respond. A `webhook` endpoint is reachable publicly only with a valid platform
-   signature — fine, and occasionally useful; say so in the guide.
+5. `alias = "live"` resolves through the reconciler's own live entry, as always. Any other `alias`
+   resolves through `Reconciler.entryForAlias(address, alias)` — the current document's entry (never
+   a `CANDIDATE`, spec `function-zones-and-aliases.md` §5) whose `aliases()` names it — `null` ⇒ 404
+   `NOT_FOUND` (same anti-leak body; the document may simply not carry that alias for this address).
+   Then D3's pipeline: endpoint match on the function-path, body cap, the endpoint's `auth`, permits,
+   load, invoke, respond — for an aliased call, load goes through the VERSIONED path (`PinnedVersions`,
+   the same one a pinned `address:version` call and a `CANDIDATE` already use) so the aliased
+   version's OWN manifest drives endpoint matching, auth and limits; the endpoint's own `auth` still
+   applies (unlike the private versioned path, which skips it). A `webhook` endpoint is reachable
+   publicly only with a valid platform signature — fine, and occasionally useful; say so in the guide.
 6. The private listener is unchanged and must stay unreachable from the internet — `docs/deployments.md`:
    the load balancer targets 8081 only; 8080 is Service Connect only.
 

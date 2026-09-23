@@ -70,7 +70,7 @@ public final class MetaspaceFenceForkDriver {
             FunctionAddress address = FunctionAddress.parse("fence.svc.f" + pad(i));
             entries.add(new DesiredDocument.Entry(address, "fnc_" + i, "v_" + i, 1,
                     DesiredDocument.Role.LIVE, DesiredDocument.Mode.WARM, digest, jar.toUri().toString(),
-                    null, null, manifest, null, "app_fence", null, Map.of(), Map.of(), List.of()));
+                    null, null, manifest, null, "app_fence", null, Map.of(), Map.of(), List.of(), List.of()));
         }
         DesiredDocument doc = new DesiredDocument(entries, List.of(), List.of());
         fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1", doc));

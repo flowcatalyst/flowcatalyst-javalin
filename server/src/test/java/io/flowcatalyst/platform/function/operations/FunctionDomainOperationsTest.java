@@ -313,7 +313,7 @@ class FunctionDomainOperationsTest {
             return null;
         });
         FunctionRoute route = FunctionRoute.of(f.id(), Hostname.parse(h),
-                io.flowcatalyst.platform.function.RoutePattern.parse("/"), Instant.now());
+                io.flowcatalyst.platform.function.RoutePattern.parse("/"), List.of(), Instant.now());
         uow.inTransaction(tx -> {
             routes.replaceForFunction(f.id(), List.of(route), tx.dbTx());
             return null;

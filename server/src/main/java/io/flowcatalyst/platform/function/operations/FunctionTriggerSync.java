@@ -330,7 +330,7 @@ public final class FunctionTriggerSync implements TriggerSync {
         }
 
         List<FunctionRoute> desired = manifest.publicRoutes().stream()
-                .map(r -> FunctionRoute.of(function.id(), r.hostname(), r.pathPrefix(), now))
+                .map(r -> FunctionRoute.of(function.id(), r.hostname(), r.pathPrefix(), r.aliasPrefixes(), now))
                 .toList();
         try {
             routes.replaceForFunction(function.id(), desired, scoped.dbTx());
@@ -343,19 +343,27 @@ public final class FunctionTriggerSync implements TriggerSync {
         }
     }
 
+    /// spec `function-zones-and-aliases.md` §3: a route whose `aliasPrefixes`
+    /// alone changed IS a difference (the key includes them, not just
+    /// `hostname|pathPrefix`) — otherwise a manifest edit that only adds or
+    /// removes an opt-in prefix would never reach `fn_routes` at all.
     private static boolean sameRoutes(List<FunctionRoute> current, List<Manifest.PublicRoute> desired) {
         if (current.size() != desired.size()) {
             return false;
         }
         java.util.Set<String> currentKeys = new java.util.HashSet<>();
         for (FunctionRoute r : current) {
-            currentKeys.add(r.hostname().value() + "|" + r.pathPrefix().value());
+            currentKeys.add(routeKey(r.hostname().value(), r.pathPrefix().value(), r.aliasPrefixes()));
         }
         java.util.Set<String> desiredKeys = new java.util.HashSet<>();
         for (Manifest.PublicRoute r : desired) {
-            desiredKeys.add(r.hostname().value() + "|" + r.pathPrefix().value());
+            desiredKeys.add(routeKey(r.hostname().value(), r.pathPrefix().value(), r.aliasPrefixes()));
         }
         return currentKeys.equals(desiredKeys);
+    }
+
+    private static String routeKey(String hostname, String pathPrefix, List<String> aliasPrefixes) {
+        return hostname + "|" + pathPrefix + "|" + String.join(",", aliasPrefixes.stream().sorted().toList());
     }
 
     /// Walks the cause chain for a PostgreSQL unique-violation naming

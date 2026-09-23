@@ -65,7 +65,7 @@ router inside the function serves both. The request value also carries the origi
       "mode": "BLOCK_ON_ERROR", "maxRetries": 3, "timeoutSeconds": 30, "dataOnly": false }
   ],
   "schedules": [ { "cron": "0 * * * *", "timezone": "UTC", "path": "/jobs/hourly", "payload": { } } ],
-  "public":    [ { "hostname": "api.acme.com", "pathPrefix": "/" } ],
+  "public":    [ { "hostname": "api.acme.com", "pathPrefix": "/", "aliasPrefixes": ["qa"] } ],
   "config": [ … ], "secrets": [ … ], "db": [ … ], "httpAllow": [ … ]
 }
 ```
@@ -96,7 +96,11 @@ router inside the function serves both. The request value also carries the origi
   subscription has no such thing — ordering is the event's own `messageGroup` plus `mode`.
 - **`schedules`** — same `path` rule (`SCHEDULE_PATH_NOT_WEBHOOK`); one entry per (cron, timezone).
 - **`public`** — `Hostname` + `pathPrefix` (a literal path, default `/`, no trailing slash except the
-  root). The prefix is stripped before endpoint matching.
+  root). The prefix is stripped before endpoint matching. **`aliasPrefixes`** (`function-zones-and-aliases.md`
+  §3, package J3): opt-in DNS-label alias-name prefixes, never `live`, no duplicates; absent/empty
+  means exact-hostname match only (today's behaviour). A prefix opted in here lets a hostname like
+  `qa-api.acme.com` resolve to this route's function through the `qa` named alias (§4 of that spec)
+  — derived, never stored as its own `fn_routes` row.
 
 Package A's `Manifest` is reshaped accordingly (`Trigger` sealed type removed; `Endpoint`,
 `SubscriptionSpec`, `ScheduleSpec`, `PublicRoute` added; both readers; every rule a code and a table

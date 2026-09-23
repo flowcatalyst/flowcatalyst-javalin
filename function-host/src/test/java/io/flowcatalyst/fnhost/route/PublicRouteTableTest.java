@@ -17,7 +17,12 @@ class PublicRouteTableTest {
     private static final FunctionAddress ROOT = FunctionAddress.parse("acme.default.root");
 
     private static DesiredDocument.PublicRouteRef ref(String hostname, String prefix, FunctionAddress address) {
-        return new DesiredDocument.PublicRouteRef(hostname, prefix, address);
+        return new DesiredDocument.PublicRouteRef(hostname, prefix, address, List.of());
+    }
+
+    private static DesiredDocument.PublicRouteRef ref(String hostname, String prefix, FunctionAddress address,
+            List<String> aliasPrefixes) {
+        return new DesiredDocument.PublicRouteRef(hostname, prefix, address, aliasPrefixes);
     }
 
     @Test
@@ -27,6 +32,7 @@ class PublicRouteTableTest {
         assertThat(match).isPresent();
         assertThat(match.get().address()).isEqualTo(BILLING);
         assertThat(match.get().functionPath()).isEqualTo("/");
+        assertThat(match.get().alias()).as("an exact hostname match resolves to the live alias").isEqualTo("live");
     }
 
     @Test
@@ -107,5 +113,83 @@ class PublicRouteTableTest {
                 ref("shop.acme.com", "/", other)));
         assertThat(table.match("api.acme.com", "/x").get().address()).isEqualTo(ROOT);
         assertThat(table.match("shop.acme.com", "/x").get().address()).isEqualTo(other);
+    }
+
+    // ── package J3 (function-zones-and-aliases.md §4): alias-prefixed hostnames ──
+
+    /// `qa-myapp.acme.com` with `qa` opted in on `myapp.acme.com` ⇒ resolves
+    /// to `myapp.acme.com`'s route with `alias = "qa"` (mutant: drop the
+    /// opt-in check — match on ANY prefix regardless of `aliasPrefixes`).
+    @Test
+    void aliasPrefixOptedInResolvesToTheBaseHostnamesRoute() {
+        FunctionAddress myapp = FunctionAddress.parse("acme.default.myapp");
+        PublicRouteTable table = PublicRouteTable.of(List.of(ref("myapp.acme.com", "/", myapp, List.of("qa"))));
+        var match = table.match("qa-myapp.acme.com", "/x");
+        assertThat(match).isPresent();
+        assertThat(match.get().address()).isEqualTo(myapp);
+        assertThat(match.get().functionPath()).isEqualTo("/x");
+        assertThat(match.get().alias()).isEqualTo("qa");
+    }
+
+    /// Without the opt-in, the SAME derived hostname is 404 (mutant: derive
+    /// regardless of whether the route names the prefix in `aliasPrefixes`).
+    @Test
+    void aliasPrefixNotOptedInIsNoMatch() {
+        FunctionAddress myapp = FunctionAddress.parse("acme.default.myapp");
+        PublicRouteTable table = PublicRouteTable.of(List.of(ref("myapp.acme.com", "/", myapp, List.of())));
+        assertThat(table.match("qa-myapp.acme.com", "/x")).isEmpty();
+    }
+
+    /// `qa-my-app.acme.com` splits at the FIRST `-` (`qa`, `my-app...`), not
+    /// the last (mutant: split at the last `-`, which would try `qa-my` as
+    /// the prefix and `app.acme.com` as the base — neither of which exists).
+    @Test
+    void aliasPrefixSplitsAtTheFirstDash() {
+        FunctionAddress myApp = FunctionAddress.parse("acme.default.myapp");
+        PublicRouteTable table = PublicRouteTable.of(List.of(ref("my-app.acme.com", "/", myApp, List.of("qa"))));
+        var match = table.match("qa-my-app.acme.com", "/");
+        assertThat(match).as("mutant: split at the last dash instead of the first").isPresent();
+        assertThat(match.get().address()).isEqualTo(myApp);
+        assertThat(match.get().alias()).isEqualTo("qa");
+    }
+
+    /// An exact route ON the derived hostname beats the derivation (spec §4
+    /// step 1 runs before step 2, unconditionally) — mutant: try the
+    /// derivation before the exact lookup, which here would find NO base
+    /// route for `myapp.acme.com` (there isn't one) and 404 instead of
+    /// resolving `qa-myapp.acme.com`'s own exact route.
+    @Test
+    void anExactRouteOnTheDerivedHostnameBeatsTheDerivation() {
+        FunctionAddress exact = FunctionAddress.parse("acme.default.exact");
+        FunctionAddress myapp = FunctionAddress.parse("acme.default.myapp");
+        PublicRouteTable table = PublicRouteTable.of(List.of(
+                ref("qa-myapp.acme.com", "/", exact),
+                ref("myapp.acme.com", "/", myapp, List.of("qa"))));
+        var match = table.match("qa-myapp.acme.com", "/");
+        assertThat(match).isPresent();
+        assertThat(match.get().address()).as("mutant: derive before checking for an exact route").isEqualTo(exact);
+        assertThat(match.get().alias()).isEqualTo("live");
+    }
+
+    /// One level only: `qa-staging-myapp.acme.com` is `p = qa`, base
+    /// `staging-myapp.acme.com` — an EXACT lookup on that base (itself
+    /// containing a `-`), never a second round of derivation.
+    @Test
+    void derivationAppliesOnlyOneLevel() {
+        FunctionAddress myapp = FunctionAddress.parse("acme.default.myapp");
+        PublicRouteTable table = PublicRouteTable.of(List.of(
+                ref("staging-myapp.acme.com", "/", myapp, List.of("qa"))));
+        var match = table.match("qa-staging-myapp.acme.com", "/");
+        assertThat(match).isPresent();
+        assertThat(match.get().address()).isEqualTo(myapp);
+        assertThat(match.get().alias()).isEqualTo("qa");
+    }
+
+    /// A hostname with no `-` in its first label never derives (mutant:
+    /// attempt derivation even with no dash present).
+    @Test
+    void noDashInFirstLabelNeverDerives() {
+        PublicRouteTable table = PublicRouteTable.of(List.of(ref("myapp.acme.com", "/", ROOT, List.of("qa"))));
+        assertThat(table.match("other.acme.com", "/")).isEmpty();
     }
 }

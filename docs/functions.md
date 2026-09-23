@@ -266,6 +266,35 @@ proxy (your load balancer; `FC_FN_TRUSTED_PROXIES`, default RFC 1918 + loopback)
 itself — a client-supplied `X-Forwarded-For` is never trusted directly, and `X-Forwarded-Host` is
 never consulted for routing at all (only the load balancer picks the route, via the real `Host`).
 
+### Alias prefixes
+
+A `public[]` entry can opt into serving its **named aliases** (see "Aliases" below) at a
+prefixed hostname — **opt-in per route**, `aliasPrefixes`, absent/empty by default (exact-hostname
+match only, today's behaviour):
+
+```json
+{ "hostname": "myapp.acme.com", "pathPrefix": "/", "aliasPrefixes": ["qa", "staging"] }
+```
+
+With `qa` opted in, `qa-myapp.acme.com` reaches the version the `qa` alias currently points at —
+without needing its own domain claim or its own `fn_routes` row; the derived hostname is never
+stored, so there is nothing to conflict at publish time. Matching: the exact hostname always wins
+first; only when there is no exact match, and the first label of the requested hostname contains a
+`-`, is it split at the FIRST `-` into a prefix and the rest (`qa-myapp` → `qa`, `myapp`;
+`qa-my-app` → `qa`, `my-app`) and looked up as a base hostname — one level of derivation only. Each
+alias prefix is a DNS label, never `live` (that name is reserved for the exact-hostname match), no
+duplicates within one route.
+
+Aliases are **HTTP-only** — pointing a named alias at a version never touches subscriptions,
+schedules or the pool (those always follow `live`). An alias-prefixed call runs the ALIASED
+version's own manifest for endpoint matching, auth and body limits, exactly like the exact-hostname
+entry runs the LIVE version's.
+
+`*.localhost` works locally with no setup (`qa-hello.localhost:8091` reaches the `qa` alias of a
+function published with `"public": [{"hostname": "hello.localhost", "aliasPrefixes": ["qa"]}]` once
+`hello.localhost` is claimed and the `qa` alias is pointed at a `READY` version). In production the
+load balancer needs a wildcard rule/certificate for the zone — see `docs/deployments.md`.
+
 ### CORS
 
 Add `cors` to an endpoint (not the `public[]` entry — CORS is per-endpoint, and applies on BOTH
@@ -465,8 +494,9 @@ An alias is a named pointer from a function to one of its `READY` versions — `
 subscription, scheduled job, pool and public route the manifest declares actually follows; any other
 name (`qa`, `staging`, …) is **HTTP-only**: pointing it at a version, or moving it, changes nothing
 downstream — no wiring is created, updated or removed. It exists so a caller who already knows how to
-address a function by name (`fn invoke acme.default.hello`, a versioned webhook path, a future
-alias-prefixed hostname) can reach a specific candidate without touching `live`.
+address a function by name (`fn invoke acme.default.hello`, a versioned webhook path, an
+alias-prefixed hostname — see "Alias prefixes" under §6a) can reach a specific candidate without
+touching `live`.
 
 ```sh
 fcdev fn promote acme.default.hello --version 7 --alias qa --wait 60s

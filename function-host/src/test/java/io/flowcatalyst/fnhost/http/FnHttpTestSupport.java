@@ -172,7 +172,7 @@ final class FnHttpTestSupport {
                                             String applicationId, String clientId) {
         return new DesiredDocument.Entry(address, functionId, versionId, version, DesiredDocument.Role.LIVE,
                 DesiredDocument.Mode.LAZY, digestOf(jar), fileRef(jar), null, null, manifest, webhookSigningSecret,
-                applicationId, clientId, Map.of(), Map.of(), List.of());
+                applicationId, clientId, Map.of(), Map.of(), List.of(), List.of());
     }
 
     static DesiredDocument.Entry warmEntry(FunctionAddress address, String functionId, String versionId, int version,
@@ -180,7 +180,7 @@ final class FnHttpTestSupport {
                                             String applicationId, String clientId) {
         return new DesiredDocument.Entry(address, functionId, versionId, version, DesiredDocument.Role.LIVE,
                 DesiredDocument.Mode.WARM, digestOf(jar), fileRef(jar), null, null, manifest, webhookSigningSecret,
-                applicationId, clientId, Map.of(), Map.of(), List.of());
+                applicationId, clientId, Map.of(), Map.of(), List.of(), List.of());
     }
 
     static DesiredDocument.Entry candidateEntry(FunctionAddress address, String functionId, String versionId,
@@ -188,7 +188,17 @@ final class FnHttpTestSupport {
                                                  String clientId) {
         return new DesiredDocument.Entry(address, functionId, versionId, version, DesiredDocument.Role.CANDIDATE,
                 DesiredDocument.Mode.LAZY, digestOf(jar), fileRef(jar), null, null, manifest, null, applicationId,
-                clientId, Map.of(), Map.of(), List.of());
+                clientId, Map.of(), Map.of(), List.of(), List.of());
+    }
+
+    /// package J3 (`function-zones-and-aliases.md` §5): a version pointed at
+    /// ONLY by named aliases — served (unlike a candidate), always lazy.
+    static DesiredDocument.Entry aliasEntry(FunctionAddress address, String functionId, String versionId,
+                                             int version, Path jar, Manifest manifest, String applicationId,
+                                             String clientId, List<String> aliases) {
+        return new DesiredDocument.Entry(address, functionId, versionId, version, DesiredDocument.Role.ALIAS,
+                DesiredDocument.Mode.LAZY, digestOf(jar), fileRef(jar), null, null, manifest, null, applicationId,
+                clientId, Map.of(), Map.of(), List.of(), aliases);
     }
 
     static DesiredDocument oneFunction(DesiredDocument.Entry entry) {
@@ -202,7 +212,15 @@ final class FnHttpTestSupport {
     static DesiredDocument oneFunctionWithPublicRoute(DesiredDocument.Entry entry, String hostname,
                                                        String pathPrefix) {
         return new DesiredDocument(List.of(entry), List.of(), List.of(),
-                List.of(new DesiredDocument.PublicRouteRef(hostname, pathPrefix, entry.address())));
+                List.of(new DesiredDocument.PublicRouteRef(hostname, pathPrefix, entry.address(), List.of())));
+    }
+
+    /// Same, with opt-in `aliasPrefixes` on the route (package J3, spec
+    /// `function-zones-and-aliases.md` §3).
+    static DesiredDocument oneFunctionWithPublicRoute(DesiredDocument.Entry entry, String hostname,
+                                                       String pathPrefix, List<String> aliasPrefixes) {
+        return new DesiredDocument(List.of(entry), List.of(), List.of(),
+                List.of(new DesiredDocument.PublicRouteRef(hostname, pathPrefix, entry.address(), aliasPrefixes)));
     }
 
     /// Same, with several `(hostname, pathPrefix)` pairs for ONE entry —

@@ -59,9 +59,9 @@ class FunctionRouteRepositoryTest {
         Function f = createFunction();
         Hostname host = Hostname.parse("r-" + RUN + "-" + fresh() + ".acme.com");
         RoutePattern prefix = RoutePattern.parse("/invoices");
-        FunctionRoute route = FunctionRoute.of(f.id(), host, prefix, Instant.now());
+        FunctionRoute route = FunctionRoute.of(f.id(), host, prefix, List.of(), Instant.now());
         Hostname host2 = Hostname.parse("r2-" + RUN + "-" + fresh() + ".acme.com");
-        FunctionRoute route2 = FunctionRoute.of(f.id(), host2, RoutePattern.parse("/"), Instant.now());
+        FunctionRoute route2 = FunctionRoute.of(f.id(), host2, RoutePattern.parse("/"), List.of(), Instant.now());
         replace(f.id(), List.of(route, route2));
 
         assertThat(REPO.listByFunction(f.id())).hasSize(2);
@@ -71,7 +71,7 @@ class FunctionRouteRepositoryTest {
         assertThat(REPO.listByFunctions(List.of(f.id())).get(f.id())).hasSize(2);
 
         // wholesale replace: only the new list survives
-        FunctionRoute onlyOne = FunctionRoute.of(f.id(), host, RoutePattern.parse("/only-one"), Instant.now());
+        FunctionRoute onlyOne = FunctionRoute.of(f.id(), host, RoutePattern.parse("/only-one"), List.of(), Instant.now());
         replace(f.id(), List.of(onlyOne));
         assertThat(REPO.listByFunction(f.id())).hasSize(1);
         assertThat(REPO.listByFunction(f.id()).get(0).pathPrefix()).isEqualTo(RoutePattern.parse("/only-one"));
@@ -86,9 +86,9 @@ class FunctionRouteRepositoryTest {
         Hostname host = Hostname.parse("shared-" + RUN + "-" + fresh() + ".acme.com");
         RoutePattern prefix = RoutePattern.parse("/shared-path");
 
-        replace(f1.id(), List.of(FunctionRoute.of(f1.id(), host, prefix, Instant.now())));
+        replace(f1.id(), List.of(FunctionRoute.of(f1.id(), host, prefix, List.of(), Instant.now())));
 
-        assertThatThrownBy(() -> replace(f2.id(), List.of(FunctionRoute.of(f2.id(), host, prefix, Instant.now()))))
+        assertThatThrownBy(() -> replace(f2.id(), List.of(FunctionRoute.of(f2.id(), host, prefix, List.of(), Instant.now()))))
                 .as("the same public (hostname, pathPrefix) on a second function is a unique violation")
                 .isInstanceOf(RuntimeException.class);
     }
@@ -99,8 +99,8 @@ class FunctionRouteRepositoryTest {
         Function f2 = createFunction();
         Hostname host = Hostname.parse("multi-" + RUN + "-" + fresh() + ".acme.com");
 
-        replace(f1.id(), List.of(FunctionRoute.of(f1.id(), host, RoutePattern.parse("/a"), Instant.now())));
-        replace(f2.id(), List.of(FunctionRoute.of(f2.id(), host, RoutePattern.parse("/b"), Instant.now())));
+        replace(f1.id(), List.of(FunctionRoute.of(f1.id(), host, RoutePattern.parse("/a"), List.of(), Instant.now())));
+        replace(f2.id(), List.of(FunctionRoute.of(f2.id(), host, RoutePattern.parse("/b"), List.of(), Instant.now())));
 
         assertThat(REPO.listByHostname(host)).hasSize(2);
     }
@@ -119,9 +119,9 @@ class FunctionRouteRepositoryTest {
         Hostname unrelated = Hostname.parse("other-" + RUN + "-" + fresh() + ".com");
 
         replace(f.id(), List.of(
-                FunctionRoute.of(f.id(), zone, RoutePattern.parse("/a"), Instant.now()),
-                FunctionRoute.of(f.id(), deep, RoutePattern.parse("/b"), Instant.now()),
-                FunctionRoute.of(f.id(), unrelated, RoutePattern.parse("/c"), Instant.now())));
+                FunctionRoute.of(f.id(), zone, RoutePattern.parse("/a"), List.of(), Instant.now()),
+                FunctionRoute.of(f.id(), deep, RoutePattern.parse("/b"), List.of(), Instant.now()),
+                FunctionRoute.of(f.id(), unrelated, RoutePattern.parse("/c"), List.of(), Instant.now())));
 
         assertThat(REPO.listUnder(zone)).extracting(r -> r.hostname().value())
                 .as("mutant: equality instead of covering — must find BOTH the apex route and the deeper one")
@@ -135,7 +135,7 @@ class FunctionRouteRepositoryTest {
         Hostname zone = Hostname.parse(apex);
         Hostname lookalike = Hostname.parse("x" + apex); // NOT under `zone` — no label boundary
 
-        replace(f.id(), List.of(FunctionRoute.of(f.id(), lookalike, RoutePattern.parse("/"), Instant.now())));
+        replace(f.id(), List.of(FunctionRoute.of(f.id(), lookalike, RoutePattern.parse("/"), List.of(), Instant.now())));
 
         assertThat(REPO.listUnder(zone)).as("mutant: string-suffix match instead of a label boundary").isEmpty();
     }

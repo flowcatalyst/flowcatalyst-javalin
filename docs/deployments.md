@@ -454,6 +454,15 @@ internal listener (§0/§1 above) is never exposed. `8081` MAY be turned off
 entirely (`FC_FN_PUBLIC_PORT=off`) for a deployment that publishes no public
 routes at all.
 
+**Alias prefixes** (spec `function-zones-and-aliases.md` §3-§4, package J3): a route that opts a
+prefix in (e.g. `qa`) is reachable at a hostname the platform never claims or provisions on its
+own — `qa-myapp.acme.com` alongside `myapp.acme.com`. The load balancer's listener for `8081` needs
+a forwarding rule that matches `*.<zone>` (not just the exact claimed hostnames), and its TLS
+certificate must be a wildcard for the zone (or cover the specific alias-prefixed names the owner
+plans to use) — this is owner IaC, not something the platform provisions. `fcdev` needs no such
+setup: `*.localhost` already resolves to loopback on macOS/Linux, so `qa-hello.localhost:8091`
+works with no certificate and no forwarding rule at all.
+
 ### Health checks
 
 `function-host/Dockerfile`'s own `HEALTHCHECK` already points at `/health`

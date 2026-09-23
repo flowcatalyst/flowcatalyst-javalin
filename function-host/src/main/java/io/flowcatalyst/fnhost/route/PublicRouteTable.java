@@ -17,13 +17,22 @@ import java.util.Optional;
 /// caller ([io.flowcatalyst.fnhost.reconcile.Reconciler]) swaps its held
 /// instance atomically each time the document changes.
 ///
-/// Matching (spec §3 steps 1-3): `hostname` is looked up exactly (already
-/// lower-cased, no port — the caller's job, spec: "`Host` header... lower-
-/// cased, port stripped"); among that hostname's routes, the LONGEST
-/// WHOLE-SEGMENT prefix of the request path wins (`/billing` matches
-/// `/billing` and `/billing/x`, never `/billingx` — a segment-by-segment
-/// comparison, never [String#startsWith]); the function-path is the request
-/// path with the matched prefix's segments removed, `/` for an exact match.
+/// Matching (spec §3 steps 1-3, amended `function-zones-and-aliases.md` §4):
+/// `hostname` is looked up exactly first (already lower-cased, no port —
+/// the caller's job, spec: "`Host` header... lower-cased, port stripped");
+/// among that hostname's routes, the LONGEST WHOLE-SEGMENT prefix of the
+/// request path wins (`/billing` matches `/billing` and `/billing/x`, never
+/// `/billingx` — a segment-by-segment comparison, never [String#startsWith]);
+/// the function-path is the request path with the matched prefix's segments
+/// removed, `/` for an exact match — the alias is `"live"`.
+///
+/// Else, when the FIRST label of `hostname` contains a `-`, it is split at
+/// the FIRST `-` into a candidate alias prefix `p` and the rest; the
+/// remaining hostname (`rest` + the other labels) is looked up the same way
+/// — if it has routes and the winning route's own `aliasPrefixes` contains
+/// `p`, that is the match, with `alias = p`; otherwise (no base route, or
+/// the route did not opt `p` in) there is no match. One level only — this
+/// derivation is never applied a second time to the already-derived base.
 public final class PublicRouteTable {
 
     public static final PublicRouteTable EMPTY = new PublicRouteTable(Map.of());
@@ -32,12 +41,17 @@ public final class PublicRouteTable {
     /// [#match] can simply take the first whose segments prefix the request.
     private final Map<String, List<Entry>> byHost;
 
-    private record Entry(String[] segments, FunctionAddress address) {
+    private record Entry(String[] segments, FunctionAddress address, List<String> aliasPrefixes) {
     }
 
-    /// One resolved match: the address to invoke and the function-path it
-    /// should see (spec §3 step 3).
-    public record Match(FunctionAddress address, String functionPath) {
+    /// One resolved match: the address to invoke, the function-path it
+    /// should see (spec §3 step 3), and the alias resolved — `"live"` for an
+    /// exact hostname match, else the opted-in prefix (spec
+    /// `function-zones-and-aliases.md` §4).
+    public record Match(FunctionAddress address, String functionPath, String alias) {
+    }
+
+    private record InternalMatch(FunctionAddress address, String functionPath, List<String> aliasPrefixes) {
     }
 
     private PublicRouteTable(Map<String, List<Entry>> byHost) {
@@ -55,7 +69,8 @@ public final class PublicRouteTable {
         for (DesiredDocument.PublicRouteRef ref : refs) {
             String hostname = ref.hostname().toLowerCase(Locale.ROOT);
             String[] segments = splitSegments(ref.pathPrefix());
-            byHost.computeIfAbsent(hostname, h -> new ArrayList<>()).add(new Entry(segments, ref.address()));
+            byHost.computeIfAbsent(hostname, h -> new ArrayList<>())
+                    .add(new Entry(segments, ref.address(), ref.aliasPrefixes()));
         }
         Map<String, List<Entry>> sorted = new LinkedHashMap<>();
         for (var e : byHost.entrySet()) {
@@ -70,6 +85,30 @@ public final class PublicRouteTable {
     /// @param hostname    already lower-cased, port stripped (the caller's job)
     /// @param requestPath the raw (undecoded) request path, starting with `/`
     public Optional<Match> match(String hostname, String requestPath) {
+        Optional<InternalMatch> exact = matchAt(hostname, requestPath);
+        if (exact.isPresent()) {
+            InternalMatch m = exact.get();
+            return Optional.of(new Match(m.address(), m.functionPath(), "live"));
+        }
+
+        int dash = firstDashInFirstLabel(hostname);
+        if (dash < 0) {
+            return Optional.empty();
+        }
+        String p = hostname.substring(0, dash);
+        String base = hostname.substring(dash + 1);
+        Optional<InternalMatch> baseMatch = matchAt(base, requestPath);
+        if (baseMatch.isEmpty()) {
+            return Optional.empty();
+        }
+        InternalMatch m = baseMatch.get();
+        if (!m.aliasPrefixes().contains(p)) {
+            return Optional.empty();
+        }
+        return Optional.of(new Match(m.address(), m.functionPath(), p));
+    }
+
+    private Optional<InternalMatch> matchAt(String hostname, String requestPath) {
         List<Entry> entries = byHost.get(hostname);
         if (entries == null) {
             return Optional.empty();
@@ -77,10 +116,24 @@ public final class PublicRouteTable {
         String[] pathSegments = splitSegments(requestPath);
         for (Entry entry : entries) {
             if (isWholeSegmentPrefix(entry.segments(), pathSegments)) {
-                return Optional.of(new Match(entry.address(), functionPath(entry.segments(), pathSegments)));
+                return Optional.of(new InternalMatch(entry.address(), functionPath(entry.segments(), pathSegments),
+                        entry.aliasPrefixes()));
             }
         }
         return Optional.empty();
+    }
+
+    /// The index of the first `-` within `hostname`'s FIRST label only
+    /// (spec `function-zones-and-aliases.md` §4: "split it at the FIRST
+    /// `-`"), or `-1` when the first label has none. A label can never start
+    /// or end with `-` ([io.flowcatalyst.platform.function.DnsLabel]
+    /// refuses it at claim/publish time), so a found dash is always strictly
+    /// between two other characters of the label.
+    private static int firstDashInFirstLabel(String hostname) {
+        int dot = hostname.indexOf('.');
+        int labelEnd = dot < 0 ? hostname.length() : dot;
+        int dash = hostname.indexOf('-');
+        return (dash >= 0 && dash < labelEnd) ? dash : -1;
     }
 
     /// True when every segment of `prefix()` equals the raw (undecoded, byte-

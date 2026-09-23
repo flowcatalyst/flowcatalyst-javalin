@@ -245,7 +245,7 @@ class FunctionDomainApiTest {
             functions.persist(f, tx.dbTx());
             return null;
         });
-        FunctionRoute route = FunctionRoute.of(f.id(), Hostname.parse(h), RoutePattern.parse("/"), Instant.now());
+        FunctionRoute route = FunctionRoute.of(f.id(), Hostname.parse(h), RoutePattern.parse("/"), List.of(), Instant.now());
         uow.inTransaction(tx -> {
             routes.replaceForFunction(f.id(), List.of(route), tx.dbTx());
             return null;
@@ -276,7 +276,7 @@ class FunctionDomainApiTest {
             return null;
         });
         // The routed hostname is DEEPER than the claimed apex — equality would miss it.
-        FunctionRoute route = FunctionRoute.of(f.id(), Hostname.parse(deep), RoutePattern.parse("/"), Instant.now());
+        FunctionRoute route = FunctionRoute.of(f.id(), Hostname.parse(deep), RoutePattern.parse("/"), List.of(), Instant.now());
         uow.inTransaction(tx -> {
             routes.replaceForFunction(f.id(), List.of(route), tx.dbTx());
             return null;
@@ -432,7 +432,8 @@ class FunctionDomainApiTest {
             return null;
         });
         String h = host("routes");
-        FunctionRoute route = FunctionRoute.of(f.id(), Hostname.parse(h), RoutePattern.parse("/api"), Instant.now());
+        FunctionRoute route = FunctionRoute.of(f.id(), Hostname.parse(h), RoutePattern.parse("/api"),
+                List.of("qa", "staging"), Instant.now());
         uow.inTransaction(tx -> {
             routes.replaceForFunction(f.id(), List.of(route), tx.dbTx());
             return null;
@@ -445,6 +446,9 @@ class FunctionDomainApiTest {
         assertThat(byAddressBody.get(0).get("hostname").asString()).isEqualTo(h);
         assertThat(byAddressBody.get(0).get("pathPrefix").asString()).isEqualTo("/api");
         assertThat(byAddressBody.get(0).get("address").asString()).isEqualTo(address.render());
+        assertThat(byAddressBody.get(0).get("aliasPrefixes").valueStream().map(JsonNode::asString).toList())
+                .as("mutant: drop aliasPrefixes from FunctionRouteResponse")
+                .containsExactly("qa", "staging");
 
         var byHostname = http.get("/api/function-routes?hostname=" + h, VIEW_ONLY);
         assertThat(byHostname.statusCode()).as(byHostname.body()).isEqualTo(200);

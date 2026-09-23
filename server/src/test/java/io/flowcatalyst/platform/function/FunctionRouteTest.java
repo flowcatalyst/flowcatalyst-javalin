@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.function;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -16,7 +17,7 @@ class FunctionRouteTest {
     void ofBuildsAPublicRouteWithAGeneratedId() {
         RoutePattern prefix = RoutePattern.parse("/invoices");
         Instant now = Instant.now();
-        FunctionRoute r = FunctionRoute.of("fnc_1", Hostname.parse("api.acme.com"), prefix, now);
+        FunctionRoute r = FunctionRoute.of("fnc_1", Hostname.parse("api.acme.com"), prefix, List.of(), now);
         assertThat(r.id()).startsWith("fnr_");
         assertThat(r.functionId()).isEqualTo("fnc_1");
         assertThat(r.hostname()).isEqualTo(Hostname.parse("api.acme.com"));
@@ -26,7 +27,7 @@ class FunctionRouteTest {
 
     @Test
     void ofRejectsANullHostname() {
-        assertThatThrownBy(() -> FunctionRoute.of("fnc_1", null, RoutePattern.parse("/invoices"), Instant.now()))
+        assertThatThrownBy(() -> FunctionRoute.of("fnc_1", null, RoutePattern.parse("/invoices"), List.of(), Instant.now()))
                 .as("every route row is public — a private call needs no fn_routes row at all (spec §2)")
                 .isInstanceOf(NullPointerException.class);
     }

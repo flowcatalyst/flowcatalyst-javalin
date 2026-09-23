@@ -289,6 +289,23 @@ class FunctionTriggerSyncTest {
         return Json.MAPPER.readTree(json);
     }
 
+    /// [#manifestWithPublic] plus opt-in `aliasPrefixes` (spec
+    /// `function-zones-and-aliases.md` §3) on the one `public[]` entry.
+    private static JsonNode manifestWithPublicAndAliasPrefixes(String pool, String hostname, String pathPrefix,
+            List<String> aliasPrefixes) {
+        String prefixesJson = aliasPrefixes.stream().map(p -> "\"" + p + "\"")
+                .collect(java.util.stream.Collectors.joining(",", "[", "]"));
+        String json = "{"
+                + "\"runtime\":\"jvm\",\"entrypoint\":\"com.acme.Fn\","
+                + "\"pool\":\"" + pool + "\",\"warm\":false,"
+                + "\"limits\":{},"
+                + "\"endpoints\":[{\"path\":\"/\",\"auth\":\"none\"}],"
+                + "\"public\":[{\"hostname\":\"" + hostname + "\",\"pathPrefix\":\"" + pathPrefix
+                + "\",\"aliasPrefixes\":" + prefixesJson + "}]"
+                + "}";
+        return Json.MAPPER.readTree(json);
+    }
+
     // ── Domain fixtures (spec `function-public-routes.md` §1) ───────────────
 
     private static FunctionDomain persistVerifiedDomain(FunctionOwner owner, String hostname) {
@@ -1602,6 +1619,56 @@ class FunctionTriggerSyncTest {
         assertThat(materialised).hasSize(1);
         assertThat(materialised.get(0).hostname().value()).isEqualTo(host);
         assertThat(materialised.get(0).pathPrefix().value()).isEqualTo("/api");
+    }
+
+    /// spec `function-zones-and-aliases.md` §3: the route's `alias_prefixes`
+    /// column is copied verbatim from the manifest's own `public[].aliasPrefixes`.
+    @Test
+    void promoteCopiesAliasPrefixesFromTheManifestOntoTheRoute() {
+        String appId = persistApplication("j3copy");
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        String host = "j3copy-" + fresh() + ".example.com";
+        persistVerifiedDomain(new FunctionOwner.Platform(), host);
+
+        var p = publish(f.address(), "j3copy",
+                manifestWithPublicAndAliasPrefixes("default", host, "/", List.of("qa", "staging")));
+        promote(f.address(), p.version().version());
+
+        List<FunctionRoute> materialised = routes.listByFunction(f.id());
+        assertThat(materialised).hasSize(1);
+        assertThat(materialised.get(0).aliasPrefixes())
+                .as("mutant: drop aliasPrefixes when materialising fn_routes")
+                .containsExactly("qa", "staging");
+    }
+
+    /// spec §3: a manifest edit that changes ONLY `aliasPrefixes` (same
+    /// hostname, same pathPrefix) is still a difference the row must be
+    /// rewritten for — `sameRoutes`'s key must include `aliasPrefixes`, not
+    /// just `hostname|pathPrefix` (mutant: compare hostname+prefix only, so
+    /// the second promote's `reconcilePublicRoutes` sees "no difference" and
+    /// skips the write, leaving the stale prefix list in place).
+    @Test
+    void changingOnlyAliasPrefixesRewritesTheRouteRow() {
+        String appId = persistApplication("j3rewrite");
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        String host = "j3rewrite-" + fresh() + ".example.com";
+        persistVerifiedDomain(new FunctionOwner.Platform(), host);
+
+        var p1 = publish(f.address(), "j3rewrite1",
+                manifestWithPublicAndAliasPrefixes("default", host, "/", List.of("qa")));
+        promote(f.address(), p1.version().version());
+        assertThat(routes.listByFunction(f.id()).get(0).aliasPrefixes()).containsExactly("qa");
+
+        // v2: same (hostname, pathPrefix), only aliasPrefixes changed.
+        var p2 = publish(f.address(), "j3rewrite2",
+                manifestWithPublicAndAliasPrefixes("default", host, "/", List.of("staging")));
+        promote(f.address(), p2.version().version());
+
+        List<FunctionRoute> materialised = routes.listByFunction(f.id());
+        assertThat(materialised).hasSize(1);
+        assertThat(materialised.get(0).aliasPrefixes())
+                .as("mutant: sameRoutes ignores aliasPrefixes, so the stale value survives the second promote")
+                .containsExactly("staging");
     }
 
     @Test

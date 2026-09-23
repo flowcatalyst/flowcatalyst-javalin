@@ -169,7 +169,7 @@ class FunctionControlApiTest {
     /// promote would have written.
     private static void persistRoute(Function f, String hostname, String pathPrefix) {
         FunctionRoute route =
-                FunctionRoute.of(f.id(), Hostname.parse(hostname), RoutePattern.parse(pathPrefix), Instant.now());
+                FunctionRoute.of(f.id(), Hostname.parse(hostname), RoutePattern.parse(pathPrefix), List.of(), Instant.now());
         uow.inTransaction(tx -> {
             routes.replaceForFunction(f.id(), List.of(route), tx.dbTx());
             return null;

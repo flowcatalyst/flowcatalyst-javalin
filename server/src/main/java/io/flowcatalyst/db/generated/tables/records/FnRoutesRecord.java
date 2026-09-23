@@ -90,6 +90,20 @@ public class FnRoutesRecord extends UpdatableRecordImpl<FnRoutesRecord> {
         return (OffsetDateTime) get(4);
     }
 
+    /**
+     * Setter for <code>public.fn_routes.alias_prefixes</code>.
+     */
+    public void setAliasPrefixes(String[] value) {
+        set(5, value);
+    }
+
+    /**
+     * Getter for <code>public.fn_routes.alias_prefixes</code>.
+     */
+    public String[] getAliasPrefixes() {
+        return (String[]) get(5);
+    }
+
     // -------------------------------------------------------------------------
     // Primary key information
     // -------------------------------------------------------------------------
@@ -113,7 +127,7 @@ public class FnRoutesRecord extends UpdatableRecordImpl<FnRoutesRecord> {
     /**
      * Create a detached, initialised FnRoutesRecord
      */
-    public FnRoutesRecord(String id, String functionId, String hostname, String pathPrefix, OffsetDateTime createdAt) {
+    public FnRoutesRecord(String id, String functionId, String hostname, String pathPrefix, OffsetDateTime createdAt, String[] aliasPrefixes) {
         super(FnRoutes.FN_ROUTES);
 
         setId(id);
@@ -121,6 +135,7 @@ public class FnRoutesRecord extends UpdatableRecordImpl<FnRoutesRecord> {
         setHostname(hostname);
         setPathPrefix(pathPrefix);
         setCreatedAt(createdAt);
+        setAliasPrefixes(aliasPrefixes);
         resetTouchedOnNotNull();
     }
 }

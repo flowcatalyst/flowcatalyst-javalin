@@ -421,6 +421,66 @@ class FnHttpServerPublicListenerTest {
         }
     }
 
+    // ── package J3 (function-zones-and-aliases.md §4): alias-prefixed hostnames ──
+
+    private static String bodySource(String className, String body) {
+        return """
+                package fixture.pub;
+                import io.flowcatalyst.function.*;
+                public final class %s implements Function {
+                    public Result handle(Request in, FunctionContext ctx) throws Exception {
+                        return Result.json(200, "{\\"body\\":\\"%s\\",\\"originalHost\\":\\"" + in.originalHost()
+                                + "\\"}");
+                    }
+                }
+                """.formatted(className, body);
+    }
+
+    /// P3 (spec §8): v1 live, v2 aliased `qa` with a DIFFERENT response body.
+    /// `Host: qa-hello.localhost` resolves to v2's body (through the
+    /// VERSIONED load path, entryForAlias); `Host: hello.localhost` to v1's
+    /// (exact, live); `Host: staging-hello.localhost` is 404 — `staging` was
+    /// never opted into this route's `aliasPrefixes` (mutant: resolve every
+    /// alias-prefixed hostname by ADDRESS alone, which would answer v1's
+    /// body for `qa-hello.localhost` too).
+    @Test
+    void aliasPrefixedHostnameServesTheAliasedVersionExactServesLiveUnoptedInPrefixIs404(
+            @TempDir Path dir) throws Exception {
+        String host = "hello.localhost";
+        Path jarV1 = FnHttpTestSupport.functionJar(dir, "j3-v1", "fixture.pub.J3V1Fn",
+                bodySource("J3V1Fn", "v1"));
+        Path jarV2 = FnHttpTestSupport.functionJar(dir, "j3-v2", "fixture.pub.J3V2Fn",
+                bodySource("J3V2Fn", "v2"));
+        var manifestV1 = FnHttpTestSupport.manifest("p", false, 10, 5000, "fixture.pub.J3V1Fn",
+                "[{\"path\":\"/*\",\"auth\":\"none\"}]");
+        var manifestV2 = FnHttpTestSupport.manifest("p", false, 10, 5000, "fixture.pub.J3V2Fn",
+                "[{\"path\":\"/*\",\"auth\":\"none\"}]");
+        var liveEntry = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jarV1, manifestV1, null, null, null);
+        var aliasEntry = FnHttpTestSupport.aliasEntry(ADDR, "fnc_1", "v2", 2, jarV2, manifestV2, null, null,
+                List.of("qa"));
+        var routeRef = new DesiredDocument.PublicRouteRef(host, "/", ADDR, List.of("qa"));
+        var doc = new DesiredDocument(List.of(liveEntry, aliasEntry), List.of(), List.of(), List.of(routeRef));
+        RecordingObserver observer = new RecordingObserver();
+        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer, 0, TrustedProxies.DEFAULT);
+        try (var h = FnHttpTestSupport.start(dir, doc, 50, options)) {
+            var qa = RawHttpClient.send(h.server.publicPort(), "GET", "/x", Map.of("Host", "qa-" + host), null);
+            assertThat(qa.status()).as("mutant: resolve by address only").isEqualTo(200);
+            assertThat(FnHttpTestSupport.json(qa.body()).path("body").asString())
+                    .as("mutant: resolve by address only, serving v1's body for the qa alias").isEqualTo("v2");
+            assertThat(FnHttpTestSupport.json(qa.body()).path("originalHost").asString())
+                    .as("Request.originalHost carries the prefixed hostname as arrived")
+                    .isEqualTo("qa-" + host);
+
+            var live = RawHttpClient.send(h.server.publicPort(), "GET", "/x", Map.of("Host", host), null);
+            assertThat(live.status()).isEqualTo(200);
+            assertThat(FnHttpTestSupport.json(live.body()).path("body").asString()).isEqualTo("v1");
+
+            var notOptedIn = RawHttpClient.send(h.server.publicPort(), "GET", "/x",
+                    Map.of("Host", "staging-" + host), null);
+            assertThat(notOptedIn.status()).as("staging was never opted into aliasPrefixes").isEqualTo(404);
+        }
+    }
+
     @Test
     void publicPortIsDisabledByDefaultOptions(@TempDir Path dir) throws Exception {
         Path jar = FnHttpTestSupport.functionJar(dir, "nopublic", "fixture.pub.PathEchoFn", pathEchoSource());

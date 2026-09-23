@@ -230,13 +230,13 @@ class ReconcilerMetaspaceHeadroomTest {
                                                      boolean warm) {
         return new DesiredDocument.Entry(address, "fnc_" + address.name().value(), versionId, version,
                 DesiredDocument.Role.LIVE, mode, digest, artifactRef, null, null,
-                TestFixtures.jvmManifest(POOL.value(), warm), null, null, null, Map.of(), Map.of(), List.of());
+                TestFixtures.jvmManifest(POOL.value(), warm), null, null, null, Map.of(), Map.of(), List.of(), List.of());
     }
 
     private static DesiredDocument.Entry candidateEntry(FunctionAddress address, String versionId, int version,
                                                           Digest digest, String artifactRef) {
         return new DesiredDocument.Entry(address, "fnc_" + address.name().value(), versionId, version,
                 DesiredDocument.Role.CANDIDATE, DesiredDocument.Mode.LAZY, digest, artifactRef, null, null,
-                TestFixtures.jvmManifest(POOL.value(), false), null, null, null, Map.of(), Map.of(), List.of());
+                TestFixtures.jvmManifest(POOL.value(), false), null, null, null, Map.of(), Map.of(), List.of(), List.of());
     }
 }

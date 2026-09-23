@@ -185,7 +185,8 @@ public final class FunctionDomainApi {
 
         List<FunctionRouteResponse> out = rows.stream()
                 .map(r -> new FunctionRouteResponse(r.hostname().value(), r.pathPrefix().value(),
-                        s.functions().findById(r.functionId()).map(f -> f.address().render()).orElse(r.functionId())))
+                        s.functions().findById(r.functionId()).map(f -> f.address().render()).orElse(r.functionId()),
+                        r.aliasPrefixes()))
                 .sorted((a, b) -> {
                     int byHost = a.hostname().compareTo(b.hostname());
                     return byHost != 0 ? byHost : a.pathPrefix().compareTo(b.pathPrefix());
@@ -248,8 +249,9 @@ public final class FunctionDomainApi {
         }
     }
 
-    /// One entry of `GET /api/function-routes` and of `DesiredState`'s
-    /// top-level `publicRoutes` (spec §2).
-    public record FunctionRouteResponse(String hostname, String pathPrefix, String address) {
+    /// One entry of `GET /api/function-routes` (spec §2, amended
+    /// `function-zones-and-aliases.md` §3 for `aliasPrefixes`).
+    public record FunctionRouteResponse(String hostname, String pathPrefix, String address,
+                                        List<String> aliasPrefixes) {
     }
 }

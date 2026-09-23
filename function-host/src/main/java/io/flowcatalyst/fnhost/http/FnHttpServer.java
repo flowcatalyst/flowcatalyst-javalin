@@ -311,7 +311,7 @@ public final class FnHttpServer implements AutoCloseable {
             answer(req, requestContext, 404, Map.of(), ErrorBody.json("FUNCTION_NOT_FOUND", "no such function"));
             return;
         }
-        handleEntry(req, requestContext, entry, path.functionPath(), InvocationObserver.Entry.PRIVATE, null);
+        handleEntry(req, requestContext, entry, path.functionPath(), InvocationObserver.Entry.PRIVATE, null, false);
     }
 
     // ── public entry (function-public-routes.md §3) ─────────────────────────
@@ -346,18 +346,28 @@ public final class FnHttpServer implements AutoCloseable {
         }
 
         PublicRouteTable.Match m = matched.get();
-        DesiredDocument.Entry entry = reconciler.liveEntry(m.address());
+        // spec `function-zones-and-aliases.md` §4: "live" is the exact-hostname match,
+        // unchanged; anything else is an alias-prefixed hostname, resolved through
+        // entryForAlias and run over the VERSIONED load path (pinnedVersions) so the
+        // aliased version's OWN manifest drives endpoint matching, auth and limits —
+        // never the address's live entry.
+        boolean isLive = "live".equals(m.alias());
+        DesiredDocument.Entry entry =
+                isLive ? reconciler.liveEntry(m.address()) : reconciler.entryForAlias(m.address(), m.alias());
         if (entry == null) {
-            // The route table can briefly name a function the live-entry lookup no longer
-            // finds (a reconcile in between the two reads) — 404, same anti-leak shape,
-            // never a 500; the next reconcile's swapped table clears this up either way.
+            // The route table can briefly name a function the entry lookup no longer
+            // finds (a reconcile in between the two reads), or an alias the document
+            // does not (yet, or ever) carry for this address — 404, same anti-leak
+            // shape, never a 500; the next reconcile's swapped table/document clears
+            // this up either way.
             observer.refused("not_found", null, InvocationObserver.Entry.PUBLIC);
             answer(req, requestContext, 404, Map.of(), ErrorBody.json("NOT_FOUND", "not found"));
             return;
         }
 
         String remoteAddress = publicRemoteAddress(req);
-        handleEntry(req, requestContext, entry, m.functionPath(), InvocationObserver.Entry.PUBLIC, remoteAddress);
+        handleEntry(req, requestContext, entry, m.functionPath(), InvocationObserver.Entry.PUBLIC, remoteAddress,
+                !isLive);
     }
 
     /// spec §3 step 1: `Host` (HTTP/1.1) or `:authority` (HTTP/2, Vert.x
@@ -410,8 +420,17 @@ public final class FnHttpServer implements AutoCloseable {
     /// here, by the host, BEFORE the ordinary method-based endpoint match —
     /// a preflight's method is `OPTIONS`, which an endpoint's own `methods`
     /// list would otherwise 405.
+    ///
+    /// @param versioned `true` only for a public alias-prefixed call (spec
+    ///                  `function-zones-and-aliases.md` §4) — selects the
+    ///                  VERSIONED load mechanism ([PinnedVersions], the same
+    ///                  one a pinned `address:version` call and a candidate
+    ///                  already use) in [#invoke] below; it does NOT change
+    ///                  which auth applies — the endpoint's own `auth` still
+    ///                  runs, unlike the private versioned path.
     private void handleEntry(HttpServerRequest req, io.vertx.core.Context requestContext, DesiredDocument.Entry entry,
-                              String functionPath, InvocationObserver.Entry entryKind, String remoteAddressOverride) {
+                              String functionPath, InvocationObserver.Entry entryKind, String remoteAddressOverride,
+                              boolean versioned) {
         if (CorsPolicy.isPreflight(req.method().name(), req.headers())) {
             Optional<Manifest.Endpoint> byPath = matchEndpointByPathOnly(entry.manifest(), functionPath);
             if (byPath.isPresent() && byPath.get().cors() != null) {
@@ -437,7 +456,7 @@ public final class FnHttpServer implements AutoCloseable {
         EndpointMatch.Ok ok = (EndpointMatch.Ok) match;
         readBodyThenRun(req, requestContext, ok.endpoint().maxBodyBytes(),
                 body -> continueAfterBody(req, entry, ok.endpoint(), functionPath, ok.pathParams(), body, entryKind,
-                        remoteAddressOverride));
+                        remoteAddressOverride, versioned));
     }
 
     /// Spec §4: NOTHING about the entry, its manifest or its endpoints may be
@@ -526,7 +545,8 @@ public final class FnHttpServer implements AutoCloseable {
     private HttpAnswer continueAfterBody(HttpServerRequest req, DesiredDocument.Entry entry,
                                           Manifest.Endpoint endpoint, String functionPath,
                                           Map<String, String> pathParams, byte[] body,
-                                          InvocationObserver.Entry entryKind, String remoteAddressOverride) {
+                                          InvocationObserver.Entry entryKind, String remoteAddressOverride,
+                                          boolean versioned) {
         AuthResult authResult = authenticateUnversioned(endpoint, req.headers(), body, entry);
         if (authResult instanceof AuthResult.Failed(HttpAnswer failure)) {
             observer.refused("unauthorized", entry.address(), entryKind);
@@ -535,7 +555,7 @@ public final class FnHttpServer implements AutoCloseable {
         Caller caller = ((AuthResult.Ok) authResult).caller();
         boolean stripAuthHeaders = endpoint.auth() != EndpointAuth.NONE;
         HttpAnswer answer = invoke(req, entry, endpoint, functionPath, pathParams, body, caller, stripAuthHeaders,
-                false, entryKind, remoteAddressOverride);
+                versioned, entryKind, remoteAddressOverride);
         return CorsPolicy.applyToActualResponse(endpoint, req.getHeader("Origin"), answer);
     }
 

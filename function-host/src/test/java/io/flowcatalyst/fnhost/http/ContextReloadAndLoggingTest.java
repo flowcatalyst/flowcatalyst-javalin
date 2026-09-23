@@ -171,7 +171,7 @@ class ContextReloadAndLoggingTest {
                                                            String versionId, int version, Map<String, String> config) {
         return new DesiredDocument.Entry(ADDR, "fnc_1", versionId, version, DesiredDocument.Role.LIVE,
                 DesiredDocument.Mode.WARM, FnHttpTestSupport.digestOf(jar), FnHttpTestSupport.fileRef(jar), null, null,
-                manifest, null, null, null, config, Map.of(), List.of());
+                manifest, null, null, null, config, Map.of(), List.of(), List.of());
     }
 
     // ── X6: MDC on the worker thread — the FUNCTION's own log line ─────

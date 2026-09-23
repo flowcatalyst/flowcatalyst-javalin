@@ -395,7 +395,7 @@ class FunctionOpenApiConformanceTest {
 
         // 24. listFunctionRoutes — persist the route a real promote would have materialised
         // (this scenario uses TriggerSync.none(), same precedent as FunctionControlApiTest).
-        FunctionRoute route = FunctionRoute.of(functionId, Hostname.parse(hostname), RoutePattern.parse("/"), Instant.now());
+        FunctionRoute route = FunctionRoute.of(functionId, Hostname.parse(hostname), RoutePattern.parse("/"), List.of(), Instant.now());
         uow.inTransaction(tx -> {
             routeRepo.replaceForFunction(functionId, List.of(route), tx.dbTx());
             return null;

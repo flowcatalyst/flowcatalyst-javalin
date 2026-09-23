@@ -719,6 +719,78 @@ class ManifestTest {
         assertThat(manifest.publicRoutes()).hasSize(2);
     }
 
+    // ── alias prefixes (function-zones-and-aliases.md §3, package J slice J3) ──
+
+    @Test
+    void aliasPrefixesAbsentDefaultsEmpty() {
+        Manifest manifest = parseJvm(withPublic("\"hostname\":\"api.acme.com\""));
+        assertThat(manifest.publicRoutes().get(0).aliasPrefixes()).isEmpty();
+    }
+
+    @Test
+    void aliasPrefixesEmptyArrayAccepted() {
+        Manifest manifest = parseJvm(withPublic("\"hostname\":\"api.acme.com\",\"aliasPrefixes\":[]"));
+        assertThat(manifest.publicRoutes().get(0).aliasPrefixes()).isEmpty();
+    }
+
+    @Test
+    void aliasPrefixesValidAccepted() {
+        Manifest manifest =
+                parseJvm(withPublic("\"hostname\":\"api.acme.com\",\"aliasPrefixes\":[\"qa\",\"staging\"]"));
+        assertThat(manifest.publicRoutes().get(0).aliasPrefixes()).containsExactly("qa", "staging");
+    }
+
+    @Test
+    void aliasPrefixesRejectsLive() {
+        assertCode(() -> parseJvm(withPublic("\"hostname\":\"api.acme.com\",\"aliasPrefixes\":[\"live\"]")),
+                "PUBLIC_ROUTE_INVALID");
+    }
+
+    @Test
+    void aliasPrefixesRejectsDuplicate() {
+        assertCode(() -> parseJvm(withPublic("\"hostname\":\"api.acme.com\",\"aliasPrefixes\":[\"qa\",\"qa\"]")),
+                "PUBLIC_ROUTE_INVALID");
+    }
+
+    @Test
+    void aliasPrefixesRejectsUppercase() {
+        assertCode(() -> parseJvm(withPublic("\"hostname\":\"api.acme.com\",\"aliasPrefixes\":[\"QA\"]")),
+                "PUBLIC_ROUTE_INVALID");
+    }
+
+    @Test
+    void aliasPrefixesRejectsOver63Characters() {
+        String tooLong = "a".repeat(64);
+        assertCode(() -> parseJvm(withPublic("\"hostname\":\"api.acme.com\",\"aliasPrefixes\":[\"" + tooLong + "\"]")),
+                "PUBLIC_ROUTE_INVALID");
+    }
+
+    @Test
+    void aliasPrefixesInvalidEntryNamesTheOffender() {
+        assertThatThrownBy(() -> parseJvm(
+                "{\"runtime\":\"jvm\",\"entrypoint\":\"x\",\"public\":[{\"hostname\":\"api.acme.com\","
+                        + "\"aliasPrefixes\":[\"qa\",\"QA\"]}]}"))
+                .isInstanceOf(UseCaseException.class)
+                .extracting(t -> ((UseCaseException) t).error().message())
+                .satisfies(msg -> assertThat(msg).asString().contains("public[0].aliasPrefixes[1]"));
+    }
+
+    @Test
+    void aliasPrefixesToJsonOmittedWhenEmpty() {
+        Manifest manifest = parseJvm(withPublic("\"hostname\":\"api.acme.com\""));
+        JsonNode route = manifest.toJson().path("public").get(0);
+        assertThat(route.has("aliasPrefixes")).isFalse();
+    }
+
+    @Test
+    void aliasPrefixesRoundTrip() {
+        Manifest manifest =
+                parseJvm(withPublic("\"hostname\":\"api.acme.com\",\"aliasPrefixes\":[\"qa\",\"staging\"]"));
+        Manifest reread = Manifest.readStored(manifest.toJson());
+        assertThat(reread.publicRoutes().get(0).aliasPrefixes()).containsExactly("qa", "staging");
+        assertThat(reread).isEqualTo(manifest);
+    }
+
     // ── db / config (unchanged from function-registry.md §4.3) ──────────────
 
     @Test

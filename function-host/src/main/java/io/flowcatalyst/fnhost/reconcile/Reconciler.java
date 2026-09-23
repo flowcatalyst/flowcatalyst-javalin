@@ -994,6 +994,36 @@ public final class Reconciler {
         return null;
     }
 
+    /// The current document's entry for `address` whose `aliases()` names
+    /// `alias` (spec `function-zones-and-aliases.md` §4: what the public
+    /// listener resolves an alias-prefixed hostname against) — `live`'s own
+    /// entry qualifies too, since the platform already carries a version's
+    /// named aliases on whichever role entry represents it. A `CANDIDATE`
+    /// entry is deliberately EXCLUDED even when it happens to carry the
+    /// alias name (spec §5: a candidate is only ever verified, never served
+    /// — D2's own mutant is exactly "serve a candidate because its own
+    /// `aliases()` was non-empty").
+    public DesiredDocument.Entry entryForAlias(FunctionAddress address, String alias) {
+        Objects.requireNonNull(address, "address");
+        Objects.requireNonNull(alias, "alias");
+        DesiredDocument doc = document;
+        if (doc == null) {
+            return null;
+        }
+        for (DesiredDocument.Entry entry : doc.functions()) {
+            if (!entry.address().equals(address)) {
+                continue;
+            }
+            if (entry.role() == DesiredDocument.Role.CANDIDATE) {
+                continue;
+            }
+            if (entry.aliases().contains(alias)) {
+                return entry;
+            }
+        }
+        return null;
+    }
+
     /// The current document's entry for `address` at exactly `version` —
     /// live OR candidate (spec §4 step 4: "the version must be an entry of
     /// the current desired-state document (live or candidate)") — or `null`

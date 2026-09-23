@@ -72,6 +72,16 @@ function verificationSeverity(hostname: string): "success" | "warn" | "danger" {
 	if (!domain) return "danger";
 	return domain.verification.state === "VERIFIED" ? "success" : "warn";
 }
+
+// Package J3 (docs/spec/function-zones-and-aliases.md §3-§4): each opt-in
+// alias prefix on a route derives a hostname by splitting the route's own
+// hostname at its first label and prepending "<prefix>-" — e.g. `qa` on
+// `myapp.acme.com` derives `qa-myapp.acme.com`. Display only; the platform
+// never stores the derived hostname (§3: "derived hostnames are not
+// stored").
+function derivedHostname(hostname: string, prefix: string): string {
+	return `${prefix}-${hostname}`;
+}
 </script>
 
 <template>
@@ -88,6 +98,7 @@ function verificationSeverity(hostname: string): "success" | "warn" | "danger" {
         <tr>
           <th>Hostname</th>
           <th>Path Prefix</th>
+          <th>Alias Prefixes</th>
           <th>Verification</th>
           <th></th>
         </tr>
@@ -96,6 +107,17 @@ function verificationSeverity(hostname: string): "success" | "warn" | "danger" {
         <tr v-for="route in routes" :key="`${route.hostname}${route.pathPrefix}`">
           <td><code>{{ route.hostname }}</code></td>
           <td><code>{{ route.pathPrefix }}</code></td>
+          <td>
+            <span v-if="route.aliasPrefixes.length === 0" class="empty-hint">none</span>
+            <ul v-else class="alias-prefixes">
+              <li v-for="prefix in route.aliasPrefixes" :key="prefix">
+                <Tag :value="prefix" severity="info" />
+                <code class="derived-hostname">
+                  {{ derivedHostname(route.hostname, prefix) }}
+                </code>
+              </li>
+            </ul>
+          </td>
           <td>
             <Tag
               :value="verificationLabel(route.hostname)"
@@ -142,5 +164,25 @@ function verificationSeverity(hostname: string): "success" | "warn" | "danger" {
 .routes-table td {
   padding: 8px 12px;
   border-bottom: 1px solid #f1f5f9;
+}
+
+.alias-prefixes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.alias-prefixes li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.derived-hostname {
+  color: #64748b;
+  font-size: 12px;
 }
 </style>

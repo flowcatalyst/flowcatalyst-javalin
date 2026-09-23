@@ -135,7 +135,7 @@ class ReconcilerTest {
 
         DesiredDocument.Entry entry = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v2", 2,
                 DesiredDocument.Role.CANDIDATE, DesiredDocument.Mode.LAZY, digest, TestFixtures.fileRef(jar), null,
-                null, TestFixtures.jvmManifest(POOL.value(), true), null, null, null, Map.of(), Map.of(), List.of()); // warm manifest — must still never load
+                null, TestFixtures.jvmManifest(POOL.value(), true), null, null, null, Map.of(), Map.of(), List.of(), List.of()); // warm manifest — must still never load
         fake.desiredStateReturns((pool, etag) -> new ControlPlane.Fetched.Changed("etag1",
                 new DesiredDocument(List.of(entry), List.of(), List.of())));
 
@@ -144,6 +144,71 @@ class ReconcilerTest {
         assertThat(registry.peek(TestFixtures.ADDR_A)).as("mutant: load a candidate").isNull();
         assertThat(fake.heartbeats().getLast().loaded()).extracting(HeartbeatReport.LoadedEntry::state)
                 .allMatch(HeartbeatReport.LoadState.Registered.class::isInstance);
+    }
+
+    // ── package J3 (function-zones-and-aliases.md §4-§5): entryForAlias serves
+    //    an ALIAS entry, still only verifies a CANDIDATE ─────────────────────
+
+    /// D2: `entryForAlias` resolves the entry whose `aliases()` names the
+    /// alias, even for role `ALIAS` — but a `CANDIDATE` is EXCLUDED even
+    /// when it happens to carry that same alias name (mutant: drop the role
+    /// check — a candidate would then be served through an alias-prefixed
+    /// hostname despite spec §5's "a candidate is only ever verified").
+    @Test
+    void entryForAliasResolvesAnAliasEntryButNeverACandidateEvenIfItCarriesTheAliasName(@TempDir Path dir) {
+        Path jarV2 = TestFixtures.functionJar(dir, "alias-v2", "alias-2");
+        Path jarV3 = TestFixtures.functionJar(dir, "alias-v3", "alias-3");
+        FakeControlPlane fake = new FakeControlPlane();
+        FunctionRegistry registry = new FunctionRegistry(50);
+        Reconciler r = offReconciler(fake, dir, registry);
+
+        DesiredDocument.Entry aliasEntry = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v2", 2,
+                DesiredDocument.Role.ALIAS, DesiredDocument.Mode.LAZY, TestFixtures.digestOf(jarV2),
+                TestFixtures.fileRef(jarV2), null, null, TestFixtures.jvmManifest(POOL.value(), false), null, null,
+                null, Map.of(), Map.of(), List.of(), List.of("qa"));
+        // A candidate that (implausibly, but per DesiredState's own construction rule) also
+        // names "sneaky" — entryForAlias must still refuse to serve it.
+        DesiredDocument.Entry candidateEntry = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v3", 3,
+                DesiredDocument.Role.CANDIDATE, DesiredDocument.Mode.LAZY, TestFixtures.digestOf(jarV3),
+                TestFixtures.fileRef(jarV3), null, null, TestFixtures.jvmManifest(POOL.value(), false), null, null,
+                null, Map.of(), Map.of(), List.of(), List.of("sneaky"));
+        fake.desiredStateReturns((pool, etag) -> new ControlPlane.Fetched.Changed("etag1",
+                new DesiredDocument(List.of(aliasEntry, candidateEntry), List.of(), List.of())));
+
+        r.reconcileOnce(Instant.now());
+
+        assertThat(r.entryForAlias(TestFixtures.ADDR_A, "qa")).isEqualTo(aliasEntry);
+        assertThat(r.entryForAlias(TestFixtures.ADDR_A, "sneaky"))
+                .as("mutant: serve a CANDIDATE because it carries the alias name").isNull();
+        assertThat(r.entryForAlias(TestFixtures.ADDR_A, "unknown")).isNull();
+    }
+
+    /// D2 corollary: an `ALIAS` entry is prepared and loadable through the
+    /// SAME pinned-load mechanism a `CANDIDATE` already uses (spec §5: "the
+    /// host serves it") — never blocked by role the way the main
+    /// registry/lazy-route path blocks anything but `LIVE`.
+    @Test
+    void anAliasEntryIsLoadableViaLoadPinnedJustLikeACandidate(@TempDir Path dir) {
+        Path jar = TestFixtures.functionJar(dir, "alias-loadable-v2", "alias-loadable-2");
+        FakeControlPlane fake = new FakeControlPlane();
+        FunctionRegistry registry = new FunctionRegistry(50);
+        Reconciler r = offReconciler(fake, dir, registry);
+
+        DesiredDocument.Entry aliasEntry = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v2", 2,
+                DesiredDocument.Role.ALIAS, DesiredDocument.Mode.LAZY, TestFixtures.digestOf(jar),
+                TestFixtures.fileRef(jar), null, null, TestFixtures.jvmManifest(POOL.value(), false), null, null,
+                null, Map.of(), Map.of(), List.of(), List.of("qa"));
+        fake.desiredStateReturns((pool, etag) -> new ControlPlane.Fetched.Changed("etag1",
+                new DesiredDocument(List.of(aliasEntry), List.of(), List.of())));
+
+        r.reconcileOnce(Instant.now()); // prepares it (never loads it into the main registry)
+
+        assertThat(registry.peek(TestFixtures.ADDR_A))
+                .as("an alias-only entry is never loaded into the main live slot").isNull();
+        LoadedFunction loaded = r.loadPinned(aliasEntry);
+        assertThat(loaded).as("mutant: refuse to load an ALIAS entry through loadPinned").isNotNull();
+        assertThat(loaded.version()).isEqualTo(2);
+        loaded.close();
     }
 
     // ── R1b: live (lazy) + candidate, same address — ensureLoaded must never
@@ -161,7 +226,7 @@ class ReconcilerTest {
                 TestFixtures.digestOf(jar1), TestFixtures.fileRef(jar1), null, null, false);
         DesiredDocument.Entry candidateV2 = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v2", 2,
                 DesiredDocument.Role.CANDIDATE, DesiredDocument.Mode.LAZY, TestFixtures.digestOf(jar2),
-                TestFixtures.fileRef(jar2), null, null, TestFixtures.jvmManifest(POOL.value(), false), null, null, null, Map.of(), Map.of(), List.of());
+                TestFixtures.fileRef(jar2), null, null, TestFixtures.jvmManifest(POOL.value(), false), null, null, null, Map.of(), Map.of(), List.of(), List.of());
         DesiredDocument doc = new DesiredDocument(List.of(liveV1, candidateV2), List.of(), List.of());
         fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1", doc));
 
@@ -204,7 +269,7 @@ class ReconcilerTest {
                 TestFixtures.digestOf(jar1), TestFixtures.fileRef(jar1), null, null, true);
         DesiredDocument.Entry candidateV2 = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v2", 2,
                 DesiredDocument.Role.CANDIDATE, DesiredDocument.Mode.LAZY, TestFixtures.digestOf(jar2),
-                TestFixtures.fileRef(jar2), null, null, TestFixtures.jvmManifest(POOL.value(), false), null, null, null, Map.of(), Map.of(), List.of());
+                TestFixtures.fileRef(jar2), null, null, TestFixtures.jvmManifest(POOL.value(), false), null, null, null, Map.of(), Map.of(), List.of(), List.of());
         fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1",
                 new DesiredDocument(List.of(liveV1, candidateV2), List.of(), List.of())));
 
@@ -382,7 +447,7 @@ class ReconcilerTest {
                 "{\"runtime\":\"jvm\",\"entrypoint\":\"nope.NoSuchClass\",\"pool\":\"" + POOL.value() + "\",\"warm\":true}"));
         DesiredDocument.Entry entry = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v2", 2,
                 DesiredDocument.Role.LIVE, DesiredDocument.Mode.WARM, TestFixtures.digestOf(jar2),
-                TestFixtures.fileRef(jar2), null, null, badEntrypoint, null, null, null, Map.of(), Map.of(), List.of());
+                TestFixtures.fileRef(jar2), null, null, badEntrypoint, null, null, null, Map.of(), Map.of(), List.of(), List.of());
         fake.desiredStateReturns((pool, etag) -> new ControlPlane.Fetched.Changed("etag2",
                 new DesiredDocument(List.of(entry), List.of(), List.of())));
         r.reconcileOnce(Instant.now());
@@ -760,6 +825,39 @@ class ReconcilerTest {
         assertThat(reloaded.version()).isEqualTo(1);
     }
 
+    // ── package J3 (function-zones-and-aliases.md §4-§5): the wire document ──
+
+    /// The real JSON wire shape (spec §5): `role: "alias"` parses to
+    /// [DesiredDocument.Role#ALIAS], an entry's `aliases` array parses onto
+    /// [DesiredDocument.Entry#aliases], and a `publicRoutes[]` entry's
+    /// `aliasPrefixes` parses onto [DesiredDocument.PublicRouteRef#aliasPrefixes]
+    /// (mutant: drop any one of the three, or fail to recognise `"alias"`
+    /// as a role at all).
+    @Test
+    void wireDocumentParsesRoleAliasEntryAliasesAndRoutesAliasPrefixes(@TempDir Path dir) {
+        Path jar = TestFixtures.functionJar(dir, "j3wire", "j3wire");
+        Digest digest = TestFixtures.digestOf(jar);
+        String entryJson = """
+                {"address":"%s","functionId":"fnc_a","versionId":"v2","version":2,"role":"alias","mode":"lazy",
+                 "digest":"%s","artifactRef":"%s","aliases":["qa","staging"],
+                 "manifest":{"runtime":"jvm","entrypoint":"%s","pool":"%s","warm":false}}
+                """.formatted(TestFixtures.ADDR_A.render(), digest.value(), TestFixtures.fileRef(jar),
+                TestFixtures.ENTRYPOINT, POOL.value());
+        String routeJson = """
+                {"hostname":"myapp.acme.com","pathPrefix":"/","address":"%s","aliasPrefixes":["qa","staging"]}
+                """.formatted(TestFixtures.ADDR_A.render());
+        String body = "{\"functions\":[" + entryJson + "],\"publicRoutes\":[" + routeJson + "]}";
+
+        DesiredDocument doc = DesiredDocument.parse(body);
+        assertThat(doc.functions()).as("mutant: fail to recognise role \"alias\"").hasSize(1);
+        DesiredDocument.Entry entry = doc.functions().getFirst();
+        assertThat(entry.role()).isEqualTo(DesiredDocument.Role.ALIAS);
+        assertThat(entry.aliases()).as("mutant: drop the entry's own aliases").containsExactly("qa", "staging");
+        assertThat(doc.publicRoutes()).hasSize(1);
+        assertThat(doc.publicRoutes().getFirst().aliasPrefixes())
+                .as("mutant: drop the route's aliasPrefixes").containsExactly("qa", "staging");
+    }
+
     // ── R8: one unreadable entry is dropped and reported; the rest applies ──
 
     @Test
@@ -867,7 +965,7 @@ class ReconcilerTest {
                 TestFixtures.digestOf(jvmJar), TestFixtures.fileRef(jvmJar), null, null, true);
         DesiredDocument.Entry wasmEntry = new DesiredDocument.Entry(TestFixtures.ADDR_B, "fnc_b", "w1", 1,
                 DesiredDocument.Role.LIVE, DesiredDocument.Mode.WARM, TestFixtures.digestOf(wasmJar),
-                TestFixtures.fileRef(wasmJar), null, null, TestFixtures.wasmManifest(POOL.value()), null, null, null, Map.of(), Map.of(), List.of());
+                TestFixtures.fileRef(wasmJar), null, null, TestFixtures.wasmManifest(POOL.value()), null, null, null, Map.of(), Map.of(), List.of(), List.of());
         fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1",
                 new DesiredDocument(List.of(jvmEntry, wasmEntry), List.of(), List.of())));
 
@@ -910,7 +1008,7 @@ class ReconcilerTest {
                 DesiredDocument.Role.LIVE, DesiredDocument.Mode.WARM, TestFixtures.digestOf(jarV2),
                 TestFixtures.fileRef(jarV2), null, null,
                 TestFixtures.jvmManifest(POOL.value(), true, "fixture.oom.WarmMetaspaceOnInitFn"),
-                null, null, null, Map.of(), Map.of(), List.of());
+                null, null, null, Map.of(), Map.of(), List.of(), List.of());
         // A second, unrelated, perfectly-loadable warm entry in the SAME document — this is
         // the original defect verbatim (`docs/function-runner-report.md`'s "Anomaly"): an
         // uncaught OutOfMemoryError on function #109 of 200 killed the eager warm-load loop
@@ -964,7 +1062,7 @@ class ReconcilerTest {
                 DesiredDocument.Role.LIVE, DesiredDocument.Mode.LAZY, TestFixtures.digestOf(jar),
                 TestFixtures.fileRef(jar), null, null,
                 TestFixtures.jvmManifest(POOL.value(), false, "fixture.oom.LazyMetaspaceOnInitFn"),
-                null, null, null, Map.of(), Map.of(), List.of());
+                null, null, null, Map.of(), Map.of(), List.of(), List.of());
         fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1",
                 new DesiredDocument(List.of(entry), List.of(), List.of())));
         r.reconcileOnce(Instant.now());
@@ -1004,7 +1102,7 @@ class ReconcilerTest {
                 DesiredDocument.Role.CANDIDATE, DesiredDocument.Mode.LAZY, TestFixtures.digestOf(jar),
                 TestFixtures.fileRef(jar), null, null,
                 TestFixtures.jvmManifest(POOL.value(), false, "fixture.oom.PinnedMetaspaceOnInitFn"),
-                null, null, null, Map.of(), Map.of(), List.of());
+                null, null, null, Map.of(), Map.of(), List.of(), List.of());
         fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1",
                 new DesiredDocument(List.of(candidate), List.of(), List.of())));
         r.reconcileOnce(Instant.now()); // prepares (but never loads) the candidate
@@ -1040,7 +1138,7 @@ class ReconcilerTest {
                 DesiredDocument.Role.LIVE, DesiredDocument.Mode.WARM, TestFixtures.digestOf(jar),
                 TestFixtures.fileRef(jar), null, null,
                 TestFixtures.jvmManifest(POOL.value(), true, "fixture.oom.HeapOomOnInitFn"),
-                null, null, null, Map.of(), Map.of(), List.of());
+                null, null, null, Map.of(), Map.of(), List.of(), List.of());
         fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1",
                 new DesiredDocument(List.of(entry), List.of(), List.of())));
 
@@ -1126,7 +1224,7 @@ class ReconcilerTest {
                                                      String signatureBundle, SignerIdentity signer, boolean warm) {
         return new DesiredDocument.Entry(address, "fnc_" + address.name().value(), versionId, version,
                 DesiredDocument.Role.LIVE, mode, digest, artifactRef, signatureBundle, signer,
-                TestFixtures.jvmManifest(POOL.value(), warm), null, null, null, Map.of(), Map.of(), List.of());
+                TestFixtures.jvmManifest(POOL.value(), warm), null, null, null, Map.of(), Map.of(), List.of(), List.of());
     }
 
     private static byte[] rawDigest(Digest digest) {

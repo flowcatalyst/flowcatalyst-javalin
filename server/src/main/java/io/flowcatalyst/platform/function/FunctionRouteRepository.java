@@ -96,17 +96,20 @@ public final class FunctionRouteRepository {
                     .set(T.FUNCTION_ID, r.functionId())
                     .set(T.HOSTNAME, r.hostname().value())
                     .set(T.PATH_PREFIX, r.pathPrefix().value())
+                    .set(T.ALIAS_PREFIXES, r.aliasPrefixes().toArray(new String[0]))
                     .set(T.CREATED_AT, utc(r.createdAt()))
                     .execute();
         }
     }
 
     private static FunctionRoute toEntity(FnRoutesRecord row) {
+        String[] aliasPrefixes = row.getAliasPrefixes();
         return new FunctionRoute(
                 row.getId(),
                 row.getFunctionId(),
                 new Hostname(row.getHostname()),
                 RoutePattern.parse(row.getPathPrefix()),
+                aliasPrefixes == null ? List.of() : List.of(aliasPrefixes),
                 row.getCreatedAt().toInstant());
     }
 

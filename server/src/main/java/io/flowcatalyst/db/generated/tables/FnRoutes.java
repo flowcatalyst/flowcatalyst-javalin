@@ -85,6 +85,11 @@ public class FnRoutes extends TableImpl<FnRoutesRecord> {
      */
     public final TableField<FnRoutesRecord, OffsetDateTime> CREATED_AT = createField(DSL.name("created_at"), SQLDataType.TIMESTAMPWITHTIMEZONE(6).nullable(false).defaultValue(DSL.field(DSL.raw("now()"), SQLDataType.TIMESTAMPWITHTIMEZONE)), this, "");
 
+    /**
+     * The column <code>public.fn_routes.alias_prefixes</code>.
+     */
+    public final TableField<FnRoutesRecord, String[]> ALIAS_PREFIXES = createField(DSL.name("alias_prefixes"), SQLDataType.CLOB.array().nullable(false).defaultValue(DSL.field(DSL.raw("'{}'::text[]"), SQLDataType.CLOB.array())), this, "");
+
     private FnRoutes(Name alias, Table<FnRoutesRecord> aliased) {
         this(alias, aliased, (Field<?>[]) null, null);
     }

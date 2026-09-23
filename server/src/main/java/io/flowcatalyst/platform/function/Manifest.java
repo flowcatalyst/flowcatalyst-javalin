@@ -88,7 +88,7 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
     private static final Set<String> SUBSCRIPTION_KEYS =
             Set.of("eventType", "path", "mode", "maxRetries", "timeoutSeconds", "dataOnly");
     private static final Set<String> SCHEDULE_KEYS = Set.of("cron", "timezone", "path", "payload");
-    private static final Set<String> PUBLIC_ROUTE_KEYS = Set.of("hostname", "pathPrefix");
+    private static final Set<String> PUBLIC_ROUTE_KEYS = Set.of("hostname", "pathPrefix", "aliasPrefixes");
     private static final Set<String> CORS_KEYS = Set.of("origins", "methods", "headers", "allowCredentials");
     private static final Set<String> DB_KEYS = Set.of("name", "secretRef", "poolSize");
 
@@ -188,7 +188,13 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
     /// A `(hostname, pathPrefix)` pair the platform exposes on the public
     /// listener for this function (spec §3, §5). The prefix is a literal
     /// path, `/` when absent, stripped before endpoint matching.
-    public record PublicRoute(Hostname hostname, RoutePattern pathPrefix) {
+    ///
+    /// @param aliasPrefixes opt-in alias name prefixes (spec
+    ///                      `function-zones-and-aliases.md` §3): each a DNS
+    ///                      label, never `live`, no duplicates; `[]` (the
+    ///                      default) means exact-hostname match only —
+    ///                      today's behaviour.
+    public record PublicRoute(Hostname hostname, RoutePattern pathPrefix, List<String> aliasPrefixes) {
 
         /// `pathPrefix` when a public route entry does not name one.
         public static final RoutePattern DEFAULT_PATH_PREFIX = RoutePattern.parse("/");
@@ -196,6 +202,7 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         public PublicRoute {
             Objects.requireNonNull(hostname, "hostname");
             Objects.requireNonNull(pathPrefix, "pathPrefix");
+            aliasPrefixes = List.copyOf(aliasPrefixes);
         }
     }
 
@@ -748,7 +755,39 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
                 ? PublicRoute.DEFAULT_PATH_PREFIX
                 : parseLiteralPath(node, "pathPrefix", path, "PUBLIC_ROUTE_INVALID");
 
-        return new PublicRoute(hostname, pathPrefix);
+        List<String> aliasPrefixes = parseAliasPrefixesField(node, path);
+
+        return new PublicRoute(hostname, pathPrefix, aliasPrefixes);
+    }
+
+    /// spec `function-zones-and-aliases.md` §3: each entry a DNS label
+    /// (reusing [DnsLabel]'s own format/length rule — `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`,
+    /// ≤ 63 characters), never `live` (that name is reserved for the exact
+    /// hostname match), no duplicates. Absent/empty ⇒ `[]` (exact match only).
+    private static List<String> parseAliasPrefixesField(JsonNode node, String path) {
+        JsonNode aliasNode = node.path("aliasPrefixes");
+        if (aliasNode.isMissingNode() || aliasNode.isNull()) return List.of();
+        if (!aliasNode.isArray()) {
+            throw UseCaseException.validation("PUBLIC_ROUTE_INVALID", path + ".aliasPrefixes must be an array");
+        }
+        List<String> out = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (int i = 0; i < aliasNode.size(); i++) {
+            JsonNode entry = aliasNode.get(i);
+            String entryPath = path + ".aliasPrefixes[" + i + "]";
+            if (!entry.isString() || !DnsLabel.isValid(entry.asString())) {
+                throw UseCaseException.validation("PUBLIC_ROUTE_INVALID", entryPath + " must be a DNS label");
+            }
+            String value = entry.asString();
+            if (Function.LIVE.equals(value)) {
+                throw UseCaseException.validation("PUBLIC_ROUTE_INVALID", entryPath + " must not be 'live'");
+            }
+            if (!seen.add(value)) {
+                throw UseCaseException.validation("PUBLIC_ROUTE_INVALID", entryPath + " is a duplicate");
+            }
+            out.add(value);
+        }
+        return List.copyOf(out);
     }
 
     // ── db / config / secrets / httpAllow ────────────────────────────────────
@@ -1126,7 +1165,26 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
             if (parsed.isEmpty()) return Optional.empty();
             pathPrefix = parsed.get();
         }
-        return Optional.of(new PublicRoute(hostname, pathPrefix));
+        List<String> aliasPrefixes = readAliasPrefixes(node);
+        return Optional.of(new PublicRoute(hostname, pathPrefix, aliasPrefixes));
+    }
+
+    /// Tolerant counterpart of [#parseAliasPrefixesField]: a malformed entry
+    /// (not a valid DNS label, `live`, or a repeat) is simply dropped rather
+    /// than failing the whole route (spec: `readStored` "never throws...
+    /// a malformed ... entry is dropped").
+    private static List<String> readAliasPrefixes(JsonNode node) {
+        JsonNode aliasNode = node.path("aliasPrefixes");
+        if (!aliasNode.isArray()) return List.of();
+        List<String> out = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (JsonNode entry : aliasNode) {
+            if (!entry.isString()) continue;
+            String value = entry.asString();
+            if (!DnsLabel.isValid(value) || Function.LIVE.equals(value)) continue;
+            if (seen.add(value)) out.add(value);
+        }
+        return List.copyOf(out);
     }
 
     private static List<DbRef> readDb(JsonNode root) {
@@ -1265,6 +1323,10 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         ObjectNode node = Json.MAPPER.createObjectNode();
         node.put("hostname", route.hostname().value());
         node.put("pathPrefix", route.pathPrefix().value());
+        if (!route.aliasPrefixes().isEmpty()) {
+            ArrayNode aliasNode = node.putArray("aliasPrefixes");
+            route.aliasPrefixes().forEach(aliasNode::add);
+        }
         return node;
     }
 

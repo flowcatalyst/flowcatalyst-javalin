@@ -16,7 +16,9 @@ import io.flowcatalyst.platform.function.FunctionRouteRepository;
 import io.flowcatalyst.platform.function.FunctionSettingsRepository;
 import io.flowcatalyst.platform.function.FunctionVersion;
 import io.flowcatalyst.platform.function.FunctionVersionRepository;
+import io.flowcatalyst.platform.function.Hostname;
 import io.flowcatalyst.platform.function.Manifest;
+import io.flowcatalyst.platform.function.RoutePattern;
 import io.flowcatalyst.platform.function.Runtime;
 import io.flowcatalyst.platform.function.SecretValue;
 import io.flowcatalyst.platform.function.SignerIdentity;
@@ -333,6 +335,94 @@ class DesiredStateTest {
         assertThat(live.aliases()).as("mutant: unsorted, or live itself included").containsExactly("aa", "zz");
         assertThat(candidate.role()).isEqualTo("candidate");
         assertThat(candidate.aliases()).as("mutant: aliases pointing at v1 leaked onto v2's entry").isEmpty();
+    }
+
+    // ── package J3 (function-zones-and-aliases.md §5): alias-only entries ────
+
+    /// D1: a version pointed at ONLY by named aliases (not live, not the
+    /// newest published candidate) appears with `role: alias`, `mode: lazy`
+    /// regardless of its own manifest's `warm`, carries its alias names
+    /// sorted, and — because it is still an entry of `functions` — a host
+    /// that reports it loaded is never listed in `unload` (mutant: drop the
+    /// entry from `functions` entirely, which would then surface it in
+    /// `unload` since the heartbeat below still reports it).
+    @Test
+    void anAliasOnlyVersionAppearsWithRoleAliasIsNeverUnloadedAndCarriesItsAliasesSorted() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        Function f = createFunction("aliasonly" + fresh());
+        FunctionVersion v1 = publish(f, 1, manifestForPool(pool.value(), false));
+        save(v1.markReady(Instant.now()));
+        f = promote(f, v1);
+        FunctionVersion v2 = publish(f, 2, manifestForPool(pool.value(), true)); // warm manifest — must still report lazy
+        save(v2.markReady(Instant.now()));
+        FunctionVersion v3 = publish(f, 3, manifestForPool(pool.value(), false)); // newest published => the candidate
+        f = f.promote("staging", v2, "prn_promoter", Instant.now()).function();
+        f = f.promote("qa", v2, "prn_promoter", Instant.now()).function();
+        save(f);
+
+        Instant now = Instant.now();
+        heartbeatHost("host-" + fresh(), pool, now,
+                List.of(new FunctionHost.LoadedVersion(f.address(), 2, new FunctionHost.LoadState.Loaded())));
+
+        DesiredState.Document doc = DESIRED.build(pool, now);
+        assertThat(doc.functions()).extracting(DesiredState.FunctionEntry::role)
+                .as("mutant: an aliased-only version is dropped from functions entirely")
+                .containsExactly("live", "alias", "candidate");
+        DesiredState.FunctionEntry aliasEntry = doc.functions().get(1);
+        assertThat(aliasEntry.version()).isEqualTo(2);
+        assertThat(aliasEntry.versionId()).isEqualTo(v2.id());
+        assertThat(aliasEntry.mode()).as("mutant: an alias-only entry is ever warm").isEqualTo("lazy");
+        assertThat(aliasEntry.aliases()).as("mutant: unsorted, or an alias name dropped")
+                .containsExactly("qa", "staging");
+        assertThat(doc.unload())
+                .as("mutant: dropping the alias entry from functions would surface the reported version here")
+                .isEmpty();
+    }
+
+    /// D1 corollary: an aliased version whose OWN manifest names a DIFFERENT
+    /// pool from the one being built never appears — the alias-only entry is
+    /// filtered by its own version's pool exactly like live/candidate are
+    /// (spec §5: "only if its own manifest's pool is the requested pool").
+    @Test
+    void anAliasOnlyVersionInADifferentPoolIsAbsentFromThisPoolsDocument() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        DnsLabel otherPool = new DnsLabel("otherpool" + fresh());
+        Function f = createFunction("aliaspool" + fresh());
+        FunctionVersion v1 = publish(f, 1, manifestForPool(pool.value(), false));
+        save(v1.markReady(Instant.now()));
+        f = promote(f, v1);
+        FunctionVersion v2 = publish(f, 2, manifestForPool(otherPool.value(), false)); // a different pool entirely
+        save(v2.markReady(Instant.now()));
+        f = f.promote("qa", v2, "prn_promoter", Instant.now()).function();
+        save(f);
+
+        DesiredState.Document doc = DESIRED.build(pool, Instant.now());
+        assertThat(doc.functions()).as("mutant: ignore the aliased version's own manifest pool")
+                .extracting(DesiredState.FunctionEntry::role).containsExactly("live");
+    }
+
+    /// D1's other mutant: the top-level `publicRoutes[]` carries the route's
+    /// `aliasPrefixes`, copied verbatim from `fn_routes` (mutant: drop the field).
+    @Test
+    void publicRoutesCarryAliasPrefixes() {
+        DnsLabel pool = new DnsLabel("pool" + fresh());
+        Function f = createFunction("routealias" + fresh());
+        FunctionVersion v1 = publish(f, 1, manifestForPool(pool.value(), false));
+        f = promote(f, v1);
+        Hostname hostname = Hostname.parse("api" + fresh() + ".acme.com");
+        FunctionRoute route = FunctionRoute.of(f.id(), hostname, RoutePattern.parse("/"), List.of("qa", "staging"),
+                Instant.now());
+        String functionId = f.id();
+        uow.inTransaction(tx -> {
+            routes.replaceForFunction(functionId, List.of(route), tx.dbTx());
+            return null;
+        });
+
+        DesiredState.Document doc = DESIRED.build(pool, Instant.now());
+        assertThat(doc.publicRoutes()).hasSize(1);
+        assertThat(doc.publicRoutes().getFirst().aliasPrefixes())
+                .as("mutant: drop aliasPrefixes from the desired-state publicRoutes entry")
+                .containsExactly("qa", "staging");
     }
 
     // ── P13: newer candidate ──────────────────────────────────────────────

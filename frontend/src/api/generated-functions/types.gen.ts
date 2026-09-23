@@ -123,6 +123,10 @@ export type PublishManifestRequest = {
     public?: Array<{
         hostname: string;
         pathPrefix?: string;
+        /**
+         * opt-in alias name prefixes (each a DNS label, never 'live', no duplicates); absent/empty means exact-hostname match only
+         */
+        aliasPrefixes?: Array<string>;
     }>;
     config?: Array<string>;
     secrets?: Array<string>;
@@ -198,6 +202,10 @@ export type ManifestSchedule = {
 export type ManifestPublicRoute = {
     hostname: string;
     pathPrefix: string;
+    /**
+     * opt-in alias name prefixes; [] when the route is exact-match only
+     */
+    aliasPrefixes?: Array<string>;
 };
 
 export type ManifestDbRef = {
@@ -423,6 +431,7 @@ export type FunctionRouteResponse = {
     hostname: string;
     pathPrefix: string;
     address: string;
+    aliasPrefixes: Array<string>;
 };
 
 export type HeartbeatLoadedEntry = {
@@ -477,6 +486,7 @@ export type DesiredStatePublicRouteEntry = {
     hostname: string;
     pathPrefix: string;
     address: string;
+    aliasPrefixes: Array<string>;
 };
 
 export type DesiredStateFunctionEntry = {
@@ -484,7 +494,7 @@ export type DesiredStateFunctionEntry = {
     functionId: string;
     versionId: string;
     version: number;
-    role: 'live' | 'candidate';
+    role: 'live' | 'candidate' | 'alias';
     mode: 'warm' | 'lazy';
     digest: string;
     artifactRef: string;
@@ -1483,7 +1493,7 @@ export type ClaimFunctionDomainErrors = {
      */
     403: ErrorResponse;
     /**
-     * DOMAIN_TAKEN
+     * DOMAIN_TAKEN — an existing claim (any owner) equals, covers, or is covered by this hostname
      */
     409: ErrorResponse;
 };
@@ -1503,7 +1513,7 @@ export type VerifyFunctionDomainData = {
     body?: never;
     path: {
         /**
-         * the claimed hostname
+         * any hostname covered by the claimed zone, or the zone apex itself — resolves to the zone's one claim
          */
         hostname: string;
     };
@@ -1545,7 +1555,7 @@ export type ReleaseFunctionDomainData = {
     body?: never;
     path: {
         /**
-         * the claimed hostname
+         * any hostname covered by the claimed zone, or the zone apex itself — resolves to the zone's one claim
          */
         hostname: string;
     };
@@ -1563,7 +1573,7 @@ export type ReleaseFunctionDomainErrors = {
      */
     404: ErrorResponse;
     /**
-     * DOMAIN_IN_USE
+     * DOMAIN_IN_USE — a public route exists on this zone's apex or on a hostname covered by it
      */
     409: ErrorResponse;
 };
@@ -1583,7 +1593,7 @@ export type GetFunctionDomainData = {
     body?: never;
     path: {
         /**
-         * the claimed hostname
+         * any hostname covered by a claimed zone, or the zone apex itself — resolves to the zone's one claim
          */
         hostname: string;
     };

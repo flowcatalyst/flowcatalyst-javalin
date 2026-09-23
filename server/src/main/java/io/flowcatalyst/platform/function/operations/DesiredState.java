@@ -86,12 +86,38 @@ public final class DesiredState {
         Map<String, FunctionVersion> liveVersions = liveLookup.versions();
         VersionBatch candidateLookup = versions.newestPublishedByFunctions(active.stream().map(Function::id).toList());
         Map<String, FunctionVersion> candidates = candidateLookup.versions();
-        reportAndGuardCorrupt(liveLookup.corrupt(), candidateLookup.corrupt(), pool);
 
         // Spec §6, R9: the application's webhook signing secret, resolved at most
         // once per application per call — several functions of one application
         // share it, and this read runs on every control-plane poll.
         Map<String, Optional<String>> secretByApplication = new HashMap<>();
+
+        // spec `function-zones-and-aliases.md` §5: a NAMED (non-`live`) alias whose
+        // version is neither this function's live version nor its newest published
+        // candidate — batch-read up front, like every other desired-state lookup —
+        // so #build's own loop below can add a `role: alias` entry for it, per
+        // function, without a second round trip per function.
+        Map<String, Set<String>> aliasOnlyVersionIdsByFunction = new LinkedHashMap<>();
+        for (Function f : active) {
+            String liveId = f.liveVersionId().orElse(null);
+            FunctionVersion candidate = candidates.get(f.id());
+            String candidateId = candidate == null ? null : candidate.id();
+            Set<String> versionIds = new LinkedHashSet<>();
+            for (Function.FunctionAlias a : f.aliases()) {
+                if (Function.LIVE.equals(a.alias())) continue;
+                if (a.versionId().equals(liveId) || a.versionId().equals(candidateId)) continue;
+                versionIds.add(a.versionId());
+            }
+            if (!versionIds.isEmpty()) {
+                aliasOnlyVersionIdsByFunction.put(f.id(), versionIds);
+            }
+        }
+        List<String> aliasOnlyVersionIds = aliasOnlyVersionIdsByFunction.values().stream()
+                .flatMap(Set::stream).distinct().toList();
+        VersionBatch aliasLookup = versions.findByIds(aliasOnlyVersionIds);
+
+        reportAndGuardCorrupt(liveLookup.corrupt(),
+                concat(candidateLookup.corrupt(), aliasLookup.corrupt()), pool);
 
         List<FunctionEntry> entries = new ArrayList<>();
         // spec `function-public-routes.md` §2: publicRoutes is per the LIVE version's
@@ -111,6 +137,15 @@ public final class DesiredState {
                 entries.add(FunctionEntry.of(f, candidate, "candidate",
                         signingSecretFor(f, candidate, secretByApplication), configAndSecretsFor(f, candidate),
                         namedAliasesFor(f, candidate)));
+            }
+            for (String versionId : aliasOnlyVersionIdsByFunction.getOrDefault(f.id(), Set.of())) {
+                FunctionVersion aliased = aliasLookup.versions().get(versionId);
+                if (aliased == null || !aliased.manifest().pool().equals(pool)) {
+                    continue; // corrupt (already logged above) or a different pool's document
+                }
+                entries.add(FunctionEntry.of(f, aliased, "alias",
+                        signingSecretFor(f, aliased, secretByApplication), configAndSecretsFor(f, aliased),
+                        namedAliasesFor(f, aliased)));
             }
         }
         entries.sort(Comparator.comparing(FunctionEntry::address).thenComparingInt(FunctionEntry::version));
@@ -159,6 +194,12 @@ public final class DesiredState {
     /// read, its `pool` is only a best-effort peek ([Manifest#peekStoredPool] — the ONE
     /// field that never depends on `runtime`/`entrypoint`); when even that peek fails
     /// (manifest not valid JSON at all), we cannot rule THIS pool out, so we fail safe.
+    private static List<CorruptVersion> concat(List<CorruptVersion> a, List<CorruptVersion> b) {
+        List<CorruptVersion> out = new ArrayList<>(a);
+        out.addAll(b);
+        return out;
+    }
+
     private void reportAndGuardCorrupt(List<CorruptVersion> live, List<CorruptVersion> candidates, DnsLabel pool) {
         Map<String, CorruptVersion> distinct = new LinkedHashMap<>();
         for (CorruptVersion c : live) {
@@ -190,7 +231,8 @@ public final class DesiredState {
         List<PublicRouteEntry> out = new ArrayList<>();
         for (Function f : liveInPool) {
             for (FunctionRoute r : byFunction.getOrDefault(f.id(), List.of())) {
-                out.add(new PublicRouteEntry(r.hostname().value(), r.pathPrefix().value(), f.address().render()));
+                out.add(new PublicRouteEntry(r.hostname().value(), r.pathPrefix().value(), f.address().render(),
+                        r.aliasPrefixes()));
             }
         }
         return out.stream()
@@ -317,16 +359,24 @@ public final class DesiredState {
         }
     }
 
-    /// One top-level `publicRoutes` entry (spec §2): `{hostname, pathPrefix,
-    /// address}` — the same shape `FunctionDomainApi`'s `GET
+    /// One top-level `publicRoutes` entry (spec §2, amended
+    /// `function-zones-and-aliases.md` §3): `{hostname, pathPrefix, address,
+    /// aliasPrefixes}` — the same shape `FunctionDomainApi`'s `GET
     /// /api/function-routes` returns for a route.
-    public record PublicRouteEntry(String hostname, String pathPrefix, String address) {
+    public record PublicRouteEntry(String hostname, String pathPrefix, String address, List<String> aliasPrefixes) {
+        public PublicRouteEntry {
+            aliasPrefixes = List.copyOf(aliasPrefixes);
+        }
     }
 
-    /// `role` is `"live"` or `"candidate"`; `mode` is `"warm"` when the
-    /// manifest says so, else `"lazy"` — a candidate is ALWAYS `"lazy"`
-    /// regardless of its own manifest's `warm` (spec §6.1: "a host fetches
-    /// and verifies a candidate and reports it REGISTERED, never serves it").
+    /// `role` is `"live"`, `"candidate"` or `"alias"` (spec
+    /// `function-zones-and-aliases.md` §5: a version pointed at ONLY by a
+    /// named alias — not live, not the newest published candidate); `mode`
+    /// is `"warm"` when the manifest says so, else `"lazy"` — a candidate OR
+    /// an alias-only entry is ALWAYS `"lazy"` regardless of its own
+    /// manifest's `warm` (spec §6.1: "a host fetches and verifies a
+    /// candidate and reports it REGISTERED, never serves it"; §5: the host
+    /// serves an alias-only entry lazily, never warm).
     /// `signer` (spec §0, R13) is the identity recorded at publish — omitted
     /// (never `null` on the wire, `Json`'s `NON_ABSENT` default) when the
     /// version was published with signatures off. `webhookSigningSecret`
@@ -349,7 +399,9 @@ public final class DesiredState {
 
         static FunctionEntry of(Function f, FunctionVersion v, String role, String webhookSigningSecret,
                 Settings settings, List<String> aliases) {
-            String mode = "candidate".equals(role) ? "lazy" : (v.manifest().warm() ? "warm" : "lazy");
+            // Only "live" ever gets to be warm (spec §6.1/§5); "candidate" is only
+            // verified, and an alias-only entry is served but always lazily.
+            String mode = "live".equals(role) && v.manifest().warm() ? "warm" : "lazy";
             boolean platformOwned = f.owner() instanceof FunctionOwner.Platform;
             // applicationId is always carried — a platform-owned function still belongs to an
             // application; only clientId is omitted for one (anchor-only reach, R1 §1).

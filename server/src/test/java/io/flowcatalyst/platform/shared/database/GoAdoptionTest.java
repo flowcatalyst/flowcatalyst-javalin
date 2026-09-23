@@ -60,13 +60,16 @@ class GoAdoptionTest {
         // changes no schema; V12 (Go 056, connection application scope, spec
         // `code-first-connections.md`) and V14 (Go 057, dispatch-job
         // descriptor/read-metadata/request_info, catch-up-2026-09-22.md) are
-        // each idempotent and a no-op on this goose-57 database.
-        assertThat(result.migrationsExecuted).isEqualTo(13);
+        // each idempotent and a no-op on this goose-57 database. V15
+        // (fn_routes.alias_prefixes, spec `function-zones-and-aliases.md` §3,
+        // package J slice J3) has no Go counterpart at all (like V13's own
+        // fn_ tables) — it is a genuine addition here too.
+        assertThat(result.migrationsExecuted).isEqualTo(14);
         assertThat(result.migrations).extracting(m -> m.version)
-                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14");
+                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15");
 
         MigrationInfo[] applied = Migrator.flyway(ds).info().applied();
-        assertThat(applied).hasSize(14);
+        assertThat(applied).hasSize(15);
         assertThat(applied[0].getVersion().getVersion()).isEqualTo("1");
         assertThat(applied[0].getState()).isEqualTo(MigrationState.BASELINE);
         for (int i = 1; i < applied.length; i++) {
@@ -86,7 +89,7 @@ class GoAdoptionTest {
                 assertThat(rs.getString(1)).isEqualTo("BASELINE");
                 assertThat(rs.getString(2)).isEqualTo("1");
                 assertThat(rs.getBoolean(3)).isTrue();
-                for (int v = 2; v <= 14; v++) {
+                for (int v = 2; v <= 15; v++) {
                     assertThat(rs.next()).isTrue();
                     assertThat(rs.getString(2)).isEqualTo(String.valueOf(v));
                     assertThat(rs.getBoolean(3)).isTrue();
@@ -115,6 +118,15 @@ class GoAdoptionTest {
                 assertThat(fnTables).as("V13 creates each fn_ table exactly once").containsExactly(
                         "fn_aliases", "fn_client_policies", "fn_config", "fn_domains", "fn_functions", "fn_hosts",
                         "fn_routes", "fn_secrets", "fn_trigger_objects", "fn_versions");
+            }
+            // V15: fn_routes.alias_prefixes is genuinely new here too — fn_routes
+            // itself did not exist on a Go database until V13 just created it above.
+            try (ResultSet rs = st.executeQuery("""
+                    SELECT count(*) FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'fn_routes'
+                      AND column_name = 'alias_prefixes'""")) {
+                rs.next();
+                assertThat(rs.getInt(1)).as("V15 adds fn_routes.alias_prefixes exactly once").isEqualTo(1);
             }
             // V2..V7, V9 and V10 are no-ops on a Go-HEAD database: the schema they
             // add is already there exactly once, not duplicated or altered.
