@@ -4,8 +4,7 @@ Owner rulings 2026-09-22 (`docs/backlog.md` §"Function domains: zone claims and
 a claim covers a zone; alias prefixes are **opt-in per route**; aliases are **HTTP-only**. Amends
 `function-public-routes.md` §1–§3, `function-api.md` §5 and §6.1, `function-registry.md` §4.1/§4.3,
 `function-developer-surface.md` §2, `function-ui.md`. **Implemented** — J1 zones `bc1be581`, J2
-named aliases `f8269fba`, J3 alias prefixes `f7c453a8`, J4 e2e + docs (this change — commit hash
-filled in once it lands, per this repo's own convention of citing landed commits by id).
+named aliases `f8269fba`, J3 alias prefixes `f7c453a8`, J4 e2e + docs `6a16efe8`.
 
 ## 0. What changes, in one paragraph
 
