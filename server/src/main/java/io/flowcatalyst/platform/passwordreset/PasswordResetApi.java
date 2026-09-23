@@ -136,11 +136,11 @@ public final class PasswordResetApi {
         // Silent to the caller, never silent in the logs: "no reset email
         // arrived" must be told apart from a delivery failure (Go `89f1a08`).
         // The reason is a class, never the address.
-        String ineligible = ineligibleForReset(p);
-        if (ineligible != null) {
+        Optional<String> ineligible = ineligibleForReset(p);
+        if (ineligible.isPresent()) {
             LOG.atInfo().setMessage("password reset requested for an ineligible account; no email sent")
                     .addKeyValue("principal", p.id())
-                    .addKeyValue("reason", ineligible)
+                    .addKeyValue("reason", ineligible.get())
                     .log();
             return;
         }
@@ -164,22 +164,22 @@ public final class PasswordResetApi {
         }
     }
 
-    /// Why a self-service reset cannot be issued for `p`, or `null` when it
+    /// Why a self-service reset cannot be issued for `p`, or empty when it
     /// can — the eligibility rule's own clauses, in order.
     /// `findByEmail` returns only USER principals with that address, so
     /// today only the federated clause is reachable; the other two stay so
     /// the rule does not silently depend on how the lookup is written.
-    static String ineligibleForReset(Principal p) {
+    static Optional<String> ineligibleForReset(Principal p) {
         if (!p.isUser()) {
-            return "not a USER principal";
+            return Optional.of("not a USER principal");
         }
         if (p.isFederated()) {
-            return "OIDC-federated (signs in through an external identity provider; has no platform password)";
+            return Optional.of("OIDC-federated (signs in through an external identity provider; has no platform password)");
         }
         if (p.email() == null || p.email().isBlank()) {
-            return "no email address on the account";
+            return Optional.of("no email address on the account");
         }
-        return null;
+        return Optional.empty();
     }
 
     // ── password-setup/request (app-managed-invitations §3) ─────────────────

@@ -99,6 +99,18 @@ Test: an invite confirm on a no-2FA domain adds exactly one SUCCESS row for
 the principal (count before/after); a RESET confirm adds none; mutant
 removing the write fails the first.
 
+## Error handling (applies to A and B)
+
+Per `CONVENTIONS.md` §8 and the owner's standing rule: an expected outcome is
+a sealed type returned and switched on, never a `throw`. The permission
+checks stay where the conventions already put them — `Checks.require` at the
+route, the operation's authorize phase for `SetProperty` — because those are
+the envelope's established boundaries. Anything new below them (the
+secret-masking decision, B's "was a session minted" decision and its
+best-effort row write) returns an outcome: no new exception type, no
+nullable-as-result, and a failed row write is a logged outcome, not a caught
+exception carried upward.
+
 ## C. Go
 
 The owner is moving off Go; no Go mirror is owed. Parity allow-list entries
