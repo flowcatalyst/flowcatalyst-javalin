@@ -136,6 +136,20 @@
       <type>test-jar</type>
       <scope>test</scope>
     </dependency>
+    <!-- Annotation processor only (provided scope, never shipped): generates
+         picocli's own reflect-config.json / native-image.properties for every
+         @Command class at compile time (-Aproject=fcdev below). Do not hand-write
+         picocli's reflection entries. Runs on EVERY compile, not only under
+         -Pnative: when it ran only in the native profile, a non-native build left
+         target/classes up to date with an OLD generated config, and the next
+         native package skipped javac and shipped it — a new @Option then crashed
+         the native binary with MissingReflectionRegistrationError (2026-09-24). -->
+    <dependency>
+      <groupId>info.picocli</groupId>
+      <artifactId>picocli-codegen</artifactId>
+      <version>${picocli.version}</version>
+      <scope>provided</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -157,6 +171,39 @@
     </resources>
 
     <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <executions>
+          <!-- Scoped to main sources only (the implicit "default-compile" execution):
+               test sources have no @Command classes, and picocli-codegen does not
+               claim -Aproject, so javac's "option not recognized by any processor"
+               warning becomes a hard error under this repo's failOnWarning — applying
+               the processor to default-testCompile too failed the build on exactly
+               that warning. -->
+          <execution>
+            <id>default-compile</id>
+            <configuration>
+              <compilerArgs>
+                <arg>-Xlint:all,-processing,-serial,-preview,-this-escape</arg>
+                <arg>-parameters</arg>
+                <arg>--enable-preview</arg>
+                <arg>-Aproject=fcdev</arg>
+              </compilerArgs>
+              <!-- Explicit path rather than relying on the provided-scope dependency
+                   landing on javac's implicit processor path: some compiler-plugin
+                   versions only run annotation processing for paths named here. -->
+              <annotationProcessorPaths>
+                <path>
+                  <groupId>info.picocli</groupId>
+                  <artifactId>picocli-codegen</artifactId>
+                  <version>${picocli.version}</version>
+                </path>
+              </annotationProcessorPaths>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
       <!--
         `fn init` ships the function API with the scaffold (owner, 2026-09-24: fcdev, not a
         Maven repository): function-api's compiled classes, zipped here into a jar that fcdev
@@ -272,53 +319,8 @@
     -->
     <profile>
       <id>native</id>
-      <dependencies>
-        <!-- Annotation processor only (provided scope, never shipped): generates
-             picocli's own reflect-config.json / native-image.properties for every
-             @Command class at compile time (-Aproject=fcdev below). Do not hand-write
-             picocli's reflection entries. -->
-        <dependency>
-          <groupId>info.picocli</groupId>
-          <artifactId>picocli-codegen</artifactId>
-          <version>${picocli.version}</version>
-          <scope>provided</scope>
-        </dependency>
-      </dependencies>
       <build>
         <plugins>
-          <plugin>
-            <groupId>org.apache.maven.plugins</groupId>
-            <artifactId>maven-compiler-plugin</artifactId>
-            <executions>
-              <!-- Scoped to main sources only (the implicit "default-compile" execution):
-                   test sources have no @Command classes, and picocli-codegen does not
-                   claim -Aproject, so javac's "option not recognized by any processor"
-                   warning becomes a hard error under this repo's failOnWarning — applying
-                   the processor to default-testCompile too failed the build on exactly
-                   that warning. -->
-              <execution>
-                <id>default-compile</id>
-                <configuration>
-                  <compilerArgs>
-                    <arg>-Xlint:all,-processing,-serial,-preview,-this-escape</arg>
-                    <arg>-parameters</arg>
-                    <arg>--enable-preview</arg>
-                    <arg>-Aproject=fcdev</arg>
-                  </compilerArgs>
-                  <!-- Explicit path rather than relying on the provided-scope dependency
-                       landing on javac's implicit processor path: some compiler-plugin
-                       versions only run annotation processing for paths named here. -->
-                  <annotationProcessorPaths>
-                    <path>
-                      <groupId>info.picocli</groupId>
-                      <artifactId>picocli-codegen</artifactId>
-                      <version>${picocli.version}</version>
-                    </path>
-                  </annotationProcessorPaths>
-                </configuration>
-              </execution>
-            </executions>
-          </plugin>
           <!-- Reflection config for our own classes: records, enums, Jackson-annotated
                DTOs and jOOQ record types only (io.flowcatalyst.tools.NativeReflectConfig,
                server test scope — additionalClasspathElements puts it on the classpath
