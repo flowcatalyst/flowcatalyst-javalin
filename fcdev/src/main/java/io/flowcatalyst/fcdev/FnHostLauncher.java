@@ -356,7 +356,12 @@ public final class FnHostLauncher {
             LOG.warn(reason);
             return new Disabled(reason);
         }
-        List<String> command = List.of(java.get().toString(), "-jar", jar.toString());
+        // The host jar is compiled with --enable-preview (CONVENTIONS.md §8) and links Endive and
+        // Netty natives — the same two flags its own image entrypoint passes
+        // (function-host/docker/entrypoint.sh). Without the first, the child dies on the first
+        // preview-compiled class with UnsupportedClassVersionError.
+        List<String> command = List.of(java.get().toString(), "--enable-preview", "--enable-native-access=ALL-UNNAMED",
+                "-jar", jar.toString());
         try {
             Process process = starter.start(command, settings.childProcessEnv());
             relayOutput(process);

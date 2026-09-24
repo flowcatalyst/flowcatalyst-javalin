@@ -39,7 +39,7 @@ class FnHostLauncherTest {
 
     /// The fake `java` records its argv and the env vars `HostEnv#load`
     /// reads, and traps TERM (exits cleanly instead of needing SIGKILL).
-    /// Pins: the command line is `java -jar <hostJar>`; the child's
+    /// Pins: the command line is `java --enable-preview --enable-native-access=ALL-UNNAMED -jar <hostJar>`; the child's
     /// environment carries the SAME values as the `FC_FN_*` settings plus
     /// `FC_METRICS_PORT` (not `FC_FN_METRICS_PORT` — that name is fcdev's OWN
     /// flag, kept distinct so it can never collide with the platform's own
@@ -63,7 +63,10 @@ class FnHostLauncherTest {
         awaitFile(dir.resolve("started.txt"), Duration.ofSeconds(5));
 
         List<String> argv = Files.readAllLines(dir.resolve("argv.txt"));
-        assertThat(argv).as("java -jar <hostJar>").containsExactly("-jar", hostJar.toString());
+        // --enable-preview: the host jar is preview-compiled; without it the real child died with
+        // UnsupportedClassVersionError (found booting the native fcdev, 2026-09-24).
+        assertThat(argv).as("java --enable-preview --enable-native-access=ALL-UNNAMED -jar <hostJar>")
+                .containsExactly("--enable-preview", "--enable-native-access=ALL-UNNAMED", "-jar", hostJar.toString());
 
         Map<String, String> env = readEnvFile(dir.resolve("env.txt"));
         assertThat(env)
@@ -284,7 +287,8 @@ class FnHostLauncherTest {
         Path script = dir.resolve("fake-java.sh");
         String body = """
                 #!/bin/sh
-                JAR="$2"
+                JAR=""; prev=""
+                for a in "$@"; do [ "$prev" = "-jar" ] && JAR="$a"; prev="$a"; done
                 DIR=$(dirname "$JAR")
                 : > "$DIR/argv.txt"
                 for a in "$@"; do printf '%s\\n' "$a" >> "$DIR/argv.txt"; done
