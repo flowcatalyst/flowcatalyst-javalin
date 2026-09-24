@@ -189,6 +189,58 @@ class FnCliEndToEndTest {
         assertThat(versioned.out()).contains("HTTP 200");
     }
 
+    /// spec `function-manifest-authoring.md` M2.3: `fn validate`'s three exit
+    /// codes against a real platform (the manifest/check route it calls) — 0
+    /// for a valid manifest, 1 for an invalid one, and 0 (not 1) again for a
+    /// valid manifest a declared config key is missing for, with a warning
+    /// line naming it. No jar, no promote: `fn validate` never publishes.
+    @Test
+    void validateExitCodesMatchValidityNotSettingsMissing() throws Exception {
+        StartCommand.Started started = fixture.boot(Map.of());
+
+        String run = Long.toUnsignedString(System.nanoTime(), 36);
+        String appCode = "fncliv" + run;
+        String[] anchor = {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
+        adminPost(started.apiPort(), anchor, "/api/applications",
+                obj("code", appCode, "name", appCode, "type", "APPLICATION"), 201);
+        adminPost(started.apiPort(), anchor, "/api/functions",
+                obj("applicationCode", appCode, "serviceName", "default", "name", "sample", "runtime", "jvm"), 201);
+        String address = appCode + ".default.sample";
+
+        Path validManifest = Files.createTempFile("fn-validate-valid-", ".json");
+        Files.writeString(validManifest, """
+                {"runtime":"jvm","entrypoint":"fixture.e2e.SampleFn","pool":"default","warm":false,
+                 "endpoints":[{"path":"/hello","auth":"none"}]}
+                """);
+        var valid = FnCliTestSupport.run(cliEnv(), "fn", "validate", address, "--manifest", validManifest.toString());
+        assertThat(valid.exit()).as("mutant: a valid manifest exits non-zero: " + valid.out() + valid.err()).isZero();
+        assertThat(valid.out()).as("nothing has ever been promoted: the pool would be created")
+                .contains("pool (create)");
+
+        Path invalidManifest = Files.createTempFile("fn-validate-invalid-", ".json");
+        Files.writeString(invalidManifest, """
+                {"runtime":"cobol","entrypoint":"fixture.e2e.SampleFn"}
+                """);
+        var invalid = FnCliTestSupport.run(cliEnv(), "fn", "validate", address, "--manifest", invalidManifest.toString());
+        assertThat(invalid.exit()).as("mutant: an invalid manifest exits zero").isEqualTo(1);
+        assertThat(invalid.out()).contains("RUNTIME_INVALID");
+
+        Path missingSettingManifest = Files.createTempFile("fn-validate-missing-setting-", ".json");
+        Files.writeString(missingSettingManifest, """
+                {"runtime":"jvm","entrypoint":"fixture.e2e.SampleFn","pool":"default","warm":false,
+                 "endpoints":[{"path":"/hello","auth":"none"}],"config":["API_KEY"]}
+                """);
+        var missingSetting = FnCliTestSupport.run(cliEnv(), "fn", "validate", address,
+                "--manifest", missingSettingManifest.toString());
+        assertThat(missingSetting.exit())
+                .as("mutant: settingsMissing alone fails the command: " + missingSetting.out()).isZero();
+        assertThat(missingSetting.out()).as("mutant: the missing key is not surfaced").contains("settings missing")
+                .contains("API_KEY");
+    }
+
     /// Retries `fn invoke` briefly: the reconcile pump runs concurrently with
     /// the CLI's own commands, so a version reaching `READY` (what `promote
     /// --wait` waits for) can win a race against the host actually finishing

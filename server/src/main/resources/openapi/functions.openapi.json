@@ -650,6 +650,74 @@
         ]
       }
     },
+    "/api/functions/{address}/manifest/check": {
+      "post": {
+        "operationId": "checkManifest",
+        "tags": [
+          "function-versions"
+        ],
+        "summary": "Validate a manifest and preview its promote plan, without writing anything",
+        "description": "Requires `platform:function:version:publish` (the same permission and reach as publish). Writes nothing: no version number is reserved, no row is locked for update. `errors` is what publishing this manifest would reject; `plan` is the promote plan for this manifest, as the next version, to `alias` (default `live`) — computed only when `errors` is empty. A `settingsMissing` entry in `plan` does NOT by itself make `valid` false.",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "description": "the function's `application.service.name` address",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckManifestRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Always 200 once authorised and the function is reachable — `valid` says whether the manifest is publishable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckManifestResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "PERMISSION_REQUIRED",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Function_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/functions/{address}/versions/{version}": {
       "get": {
         "operationId": "getFunctionVersion",
@@ -3266,6 +3334,291 @@
           "alias",
           "version",
           "versionId"
+        ],
+        "additionalProperties": false
+      },
+      "CheckManifestRequest": {
+        "type": "object",
+        "description": "Body of POST manifest/check.",
+        "properties": {
+          "manifest": {
+            "$ref": "#/components/schemas/PublishManifestRequest"
+          },
+          "alias": {
+            "type": "string",
+            "description": "defaults to `live` when absent/blank"
+          }
+        },
+        "required": [
+          "manifest"
+        ],
+        "additionalProperties": false
+      },
+      "ManifestErrorResponse": {
+        "type": "object",
+        "description": "One entry of CheckManifestResponse#errors — the same shape a real publish rejection's error body carries.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "CheckManifestResponse": {
+        "type": "object",
+        "description": "200 body of POST manifest/check. valid is errors empty; plan is present only when valid.",
+        "properties": {
+          "valid": {
+            "type": "boolean"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManifestErrorResponse"
+            }
+          },
+          "plan": {
+            "$ref": "#/components/schemas/PromotePlanResponse"
+          }
+        },
+        "required": [
+          "valid",
+          "errors"
+        ],
+        "additionalProperties": false
+      },
+      "PoolActionResponse": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "create",
+              "update",
+              "unchanged"
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "changedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "action",
+          "key",
+          "changedFields"
+        ],
+        "additionalProperties": false
+      },
+      "SubscriptionActionResponse": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "create",
+              "update",
+              "delete",
+              "unchanged"
+            ]
+          },
+          "triggerKey": {
+            "type": "string"
+          },
+          "eventType": {
+            "type": "string"
+          },
+          "changedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "action",
+          "triggerKey",
+          "eventType",
+          "changedFields"
+        ],
+        "additionalProperties": false
+      },
+      "ScheduleActionResponse": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "create",
+              "update",
+              "delete",
+              "unchanged"
+            ]
+          },
+          "triggerKey": {
+            "type": "string"
+          },
+          "cron": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "changedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "action",
+          "triggerKey",
+          "cron",
+          "changedFields"
+        ],
+        "additionalProperties": false
+      },
+      "RouteKeyResponse": {
+        "type": "object",
+        "properties": {
+          "hostname": {
+            "type": "string"
+          },
+          "pathPrefix": {
+            "type": "string"
+          },
+          "aliasPrefixes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "hostname",
+          "pathPrefix",
+          "aliasPrefixes"
+        ],
+        "additionalProperties": false
+      },
+      "PublicRoutesActionResponse": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "replace",
+              "unchanged"
+            ]
+          },
+          "added": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouteKeyResponse"
+            }
+          },
+          "removed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouteKeyResponse"
+            }
+          }
+        },
+        "required": [
+          "action",
+          "added",
+          "removed"
+        ],
+        "additionalProperties": false
+      },
+      "ConflictResponse": {
+        "type": "object",
+        "description": "What would make TriggerSync#apply of this plan fail — PUBLIC_ROUTE_TAKEN or TRIGGER_KEY_COLLISION.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "PromotePlanResponse": {
+        "type": "object",
+        "description": "PromotePlan on the wire. httpOnly is true for a named alias (function-zones-and-aliases.md §2) — pool/subscriptions/schedules/publicRoutes are then absent.",
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "fromVersion": {
+            "type": "integer",
+            "description": "the alias's version before this promote; absent when the alias is unset"
+          },
+          "toVersion": {
+            "type": "integer"
+          },
+          "settingsMissing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "httpOnly": {
+            "type": "boolean"
+          },
+          "pool": {
+            "$ref": "#/components/schemas/PoolActionResponse"
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionActionResponse"
+            }
+          },
+          "schedules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScheduleActionResponse"
+            }
+          },
+          "publicRoutes": {
+            "$ref": "#/components/schemas/PublicRoutesActionResponse"
+          },
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConflictResponse"
+            }
+          }
+        },
+        "required": [
+          "alias",
+          "toVersion",
+          "settingsMissing",
+          "httpOnly",
+          "conflicts"
         ],
         "additionalProperties": false
       },

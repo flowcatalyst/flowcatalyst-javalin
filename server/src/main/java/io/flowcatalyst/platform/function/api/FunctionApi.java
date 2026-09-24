@@ -1,5 +1,7 @@
 package io.flowcatalyst.platform.function.api;
 
+import io.flowcatalyst.platform.function.ClientCeilings;
+import io.flowcatalyst.platform.function.ClientPolicy;
 import io.flowcatalyst.platform.function.ClientPolicyRepository;
 import io.flowcatalyst.platform.function.Digest;
 import io.flowcatalyst.platform.function.Function;
@@ -31,6 +33,7 @@ import io.flowcatalyst.platform.function.operations.DeleteFunctionSecret;
 import io.flowcatalyst.platform.function.operations.DeleteSecretCommand;
 import io.flowcatalyst.platform.function.operations.FunctionEvents;
 import io.flowcatalyst.platform.function.operations.PromoteCommand;
+import io.flowcatalyst.platform.function.operations.PromotePlan;
 import io.flowcatalyst.platform.function.operations.PromoteVersion;
 import io.flowcatalyst.platform.function.operations.PublishCommand;
 import io.flowcatalyst.platform.function.operations.PublishVersion;
@@ -62,6 +65,8 @@ import io.flowcatalyst.platform.shared.auth.Visibility;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.sdk.result.Result;
+import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.http.Exchange;
@@ -179,6 +184,9 @@ public final class FunctionApi {
         routes.get("/api/function-pools", Auth.scoped(ctx -> pools(ctx, s)));
         // §5: versions and aliases (slice B3).
         write.post("/api/functions/{address}/versions", Auth.scoped(ctx -> publish(ctx, s)));
+        // spec `function-manifest-authoring.md` M2.2: validate/dry-run, same permission and
+        // reach as publish, writes nothing — deliberately NOT `write` (no transaction is opened).
+        routes.post("/api/functions/{address}/manifest/check", Auth.scoped(ctx -> checkManifest(ctx, s)));
         routes.get("/api/functions/{address}/versions", Auth.scoped(ctx -> listVersions(ctx, s)));
         routes.get("/api/functions/{address}/versions/{version}", Auth.scoped(ctx -> getVersion(ctx, s)));
         write.post("/api/functions/{address}/versions/{version}/retire", Auth.scoped(ctx -> retire(ctx, s)));
@@ -245,6 +253,52 @@ public final class FunctionApi {
                 .of(s.repo(), s.versions(), s.policies(), s.limits(), s.signatures(), s.triggerSync(), s.artifactBlobStore())
                 .run(s.uow(), req.toCommand(address), Auth.executionContext());
         ctx.status(201).json(PublishResponse.from(result.version()));
+    }
+
+    /// spec `function-manifest-authoring.md` M2.2: `POST
+    /// /api/functions/{address}/manifest/check` — same permission
+    /// (`FUNCTION_PUBLISH`) and reach as [#publish], answers 200 always once
+    /// authorised and reachable. `errors` is [Manifest#check]'s parse error
+    /// (at most one) plus [TriggerSync#checkPublish]'s cross-checks — exactly
+    /// what a real publish of this manifest would reject; `plan` is
+    /// [TriggerSync#plan] for promoting the manifest, AS THE NEXT VERSION, to
+    /// `alias` (default `live`), computed only when `errors` is empty.
+    /// `settingsMissing` alone never makes `valid` false (spec M2.2: it is a
+    /// promote precondition, not a publish one). The "next version" is a
+    /// plain max-and-add-one read — never [FunctionVersionRepository#nextVersion],
+    /// which reserves a real number under the function's row lock.
+    private static void checkManifest(Exchange ctx, State s) {
+        Checks.require(Auth.current(), FUNCTION_PUBLISH);
+        Function f = functionByAddress(s, parseAddress(ctx.pathParam("address")), Auth.current());
+        var req = ctx.bodyAsClass(CheckManifestRequest.class);
+        String alias = req.alias() == null || req.alias().isBlank() ? Function.LIVE : req.alias();
+
+        Optional<ClientPolicy> policy = s.policies().findByOwner(f.owner());
+        ClientCeilings ceilings = policy.map(p -> p.ceilings(s.limits())).orElseGet(() -> ClientCeilings.of(s.limits()));
+
+        List<ManifestErrorResponse> errors = new ArrayList<>();
+        PromotePlanResponse planResponse = null;
+        switch (Manifest.check(req.manifest(), f.runtime(), s.limits(), ceilings)) {
+            case Result.Err<Manifest, UseCaseError>(UseCaseError e) -> errors.add(ManifestErrorResponse.from(e));
+            case Result.Ok<Manifest, UseCaseError>(Manifest manifest) -> {
+                for (UseCaseError e : s.triggerSync().checkPublish(f, manifest)) {
+                    errors.add(ManifestErrorResponse.from(e));
+                }
+                if (errors.isEmpty()) {
+                    int previewNextVersion = previewNextVersion(s, f);
+                    PromotePlan plan = s.triggerSync().plan(f, manifest, previewNextVersion, alias);
+                    planResponse = PromotePlanResponse.from(plan);
+                }
+            }
+        }
+        ctx.json(new CheckManifestResponse(errors.isEmpty(), errors, planResponse));
+    }
+
+    /// A plain, non-locking read of what the NEXT version number would be
+    /// right now (spec M2.2: "no version number is reserved") — may go stale
+    /// under a concurrent publish, which is fine for a dry run.
+    private static int previewNextVersion(State s, Function f) {
+        return s.versions().listByFunction(f.id()).stream().mapToInt(FunctionVersion::version).max().orElse(0) + 1;
     }
 
     private static final int UPLOAD_CHUNK_BYTES = 64 * 1024;
@@ -882,6 +936,117 @@ public final class FunctionApi {
 
     /// One entry of `GET /api/functions/{address}/aliases` (spec §5.2).
     public record AliasResponse(String alias, int version, String versionId, String updatedBy, Instant updatedAt) {
+    }
+
+    // ── spec `function-manifest-authoring.md` M2.2: manifest/check DTOs ─────
+
+    /// Body of `POST /api/functions/{address}/manifest/check`. `alias`
+    /// absent/blank defaults to `live`.
+    public record CheckManifestRequest(JsonNode manifest, String alias) {
+    }
+
+    /// 200 body of the check route: `valid` is `errors` empty; `plan` is
+    /// `null` unless `valid`.
+    public record CheckManifestResponse(boolean valid, List<ManifestErrorResponse> errors, PromotePlanResponse plan) {
+    }
+
+    /// One entry of [CheckManifestResponse#errors] — a [UseCaseError] on the
+    /// wire, the same shape [io.flowcatalyst.platform.shared.httperror.HttpError]
+    /// answers for a real publish rejection.
+    public record ManifestErrorResponse(String code, String message, Map<String, Object> details) {
+        static ManifestErrorResponse from(UseCaseError e) {
+            return new ManifestErrorResponse(e.code(), e.message(), e.details());
+        }
+    }
+
+    /// [PromotePlan] on the wire (spec M2.1's table). `httpOnly` is `true`
+    /// for a named alias (spec §2) — `pool`/`subscriptions`/`schedules`/
+    /// `publicRoutes` are then absent (`null`/empty), `settingsMissing` and
+    /// `conflicts` still populated.
+    public record PromotePlanResponse(String alias, Integer fromVersion, int toVersion, List<String> settingsMissing,
+                                      boolean httpOnly, PoolActionResponse pool,
+                                      List<SubscriptionActionResponse> subscriptions,
+                                      List<ScheduleActionResponse> schedules, PublicRoutesActionResponse publicRoutes,
+                                      List<ConflictResponse> conflicts) {
+        static PromotePlanResponse from(PromotePlan plan) {
+            List<ConflictResponse> conflicts = plan.conflicts().stream().map(ConflictResponse::from).toList();
+            if (plan.wiring() instanceof PromotePlan.Wiring.Live live) {
+                return new PromotePlanResponse(plan.alias(), plan.fromVersion(), plan.toVersion(),
+                        plan.settingsMissing(), false, PoolActionResponse.from(live.pool()),
+                        live.subscriptions().stream().map(SubscriptionActionResponse::from).toList(),
+                        live.schedules().stream().map(ScheduleActionResponse::from).toList(),
+                        PublicRoutesActionResponse.from(live.publicRoutes()), conflicts);
+            }
+            return new PromotePlanResponse(plan.alias(), plan.fromVersion(), plan.toVersion(), plan.settingsMissing(),
+                    true, null, List.of(), List.of(), null, conflicts);
+        }
+    }
+
+    public record PoolActionResponse(String action, String key, List<String> changedFields) {
+        static PoolActionResponse from(PromotePlan.PoolAction a) {
+            return switch (a) {
+                case PromotePlan.PoolAction.Create c -> new PoolActionResponse("create", c.key(), List.of());
+                case PromotePlan.PoolAction.Update u -> new PoolActionResponse("update", u.key(), u.changedFields());
+                case PromotePlan.PoolAction.Unchanged u -> new PoolActionResponse("unchanged", u.key(), List.of());
+            };
+        }
+    }
+
+    public record SubscriptionActionResponse(String action, String triggerKey, String eventType,
+                                             List<String> changedFields) {
+        static SubscriptionActionResponse from(PromotePlan.SubscriptionAction a) {
+            return switch (a) {
+                case PromotePlan.SubscriptionAction.Create c ->
+                        new SubscriptionActionResponse("create", c.triggerKey(), c.eventType(), List.of());
+                case PromotePlan.SubscriptionAction.Update u ->
+                        new SubscriptionActionResponse("update", u.triggerKey(), u.eventType(), u.changedFields());
+                case PromotePlan.SubscriptionAction.Delete d ->
+                        new SubscriptionActionResponse("delete", d.triggerKey(), d.eventType(), List.of());
+                case PromotePlan.SubscriptionAction.Unchanged u ->
+                        new SubscriptionActionResponse("unchanged", u.triggerKey(), u.eventType(), List.of());
+            };
+        }
+    }
+
+    public record ScheduleActionResponse(String action, String triggerKey, String cron, String timezone,
+                                         List<String> changedFields) {
+        static ScheduleActionResponse from(PromotePlan.ScheduleAction a) {
+            return switch (a) {
+                case PromotePlan.ScheduleAction.Create c ->
+                        new ScheduleActionResponse("create", c.triggerKey(), c.cron(), c.timezone(), List.of());
+                case PromotePlan.ScheduleAction.Update u ->
+                        new ScheduleActionResponse("update", u.triggerKey(), u.cron(), u.timezone(), u.changedFields());
+                case PromotePlan.ScheduleAction.Delete d ->
+                        new ScheduleActionResponse("delete", d.triggerKey(), d.cron(), d.timezone(), List.of());
+                case PromotePlan.ScheduleAction.Unchanged u ->
+                        new ScheduleActionResponse("unchanged", u.triggerKey(), u.cron(), u.timezone(), List.of());
+            };
+        }
+    }
+
+    public record PublicRoutesActionResponse(String action, List<RouteKeyResponse> added,
+                                             List<RouteKeyResponse> removed) {
+        static PublicRoutesActionResponse from(PromotePlan.PublicRoutesAction a) {
+            return switch (a) {
+                case PromotePlan.PublicRoutesAction.Replace r -> new PublicRoutesActionResponse("replace",
+                        r.added().stream().map(RouteKeyResponse::from).toList(),
+                        r.removed().stream().map(RouteKeyResponse::from).toList());
+                case PromotePlan.PublicRoutesAction.Unchanged ignored ->
+                        new PublicRoutesActionResponse("unchanged", List.of(), List.of());
+            };
+        }
+    }
+
+    public record RouteKeyResponse(String hostname, String pathPrefix, List<String> aliasPrefixes) {
+        static RouteKeyResponse from(PromotePlan.RouteKey k) {
+            return new RouteKeyResponse(k.hostname(), k.pathPrefix(), k.aliasPrefixes());
+        }
+    }
+
+    public record ConflictResponse(String code, String message) {
+        static ConflictResponse from(PromotePlan.Conflict c) {
+            return new ConflictResponse(c.code(), c.message());
+        }
     }
 
     /// `GET /api/functions/{address}/status` (spec §6.3). `hosts` lists only

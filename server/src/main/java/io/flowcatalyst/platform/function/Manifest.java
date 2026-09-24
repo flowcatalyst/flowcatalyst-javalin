@@ -3,6 +3,8 @@ package io.flowcatalyst.platform.function;
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.subscription.Subscription;
+import io.flowcatalyst.sdk.result.Result;
+import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
@@ -288,6 +290,23 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         if (schemaNode.isMissingNode() || schemaNode.isNull()) return;
         if (!schemaNode.isString()) {
             throw UseCaseException.validation("MANIFEST_INVALID", "$schema must be a string");
+        }
+    }
+
+    /// spec `function-manifest-authoring.md` M2.2: the ONE place [#parseStrict]'s
+    /// exception becomes a value — the bridge until the parser itself returns
+    /// [Result] (`CONVENTIONS.md` §8's rule; documented here as the deliberate
+    /// exception to "expected outcomes are `Result`, not exceptions", since
+    /// [#parseStrict] is also the publish reader every existing operation
+    /// still calls for its thrown form). Used by the `manifest/check` route
+    /// (`FunctionApi`) so an invalid manifest is a value the handler switches
+    /// on, never a caught exception.
+    public static Result<Manifest, UseCaseError> check(JsonNode root, Runtime functionRuntime, FunctionLimits defaults,
+                                                         ClientCeilings ceilings) {
+        try {
+            return Result.ok(parseStrict(root, functionRuntime, defaults, ceilings));
+        } catch (UseCaseException e) {
+            return Result.err(e.error());
         }
     }
 

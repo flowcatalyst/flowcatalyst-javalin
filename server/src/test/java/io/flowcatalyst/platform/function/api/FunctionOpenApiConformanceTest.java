@@ -296,6 +296,33 @@ class FunctionOpenApiConformanceTest {
         call("listFunctionVersions", http.get("/api/functions/" + address + "/versions", FULL), 200, null);
         call("getFunctionVersion", http.get("/api/functions/" + address + "/versions/1", FULL), 200, null);
 
+        // 10b. checkManifest (spec function-manifest-authoring.md M2.2) — a valid manifest,
+        // dry-run promoted to live: writes nothing (no version is reserved here). This
+        // harness wires TriggerSync.none() (same precedent as FunctionControlApiTest below),
+        // whose plan() is the degenerate HttpOnly stub for every alias including live —
+        // FunctionTriggerSyncTest exercises the REAL wiring-plan classification.
+        String checkBody = "{\"manifest\":" + manifest1 + ",\"alias\":\"live\"}";
+        JsonNode checked = call("checkManifest",
+                http.post("/api/functions/" + address + "/manifest/check", checkBody, FULL), 200, checkBody);
+        assertThat(checked.get("valid").asBoolean()).as("mutant: a valid manifest reported invalid").isTrue();
+        assertThat(checked.get("errors")).isEmpty();
+        assertThat(checked.get("plan").get("alias").asText()).isEqualTo("live");
+        assertThat(checked.get("plan").get("toVersion").asInt()).as("preview: next after v1").isEqualTo(2);
+
+        // O4 (checkManifest family): an invalid manifest is still 200, valid:false, never a
+        // thrown error — raw http (not `call`) since the bad body itself must NOT conform to
+        // the request schema (S4's publishFunctionVersion pair below does the same for that
+        // reason).
+        String badCheckBody = "{\"manifest\":{\"runtime\":\"cobol\",\"entrypoint\":\"com.acme.Fn\"}}";
+        var badCheckResponse = http.post("/api/functions/" + address + "/manifest/check", badCheckBody, FULL);
+        EXERCISED.add("checkManifest");
+        assertThat(badCheckResponse.statusCode()).as(badCheckResponse.body()).isEqualTo(200);
+        JsonNode badChecked = Json.MAPPER.readTree(badCheckResponse.body());
+        assertResponseConforms("checkManifest", 200, badChecked);
+        assertThat(badChecked.get("valid").asBoolean()).isFalse();
+        assertThat(badChecked.get("errors").get(0).get("code").asText()).isEqualTo("RUNTIME_INVALID");
+        assertThat(badChecked.has("plan")).as("mutant: compute a plan for an invalid manifest").isFalse();
+
         // 11. heartbeatFunctionHost — reports v1 LOADED, which marks it READY
         String hostId = "host-" + RUN;
         String heartbeatBody = "{\"hostId\":\"" + hostId + "\",\"pool\":\"default\",\"state\":\"ACTIVE\","

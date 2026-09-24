@@ -102,7 +102,7 @@ class FunctionTriggerSyncTest {
     private static final Signatures OFF = new Signatures.Off();
     private static final PoolUrlTemplate POOL_URL = PoolUrlTemplate.parse("http://fn-{pool}:8080");
     private static final FunctionTriggerSync SYNC = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes,
-            triggerObjects, applications, serviceAccounts, versions, DEFAULTS, POOL_URL, domains, routes, functions);
+            triggerObjects, applications, serviceAccounts, versions, DEFAULTS, POOL_URL, domains, routes, functions, settings);
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 8).toLowerCase(Locale.ROOT);
     private static final String PRINCIPAL = "usr_fts_" + RUN;
@@ -273,6 +273,23 @@ class FunctionTriggerSyncTest {
 
     private static String sched(String cron, String path) {
         return "{\"cron\":\"" + cron + "\",\"path\":\"" + path + "\"}";
+    }
+
+    /// spec `function-manifest-authoring.md` M2 test 1: subscriptions,
+    /// schedules AND a public route together, so one manifest can exercise
+    /// every [PromotePlan.Wiring.Live] field in a single plan/apply scenario.
+    private static JsonNode manifestFull(String pool, int maxConcurrency, List<String> subs, List<String> scheds,
+            String publicHostname, String publicPathPrefix) {
+        String json = "{"
+                + "\"runtime\":\"jvm\",\"entrypoint\":\"com.acme.Fn\","
+                + "\"pool\":\"" + pool + "\",\"warm\":false,"
+                + "\"limits\":{\"maxConcurrency\":" + maxConcurrency + "},"
+                + "\"endpoints\":[{\"path\":\"/events/*\",\"auth\":\"webhook\"},{\"path\":\"/jobs/*\",\"auth\":\"webhook\"}],"
+                + "\"subscriptions\":[" + String.join(",", subs) + "],"
+                + "\"schedules\":[" + String.join(",", scheds) + "],"
+                + "\"public\":[{\"hostname\":\"" + publicHostname + "\",\"pathPrefix\":\"" + publicPathPrefix + "\"}]"
+                + "}";
+        return Json.MAPPER.readTree(json);
     }
 
     /// A minimal manifest declaring exactly one `public[]` entry (spec
@@ -447,7 +464,7 @@ class FunctionTriggerSyncTest {
         FunctionLimits tight = new FunctionLimits(DEFAULTS.maxDurationMs(), DEFAULTS.maxConcurrency(),
                 DEFAULTS.wasmMemoryMb(), DEFAULTS.dbPoolSize(), 1);
         FunctionTriggerSync tightSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes, triggerObjects,
-                applications, serviceAccounts, versions, tight, POOL_URL, domains, routes, functions);
+                applications, serviceAccounts, versions, tight, POOL_URL, domains, routes, functions, settings);
 
         // First warm function in this pool: fits exactly at the cap of 1.
         Function first = createFunction(appId, new FunctionOwner.Platform());
@@ -484,7 +501,7 @@ class FunctionTriggerSyncTest {
         FunctionLimits tight = new FunctionLimits(DEFAULTS.maxDurationMs(), DEFAULTS.maxConcurrency(),
                 DEFAULTS.wasmMemoryMb(), DEFAULTS.dbPoolSize(), 1);
         FunctionTriggerSync tightSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes, triggerObjects,
-                applications, serviceAccounts, versions, tight, POOL_URL, domains, routes, functions);
+                applications, serviceAccounts, versions, tight, POOL_URL, domains, routes, functions, settings);
 
         Function f1 = createFunction(appId, new FunctionOwner.Platform());
         JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
@@ -515,7 +532,7 @@ class FunctionTriggerSyncTest {
         FunctionLimits tight = new FunctionLimits(DEFAULTS.maxDurationMs(), DEFAULTS.maxConcurrency(),
                 DEFAULTS.wasmMemoryMb(), DEFAULTS.dbPoolSize(), 1);
         FunctionTriggerSync tightSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes, triggerObjects,
-                applications, serviceAccounts, versions, tight, POOL_URL, domains, routes, functions);
+                applications, serviceAccounts, versions, tight, POOL_URL, domains, routes, functions, settings);
 
         Function f1 = createFunction(appId, new FunctionOwner.Platform());
         JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
@@ -545,7 +562,7 @@ class FunctionTriggerSyncTest {
         FunctionLimits tight = new FunctionLimits(DEFAULTS.maxDurationMs(), DEFAULTS.maxConcurrency(),
                 DEFAULTS.wasmMemoryMb(), DEFAULTS.dbPoolSize(), 1);
         FunctionTriggerSync tightSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes, triggerObjects,
-                applications, serviceAccounts, versions, tight, POOL_URL, domains, routes, functions);
+                applications, serviceAccounts, versions, tight, POOL_URL, domains, routes, functions, settings);
 
         Function f1 = createFunction(appId, new FunctionOwner.Platform());
         JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
@@ -575,7 +592,7 @@ class FunctionTriggerSyncTest {
         FunctionLimits tight = new FunctionLimits(DEFAULTS.maxDurationMs(), DEFAULTS.maxConcurrency(),
                 DEFAULTS.wasmMemoryMb(), DEFAULTS.dbPoolSize(), 1);
         FunctionTriggerSync tightSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes, triggerObjects,
-                applications, serviceAccounts, versions, tight, POOL_URL, domains, routes, functions);
+                applications, serviceAccounts, versions, tight, POOL_URL, domains, routes, functions, settings);
 
         Function f1 = createFunction(appId, new FunctionOwner.Platform());
         JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
@@ -605,7 +622,7 @@ class FunctionTriggerSyncTest {
         FunctionLimits tight = new FunctionLimits(DEFAULTS.maxDurationMs(), DEFAULTS.maxConcurrency(),
                 DEFAULTS.wasmMemoryMb(), DEFAULTS.dbPoolSize(), 1);
         FunctionTriggerSync tightSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes, triggerObjects,
-                applications, serviceAccounts, versions, tight, POOL_URL, domains, routes, functions);
+                applications, serviceAccounts, versions, tight, POOL_URL, domains, routes, functions, settings);
 
         Function f1 = createFunction(appId, new FunctionOwner.Platform());
         JsonNode warmManifest = manifest(pool.value(), true, null, List.of(), List.of());
@@ -673,7 +690,7 @@ class FunctionTriggerSyncTest {
         Function f = createFunction(appId, new FunctionOwner.Platform());
         FunctionTriggerSync collidingSync = new FunctionTriggerSync(subscriptions, pools, jobs, eventTypes,
                 triggerObjects, applications, serviceAccounts, versions, DEFAULTS, POOL_URL, domains, routes, functions,
-                ignored -> "deadbeef");
+                settings, ignored -> "deadbeef");
 
         JsonNode m = manifest("default", false, null, List.of(sub(et1, "/events/a"), sub(et2, "/events/b")), List.of());
         var cmd = new PublishCommand(f.address(), "oci://artifact/kc2", sha256("kc2"), null, m);
@@ -1150,6 +1167,118 @@ class FunctionTriggerSyncTest {
 
         DispatchPool after = pools.findById(poolLink.objectId()).orElseThrow();
         assertThat(after.updatedAt()).as("mutant: always rewrite -> updated_at would move").isEqualTo(before.updatedAt());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // spec `function-manifest-authoring.md` M2 test 1 (load-bearing): the
+    // plan is what promote does — across scenarios (first promote everything
+    // Create; add one subscription and drop another; a changed schedule; a
+    // changed pool limit; a changed public route), THEN a fresh plan shows
+    // every action Unchanged.
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Mutant this pins (spec's own wording): make `apply` skip deletions —
+    /// the post-promote plan would still show a `Delete` action and the row
+    /// count would disagree. Also pins: `apply` performing an update/create
+    /// the plan did not call for, and a stale public route surviving a
+    /// changed `pathPrefix`.
+    @Test
+    void planMatchesEveryRowPromoteActuallyWritesAndAFreshPlanAfterwardsIsAllUnchanged() {
+        String appId = persistApplication("m2p1");
+        persistServiceAccount(appId, "secret-" + fresh(), true);
+        String keepType = "fts:m2p1:x:keep-" + fresh();
+        String dropType = "fts:m2p1:x:drop-" + fresh();
+        String addType = "fts:m2p1:x:add-" + fresh();
+        persistEventType(keepType);
+        persistEventType(dropType);
+        persistEventType(addType);
+        Function f = createFunction(appId, new FunctionOwner.Platform());
+        String host = "m2p1-" + fresh() + ".example.com";
+        persistDomain(new FunctionOwner.Platform(), host);
+
+        // v1: first promote — everything must be Create.
+        JsonNode m1 = manifestFull("default", 3,
+                List.of(sub(keepType, "/events/keep"), sub(dropType, "/events/drop")),
+                List.of(sched("0 0 * * * *", "/jobs/a")), host, "/api");
+        PublishVersion.Result p1 = publish(f.address(), "m2p1-1", m1);
+
+        PromotePlan planV1 = SYNC.plan(functions.findByAddress(f.address()).orElseThrow(), p1.version().manifest(),
+                p1.version().version(), Function.LIVE);
+        assertThat(planV1.wiring()).isInstanceOf(PromotePlan.Wiring.Live.class);
+        var liveV1 = (PromotePlan.Wiring.Live) planV1.wiring();
+        assertThat(liveV1.pool()).as("first promote: pool is created").isInstanceOf(PromotePlan.PoolAction.Create.class);
+        assertThat(liveV1.subscriptions()).hasSize(2)
+                .allSatisfy(a -> assertThat(a).isInstanceOf(PromotePlan.SubscriptionAction.Create.class));
+        assertThat(liveV1.schedules()).hasSize(1)
+                .allSatisfy(a -> assertThat(a).isInstanceOf(PromotePlan.ScheduleAction.Create.class));
+        assertThat(liveV1.publicRoutes()).isInstanceOf(PromotePlan.PublicRoutesAction.Replace.class);
+
+        promote(f.address(), p1.version().version());
+
+        // Every row the plan predicted actually exists now — count by kind, matching
+        // the plan's own action counts one for one.
+        List<TriggerObject> afterV1 = linked(f);
+        assertThat(afterV1).as("mutant: apply creates a different count than the plan predicted")
+                .hasSize(1 /* pool */ + 2 /* subscriptions */ + 1 /* schedule */);
+        assertThat(routes.listByFunction(f.id())).hasSize(1);
+
+        // A fresh plan for the SAME manifest, now that it is live, shows everything
+        // Unchanged (the "identical re-promote" scenario, without a second publish).
+        PromotePlan planAfterV1 = SYNC.plan(functions.findByAddress(f.address()).orElseThrow(),
+                p1.version().manifest(), p1.version().version(), Function.LIVE);
+        var liveAfterV1 = (PromotePlan.Wiring.Live) planAfterV1.wiring();
+        assertThat(liveAfterV1.pool()).isInstanceOf(PromotePlan.PoolAction.Unchanged.class);
+        assertThat(liveAfterV1.subscriptions())
+                .allSatisfy(a -> assertThat(a).isInstanceOf(PromotePlan.SubscriptionAction.Unchanged.class));
+        assertThat(liveAfterV1.schedules())
+                .allSatisfy(a -> assertThat(a).isInstanceOf(PromotePlan.ScheduleAction.Unchanged.class));
+        assertThat(liveAfterV1.publicRoutes()).isInstanceOf(PromotePlan.PublicRoutesAction.Unchanged.class);
+        assertThat(planAfterV1.conflicts()).isEmpty();
+
+        // v2: adds addType, drops dropType, keeps keepType, bumps pool concurrency,
+        // changes the schedule's target path (SAME cron+timezone key: an Update, never a
+        // Create/Delete pair), and moves the public route to a new path prefix.
+        JsonNode m2 = manifestFull("default", 9,
+                List.of(sub(keepType, "/events/keep"), sub(addType, "/events/add")),
+                List.of(sched("0 0 * * * *", "/jobs/b")), host, "/api2");
+        PublishVersion.Result p2 = publish(f.address(), "m2p1-2", m2);
+
+        PromotePlan planV2 = SYNC.plan(functions.findByAddress(f.address()).orElseThrow(), p2.version().manifest(),
+                p2.version().version(), Function.LIVE);
+        var liveV2 = (PromotePlan.Wiring.Live) planV2.wiring();
+        assertThat(liveV2.pool()).isInstanceOf(PromotePlan.PoolAction.Update.class);
+        assertThat(liveV2.subscriptions()).extracting(Object::getClass).containsExactlyInAnyOrder(
+                PromotePlan.SubscriptionAction.Unchanged.class, PromotePlan.SubscriptionAction.Create.class,
+                PromotePlan.SubscriptionAction.Delete.class);
+        assertThat(liveV2.schedules()).hasSize(1);
+        assertThat(liveV2.schedules().get(0)).isInstanceOf(PromotePlan.ScheduleAction.Update.class);
+        assertThat(liveV2.publicRoutes()).isInstanceOf(PromotePlan.PublicRoutesAction.Replace.class);
+
+        promote(f.address(), p2.version().version());
+
+        List<TriggerObject> afterV2 = linked(f);
+        assertThat(afterV2).as("mutant: apply skips a create/update/delete the plan predicted")
+                .hasSize(1 /* pool */ + 2 /* keepType, addType */ + 1 /* schedule, same key */);
+        List<String> subEventTypesAfterV2 = afterV2.stream().filter(o -> o.kind() == TriggerObjectKind.SUBSCRIPTION)
+                .map(TriggerObject::objectId).map(id -> subscriptions.findById(id).orElseThrow())
+                .map(s -> s.eventTypes().get(0).eventTypeCode()).toList();
+        assertThat(subEventTypesAfterV2).as("dropType's row is really gone, addType's really exists")
+                .containsExactlyInAnyOrder(keepType, addType);
+        assertThat(routes.listByFunction(f.id()).get(0).pathPrefix().value()).isEqualTo("/api2");
+
+        // THE MUTANT (spec M2 test 1): after v2's promote, a fresh plan must show
+        // everything Unchanged. If `apply` had skipped the dropType deletion, this
+        // plan would show a `Delete` action for it (and afterV2 above would already
+        // have failed its row count first).
+        PromotePlan planAfterV2 = SYNC.plan(functions.findByAddress(f.address()).orElseThrow(),
+                p2.version().manifest(), p2.version().version(), Function.LIVE);
+        var liveAfterV2 = (PromotePlan.Wiring.Live) planAfterV2.wiring();
+        assertThat(liveAfterV2.pool()).isInstanceOf(PromotePlan.PoolAction.Unchanged.class);
+        assertThat(liveAfterV2.subscriptions()).as("mutant: apply skips deletions -> this would still show a Delete")
+                .allSatisfy(a -> assertThat(a).isInstanceOf(PromotePlan.SubscriptionAction.Unchanged.class));
+        assertThat(liveAfterV2.schedules())
+                .allSatisfy(a -> assertThat(a).isInstanceOf(PromotePlan.ScheduleAction.Unchanged.class));
+        assertThat(liveAfterV2.publicRoutes()).isInstanceOf(PromotePlan.PublicRoutesAction.Unchanged.class);
     }
 
     // ═══════════════════════════════════════════════════════════════════

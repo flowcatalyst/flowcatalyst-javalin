@@ -264,6 +264,97 @@ export type PromoteResponse = {
     previousVersion?: number;
 };
 
+/**
+ * Body of POST manifest/check.
+ */
+export type CheckManifestRequest = {
+    manifest: PublishManifestRequest;
+    /**
+     * defaults to `live` when absent/blank
+     */
+    alias?: string;
+};
+
+/**
+ * One entry of CheckManifestResponse#errors — the same shape a real publish rejection's error body carries.
+ */
+export type ManifestErrorResponse = {
+    code: string;
+    message: string;
+    details?: {
+        [key: string]: unknown;
+    };
+};
+
+/**
+ * 200 body of POST manifest/check. valid is errors empty; plan is present only when valid.
+ */
+export type CheckManifestResponse = {
+    valid: boolean;
+    errors: Array<ManifestErrorResponse>;
+    plan?: PromotePlanResponse;
+};
+
+export type PoolActionResponse = {
+    action: 'create' | 'update' | 'unchanged';
+    key: string;
+    changedFields: Array<string>;
+};
+
+export type SubscriptionActionResponse = {
+    action: 'create' | 'update' | 'delete' | 'unchanged';
+    triggerKey: string;
+    eventType: string;
+    changedFields: Array<string>;
+};
+
+export type ScheduleActionResponse = {
+    action: 'create' | 'update' | 'delete' | 'unchanged';
+    triggerKey: string;
+    cron: string;
+    timezone?: string;
+    changedFields: Array<string>;
+};
+
+export type RouteKeyResponse = {
+    hostname: string;
+    pathPrefix: string;
+    aliasPrefixes: Array<string>;
+};
+
+export type PublicRoutesActionResponse = {
+    action: 'replace' | 'unchanged';
+    added: Array<RouteKeyResponse>;
+    removed: Array<RouteKeyResponse>;
+};
+
+/**
+ * What would make TriggerSync#apply of this plan fail — PUBLIC_ROUTE_TAKEN or TRIGGER_KEY_COLLISION.
+ */
+export type ConflictResponse = {
+    code: string;
+    message: string;
+};
+
+/**
+ * PromotePlan on the wire. httpOnly is true for a named alias (function-zones-and-aliases.md §2) — pool/subscriptions/schedules/publicRoutes are then absent.
+ */
+export type PromotePlanResponse = {
+    alias: string;
+    /**
+     * the alias's version before this promote; absent when the alias is unset
+     */
+    fromVersion?: number;
+    toVersion: number;
+    settingsMissing: Array<string>;
+    httpOnly: boolean;
+    pool?: PoolActionResponse;
+    subscriptions?: Array<SubscriptionActionResponse>;
+    schedules?: Array<ScheduleActionResponse>;
+    publicRoutes?: PublicRoutesActionResponse;
+    conflicts: Array<ConflictResponse>;
+};
+
 export type AliasResponse = {
     alias: string;
     version: number;
@@ -851,6 +942,40 @@ export type PublishFunctionVersionResponses = {
 };
 
 export type PublishFunctionVersionResponse = PublishFunctionVersionResponses[keyof PublishFunctionVersionResponses];
+
+export type CheckManifestData = {
+    body: CheckManifestRequest;
+    path: {
+        /**
+         * the function's `application.service.name` address
+         */
+        address: string;
+    };
+    query?: never;
+    url: '/api/functions/{address}/manifest/check';
+};
+
+export type CheckManifestErrors = {
+    /**
+     * PERMISSION_REQUIRED
+     */
+    403: ErrorResponse;
+    /**
+     * Function_NOT_FOUND
+     */
+    404: ErrorResponse;
+};
+
+export type CheckManifestError = CheckManifestErrors[keyof CheckManifestErrors];
+
+export type CheckManifestResponses = {
+    /**
+     * Always 200 once authorised and the function is reachable — `valid` says whether the manifest is publishable
+     */
+    200: CheckManifestResponse;
+};
+
+export type CheckManifestResponse2 = CheckManifestResponses[keyof CheckManifestResponses];
 
 export type GetFunctionVersionData = {
     body?: never;

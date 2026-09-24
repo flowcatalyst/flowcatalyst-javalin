@@ -296,6 +296,7 @@ class PublishPromoteRetireTest {
     @Test
     void aThrowingTriggerSeamLeavesNoVersionRowNoEventAndTheNextPublishStillGetsVersionOne() {
         Function f = createFunction("p7", new FunctionOwner.Platform());
+        TriggerSync none = TriggerSync.none();
         TriggerSync throwing = new TriggerSync() {
             @Override
             public void onPublish(io.flowcatalyst.sdk.usecase.jdbc.TxScopedUnitOfWork scoped, Function function,
@@ -304,10 +305,21 @@ class PublishPromoteRetireTest {
             }
 
             @Override
-            public void onPromote(io.flowcatalyst.sdk.usecase.jdbc.TxScopedUnitOfWork scoped, Function function,
+            public java.util.List<io.flowcatalyst.sdk.usecase.UseCaseError> checkPublish(Function function,
+                    io.flowcatalyst.platform.function.Manifest manifest) {
+                return none.checkPublish(function, manifest);
+            }
+
+            @Override
+            public PromotePlan plan(Function function, io.flowcatalyst.platform.function.Manifest manifest,
+                    int toVersion, String alias) {
+                return none.plan(function, manifest, toVersion, alias);
+            }
+
+            @Override
+            public void apply(io.flowcatalyst.sdk.usecase.jdbc.TxScopedUnitOfWork scoped, Function function,
                     io.flowcatalyst.platform.function.FunctionVersion newLive,
-                    io.flowcatalyst.platform.function.FunctionVersion previousLive,
-                    io.flowcatalyst.sdk.usecase.ExecutionContext ec) {
+                    io.flowcatalyst.sdk.usecase.ExecutionContext ec, PromotePlan plan) {
             }
 
             @Override

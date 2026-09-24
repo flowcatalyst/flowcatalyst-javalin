@@ -88,16 +88,22 @@ public final class PromoteVersion {
 
                     requireSettingsPresent(settings, f.id(), v.manifest());
 
+                    // spec `function-manifest-authoring.md` M2.1: the wiring diff, computed
+                    // read-only, then applied verbatim below — `f` (not yet promoted) carries
+                    // the alias's CURRENT target, for PromotePlan#fromVersion.
+                    PromotePlan plan = triggerSync.plan(f, v.manifest(), v.version(), cmd.alias());
+
                     Instant now = Instant.now();
                     Function.Promoted promoted = f.promote(cmd.alias(), v, ec.principalId(), now);
                     AliasChanged event = AliasChanged.of(ec, promoted.function(), cmd.alias(), v, promoted.previousVersionId());
                     scoped.commit(promoted.function(), functions, event, cmd);
 
-                    // Named-alias promote is HTTP-only (spec §2) — never reaches TriggerSync at all.
+                    // Named-alias promote is HTTP-only (spec §2) — never reaches TriggerSync's
+                    // wiring at all; `plan.wiring()` is already `HttpOnly` for that case, so
+                    // `apply` itself is a no-op, but the LIVE guard here matches the pre-M2 shape
+                    // (`onPromote` was never even called for a named alias) and is asserted directly.
                     if (Function.LIVE.equals(cmd.alias())) {
-                        FunctionVersion previousLive = promoted.previousVersionId() == null ? null
-                                : versions.findById(promoted.previousVersionId()).orElse(null);
-                        triggerSync.onPromote(scoped, promoted.function(), v, previousLive, ec);
+                        triggerSync.apply(scoped, promoted.function(), v, ec, plan);
                     }
 
                     return event;
@@ -108,35 +114,40 @@ public final class PromoteVersion {
     /// `config`, `secrets`, and each `db[].secretRef` — must have a value,
     /// checked as three independent sources (a candidate may be missing some
     /// of one and none of another) and reported together, naming every
-    /// missing key from all three, or none is thrown at all.
+    /// missing key from all three, or none is thrown at all. Independent of
+    /// `triggerSync` (spec `function-manifest-authoring.md` M2.1's
+    /// `PromotePlan#settingsMissing` is the SAME computation for the
+    /// `manifest/check` route — [FunctionTriggerSync#plan] — but this
+    /// operation must still enforce it even against `TriggerSync.none()`, so
+    /// it is not routed through `plan` here).
     ///
     /// @throws UseCaseException conflict `SETTINGS_MISSING`
     private static void requireSettingsPresent(FunctionSettingsRepository settings, String functionId, Manifest manifest) {
+        List<String> missing = missingSettings(settings, functionId, manifest);
+        if (!missing.isEmpty()) {
+            throw UseCaseException.conflict("SETTINGS_MISSING",
+                    "the following config/secret keys have no value set: " + String.join(", ", missing));
+        }
+    }
+
+    /// The keys `manifest` declares that have no value set — `config`, `secrets` and each
+    /// `db[].secretRef`, three independent sources, de-duplicated in first-seen order so the
+    /// message is stable. The ONE implementation: [#requireSettingsPresent] throws on it, and
+    /// [FunctionTriggerSync#plan] returns it as `PromotePlan#settingsMissing` for the
+    /// `manifest/check` route (`function-manifest-authoring.md` M2.1).
+    static List<String> missingSettings(FunctionSettingsRepository settings, String functionId, Manifest manifest) {
         Set<String> configured = settings.configMap(functionId).keySet();
         Set<String> secretKeys = settings.secretKeySet(functionId);
-
         List<String> missing = new ArrayList<>();
         for (String key : manifest.config()) {
-            if (!configured.contains(key)) {
-                missing.add(key);
-            }
+            if (!configured.contains(key)) missing.add(key);
         }
         for (String key : manifest.secrets()) {
-            if (!secretKeys.contains(key)) {
-                missing.add(key);
-            }
+            if (!secretKeys.contains(key)) missing.add(key);
         }
         for (Manifest.DbRef ref : manifest.db()) {
-            if (!secretKeys.contains(ref.secretRef())) {
-                missing.add(ref.secretRef());
-            }
+            if (!secretKeys.contains(ref.secretRef())) missing.add(ref.secretRef());
         }
-        if (!missing.isEmpty()) {
-            // De-duplicate (a name can legitimately appear in more than one source)
-            // while keeping the first-seen order, so the message is stable.
-            List<String> named = List.copyOf(new LinkedHashSet<>(missing));
-            throw UseCaseException.conflict("SETTINGS_MISSING",
-                    "the following config/secret keys have no value set: " + String.join(", ", named));
-        }
+        return List.copyOf(new LinkedHashSet<>(missing));
     }
 }

@@ -668,16 +668,17 @@ public final class Platform {
         // below — the same instances FunctionTriggerSync reconciles fn_routes through.
         var functionDomainRepo = new io.flowcatalyst.platform.function.FunctionDomainRepository(pool);
         var functionRouteRepo = new io.flowcatalyst.platform.function.FunctionRouteRepository(pool);
-        var functionTriggerSync = new io.flowcatalyst.platform.function.operations.FunctionTriggerSync(
-                subscriptionRepo, dispatchPoolRepo, scheduledJobRepo, eventTypeRepo, triggerObjectRepo,
-                applicationRepo, serviceAccountRepo, functionVersionRepo, env.functionLimits(),
-                env.fnPoolUrlTemplate(), functionDomainRepo, functionRouteRepo, functionRepo);
         // function-context.md §1 (D4a): platform-stored config/secrets. Same
         // Encryption.fromKeys(...) resolution every other secret-at-rest repository uses
         // (ServiceAccountRepository, ClientSecretEncryption) — Optional.empty() when
-        // FLOWCATALYST_APP_KEY is unset, never a fallback to plaintext.
+        // FLOWCATALYST_APP_KEY is unset, never a fallback to plaintext. Built ahead of
+        // functionTriggerSync below — its plan() needs it too (function-manifest-authoring.md M2.1).
         var functionSettingsRepo = new io.flowcatalyst.platform.function.FunctionSettingsRepository(
                 pool, Encryption.fromKeys(env.appKey(), env.appKeyPrevious()));
+        var functionTriggerSync = new io.flowcatalyst.platform.function.operations.FunctionTriggerSync(
+                subscriptionRepo, dispatchPoolRepo, scheduledJobRepo, eventTypeRepo, triggerObjectRepo,
+                applicationRepo, serviceAccountRepo, functionVersionRepo, env.functionLimits(),
+                env.fnPoolUrlTemplate(), functionDomainRepo, functionRouteRepo, functionRepo, functionSettingsRepo);
         // function-artifact-upload.md §2: the composition root's single resolution rule —
         // a value-taking factory over the raw string, never the process environment read
         // directly (`fcdev start`'s own default is set through the SAME Env field).
