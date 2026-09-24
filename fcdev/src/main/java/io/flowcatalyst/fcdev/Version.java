@@ -48,17 +48,6 @@ public final class Version {
         return v;
     }
 
-    /// The `flowcatalyst-function-api` version this fcdev was built beside —
-    /// the reactor's `project.version`, which is what `fn init`'s generated
-    /// `pom.xml` must name (fcdev's own release semver is a different number).
-    public static String functionApiVersion() {
-        var v = BUILD.getProperty("function.api.version", "").strip();
-        if (v.isEmpty() || v.startsWith("${")) {
-            throw new IllegalStateException("fcdev-build.properties was not filtered: function.api.version=" + v);
-        }
-        return v;
-    }
-
     private static Properties loadBuild() {
         var p = new Properties();
         try (InputStream in = Version.class.getResourceAsStream("/fcdev-build.properties")) {

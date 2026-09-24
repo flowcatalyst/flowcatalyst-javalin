@@ -1814,7 +1814,13 @@ routes are gone; an invite sign-in writes a `USER_LOGIN` SUCCESS row.
   0.11.0) and runs `scripts/release.sh`. The CI staleness check promised by `docs/sdk-release-plan.md` §2.2 is now the `sdks`
   job in `ci.yml` (first run on GitHub unobserved — watch it after the push).
 
-## `flowcatalyst-function-api` is not published anywhere (2026-09-24, owner question)
+## `flowcatalyst-function-api` is not published anywhere (2026-09-24) — RULED: fcdev ships it
+
+Owner: fcdev rather than a Maven repository. `fn init` writes the jar (zipped from function-api's
+classes at fcdev build time) and a minimal pom into the project's `lib/m2`, which the generated pom
+declares as a file repository; versioned as the fcdev release that carried it. A test runs `mvn
+package` on a fresh scaffold. Native fcdev includes the resource (`fn-init/.*`) — not yet checked
+with a native build. Original question:
 
 `fcdev fn init` generates a standalone Maven project depending on `flowcatalyst-function-api`
 (`provided`) at the reactor version, but nothing is published to a Maven repository

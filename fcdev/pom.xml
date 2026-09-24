@@ -158,6 +158,39 @@
 
     <plugins>
       <!--
+        `fn init` ships the function API with the scaffold (owner, 2026-09-24: fcdev, not a
+        Maven repository): function-api's compiled classes, zipped here into a jar that fcdev
+        carries as a resource and writes into the generated project's own lib/m2 repository.
+        From the sibling module's target/classes, so it works under `mvn test` (no package
+        phase needed) — build fcdev through the reactor (`-pl fcdev -am`), as always.
+        function-api has no dependencies of its own, so its classes are the whole artifact.
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-antrun-plugin</artifactId>
+        <version>3.1.0</version>
+        <executions>
+          <execution>
+            <id>fn-init-function-api</id>
+            <phase>process-resources</phase>
+            <goals>
+              <goal>run</goal>
+            </goals>
+            <configuration>
+              <target>
+                <fail message="function-api is not compiled at ${project.basedir}/../function-api/target/classes — build fcdev through the reactor (-pl fcdev -am)">
+                  <condition>
+                    <not><available file="${project.basedir}/../function-api/target/classes/io/flowcatalyst/function/Function.class"/></not>
+                  </condition>
+                </fail>
+                <zip destfile="${project.build.outputDirectory}/fn-init/flowcatalyst-function-api.jar"
+                     basedir="${project.basedir}/../function-api/target/classes"/>
+              </target>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <!--
         The executable fat jar — the GitHub-Releases fallback for developers without JBang:
 
           java -jar fcdev/target/flowcatalyst-fcdev-0.0.1-SNAPSHOT.jar [start|stop|fresh|…]
@@ -354,7 +387,7 @@
                      classpath into the image heap as bytes. fcdev adds its own two
                      classpath-root resources (VERSION, fcdev-build.properties) to the
                      server's list; everything else here is the embedded server. -->
-                <buildArg>-H:IncludeResources=db/.*|frontend/.*|openapi/.*|docs/.*|router/.*|io/flowcatalyst/platform/principal/common_passwords\.txt|VERSION|fcdev-build\.properties</buildArg>
+                <buildArg>-H:IncludeResources=db/.*|frontend/.*|openapi/.*|docs/.*|router/.*|io/flowcatalyst/platform/principal/common_passwords\.txt|VERSION|fcdev-build\.properties|fn-init/.*</buildArg>
                 <!-- -Os by default (binary-size ruling for the developer binary); pass
                      -Dnative.optimization=-O2 for the server-speed build (see server/pom.xml). -->
                 <buildArg>${native.optimization}</buildArg>

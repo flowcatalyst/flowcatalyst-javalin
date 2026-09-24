@@ -35,6 +35,8 @@ public final class InitCommand implements Callable<Integer> {
     /// `fcdev start`'s own default (`StartOptions`: `FC_API_PORT` default `8080`,
     /// `StartCommand#writeFnCliCredentials`: `"http://localhost:" + apiPort`) —
     /// what a freshly-started local fcdev answers at when nothing else names a URL.
+    static final String LOCAL_REPO = "lib/m2";
+    static final String FUNCTION_API_JAR_RESOURCE = "/fn-init/flowcatalyst-function-api.jar";
     private static final String DEFAULT_PLATFORM_URL = "http://localhost:8080";
     private static final String DEFAULT_PACKAGE = "com.example.fn";
     private static final String HANDLER_CLASS_NAME = "Handler";
@@ -88,11 +90,20 @@ public final class InitCommand implements Callable<Integer> {
                 manifestJson(runtimeValue, entrypoint, platformUrl).getBytes(StandardCharsets.UTF_8));
         if (!manifestOnlyEffective) {
             files.put(targetDir.resolve("pom.xml"),
-                    pomXml(packageName, artifactId, Version.functionApiVersion()).getBytes(StandardCharsets.UTF_8));
+                    pomXml(packageName, artifactId, Version.current()).getBytes(StandardCharsets.UTF_8));
             Path handlerPath = targetDir.resolve("src/main/java")
                     .resolve(packageName.replace('.', '/'))
                     .resolve(HANDLER_CLASS_NAME + ".java");
             files.put(handlerPath, handlerJava(packageName, HANDLER_CLASS_NAME).getBytes(StandardCharsets.UTF_8));
+            // The function API ships with the scaffold (owner, 2026-09-24): a project-local Maven
+            // repository the generated pom names, so `mvn package` resolves it with no install step
+            // and no system scope. Versioned as the fcdev that carried it — a release version, so
+            // it resolves from a plain file repository with no snapshot metadata or update checks.
+            String v = Version.current();
+            Path repoDir = targetDir.resolve(LOCAL_REPO).resolve("io/flowcatalyst/flowcatalyst-function-api").resolve(v);
+            files.put(repoDir.resolve("flowcatalyst-function-api-" + v + ".jar"), functionApiJar());
+            files.put(repoDir.resolve("flowcatalyst-function-api-" + v + ".pom"),
+                    functionApiPom(v).getBytes(StandardCharsets.UTF_8));
         }
 
         var existing = new TreeSet<Path>();
@@ -186,6 +197,14 @@ public final class InitCommand implements Callable<Integer> {
                     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
                   </properties>
 
+                  <!-- fcdev fn init wrote the function API here; it is not in any public repository. -->
+                  <repositories>
+                    <repository>
+                      <id>fcdev-function-api</id>
+                      <url>file://${project.basedir}/lib/m2</url>
+                    </repository>
+                  </repositories>
+
                   <dependencies>
                     <dependency>
                       <groupId>io.flowcatalyst</groupId>
@@ -215,6 +234,32 @@ public final class InitCommand implements Callable<Integer> {
                   </build>
                 </project>
                 """.formatted(groupId, artifactId, functionApiVersion, artifactId);
+    }
+
+    /// The function API jar fcdev carries (zipped from function-api's classes at build time,
+    /// `fcdev/pom.xml`'s `fn-init-function-api` execution).
+    private static byte[] functionApiJar() {
+        try (var in = InitCommand.class.getResourceAsStream(FUNCTION_API_JAR_RESOURCE)) {
+            if (in == null) {
+                throw new IllegalStateException("fcdev was built without " + FUNCTION_API_JAR_RESOURCE);
+            }
+            return in.readAllBytes();
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
+    private static String functionApiPom(String version) {
+        return """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <project xmlns="http://maven.apache.org/POM/4.0.0">
+                  <modelVersion>4.0.0</modelVersion>
+                  <groupId>io.flowcatalyst</groupId>
+                  <artifactId>flowcatalyst-function-api</artifactId>
+                  <version>%s</version>
+                  <packaging>jar</packaging>
+                </project>
+                """.formatted(version);
     }
 
     private static String handlerJava(String packageName, String className) {
@@ -251,13 +296,9 @@ public final class InitCommand implements Callable<Integer> {
             out.println("wrote manifest.json");
             return;
         }
-        out.println("wrote pom.xml, manifest.json, src/main/java/…/Handler.java");
+        out.println("wrote pom.xml, manifest.json, src/main/java/…/Handler.java, and the function API ("
+                + Version.current() + ") under " + LOCAL_REPO);
         out.println("next steps:");
-        // Not yet published to any Maven repository (function-developer-surface.md): say so,
-        // rather than let the author's first `mvn package` fail on an unresolvable dependency.
-        out.println("  flowcatalyst-function-api " + Version.functionApiVersion()
-                + " is not published to a Maven repository yet; install it once from a platform checkout:");
-        out.println("    mvn -pl function-api install");
         out.println("  mvn package");
         out.println("  fcdev fn publish target/" + artifactId + ".jar --manifest manifest.json");
     }

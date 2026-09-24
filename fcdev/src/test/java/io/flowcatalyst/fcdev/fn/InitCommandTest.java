@@ -39,24 +39,51 @@ class InitCommandTest {
         return Map.of("XDG_DATA_HOME", stateDir.resolve("state").toString());
     }
 
-    /// The generated pom names the function-api this reactor actually builds — not fcdev's
-    /// release semver, which is a different number and resolves to nothing.
+    /// The scaffold carries the real function API: the jar under lib/m2 holds the same
+    /// `Function.class` bytes this fcdev was built against.
     @Test
-    void generatedPomNamesTheFunctionApiVersionTheReactorBuilds(@TempDir Path projectDir) throws IOException {
+    void theScaffoldCarriesTheRealFunctionApiInItsLocalRepository(@TempDir Path projectDir) throws Exception {
         Path dir = projectDir.resolve("myfn");
         var r = FnCliTestSupport.run(env(), "fn", "init", dir.toString());
         assertThat(r.exit()).as(r.err()).isZero();
-
-        String functionApiPom = Files.readString(Path.of("..", "function-api", "pom.xml"));
-        var m = java.util.regex.Pattern.compile("<version>([^<]+)</version>").matcher(functionApiPom);
-        assertThat(m.find()).isTrue();
-        String reactorVersion = m.group(1);
-
+        String v = io.flowcatalyst.fcdev.Version.current();
+        Path jar = dir.resolve("lib/m2/io/flowcatalyst/flowcatalyst-function-api/" + v + "/flowcatalyst-function-api-" + v + ".jar");
+        assertThat(dir.resolve("lib/m2/io/flowcatalyst/flowcatalyst-function-api/" + v + "/flowcatalyst-function-api-" + v + ".pom")).exists();
+        byte[] expected;
+        try (var in = Function.class.getResourceAsStream("Function.class")) {
+            expected = in.readAllBytes();
+        }
+        try (var zip = new java.util.zip.ZipFile(jar.toFile())) {
+            var entry = zip.getEntry("io/flowcatalyst/function/Function.class");
+            assertThat(entry).as("Function.class in the shipped jar").isNotNull();
+            try (var in = zip.getInputStream(entry)) {
+                assertThat(in.readAllBytes()).isEqualTo(expected);
+            }
+        }
         String pom = Files.readString(dir.resolve("pom.xml"));
+        assertThat(pom).contains("<url>file://${project.basedir}/lib/m2</url>");
         assertThat(pom).containsPattern("<artifactId>flowcatalyst-function-api</artifactId>\\s*<version>"
-                + java.util.regex.Pattern.quote(reactorVersion) + "</version>");
-        assertThat(r.out()).as("the author is told the artifact is not published yet")
-                .contains("not published to a Maven repository yet");
+                + java.util.regex.Pattern.quote(v) + "</version>");
+    }
+
+    /// The whole point: a freshly scaffolded project builds with plain `mvn package` and nothing
+    /// installed — the function API resolves from the scaffold's own lib/m2 (not offline mode:
+    /// `-o` blocks file:// repositories too; the build plugins come from the local cache).
+    /// Skipped (not failed) when no `mvn` is on the PATH.
+    @Test
+    void aFreshScaffoldBuildsWithPlainMavenPackage(@TempDir Path projectDir) throws Exception {
+        Path dir = projectDir.resolve("myfn");
+        var r = FnCliTestSupport.run(env(), "fn", "init", dir.toString(), "--name", "myfn");
+        assertThat(r.exit()).as(r.err()).isZero();
+        java.util.Optional<Path> mvn = java.util.Arrays.stream(System.getenv().getOrDefault("PATH", "").split(java.io.File.pathSeparator))
+                .map(p -> Path.of(p, "mvn")).filter(Files::isExecutable).findFirst();
+        org.junit.jupiter.api.Assumptions.assumeTrue(mvn.isPresent(), "no mvn on PATH");
+        Path log = projectDir.resolve("mvn.log");
+        Process p = new ProcessBuilder(mvn.get().toString(), "-q", "-B", "package")
+                .directory(dir.toFile()).redirectErrorStream(true).redirectOutput(log.toFile()).start();
+        assertThat(p.waitFor(180, java.util.concurrent.TimeUnit.SECONDS)).as("mvn finished").isTrue();
+        assertThat(p.exitValue()).as(Files.readString(log)).isZero();
+        assertThat(dir.resolve("target/myfn.jar")).exists();
     }
 
     // ── the generated manifest parses under the REAL publish reader ────────────────────────────
