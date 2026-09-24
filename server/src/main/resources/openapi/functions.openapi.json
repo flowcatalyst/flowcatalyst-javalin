@@ -2752,7 +2752,8 @@
                   "type": "string",
                   "enum": [
                     "IMMEDIATE",
-                    "NEXT_ON_ERROR"
+                    "NEXT_ON_ERROR",
+                    "BLOCK_ON_ERROR"
                   ]
                 },
                 "maxRetries": {
@@ -3055,7 +3056,8 @@
             "type": "string",
             "enum": [
               "IMMEDIATE",
-              "NEXT_ON_ERROR"
+              "NEXT_ON_ERROR",
+              "BLOCK_ON_ERROR"
             ]
           },
           "maxRetries": {

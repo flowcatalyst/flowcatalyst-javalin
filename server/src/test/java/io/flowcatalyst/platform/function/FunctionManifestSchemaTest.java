@@ -215,7 +215,16 @@ class FunctionManifestSchemaTest {
     private static void assertLevelMatches(JsonNode schemaObject, JsonNode openapiObject) {
         assertThat(propertyNames(schemaObject)).as("property names").isEqualTo(propertyNames(openapiObject));
         assertThat(requiredNames(schemaObject)).as("required").isEqualTo(requiredNames(openapiObject));
+        // Enums too, on the property and on its array items: the two renderings once disagreed on
+        // subscriptions[].mode (the OpenAPI document lacked BLOCK_ON_ERROR, which the parser accepts).
+        for (String name : propertyNames(schemaObject)) {
+            JsonNode a = schemaObject.path("properties").path(name);
+            JsonNode b = openapiObject.path("properties").path(name);
+            assertThat(enumValues(a)).as(name + " enum").isEqualTo(enumValues(b));
+            assertThat(enumValues(a.path("items"))).as(name + "[] enum").isEqualTo(enumValues(b.path("items")));
+        }
     }
+
 
     // ── M1.5 third assertion: every committed manifest parses under parseStrict ────────────────
 

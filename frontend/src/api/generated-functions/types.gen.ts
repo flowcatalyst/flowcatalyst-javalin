@@ -107,7 +107,7 @@ export type PublishManifestRequest = {
     subscriptions?: Array<{
         eventType: string;
         path: string;
-        mode?: 'IMMEDIATE' | 'NEXT_ON_ERROR';
+        mode?: 'IMMEDIATE' | 'NEXT_ON_ERROR' | 'BLOCK_ON_ERROR';
         maxRetries?: number;
         timeoutSeconds?: number;
         dataOnly?: boolean;
@@ -184,7 +184,7 @@ export type ManifestEndpoint = {
 export type ManifestSubscription = {
     eventType: string;
     path: string;
-    mode: 'IMMEDIATE' | 'NEXT_ON_ERROR';
+    mode: 'IMMEDIATE' | 'NEXT_ON_ERROR' | 'BLOCK_ON_ERROR';
     maxRetries: number;
     timeoutSeconds: number;
     dataOnly: boolean;
