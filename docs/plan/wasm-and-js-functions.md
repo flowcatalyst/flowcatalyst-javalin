@@ -52,7 +52,7 @@ plan §6); linear-memory cap enforcement; metaspace cost of compile mode (it gen
 whether each works under the jlink image and under GraalVM native (fcdev). Output: a findings
 section appended here, and the D1/D2 rulings asked for.
 
-**W1 — the loader seam and the Wasm loader** (one worktree, Sonnet).
+**W1 — the loader seam and the Wasm loader** (one worktree, parent model).
 - A sealed `FunctionLoader` (JVM | Wasm) chosen by `manifest.runtime()`; `Reconciler` holds the
   set, the `RUNTIME_UNSUPPORTED` branch goes. `LoadedFunction` becomes runtime-neutral
   (a `Loaded` handle with invoke/init/close; the JVM one keeps its class loader).
@@ -65,7 +65,7 @@ section appended here, and the D1/D2 rulings asked for.
   else a minimal committed set with their source beside them.
 - Tests: load/refuse/invoke/timeout/memory-cap/unload, each mutant-checked.
 
-**W2 — host functions** (same worktree as W1, after it).
+**W2 — host functions** (same worktree as W1, after it; parent model).
 `fc.log`, `fc.config.get`, `fc.secret.get` (manifest-declared only), `fc.http.request`
 (**enforced** allowlist and deadline — the same `AllowlistHttpCaller`), `fc.events.emit`,
 `fc.now`. One JSON convention for every call; every host function's failure is a value the guest
