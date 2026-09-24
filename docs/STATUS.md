@@ -15,7 +15,12 @@ Laravel generator pinned (jane-openapi 7.11.2, require-dev), new CI job `sdks` f
 `POST /api/functions/{address}/manifest/check` + `fn validate`, M3 `fn init`, M4 SPA editor; **M1 + M3
 landed `70c390b5`, M2 landed `943119c9`** (promote = plan then apply, one diff implementation shared
 with the check route); full reactor green from clean: server 5189 · function-host 353 · fcdev 231 ·
-SPA 47. M4 (SPA editor) in build. Owner question: how function authors get `function-api` (unpublished).
+SPA 47. **M4 landed** (`4b1709e8` editor, `6323ec96` embedded SPA, `6a7f8956` e2e step 12: remove the
+subscription in the editor → plan says delete → publish → promote → re-validate says no changes);
+SPA vitest 60, e2e 54/54 on Java (platform/documentation flaky once — the known flake). Found on
+the way: the function API document's subscription `mode` enum lacked `BLOCK_ON_ERROR` (`2b56db82`,
+drift test now compares enums). Owner questions: how function authors get `function-api`
+(unpublished); SDK version bump.
 
 ## Platform config gated by view/manage; invite sign-in recorded; Result<T, E> (2026-09-23, night)
 
