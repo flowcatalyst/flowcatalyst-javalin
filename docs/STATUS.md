@@ -12,8 +12,11 @@ able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 wildcard port-0 bind lands on a port a `127.0.0.1` harness listener already holds ~1 in 100, and
 that listener gets the connection (404, or no bytes). Test-only (Linux refuses the bind; production
 uses fixed ports). Every test binds loopback; `LoopbackBindTest` pins it. Loop: 10/10 random-order
-runs of the three listener classes clean (was ~1 failure in 8). In build: parser reports every
-manifest problem (`docs/spec/manifest-all-errors.md`, Sonnet worktree).
+runs of the three listener classes clean (was ~1 failure in 8). **Landed after it:** the manifest
+parser reports every independent problem with a JSON Pointer (`5aebadee`, spec
+`docs/spec/manifest-all-errors.md`; publish still answers the first); check route, `fn validate`
+and the SPA editor show them all, attached by pointer. Reactor green from clean: server 5247 ·
+function-host 355 · fcdev 231 · SPA 61.
 
 ## SDKs regenerated from the Java lockfile; staleness check in CI; manifest aids in build (2026-09-24)
 
