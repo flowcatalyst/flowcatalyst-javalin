@@ -202,4 +202,63 @@ describe("PublishVersionDrawer", () => {
 		expect(errorBox.text()).toContain("must be a boolean");
 		expect(wrapper.emitted("published")).toBeFalsy();
 	});
+
+	// docs/spec/function-manifest-authoring.md M4: "Publish with this
+	// manifest" opens this drawer with the manifest editor's current model
+	// pre-filled — the jar is still chosen here (canSubmit must not require
+	// re-choosing manifest.json as a file when a manifest was already
+	// supplied via the prop). Mutant tried: initialise `manifestText` to ""
+	// regardless of the prop -> canSubmit stays false with only the jar
+	// chosen, and this test's first assertion fails (confirmed); a second
+	// mutant (send `JSON.stringify(manifestFile text)` instead of the prop)
+	// would send the wrong manifest and fail the publishVersion assertion.
+	it("pre-fills the manifest from initialManifest and can publish without a manifest file", async () => {
+		const uploadResponse: UploadArtifactResponse = {
+			artifactRef: "platform://store/from-editor",
+			digest: await expectedDigest(),
+			bytes: JAR_BYTES.length,
+		};
+		mocks.uploadArtifact.mockResolvedValue(uploadResponse);
+		mocks.publishVersion.mockResolvedValue({
+			id: "ver_2",
+			version: 2,
+			state: "PUBLISHED",
+			digest: uploadResponse.digest,
+		} satisfies PublishResponse);
+
+		const { default: PublishVersionDrawer } = await import(
+			"@/pages/functions/PublishVersionDrawer.vue"
+		);
+		const wrapper = mount(PublishVersionDrawer, {
+			props: {
+				address: "acme.default.hello",
+				initialManifest: { runtime: "jvm", entrypoint: "com.example.fn.FromEditor" },
+			},
+			global: {
+				plugins: [PrimeVue],
+				stubs: { Teleport: true },
+			},
+		});
+		await flushPromises();
+
+		// Only the jar is chosen — no manifest file input touched.
+		const jarFile = new File([JAR_BYTES], "hello.jar");
+		const jarInput = wrapper.get('[data-testid="publish-jar-input"]')
+			.element as HTMLInputElement;
+		setFile(jarInput, jarFile);
+		await flushPromises();
+
+		const submit = wrapper.get('[data-testid="publish-submit"]');
+		expect(submit.attributes("disabled")).toBeUndefined();
+
+		await submit.trigger("click");
+		await settle();
+
+		expect(mocks.publishVersion).toHaveBeenCalledTimes(1);
+		const publishArgs = mocks.publishVersion.mock.calls[0];
+		expect(publishArgs[1].manifest).toEqual({
+			runtime: "jvm",
+			entrypoint: "com.example.fn.FromEditor",
+		});
+	});
 });

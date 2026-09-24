@@ -15,6 +15,8 @@ import {
 import { useAuthStore } from "@/stores/auth";
 import { userHasPermission } from "@/stores/permissions";
 import PublishVersionDrawer from "./PublishVersionDrawer.vue";
+import ManifestEditorDrawer from "./ManifestEditorDrawer.vue";
+import { parseManifestText, type ManifestModel } from "./manifestModel";
 
 const props = defineProps<{
 	address: string;
@@ -42,6 +44,13 @@ const expandedRows = ref<Record<number, boolean>>({});
 const manifestByVersion = ref<Record<number, Manifest | null>>({});
 const showPublishDrawer = ref(false);
 const highlightVersion = ref<number | null>(null);
+
+// The manifest editor (docs/spec/function-manifest-authoring.md M4): opened
+// three ways — "New manifest", "Edit as new version" on a row, "Import
+// file" — all just pass a different starting manifest (or none) into the
+// same drawer instance.
+const showManifestEditor = ref(false);
+const manifestEditorSeed = ref<Manifest | ManifestModel | null>(null);
 
 const aliases = ref<AliasResponse[]>([]);
 const aliasesLoading = ref(true);
@@ -220,6 +229,45 @@ function onPublished(published: PublishResponse) {
 	emit("changed");
 }
 
+function openNewManifest() {
+	manifestEditorSeed.value = null;
+	showManifestEditor.value = true;
+}
+
+/** "Edit as new version" (a Versions-tab row): starts from that version's
+ * stored manifest — fetched fresh rather than relying on `manifestByVersion`
+ * (only populated once a row has actually been expanded, U6/§2.1). */
+async function openEditAsNewVersion(v: VersionResponse) {
+	try {
+		const full = await functionsApi.getVersion(props.address, v.version);
+		manifestEditorSeed.value = full.manifest ?? null;
+		showManifestEditor.value = true;
+	} catch {
+		// errors surface via the global error toast
+	}
+}
+
+async function onImportManifestFile(event: Event) {
+	const input = event.target as HTMLInputElement;
+	const file = input.files?.[0];
+	input.value = "";
+	if (!file) return;
+	try {
+		const text = await file.text();
+		manifestEditorSeed.value = parseManifestText(text);
+		showManifestEditor.value = true;
+	} catch {
+		toast.error("Import failed", `${file.name} is not valid JSON`);
+	}
+}
+
+function onManifestEditorPublished(published: PublishResponse) {
+	showManifestEditor.value = false;
+	highlightVersion.value = published.version;
+	void loadVersions(props.address);
+	emit("changed");
+}
+
 function shortDigest(digest: string): string {
 	const [algo, hex] = digest.split(":");
 	if (!hex || hex.length <= 14) return digest;
@@ -250,12 +298,28 @@ function rowClass(data: VersionResponse) {
 <template>
   <div class="versions-tab">
     <div class="versions-toolbar">
-      <Button
-        v-if="canPublish"
-        label="Publish Version"
-        icon="pi pi-upload"
-        @click="showPublishDrawer = true"
-      />
+      <template v-if="canPublish">
+        <Button
+          label="New Manifest"
+          icon="pi pi-file-plus"
+          text
+          data-testid="new-manifest-button"
+          @click="openNewManifest"
+        />
+        <label class="import-manifest-label">
+          <input
+            type="file"
+            accept=".json,application/json"
+            data-testid="import-manifest-input"
+            @change="onImportManifestFile"
+          />
+        </label>
+        <Button
+          label="Publish Version"
+          icon="pi pi-upload"
+          @click="showPublishDrawer = true"
+        />
+      </template>
     </div>
 
     <ProgressSpinner v-if="loading" style="width: 24px; height: 24px" />
@@ -321,6 +385,14 @@ function rowClass(data: VersionResponse) {
               :disabled="!canRetireRow(data)"
               @click="confirmRetire(data)"
             />
+            <Button
+              v-if="canPublish"
+              label="Edit as new version"
+              size="small"
+              text
+              data-testid="edit-as-new-version-button"
+              @click="openEditAsNewVersion(data)"
+            />
           </div>
         </template>
       </Column>
@@ -375,6 +447,14 @@ function rowClass(data: VersionResponse) {
       @published="onPublished"
     />
 
+    <ManifestEditorDrawer
+      v-if="showManifestEditor"
+      :address="address"
+      :initial-manifest="manifestEditorSeed"
+      @close="showManifestEditor = false"
+      @published="onManifestEditorPublished"
+    />
+
     <Dialog
       v-model:visible="showPromoteDialog"
       header="Point Alias"
@@ -418,7 +498,13 @@ function rowClass(data: VersionResponse) {
 .versions-toolbar {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
   margin-bottom: 12px;
+}
+
+.import-manifest-label input {
+  font-size: 12px;
 }
 
 .versions-empty {

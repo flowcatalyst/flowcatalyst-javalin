@@ -276,5 +276,50 @@ expect(publishRes.ok(), publishResBody).toBe(true);
         ).toBeDisabled();
         await deleteAliasViaUi(page, FN_ALIAS_PREFIX);
         await expect(aliasesTable(page).locator("tbody tr", { hasText: FN_ALIAS_PREFIX })).toHaveCount(0);
+
+        // ── 12. E2 (function-ui.md §2.6, function-manifest-authoring.md M4): the manifest
+        // editor, the dry run and promote agree. Edit the live version as a new one, drop its
+        // subscription, Validate: the plan says the subscription goes. Publish from the editor,
+        // promote, then Validate the same manifest again: the plan is empty, because promote did
+        // exactly what the dry run said. (Removing rather than adding a subscription: adding one
+        // needs a second event type this flow does not seed.) ────────────────────────────────
+        const EVENT_TYPE = "hello:greeting:greeting:requested";
+        await versionsTable(page).locator("tbody tr", { hasText: `v${published.version}` })
+            .getByTestId("edit-as-new-version-button").click();
+        await expect(page.getByTestId("subscription-row")).toHaveCount(1);
+        await page.getByTestId("subscription-row").getByRole("button", { name: "Remove subscription" }).click();
+        await expect(page.getByTestId("subscription-row")).toHaveCount(0);
+
+        const checkPath = `/api/functions/${FN_ADDRESS}/manifest/check`;
+        let check = page.waitForResponse((r) => new URL(r.url()).pathname === checkPath && r.request().method() === "POST");
+        await page.getByTestId("manifest-validate-button").click();
+        expect((await check).ok()).toBe(true);
+        await expect(page.getByTestId("manifest-plan")).toContainText(`- subscription ${EVENT_TYPE} (delete)`);
+
+        await page.getByTestId("manifest-publish-button").click();
+        await page.getByTestId("publish-jar-input").setInputFiles(JAR_PATH);
+        const editedPublish = page.waitForResponse(
+            (r) => new URL(r.url()).pathname === `/api/functions/${FN_ADDRESS}/versions` && r.request().method() === "POST",
+        );
+        await page.getByTestId("publish-submit").click();
+        const editedRes = await editedPublish;
+        const editedBody = await editedRes.text().catch(() => "<body discarded>");
+        expect(editedRes.ok(), editedBody).toBe(true);
+        const edited = JSON.parse(editedBody) as { version: number };
+        expect(edited.version).toBe(published.version + 1);
+
+        await waitForVersionState(page, edited.version, "READY", pollBudgetMs);
+        await promoteViaDialog(page, edited.version, "live");
+        await expect(
+            versionsTable(page).locator("tbody tr", { hasText: `v${edited.version}` }).getByText("LIVE"),
+        ).toBeVisible();
+
+        await versionsTable(page).locator("tbody tr", { hasText: `v${edited.version}` })
+            .getByTestId("edit-as-new-version-button").click();
+        await expect(page.getByTestId("subscription-row")).toHaveCount(0);
+        check = page.waitForResponse((r) => new URL(r.url()).pathname === checkPath && r.request().method() === "POST");
+        await page.getByTestId("manifest-validate-button").click();
+        expect((await check).ok()).toBe(true);
+        await expect(page.getByTestId("manifest-plan")).toContainText("no changes");
     });
 });

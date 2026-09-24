@@ -18,6 +18,13 @@ import {
 
 const props = defineProps<{
 	address: string;
+	/**
+	 * The manifest editor's "Publish with this manifest" (docs/spec/
+	 * function-manifest-authoring.md M4): pre-fills the manifest text with
+	 * the editor's current model — the jar is still chosen here as usual.
+	 * `manifestFile`/its file input stay untouched: only the text seeds.
+	 */
+	initialManifest?: PublishManifestRequest | null;
 }>();
 
 const emit = defineEmits<{
@@ -27,7 +34,9 @@ const emit = defineEmits<{
 
 const jarFile = ref<File | null>(null);
 const manifestFile = ref<File | null>(null);
-const manifestText = ref<string>("");
+const manifestText = ref<string>(
+	props.initialManifest ? JSON.stringify(props.initialManifest, null, 2) : "",
+);
 const manifestParseError = ref<string | null>(null);
 const bundleFile = ref<File | null>(null);
 
@@ -206,6 +215,11 @@ async function onSubmit() {
               @change="onManifestChange"
             />
             <small v-if="manifestFile" class="file-hint">{{ manifestFile.name }}</small>
+            <small
+              v-else-if="manifestText"
+              class="file-hint"
+              data-testid="publish-manifest-prefilled-hint"
+            >pre-filled from the manifest editor — choose a file to replace it</small>
             <small v-if="manifestParseError" class="p-error">{{ manifestParseError }}</small>
           </template>
         </FcFormField>

@@ -98,6 +98,54 @@ platform's defaults shown beside each ceiling. A client's policy that does not e
 On the functions list page, a small panel from `GET /api/function-pools`: pool name, hosts
 (count, states), functions loaded. No actions.
 
+### 2.6 Manifest editor (package M4, `docs/spec/function-manifest-authoring.md`)
+
+A `ManifestEditorDrawer` on the function detail (`src/pages/functions/ManifestEditorDrawer.vue`),
+opened three ways, each just a different starting manifest (or none) passed into the same drawer:
+
+- **New manifest** — a toolbar button on the Versions tab (`function-ui.md` §2.1). Starts from the
+  same template `fn init --manifest-only` writes: `runtime: jvm`, entrypoint
+  `com.example.fn.Handler`, one `platform`-authenticated `GET /hello` endpoint.
+- **Edit as new version** — a Versions-tab row action. Fetches that version's stored manifest
+  (`getVersion`) and starts from it.
+- **Import file** — a file input on the Versions tab toolbar; also present inside the drawer
+  itself. Parses the chosen file as manifest JSON.
+
+Two synced views of one model (a plain `PublishManifestRequest`, never a hand-rolled type —
+U8 still applies): a **form** covering every field of the JSON Schema (`function-manifest.schema.
+json`) — runtime/entrypoint/pool/warm, an optional limits override, lists of endpoints (with a
+CORS sub-form), subscriptions, schedules (payload as its own JSON textarea, nothing else is),
+public routes (alias prefixes as a comma list), config/secrets/httpAllow (comma lists), and
+database connections — and a **JSON** textarea. Editing the form re-serialises the JSON view on
+every change; editing JSON re-parses into the form on every valid edit, and on an invalid edit
+leaves the form showing the last valid model (disabled, with a warning) until the text parses
+again — never a half-applied document. A top-level `"$schema"` in imported/pasted JSON is
+discarded (it is `parseStrict`'s editor hint, M1 §2, never part of the wire shape) and reinjected
+on export.
+
+**Validate** (`functionsApi.checkManifest`, M2.2) sends the live model plus a typed alias
+(default `live`) and renders: an invalid manifest's errors (code + message; an `ENDPOINT_*` code
+is additionally shown under the Endpoints section, next to the field an author would go fix), or
+a valid manifest's promote plan, rendered by `manifestPlanText.ts#renderPlanLines` — line-for-line
+the same `+`/`~`/`-`/`!` format as `fcdev fn validate` (`ValidateCommand.java#printText`; the two
+are kept in lockstep by hand, there is no shared source).
+
+**Export** (`manifestModel.ts#exportManifest`) downloads `manifest.json`: `"$schema"` first
+(pointing at `GET /api/schemas/function-manifest.json` on the SPA's own origin), then every field
+present in the model, in the JSON Schema's own property order, with absent optional fields left
+out entirely — an import/export round trip reproduces exactly what was imported, plus `$schema`.
+
+**Publish with this manifest** opens the existing Publish drawer (§2.2) with the live edited model
+pre-filled into its manifest text (`PublishVersionDrawer`'s new `initialManifest` prop) — the jar
+is still chosen there as before; the drawer's own upload/publish flow (U3/U4) is unchanged.
+
+No new dependency: no JSON-schema form library, no code editor, no ajv — the server remains the
+only validator (`checkManifest`), matching M4's rule.
+
+E2E (`e2e/tests/functions.spec.ts`, extends E1 as step 12 — see the table, outside
+`frontend/`): open the editor from a version, add a subscription, Validate shows `Create`,
+publish, promote.
+
 ## 3. Navigation
 
 One group "Functions" in `config/navigation.ts` after "Dispatch Jobs": Functions, Domains,
@@ -138,7 +186,13 @@ never crash the list (this exact case took the platform down once; `function-api
 | U6 | the function list renders a row whose `liveVersion` is absent as "—" and renders the rest | throw on null |
 | U7 | the secrets table never renders a stored value: after a set, the cell reads "set" (assert the value string is absent from the DOM) | echo the value |
 | U8 | the generated function types are used, not hand-written: a conventions test (like `tests/conventions/`) asserts `api/functions.ts` imports from `generated-functions` and that no file under `src/api` declares an interface named like a generated one | — |
+| U9 | (M4, §2.6) `manifestModel.ts#exportManifest(parseManifestText(text))` round-trips the sample manifest exactly (plus `$schema`), and keys come out in the JSON Schema's own property order at the top level | drop a field from the export walk; reorder the key list |
+| U10 | (M4) `manifestPlanText.ts#renderPlanLines` renders create/update/delete/settings-missing/no-changes lines in `ValidateCommand.java`'s exact `+`/`~`/`-`/`!` format, both as a pure function and as rendered by the drawer's Validate result | swap a line's prefix; render a plan generically instead of via `renderPlanLines` |
+| U11 | the manifest editor: a form edit re-serialises the JSON view; a valid JSON edit updates the form; an invalid JSON edit leaves the form on the last valid model (disabled, with a warning) rather than corrupting it | drop the form→JSON sync; apply an unparseable document to the model anyway |
+| U12 | Validate sends the drawer's **current** (live-edited) model, not a snapshot taken at mount, and a server `ENDPOINT_*` error is additionally rendered under the Endpoints section next to the flat error list | send a captured copy from mount; always render zero endpoint-section errors |
+| U13 | "Publish with this manifest" opens the publish drawer with the **exact current edited model** (not the manifest the editor started from); the publish drawer's own `initialManifest` prop pre-fills its manifest text so publish can proceed without re-choosing a manifest file | pass the original `initialManifest` prop through unedited; ignore the prop in the publish drawer |
 | E1 | **e2e** (`e2e/tests/functions.spec.ts`, Playwright, against the Java platform as the others run): as the bootstrap admin, claim `hello.localhost`, publish the sample jar (`examples/function-hello`, built by the flow's setup or a checked-in fixture jar) with its manifest through the SPA, watch the version reach `READY` (the in-process fcdev host reports it), promote, and assert the Hosts panel shows `LOADED` and the Public routes tab shows `hello.localhost` verified | — (integration pin) |
+| E2 | step 12 of E1: edit the live version as new, remove its subscription, Validate shows `- subscription … (delete)`, publish from the editor, promote, Validate again shows `no changes` (removal, not addition: adding needs a second seeded event type) | the dry run and promote disagreeing — the re-validate is not empty |
 
 `vue-tsc -b` (the `build` script) must pass — it is the type check. `oxlint` clean.
 

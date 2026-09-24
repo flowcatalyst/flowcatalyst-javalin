@@ -1,28 +1,38 @@
 import { apiFetch, type FetchOptions } from "./client";
 import type {
 	AliasResponse,
+	CheckManifestRequest,
+	CheckManifestResponse,
 	ClaimRequest,
 	ConfigResponse,
+	ConflictResponse,
 	CreateFunctionRequest,
 	DomainResponse,
 	FunctionPageResponse,
 	FunctionResponse,
 	FunctionRouteResponse,
 	Manifest,
+	ManifestErrorResponse,
 	PolicyListResponse,
 	PolicyResponse,
 	PolicySignerRequest,
+	PoolActionResponse,
 	PoolSummaryResponse,
+	PromotePlanResponse,
 	PromoteRequest,
 	PromoteResponse,
+	PublicRoutesActionResponse,
 	PublishManifestRequest,
 	PublishRequest,
 	PublishResponse,
 	PutPolicyRequest,
+	RouteKeyResponse,
+	ScheduleActionResponse,
 	SecretListResponse,
 	SetConfigRequest,
 	SetSecretRequest,
 	StatusResponse,
+	SubscriptionActionResponse,
 	UpdateFunctionRequest,
 	UploadArtifactResponse,
 	VersionResponse,
@@ -37,21 +47,31 @@ import type {
 // host's own protocol to the platform, not something the SPA ever calls.
 export type {
 	AliasResponse,
+	CheckManifestRequest,
+	CheckManifestResponse,
 	ConfigResponse,
+	ConflictResponse,
 	DomainResponse,
 	FunctionPageResponse,
 	FunctionResponse,
 	FunctionRouteResponse,
 	Manifest,
+	ManifestErrorResponse,
 	PolicyListResponse,
 	PolicyResponse,
 	PolicySignerRequest,
+	PoolActionResponse,
 	PoolSummaryResponse,
+	PromotePlanResponse,
 	PromoteResponse,
+	PublicRoutesActionResponse,
 	PublishManifestRequest,
 	PublishResponse,
+	RouteKeyResponse,
+	ScheduleActionResponse,
 	SecretListResponse,
 	StatusResponse,
+	SubscriptionActionResponse,
 	UploadArtifactResponse,
 	VersionResponse,
 };
@@ -123,6 +143,21 @@ export const functionsApi = {
 		data: PublishRequest,
 	): Promise<PublishResponse> {
 		return apiFetch(`/functions/${encodeURIComponent(address)}/versions`, {
+			method: "POST",
+			body: JSON.stringify(data),
+		});
+	},
+
+	/**
+	 * `POST …/manifest/check` (M2.2): validates a manifest and, when valid,
+	 * returns the promote plan — writes nothing (no version reserved, no row
+	 * locked). Same permission and reach as `publishVersion`.
+	 */
+	checkManifest(
+		address: string,
+		data: CheckManifestRequest,
+	): Promise<CheckManifestResponse> {
+		return apiFetch(`/functions/${encodeURIComponent(address)}/manifest/check`, {
 			method: "POST",
 			body: JSON.stringify(data),
 		});
