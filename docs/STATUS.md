@@ -25,6 +25,19 @@ releases. `docs/backlog.md` has the full note. Reactor: fcdev tests green (41 ac
 `UpgradeCommandTest`/`FnHostLauncherTest`/`StartCommandFnHostFetchTest`/`DevPathsTest` alone; full
 module suite run in progress at hand-off — check it before landing).
 
+## Audit logs never store secrets; fcdev 0.9.0; native fixes (2026-09-24, evening)
+
+`04688a4f`: one redaction rule (`docs/spec/audit-redaction.md`, shared vectors) applied at the
+source — `PlatformSink`, `OutboxSink` (Java SDK apps), the TS and Laravel SDKs (`7dbf3f7f`) — and
+as an ingest backstop; fixes the webhook-credential and SECRET-config leaks. Temporary dashboard
+**Redact** card sweeps existing rows (SQL-prefiltered, idempotent, audited) — remove later.
+**Owner:** rotate the credentials the sweep finds (they are in backups); decide the Go-side patch.
+fcdev 0.9.0 (`28cb5e06`): released from this repo (`make release-fcdev`), host jar fetched on
+first use, Java < 25 is a warning. Native: picocli config generated on every compile
+(`c2dd3070`), `schemas/` + `function/` resources included (`ac6daeec`). Claude.md routing revised
+(`32140aa1`). Plan for Wasm + JS functions: `docs/plan/wasm-and-js-functions.md` (awaiting
+D1–D5). Reactor green: server 5264 · fcdev 254 · SPA 68 · TS SDK 138 · Laravel 224.
+
 ## Cookie hardening; fn init ships the function API (2026-09-24, later)
 
 `d2cf1fc9` (`docs/spec/cookie-hardening.md`): deployed session cookie is `__Host-fc_session`
