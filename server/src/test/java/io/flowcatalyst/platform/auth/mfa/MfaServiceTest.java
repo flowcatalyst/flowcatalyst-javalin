@@ -89,6 +89,26 @@ class MfaServiceTest {
 
     // ── TOTP ───────────────────────────────────────────────────────────────
 
+    /// A replay is its own outcome, not a mismatch — a valid code presented again
+    /// is the signal a relayed or shoulder-surfed code gives. Mutant: a replay
+    /// answered as Mismatch.
+    @Test
+    void aReplayedCodeIsToldApartFromAWrongOne() {
+        String pid = principal();
+        CLOCK.set(T0);
+        var enrolment = MFA.beginTotpEnrollment(pid, "replay@example.com");
+        assertThat(MFA.checkTotp(pid, Totp.code(enrolment.secret(), Totp.stepOf(T0))))
+                .as("unconfirmed").isInstanceOf(Mfa.TotpCheck.NotEnrolled.class);
+        String code = Totp.code(enrolment.secret(), Totp.stepOf(T0));
+        assertThat(MFA.confirmTotpEnrollment(pid, code)).isTrue();
+
+        String next = Totp.code(enrolment.secret(), Totp.stepOf(T0) + 1);
+        assertThat(MFA.checkTotp(pid, next)).isInstanceOf(Mfa.TotpCheck.Accepted.class);
+        assertThat(MFA.checkTotp(pid, next)).isInstanceOf(Mfa.TotpCheck.Replayed.class);
+        assertThat(MFA.checkTotp(pid, code)).as("the enrolment code, spent").isInstanceOf(Mfa.TotpCheck.Replayed.class);
+        assertThat(MFA.checkTotp(pid, "123456")).isInstanceOf(Mfa.TotpCheck.Mismatch.class);
+    }
+
     @Test
     void totpEnrolmentConfirmsWithTheCurrentCodeAndThatCodeCannotBeReplayedAtLogin() {
         String pid = principal();

@@ -186,25 +186,60 @@ public final class Mfa implements MfaService {
         return repo.confirm(principalId, MfaMethod.TOTP, Totp.timeForStep(step.getAsLong()));
     }
 
+    /// What checking a TOTP code found. A replay is kept apart from a plain
+    /// mismatch: a code valid for its step but already used — or used by a
+    /// concurrent presentation that won the guard — is what a relayed or
+    /// shoulder-surfed code looks like, and is logged as such.
+    public sealed interface TotpCheck {
+        record Accepted() implements TotpCheck {
+        }
+
+        record Mismatch() implements TotpCheck {
+        }
+
+        /// A valid code for a step at or before the last accepted one.
+        record Replayed() implements TotpCheck {
+        }
+
+        /// No confirmed TOTP method with a secret.
+        record NotEnrolled() implements TotpCheck {
+        }
+    }
+
     /// Not enrolled, unconfirmed, wrong, or a step at or before the last
     /// accepted one → false; a match advances the guard (§6.5, the
-    /// enrolment code cannot be replayed at login).
+    /// enrolment code cannot be replayed at login). See [#checkTotp].
     public boolean verifyTotp(String principalId, String code) {
+        return checkTotp(principalId, code) instanceof TotpCheck.Accepted;
+    }
+
+    /// [#verifyTotp] with the full outcome; a [TotpCheck.Replayed] is logged at WARN.
+    public TotpCheck checkTotp(String principalId, String code) {
         Optional<MfaMethodRow> found = repo.findMethod(principalId, MfaMethod.TOTP);
         if (found.isEmpty() || !found.get().confirmed() || found.get().secretEncrypted() == null) {
-            return false;
+            return new TotpCheck.NotEnrolled();
         }
         MfaMethodRow row = found.get();
         OptionalLong step = Totp.validate(secret(row), code, clock.instant());
         if (step.isEmpty()) {
-            return false;
+            return new TotpCheck.Mismatch();
         }
         if (row.lastUsedAt() != null && step.getAsLong() <= Totp.stepOf(row.lastUsedAt())) {
-            return false; // replay
+            return replayed(principalId);
         }
         // The guarded update is the second half of the guard: two
-        // concurrent presentations of one code cannot both advance it.
-        return repo.advanceLastUsed(principalId, MfaMethod.TOTP, Totp.timeForStep(step.getAsLong()));
+        // concurrent presentations of one code cannot both advance it —
+        // the loser is a replay too.
+        return repo.advanceLastUsed(principalId, MfaMethod.TOTP, Totp.timeForStep(step.getAsLong()))
+                ? new TotpCheck.Accepted()
+                : replayed(principalId);
+    }
+
+    private static TotpCheck replayed(String principalId) {
+        LOG.atWarn().setMessage("a TOTP code was presented again after it had been used")
+                .addKeyValue("principal_id", principalId)
+                .log();
+        return new TotpCheck.Replayed();
     }
 
     private String secret(MfaMethodRow row) {
