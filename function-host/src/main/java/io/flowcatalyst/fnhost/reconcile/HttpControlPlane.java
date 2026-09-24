@@ -2,6 +2,8 @@ package io.flowcatalyst.fnhost.reconcile;
 
 import io.flowcatalyst.function.EventEmitException;
 import io.flowcatalyst.platform.function.DnsLabel;
+import io.flowcatalyst.platform.shared.Failures;
+import io.flowcatalyst.platform.shared.LogThrottle;
 import io.flowcatalyst.platform.shared.json.Json;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,6 +33,7 @@ public final class HttpControlPlane implements ControlPlane {
     private static final Logger LOG = LoggerFactory.getLogger(HttpControlPlane.class);
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
+    private static final LogThrottle EMIT_FAILURE_LOG = new LogThrottle(Duration.ofSeconds(10));
 
     private final HttpClient client;
     private final String platformUrl;
@@ -111,7 +114,7 @@ public final class HttpControlPlane implements ControlPlane {
         try {
             token = tokenSource.token();
         } catch (ControlPlaneException e) {
-            throw new EventEmitException("UNAVAILABLE", 503, "minting a control-plane token failed");
+            throw unavailable("minting a control-plane token failed", e);
         }
         HttpResponse<String> response = sendEmit(token, body);
         if (response.statusCode() == 401) {
@@ -119,7 +122,7 @@ public final class HttpControlPlane implements ControlPlane {
             try {
                 token = tokenSource.refresh();
             } catch (ControlPlaneException e) {
-                throw new EventEmitException("UNAVAILABLE", 503, "refreshing a control-plane token failed");
+                throw unavailable("refreshing a control-plane token failed", e);
             }
             response = sendEmit(token, body);
         }
@@ -142,7 +145,7 @@ public final class HttpControlPlane implements ControlPlane {
         try {
             return client.send(request, HttpResponse.BodyHandlers.ofString());
         } catch (IOException e) {
-            throw new EventEmitException("UNAVAILABLE", 503, "control plane request failed: POST /control/functions/events");
+            throw unavailable("control plane request failed: POST /control/functions/events", e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new EventEmitException("UNAVAILABLE", 503, "control plane request was interrupted");
@@ -155,16 +158,37 @@ public final class HttpControlPlane implements ControlPlane {
     /// status, so the code falls back to `"UNKNOWN"` rather than losing it.
     private static EventEmitException errorFrom(HttpResponse<String> response) {
         String code = "UNKNOWN";
+        String message = null;
         try {
             JsonNode body = Json.MAPPER.readTree(response.body());
             String fromBody = body.path("error").asString(null);
             if (fromBody != null && !fromBody.isBlank()) {
                 code = fromBody;
             }
+            message = body.path("message").asString(null);
         } catch (RuntimeException ignored) {
             // Body was not readable JSON — fall through with the status alone.
         }
-        return new EventEmitException(code, response.statusCode());
+        // The platform's own reason (which check refused the emit) rides in the message: the
+        // function author, and the log line the function may write, see why.
+        return message == null || message.isBlank()
+                ? new EventEmitException(code, response.statusCode())
+                : new EventEmitException(code, response.statusCode(),
+                        "emit refused: " + code + " (" + response.statusCode() + "): " + message);
+    }
+
+    /// A transport or token failure: the function gets the `UNAVAILABLE` code it
+    /// branches on, and the host operator gets the cause — [EventEmitException]
+    /// (function-api, a published contract) carries none, so it is logged here,
+    /// throttled (a platform outage fails every emit).
+    private static EventEmitException unavailable(String what, Exception cause) {
+        EMIT_FAILURE_LOG.admit().ifPresent(suppressed -> LOG.atWarn()
+                .setMessage("a function's event emit could not reach the platform")
+                .addKeyValue("what", what)
+                .addKeyValue("suppressed_since_last", suppressed)
+                .setCause(cause)
+                .log());
+        return new EventEmitException("UNAVAILABLE", 503, what + ": " + Failures.describe(cause));
     }
 
     private static Object toWire(ControlPlane.EmitRequest request) {

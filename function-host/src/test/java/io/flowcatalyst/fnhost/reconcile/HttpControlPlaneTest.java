@@ -194,7 +194,9 @@ class HttpControlPlaneTest {
                 .satisfies(e -> assertThat(((EventEmitException) e).code())
                         .as("mutant: a fixed/wrong code instead of the platform's own").isEqualTo("EVENT_TYPE_NOT_OWNED"))
                 .satisfies(e -> assertThat(((EventEmitException) e).status())
-                        .as("mutant: a fixed status instead of the response's own").isEqualTo(403));
+                        .as("mutant: a fixed status instead of the response's own").isEqualTo(403))
+                .satisfies(e -> assertThat(e.getMessage())
+                        .as("mutant: the platform's own reason dropped").contains("nope"));
     }
 
     @Test
