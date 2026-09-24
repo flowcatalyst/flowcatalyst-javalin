@@ -19,7 +19,19 @@ caps and containment of mistakes, **not** sandboxing hostile tenants.
   and a result serialise to the same bytes for any runtime (plan §4a).
 - No Wasm or JS dependency, fixture or toolchain exists in the repo.
 
-## Decisions for the owner (before W1)
+## Rulings (owner, 2026-09-24)
+
+- **D1: Endive.** W0 no longer compares runtimes; it proves Endive for our needs (below).
+- **D2: Extism**, behind our own `fc.*` host-function names.
+- **D3 + D4: JavaScript through Wasm** (QuickJS via the Extism JS PDK); a JS function declares
+  `runtime: wasm`; `fn init --lang js` scaffolds it.
+- **D5: `fc.db.*` later** (W4).
+
+Per `Claude.md` routing, W0, W1 and W2 are the parent model's (new abstractions, deadline and
+allowlist enforcement); W3's sample/types/scaffold, W4's volume and W5 are Sonnet-shaped with
+parent-model review.
+
+## Decisions for the owner (before W1) — as asked
 
 | # | Question | Recommendation |
 |---|---|---|
@@ -31,8 +43,9 @@ caps and containment of mistakes, **not** sandboxing hostile tenants.
 
 ## Packages
 
-**W0 — spike (orchestrator, time-boxed, no merge).** Answer with numbers, in a scratch module:
-Endive and Chicory each running an Extism JS-PDK module and a Rust module; cold load time and
+**W0 — spike (parent model, time-boxed, no merge).** Answer with numbers, in a scratch module:
+Endive (D1) running an Extism JS-PDK module and a Rust module — its Maven coordinates and
+release, whether Extism's Java host SDK runs on it or we bind the Extism kernel ourselves; cold load time and
 first-call latency in compile mode; per-call overhead vs the JVM hello function; whether an
 invocation can be **interrupted** at a deadline (if not: a dedicated pool abandoned on timeout,
 plan §6); linear-memory cap enforcement; metaspace cost of compile mode (it generates classes);
