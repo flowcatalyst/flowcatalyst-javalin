@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.function;
 
+import io.flowcatalyst.sdk.result.Result;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 
 import java.io.ByteArrayOutputStream;
@@ -74,46 +75,64 @@ public record RoutePattern(String value, List<Segment> segments) implements Comp
     public static final String INVALID_MESSAGE =
             "route path must start with '/' and contain only literal, {param} or trailing '*' segments";
 
-    /// Non-throwing companion of [#parse]: empty on any malformed input,
-    /// never throws.
-    public static Optional<RoutePattern> tryParse(String raw) {
-        try {
-            return Optional.of(parse(raw));
-        } catch (UseCaseException e) {
-            return Optional.empty();
-        }
+    /// Malformed input: the code and message [#parse] raises as a
+    /// `UseCaseException` (`CONVENTIONS.md` §8) — carried here so a caller
+    /// outside an operation's validate/authorize phases can switch on
+    /// [#check] instead of catching that exception for control flow.
+    public record Invalid(String code, String message) {
     }
 
-    /// @throws UseCaseException validation `ROUTE_PATTERN_INVALID`
-    public static RoutePattern parse(String raw) {
-        if (raw == null || raw.isEmpty() || raw.charAt(0) != '/') throw invalid();
-        if (raw.length() > MAX_LENGTH) throw invalid();
+    /// Validates `raw` without throwing. The `Err` case carries exactly the
+    /// code and message [#parse] raises as a `UseCaseException`.
+    public static Result<RoutePattern, Invalid> check(String raw) {
+        if (raw == null || raw.isEmpty() || raw.charAt(0) != '/') return invalid();
+        if (raw.length() > MAX_LENGTH) return invalid();
         if (raw.equals("/")) {
-            return new RoutePattern(raw, List.of());
+            return Result.ok(new RoutePattern(raw, List.of()));
         }
         String[] parts = raw.substring(1).split("/", -1);
         List<Segment> parsed = new ArrayList<>(parts.length);
         Set<String> paramNames = new HashSet<>();
         for (int i = 0; i < parts.length; i++) {
-            Segment segment = parseSegment(parts[i], i == parts.length - 1);
-            if (segment instanceof Param(String name) && !paramNames.add(name)) throw invalid();
-            parsed.add(segment);
+            Segment s;
+            switch (parseSegment(parts[i], i == parts.length - 1)) {
+                case Result.Ok<Segment, Invalid>(Segment ok) -> s = ok;
+                case Result.Err<Segment, Invalid>(Invalid err) -> {
+                    return Result.err(err);
+                }
+            }
+            if (s instanceof Param(String name) && !paramNames.add(name)) return invalid();
+            parsed.add(s);
         }
-        return new RoutePattern(raw, parsed);
+        return Result.ok(new RoutePattern(raw, parsed));
     }
 
-    private static Segment parseSegment(String part, boolean isLast) {
+    /// Non-throwing companion of [#parse]: empty on any malformed input,
+    /// never throws.
+    public static Optional<RoutePattern> tryParse(String raw) {
+        return switch (check(raw)) {
+            case Result.Ok<RoutePattern, Invalid> ok -> Optional.of(ok.value());
+            case Result.Err<RoutePattern, Invalid> ignored -> Optional.empty();
+        };
+    }
+
+    /// @throws UseCaseException validation `ROUTE_PATTERN_INVALID`
+    public static RoutePattern parse(String raw) {
+        return check(raw).orElseThrow(e -> UseCaseException.validation(e.code(), e.message()));
+    }
+
+    private static Result<Segment, Invalid> parseSegment(String part, boolean isLast) {
         if (part.equals("*")) {
-            if (!isLast) throw invalid();
-            return new Rest();
+            if (!isLast) return invalid();
+            return Result.ok(new Rest());
         }
         if (part.length() >= 2 && part.startsWith("{") && part.endsWith("}")) {
             String name = part.substring(1, part.length() - 1);
-            if (!PARAM_NAME.matcher(name).matches()) throw invalid();
-            return new Param(name);
+            if (!PARAM_NAME.matcher(name).matches()) return invalid();
+            return Result.ok(new Param(name));
         }
-        if (!LITERAL.matcher(part).matches()) throw invalid();
-        return new Literal(part);
+        if (!LITERAL.matcher(part).matches()) return invalid();
+        return Result.ok(new Literal(part));
     }
 
     /// The params on a match, in declaration order; empty `Optional`
@@ -248,7 +267,7 @@ public record RoutePattern(String value, List<Segment> segments) implements Comp
         }
     }
 
-    private static UseCaseException invalid() {
-        return UseCaseException.validation("ROUTE_PATTERN_INVALID", INVALID_MESSAGE);
+    private static <T> Result<T, Invalid> invalid() {
+        return Result.err(new Invalid("ROUTE_PATTERN_INVALID", INVALID_MESSAGE));
     }
 }

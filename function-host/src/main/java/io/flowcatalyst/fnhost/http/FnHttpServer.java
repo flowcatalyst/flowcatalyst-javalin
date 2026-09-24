@@ -19,7 +19,6 @@ import io.flowcatalyst.platform.shared.auth.Permission;
 import io.flowcatalyst.platform.shared.auth.ScopeClaim;
 import io.flowcatalyst.platform.shared.auth.TokenClaims;
 import io.flowcatalyst.sdk.tsid.Tsid;
-import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.server.Logging;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
@@ -390,11 +389,10 @@ public final class FnHttpServer implements AutoCloseable {
             return null;
         }
         String lower = authority.host().toLowerCase(Locale.ROOT);
-        try {
-            return Hostname.parse(lower).value();
-        } catch (UseCaseException e) {
-            return null;
-        }
+        return switch (Hostname.check(lower)) {
+            case io.flowcatalyst.sdk.result.Result.Ok<Hostname, Hostname.Invalid> ok -> ok.value().value();
+            case io.flowcatalyst.sdk.result.Result.Err<Hostname, Hostname.Invalid> ignored -> null;
+        };
     }
 
     /// spec §3's trust rule: the right-most `X-Forwarded-For` entry ONLY

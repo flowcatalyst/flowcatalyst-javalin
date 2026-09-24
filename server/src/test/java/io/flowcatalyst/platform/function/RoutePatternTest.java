@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.function;
 
+import io.flowcatalyst.sdk.result.Result;
 import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import org.junit.jupiter.api.Test;
@@ -107,6 +108,29 @@ class RoutePatternTest {
                     assertThat(err).isInstanceOf(UseCaseError.Validation.class);
                     assertThat(err.code()).isEqualTo("ROUTE_PATTERN_INVALID");
                 });
+    }
+
+    // ── #check (CONVENTIONS.md §8: no exceptions for control flow) ──────────
+
+    @Test
+    void checkIsOkForAValidPattern() {
+        assertThat(RoutePattern.check("/invoices/{id}"))
+                .as("mutant: check must accept exactly what parse accepts")
+                .isEqualTo(Result.ok(RoutePattern.parse("/invoices/{id}")));
+    }
+
+    @ParameterizedTest(name = "[{index}] check rejects: {0}")
+    @CsvSource({"invoices", "''", "'/in voices'", "/{}", "/{a}/{a}", "/*/a"})
+    void checkIsErrForInvalidPatternWithTheParseMessage(String raw) {
+        assertThat(RoutePattern.check(raw))
+                .as("mutant: check's Err must carry parse's exact code/message, never a different or missing one")
+                .isEqualTo(Result.err(new RoutePattern.Invalid("ROUTE_PATTERN_INVALID", RoutePattern.INVALID_MESSAGE)));
+    }
+
+    @Test
+    void checkIsErrForNullWithTheParseMessage() {
+        assertThat(RoutePattern.check(null))
+                .isEqualTo(Result.err(new RoutePattern.Invalid("ROUTE_PATTERN_INVALID", RoutePattern.INVALID_MESSAGE)));
     }
 
     // ── match — §5.2's rules, and §8 M8 ──────────────────────────────────────

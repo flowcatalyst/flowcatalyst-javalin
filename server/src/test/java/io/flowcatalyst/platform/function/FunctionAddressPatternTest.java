@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.function;
 
+import io.flowcatalyst.sdk.result.Result;
 import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import org.junit.jupiter.api.Test;
@@ -94,5 +95,30 @@ class FunctionAddressPatternTest {
                 .isInstanceOf(UseCaseException.class)
                 .extracting(t -> ((UseCaseException) t).error().code())
                 .isEqualTo("ADDRESS_PATTERN_INVALID");
+    }
+
+    // ── #check (CONVENTIONS.md §8: no exceptions for control flow) ──────────
+
+    @Test
+    void checkIsOkForAValidPattern() {
+        assertThat(FunctionAddressPattern.check("billing.invoices.*"))
+                .as("mutant: check must accept exactly what parse accepts")
+                .isEqualTo(Result.ok(FunctionAddressPattern.parse("billing.invoices.*")));
+    }
+
+    @ParameterizedTest(name = "[{index}] check rejects: {0}")
+    @CsvSource({"'*'", "a.*.c", "'*.b.c'", "billing.inv*", "a.b.c.*"})
+    void checkIsErrForInvalidPatternWithTheParseMessage(String raw) {
+        assertThat(FunctionAddressPattern.check(raw))
+                .as("mutant: check's Err must carry parse's exact code/message, never a different or missing one")
+                .isEqualTo(Result.err(new FunctionAddressPattern.Invalid("ADDRESS_PATTERN_INVALID",
+                        "address pattern must be app.service.function, app.service.*, or app.*")));
+    }
+
+    @Test
+    void checkIsErrForNullWithTheParseMessage() {
+        assertThat(FunctionAddressPattern.check(null))
+                .isEqualTo(Result.err(new FunctionAddressPattern.Invalid("ADDRESS_PATTERN_INVALID",
+                        "address pattern must be app.service.function, app.service.*, or app.*")));
     }
 }

@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.function;
 
+import io.flowcatalyst.sdk.result.Result;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 
 import java.util.ArrayList;
@@ -29,28 +30,40 @@ public record Hostname(String value) {
     public static final String INVALID_MESSAGE = "hostname must be a lower-cased DNS name of at least two labels, "
             + "with no trailing dot, wildcard, port or IP literal";
 
+    /// Malformed input: the code and message [#parse] raises as a
+    /// `UseCaseException` (`CONVENTIONS.md` §8) — carried here so a caller
+    /// outside an operation's validate/authorize phases can switch on
+    /// [#check] instead of catching that exception for control flow.
+    public record Invalid(String code, String message) {
+    }
+
+    /// Validates `raw` without throwing. The `Err` case carries exactly the
+    /// code and message [#parse] raises as a `UseCaseException`.
+    public static Result<Hostname, Invalid> check(String raw) {
+        if (raw == null || raw.isEmpty()) return invalid();
+        String lower = raw.toLowerCase(Locale.ROOT);
+        if (lower.length() > MAX_LENGTH) return invalid();
+        String[] labels = lower.split("\\.", -1);
+        if (labels.length < 2) return invalid();
+        for (String label : labels) {
+            if (!DnsLabel.isValid(label)) return invalid();
+        }
+        if (isAllDigits(labels[labels.length - 1])) return invalid();
+        return Result.ok(new Hostname(lower));
+    }
+
     /// Non-throwing companion of [#parse]: empty on any malformed input,
     /// never throws.
     public static Optional<Hostname> tryParse(String raw) {
-        try {
-            return Optional.of(parse(raw));
-        } catch (UseCaseException e) {
-            return Optional.empty();
-        }
+        return switch (check(raw)) {
+            case Result.Ok<Hostname, Invalid> ok -> Optional.of(ok.value());
+            case Result.Err<Hostname, Invalid> ignored -> Optional.empty();
+        };
     }
 
     /// @throws UseCaseException validation `HOSTNAME_INVALID`
     public static Hostname parse(String raw) {
-        if (raw == null || raw.isEmpty()) throw invalid();
-        String lower = raw.toLowerCase(Locale.ROOT);
-        if (lower.length() > MAX_LENGTH) throw invalid();
-        String[] labels = lower.split("\\.", -1);
-        if (labels.length < 2) throw invalid();
-        for (String label : labels) {
-            if (!DnsLabel.isValid(label)) throw invalid();
-        }
-        if (isAllDigits(labels[labels.length - 1])) throw invalid();
-        return new Hostname(lower);
+        return check(raw).orElseThrow(e -> UseCaseException.validation(e.code(), e.message()));
     }
 
     /// The candidate zone apexes this hostname could be covered by (spec
@@ -83,7 +96,7 @@ public record Hostname(String value) {
         return true;
     }
 
-    private static UseCaseException invalid() {
-        return UseCaseException.validation("HOSTNAME_INVALID", INVALID_MESSAGE);
+    private static Result<Hostname, Invalid> invalid() {
+        return Result.err(new Invalid("HOSTNAME_INVALID", INVALID_MESSAGE));
     }
 }

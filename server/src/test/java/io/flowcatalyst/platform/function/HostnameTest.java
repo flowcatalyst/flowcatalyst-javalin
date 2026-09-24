@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.function;
 
+import io.flowcatalyst.sdk.result.Result;
 import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import org.junit.jupiter.api.Test;
@@ -82,6 +83,24 @@ class HostnameTest {
     void zoneCandidatesOfADeeperHostnameWalksEveryLevel() {
         assertThat(Hostname.parse("a.b.c.acme.com").zoneCandidates())
                 .containsExactly("a.b.c.acme.com", "b.c.acme.com", "c.acme.com", "acme.com");
+    }
+
+    // ── #check (CONVENTIONS.md §8: no exceptions for control flow) ──────────
+
+    @Test
+    void checkIsOkForAValidHostname() {
+        assertThat(Hostname.check("API.Acme.com"))
+                .as("mutant: check must accept exactly what parse accepts, lower-cased")
+                .isEqualTo(Result.ok(new Hostname("api.acme.com")));
+    }
+
+    @ParameterizedTest(name = "[{index}] check rejects: {0}")
+    @CsvSource({"localhost", "a..com", "-a.com", "a_b.com", "acme.com.", "'*.acme.com'", "acme.com:443",
+            "https://acme.com", "10.0.0.1"})
+    void checkIsErrForInvalidHostnameWithTheParseMessage(String raw) {
+        assertThat(Hostname.check(raw))
+                .as("mutant: check's Err must carry parse's exact code/message, never a different or missing one")
+                .isEqualTo(Result.err(new Hostname.Invalid("HOSTNAME_INVALID", Hostname.INVALID_MESSAGE)));
     }
 
     private static void assertRejected(String raw) {

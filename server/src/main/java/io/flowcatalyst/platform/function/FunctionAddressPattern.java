@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.function;
 
+import io.flowcatalyst.sdk.result.Result;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 
 import java.util.Objects;
@@ -73,39 +74,52 @@ public sealed interface FunctionAddressPattern {
         }
     }
 
+    /// Malformed input: the code and message [#parse] raises as a
+    /// `UseCaseException` (`CONVENTIONS.md` §8) — carried here so a caller
+    /// outside an operation's validate/authorize phases can switch on
+    /// [#check] instead of catching that exception for control flow.
+    record Invalid(String code, String message) {
+    }
+
     /// A bare `*`, a wildcard anywhere but last (`a.*.c`, `*.b.c`), a
     /// partial-segment wildcard (`billing.inv*`), and a four-segment pattern
     /// (`a.b.c.*`) are all rejected: a wildcard is only ever the whole final
     /// segment of a two- or three-segment pattern.
     ///
-    /// @throws UseCaseException validation `ADDRESS_PATTERN_INVALID`
-    static FunctionAddressPattern parse(String raw) {
-        if (raw == null) throw invalid();
+    /// Validates `raw` without throwing. The `Err` case carries exactly the
+    /// code and message [#parse] raises as a `UseCaseException`.
+    static Result<FunctionAddressPattern, Invalid> check(String raw) {
+        if (raw == null) return invalid();
         String[] parts = raw.split("\\.", -1);
         for (int i = 0; i < parts.length - 1; i++) {
-            if (parts[i].equals("*")) throw invalid();
+            if (parts[i].equals("*")) return invalid();
         }
         String last = parts[parts.length - 1];
         if (parts.length == 3) {
             if (last.equals("*")) {
-                if (!DnsLabel.isValid(parts[0]) || !DnsLabel.isValid(parts[1])) throw invalid();
-                return new Service(new DnsLabel(parts[0]), new DnsLabel(parts[1]));
+                if (!DnsLabel.isValid(parts[0]) || !DnsLabel.isValid(parts[1])) return invalid();
+                return Result.ok(new Service(new DnsLabel(parts[0]), new DnsLabel(parts[1])));
             }
             try {
-                return new Exact(FunctionAddress.parse(raw));
+                return Result.ok(new Exact(FunctionAddress.parse(raw)));
             } catch (UseCaseException e) {
-                throw invalid();
+                return invalid();
             }
         }
         if (parts.length == 2 && last.equals("*")) {
-            if (!DnsLabel.isValid(parts[0])) throw invalid();
-            return new Application(new DnsLabel(parts[0]));
+            if (!DnsLabel.isValid(parts[0])) return invalid();
+            return Result.ok(new Application(new DnsLabel(parts[0])));
         }
-        throw invalid();
+        return invalid();
     }
 
-    private static UseCaseException invalid() {
-        return UseCaseException.validation("ADDRESS_PATTERN_INVALID",
-                "address pattern must be app.service.function, app.service.*, or app.*");
+    /// @throws UseCaseException validation `ADDRESS_PATTERN_INVALID`
+    static FunctionAddressPattern parse(String raw) {
+        return check(raw).orElseThrow(e -> UseCaseException.validation(e.code(), e.message()));
+    }
+
+    private static <T> Result<T, Invalid> invalid() {
+        return Result.err(new Invalid("ADDRESS_PATTERN_INVALID",
+                "address pattern must be app.service.function, app.service.*, or app.*"));
     }
 }
