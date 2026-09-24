@@ -52,7 +52,7 @@ public final class CreateConnection {
                     }
                     ServiceAccount account = reach.account(cmd.serviceAccountId())
                             .orElseThrow(() -> UseCaseException.resourceNotFound("ServiceAccount", cmd.serviceAccountId()));
-                    reach.mayUse(Auth.current(), account, null)
+                    reach.mayUse(Auth.current(), account)
                             .orElseThrow(refusal -> UseCaseException.authorization("SERVICE_ACCOUNT_OUT_OF_REACH", refusal.message()));
                     ConnectionCode code = ConnectionCode.parse(cmd.code());
                     if (repo.findByCode(code.value(), cmd.applicationCode(), cmd.clientId()).isPresent()) {

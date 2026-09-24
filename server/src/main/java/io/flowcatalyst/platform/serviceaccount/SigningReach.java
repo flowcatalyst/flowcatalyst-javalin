@@ -21,9 +21,11 @@ import java.util.Optional;
 ///
 /// 1. a super-admin (`platform:*:*:*`) may use any account;
 /// 2. an account that belongs to an application may be used by that
-///    application itself (the caller is one of its service accounts) or by a
-///    configuration that application owns (`ownerApplicationId`, a
-///    sync-authored subscription's own application) — and by nobody else;
+///    application itself (the caller is one of its service accounts) — and
+///    by nobody else. Not even on a subscription that application synced: its
+///    endpoint is editable by whoever administers the subscription's client,
+///    so "the configuration is the application's" would let that admin point
+///    the application's credentials at their own endpoint;
 /// 3. an application's own credentials (the caller IS an application) may
 ///    use no other account at all — application service accounts are
 ///    anchor-tier (`service-account-reach.md` §1), so tenancy alone would
@@ -147,12 +149,8 @@ public final class SigningReach {
         return applications.idOf(code);
     }
 
-    /// Whether `ac` may send deliveries signed by `account`. `ownerApplicationId`
-    /// is the application that owns the configuration naming the account
-    /// (a sync-authored subscription's), or `null` when the configuration is
-    /// the caller's own choice — the ingest paths always pass `null`, since
-    /// an ingested job's payload and target are the caller's.
-    public Result<ServiceAccount, Refusal> mayUse(AuthContext ac, ServiceAccount account, String ownerApplicationId) {
+    /// Whether `ac` may send deliveries signed by `account`.
+    public Result<ServiceAccount, Refusal> mayUse(AuthContext ac, ServiceAccount account) {
         Objects.requireNonNull(ac, "ac");
         if (ac.isSuperAdmin()) {
             return Result.ok(account);
@@ -160,7 +158,7 @@ public final class SigningReach {
         String callerApplication = callerApplicationId(ac);
         String owningApplication = blankToNull(account.applicationId());
         if (owningApplication != null) {
-            if (owningApplication.equals(ownerApplicationId) || owningApplication.equals(callerApplication)) {
+            if (owningApplication.equals(callerApplication)) {
                 return Result.ok(account);
             }
             return Result.err(new Refusal.OtherApplication(account.code()));

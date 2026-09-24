@@ -49,8 +49,7 @@ public final class CreateSubscription {
                         throw UseCaseException.conflict("CODE_EXISTS",
                                 "Subscription with code '" + code + "' already exists");
                     }
-                    // Admin create never has an owning application (applicationCode is null).
-                    Access.requireUsableSigners(reach, connections, null,
+                    Access.requireUsableSigners(reach, connections,
                             Access.blankToNull(cmd.serviceAccountId()), true, Access.blankToNull(cmd.connectionId()), true);
                     QueuePriority queue = QueuePriority.parse(cmd.queue());
                     Subscription s = Subscription.create(code, cmd.name().strip(), EndpointUrl.parse(cmd.endpoint()).value())

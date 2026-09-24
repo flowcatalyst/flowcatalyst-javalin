@@ -543,7 +543,7 @@ class SubscriptionOperationsTest {
     /// A subscription an application's sync authored may use that
     /// application's accounts — and no other application's.
     @Test
-    void updateMayUseTheOwningApplicationsAccountOnly() {
+    void aClientAdminCannotSignWithTheApplicationsAccountEvenOnItsSyncedSubscription() {
         String clientA = EntityType.CLIENT.generate();
         var caller = clientCaller(clientA);
         var app = io.flowcatalyst.platform.application.Application.create(
@@ -563,13 +563,30 @@ class SubscriptionOperationsTest {
         String otherAppAccount = SigningAccounts.seed(DS, List.of(), other.id());
         var synced = seedSubscription(code("subsign-synced"), app.code(), clientA, SubscriptionSource.API);
 
-        runAsCaller(caller, UpdateSubscription.of(repo, connections, REACH), signedUpdate(synced.id(), null, null, appAccount));
-        assertThat(reload(synced.id()).serviceAccountId()).isEqualTo(appAccount);
-
+        // The subscription is the application's (it synced it), but its client's admin
+        // edits it — and chooses its endpoint: the application's account is not theirs
+        // to point anywhere (review fix: the "owning application" exemption let exactly
+        // this through). Mutant: trust the subscription's applicationCode as the owner.
+        assertUseCaseError(() -> runAsCaller(caller, UpdateSubscription.of(repo, connections, REACH),
+                        signedUpdate(synced.id(), null, null, appAccount)),
+                UseCaseError.Authorization.class, "SERVICE_ACCOUNT_OUT_OF_REACH");
         assertUseCaseError(() -> runAsCaller(caller, UpdateSubscription.of(repo, connections, REACH),
                         signedUpdate(synced.id(), null, null, otherAppAccount)),
                 UseCaseError.Authorization.class, "SERVICE_ACCOUNT_OUT_OF_REACH");
-        assertThat(reload(synced.id()).serviceAccountId()).isEqualTo(appAccount);
+        assertThat(reload(synced.id()).serviceAccountId()).isNull();
+
+        // Already signed by the application's account: re-pointing its endpoint is refused too.
+        try (java.sql.Connection conn = DS.getConnection()) {
+            conn.setAutoCommit(false);
+            repo.persist(reload(synced.id()).withServiceAccountId(appAccount), DbTx.wrapForBootstrap(conn));
+            conn.commit();
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        assertUseCaseError(() -> runAsCaller(caller, UpdateSubscription.of(repo, connections, REACH),
+                        signedUpdate(synced.id(), "https://attacker.example.test/hook", null, null)),
+                UseCaseError.Authorization.class, "SERVICE_ACCOUNT_OUT_OF_REACH");
+        assertThat(reload(synced.id()).endpoint()).isNotEqualTo("https://attacker.example.test/hook");
     }
 
     // ── Update ─────────────────────────────────────────────────────────────

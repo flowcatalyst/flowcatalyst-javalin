@@ -64,25 +64,25 @@ class SigningReachTest {
     @Test
     void anAnchorTierAccountIsCoveredOnlyByAnAnchor() {
         ServiceAccount anchorTier = account("sac_anchor", List.of(), null);
-        assertThat(refusal(REACH.mayUse(CLIENT_A_USER, anchorTier, null)))
+        assertThat(refusal(REACH.mayUse(CLIENT_A_USER, anchorTier)))
                 .isInstanceOf(SigningReach.Refusal.OutOfReach.class);
-        assertThat(allowed(REACH.mayUse(ANCHOR_OPERATOR, anchorTier, null))).isTrue();
+        assertThat(allowed(REACH.mayUse(ANCHOR_OPERATOR, anchorTier))).isTrue();
     }
 
     @Test
     void aClientLinkedAccountNeedsEveryOneOfItsClients() {
         ServiceAccount shared = account("sac_ab", List.of(CLIENT_A, CLIENT_B), null);
-        assertThat(refusal(REACH.mayUse(CLIENT_A_USER, shared, null)))
+        assertThat(refusal(REACH.mayUse(CLIENT_A_USER, shared)))
                 .as("confined to A, the account also signs for B")
                 .isInstanceOf(SigningReach.Refusal.OutOfReach.class);
-        assertThat(allowed(REACH.mayUse(PARTNER_AB_USER, shared, null))).isTrue();
-        assertThat(allowed(REACH.mayUse(CLIENT_A_USER, account("sac_a", List.of(CLIENT_A), null), null))).isTrue();
+        assertThat(allowed(REACH.mayUse(PARTNER_AB_USER, shared))).isTrue();
+        assertThat(allowed(REACH.mayUse(CLIENT_A_USER, account("sac_a", List.of(CLIENT_A), null)))).isTrue();
     }
 
     @Test
     void aSuperAdminMayUseAnyAccount() {
-        assertThat(allowed(REACH.mayUse(SUPER_ADMIN, account("sac_anchor", List.of(), null), null))).isTrue();
-        assertThat(allowed(REACH.mayUse(SUPER_ADMIN, APP_X_OWN, null))).isTrue();
+        assertThat(allowed(REACH.mayUse(SUPER_ADMIN, account("sac_anchor", List.of(), null)))).isTrue();
+        assertThat(allowed(REACH.mayUse(SUPER_ADMIN, APP_X_OWN))).isTrue();
         assertThat(allowed(REACH.mayUseApplication(SUPER_ADMIN, APP_X, "x"))).isTrue();
     }
 
@@ -90,27 +90,28 @@ class SigningReachTest {
 
     @Test
     void anApplicationsAccountIsUsableByThatApplicationOnly() {
-        assertThat(allowed(REACH.mayUse(APP_X_CALLER, APP_X_OWN, null))).isTrue();
-        assertThat(refusal(REACH.mayUse(APP_Y_CALLER, APP_X_OWN, null)))
+        assertThat(allowed(REACH.mayUse(APP_X_CALLER, APP_X_OWN))).isTrue();
+        assertThat(refusal(REACH.mayUse(APP_Y_CALLER, APP_X_OWN)))
                 .isInstanceOf(SigningReach.Refusal.OtherApplication.class);
-        assertThat(refusal(REACH.mayUse(ANCHOR_OPERATOR, APP_X_OWN, null)))
+        assertThat(refusal(REACH.mayUse(ANCHOR_OPERATOR, APP_X_OWN)))
                 .as("anchor reach is not being the application")
                 .isInstanceOf(SigningReach.Refusal.OtherApplication.class);
     }
 
+    /// Even a client admin whose client the application serves may not sign with
+    /// the application's own account — they choose the endpoint.
     @Test
-    void aConfigurationTheApplicationOwnsMayUseItsAccount() {
-        assertThat(allowed(REACH.mayUse(CLIENT_A_USER, APP_X_OWN, APP_X))).isTrue();
-        assertThat(refusal(REACH.mayUse(CLIENT_A_USER, APP_X_OWN, APP_Y)))
+    void noOneButTheApplicationSignsWithItsAccount() {
+        assertThat(refusal(REACH.mayUse(CLIENT_A_USER, APP_X_OWN)))
                 .isInstanceOf(SigningReach.Refusal.OtherApplication.class);
     }
 
     @Test
     void anApplicationMayNotBorrowAnAccountThatIsNotItsOwn() {
         // Application credentials are anchor-tier, so tenancy alone would allow this.
-        assertThat(refusal(REACH.mayUse(APP_X_CALLER, account("sac_anchor", List.of(), null), null)))
+        assertThat(refusal(REACH.mayUse(APP_X_CALLER, account("sac_anchor", List.of(), null))))
                 .isInstanceOf(SigningReach.Refusal.ApplicationCaller.class);
-        assertThat(refusal(REACH.mayUse(APP_X_CALLER, account("sac_a", List.of(CLIENT_A), null), null)))
+        assertThat(refusal(REACH.mayUse(APP_X_CALLER, account("sac_a", List.of(CLIENT_A), null))))
                 .isInstanceOf(SigningReach.Refusal.ApplicationCaller.class);
     }
 
@@ -136,7 +137,7 @@ class SigningReachTest {
         }, principalId -> Optional.of(APP_X_OWN.id()), code -> Optional.of(APP_X));
         var memo = counting.perRequest();
         for (int i = 0; i < 5; i++) {
-            memo.mayUse(APP_X_CALLER, APP_X_OWN, null);
+            memo.mayUse(APP_X_CALLER, APP_X_OWN);
             memo.account(APP_X_OWN.id());
         }
         assertThat(calls).as("the caller's account and the named account, once each — same id here").hasValue(1);

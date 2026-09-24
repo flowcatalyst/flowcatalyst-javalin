@@ -85,7 +85,7 @@ public final class DeliverySigningGuard {
         }
         Result<?, SigningReach.Refusal> signer = switch (DeliveryCredentials.signerOf(job, subscriptions, connections)) {
             case DeliveryCredentials.Signer.Named(var serviceAccountId, var ignored) -> reach.account(serviceAccountId)
-                    .<Result<?, SigningReach.Refusal>>map(account -> reach.mayUse(ac, account, null))
+                    .<Result<?, SigningReach.Refusal>>map(account -> reach.mayUse(ac, account))
                     .orElse(Result.ok(serviceAccountId));
             case DeliveryCredentials.Signer.OfApplication(var applicationCode) -> reach.applicationId(applicationCode)
                     .<Result<?, SigningReach.Refusal>>map(id -> reach.mayUseApplication(ac, id, applicationCode))

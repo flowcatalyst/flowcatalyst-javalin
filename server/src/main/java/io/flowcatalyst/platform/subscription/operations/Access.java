@@ -56,10 +56,6 @@ final class Access {
     /// caller chooses the endpoint, so naming an account is choosing where
     /// its bearer token and signatures go.
     ///
-    /// `ownerApplicationCode` is the subscription's own `applicationCode`
-    /// (set only by an application's sync, never by the admin routes): that
-    /// application's accounts are usable on its own subscription.
-    ///
     /// `serviceAccountId`/`connectionId` are `null` when absent. A reference
     /// the caller is setting (`mustExist`) must name an existing row; one
     /// carried over unchanged may be dangling (it signs nothing) and is then
@@ -67,17 +63,15 @@ final class Access {
     ///
     /// @throws UseCaseException not-found `ServiceAccount_NOT_FOUND` | `Connection_NOT_FOUND`,
     ///                          authorization `SERVICE_ACCOUNT_OUT_OF_REACH` | `CONNECTION_OUT_OF_REACH`
-    static void requireUsableSigners(SigningReach reach, ConnectionRepository connections, String ownerApplicationCode,
+    static void requireUsableSigners(SigningReach reach, ConnectionRepository connections,
                                      String serviceAccountId, boolean serviceAccountMustExist,
                                      String connectionId, boolean connectionMustExist) {
         AuthContext ac = Auth.current();
         if (ac == null) {
             throw UseCaseException.authorization("UNAUTHENTICATED", "authentication required");
         }
-        String ownerApplicationId = ownerApplicationCode == null ? null
-                : reach.applicationId(ownerApplicationCode).orElse(null);
         if (serviceAccountId != null) {
-            requireUsable(reach, ac, serviceAccountId, serviceAccountMustExist, ownerApplicationId);
+            requireUsable(reach, ac, serviceAccountId, serviceAccountMustExist);
         }
         if (connectionId != null) {
             Connection connection = connections.findById(connectionId).orElse(null);
@@ -93,13 +87,12 @@ final class Access {
             }
             String connectionAccountId = connection.serviceAccountId();
             if (connectionAccountId != null && !connectionAccountId.isBlank()) {
-                requireUsable(reach, ac, connectionAccountId, false, ownerApplicationId);
+                requireUsable(reach, ac, connectionAccountId, false);
             }
         }
     }
 
-    private static void requireUsable(SigningReach reach, AuthContext ac, String serviceAccountId, boolean mustExist,
-                                      String ownerApplicationId) {
+    private static void requireUsable(SigningReach reach, AuthContext ac, String serviceAccountId, boolean mustExist) {
         ServiceAccount account = reach.account(serviceAccountId).orElse(null);
         if (account == null) {
             if (mustExist) {
@@ -107,7 +100,7 @@ final class Access {
             }
             return;
         }
-        reach.mayUse(ac, account, ownerApplicationId)
+        reach.mayUse(ac, account)
                 .orElseThrow(refusal -> UseCaseException.authorization("SERVICE_ACCOUNT_OUT_OF_REACH", refusal.message()));
     }
 

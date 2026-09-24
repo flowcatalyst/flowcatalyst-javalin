@@ -72,7 +72,7 @@ public final class UpdateSubscription {
                     boolean connectionChanged = !Objects.equals(connectionBefore, connectionAfter);
                     boolean endpointChanged = !Objects.equals(before.endpoint(), s.endpoint());
                     if (accountChanged || connectionChanged || endpointChanged) {
-                        Access.requireUsableSigners(reach, connections, s.applicationCode(),
+                        Access.requireUsableSigners(reach, connections,
                                 accountAfter, accountChanged, connectionAfter, connectionChanged);
                     }
                     return Plan.save(s, repo, SubscriptionUpdated.of(ec, s));
