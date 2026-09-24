@@ -86,7 +86,25 @@ Role assignment sources (who owns which rows of `iam_principal_roles`):
 |---|---|---|---|
 | `AssignRoles` (admin set / add / remove) | **every** assignment — the set is replaced wholesale | nothing (a previously `IDP_SYNC`/`SDK_SYNC` row is rewritten as `ADMIN_ASSIGNED`; the next IdP/SDK sync then treats it as admin-owned — **accident?**) | `ADMIN_ASSIGNED` |
 | `SyncIdpRoles` (login bridge) | `IDP_SYNC` rows | every non-`IDP_SYNC` row; an incoming name already kept is not duplicated | `IDP_SYNC` |
-| `SyncPrincipals` (SDK / `POST /api/principals/sync`) | `SDK_SYNC` rows | every non-`SDK_SYNC` row; incoming names lower-cased; **not** validated against `iam_roles` (no FK either) — **accident?** | `SDK_SYNC` |
+| `SyncPrincipals` (SDK / `POST /api/principals/sync`) | this sync's own application's `SDK_SYNC` rows only (**2026-09-25**, commit `037e6f56`: an app-scoped sync used to replace a matched principal's *entire* `SDK_SYNC` set, so application B's sync stripped application A's roles — `Principal.syncSourcedRoles` now scopes the replacement the way the `removeUnlisted` sweep already did) | every non-`SDK_SYNC` row and every other application's `SDK_SYNC` rows; incoming names lower-cased | `SDK_SYNC` |
+
+Principal sync's per-resource rules (security-fixes-2026-09-24.md S1.3, commit
+`6068fe6b`, **2026-09-25**): an existing principal matched by email is
+touched only when the caller could administer it
+([Access#administers](../../server/src/main/java/io/flowcatalyst/platform/principal/operations/Access.java):
+a non-anchor reaches only `CLIENT`-scope principals of a client it can
+access) — otherwise the whole batch is refused `SYNC_TARGET_FORBIDDEN`
+(the `removeUnlisted` sweep instead skips such a principal, since it
+ranges over every user). Every role name must exist (`UNKNOWN_ROLE`); on
+the app-scoped route it must also belong to the sync's application
+(`ROLE_APP_FORBIDDEN`); on the platform route (no application code) a
+non-anchor may only name roles it could assign through `PUT
+/api/principals/{id}/roles` (§5.3's assignability rule; an anchor, any
+existing role). `passwordHash` is stored verbatim on a principal the sync
+creates; on an *existing* principal it is applied only when the caller is
+a super-admin and otherwise silently ignored — **owner question**: should
+a non-super-admin's hash on an existing principal be refused outright
+instead of ignored?
 
 Password lifecycle: set at create (optional, policy-checked), replaced by
 `ResetPassword` (admin route *and* the unauthenticated token-gated confirm
@@ -119,8 +137,12 @@ All routes require a bearer; errors are the `ErrorModel` envelope. "Gate"
 is what the handler checks before anything else; resource-level rules are
 in §5. `USER_VIEW` = `platform:iam:user:view`; "write" = any of
 `USER_CREATE`, `USER_UPDATE`, `USER_DELETE`; "sync" = any of `USER_MANAGE`,
-`USER_CREATE`, `USER_UPDATE`, `USER_DELETE`, `USER_ASSIGN_ROLES`. Anchors pass
-every permission gate.
+`USER_CREATE`, `USER_UPDATE`, `USER_DELETE`, `USER_ASSIGN_ROLES`. `CLIENT_ACCESS_VIEW`
+= `platform:iam:client-access:view`, `CLIENT_ACCESS_GRANT` = `…:grant`,
+`CLIENT_ACCESS_REVOKE` = `…:revoke` — the client-access and
+client-association routes' permissions (2026-09-25, `security-fixes-2026-09-24.md`
+S1.2, commit `6068fe6b`: the anchor tier is reach, never authority, so
+`requireAnchor` alone is no longer any route's whole gate).
 
 | Method / path | Gate | Use case | Success |
 |---|---|---|---|
@@ -147,10 +169,10 @@ every permission gate.
 | `GET /api/principals/{id}/application-access` | `USER_VIEW`; load | read | 200 `ApplicationAccessListResponse {applications, total, allApplications}` |
 | `PUT /api/principals/{id}/application-access` | no coarse gate; load; `allApplications = true` by a caller without all-applications → 403 `FORBIDDEN` "Only an all-applications administrator may grant all-applications access"; non-anchor bounding (§5.3) | `AssignApplicationAccess` (set = body ∪ preserved) | 200 `SetApplicationAccessResponse {applications, added, removed, allApplications}` |
 | `GET /api/principals/{id}/available-applications` | `USER_VIEW`; load | read: active applications; non-anchor → only those the principal's home client has an enabled client-config for | 200 `PrincipalAvailableApplicationsResponse` |
-| `GET /api/principals/{id}/client-access` | `requireAnchor` | read (grants by `granted_at`) | 200 `ClientAccessGrantListResponse` |
-| `POST /api/principals/{id}/client-access` | `requireAnchor` | `GrantClientAccess` | 200 `ClientAccessGrantResponse` (re-read) |
-| `DELETE /api/principals/{id}/client-access/{clientId}` | `requireAnchor` | `RevokeClientAccess` | 204 |
-| `PUT /api/principals/{id}/client-association` | `requireAnchor` | `SetClientAssociation` (mode upper-cased/trimmed) | 200 `PrincipalResponse` |
+| `GET /api/principals/{id}/client-access` | `requireAnchor` + `CLIENT_ACCESS_VIEW` | read (grants by `granted_at`) | 200 `ClientAccessGrantListResponse` |
+| `POST /api/principals/{id}/client-access` | `requireAnchor` + `CLIENT_ACCESS_GRANT` | `GrantClientAccess` | 200 `ClientAccessGrantResponse` (re-read) |
+| `DELETE /api/principals/{id}/client-access/{clientId}` | `requireAnchor` + `CLIENT_ACCESS_REVOKE` | `RevokeClientAccess` | 204 |
+| `PUT /api/principals/{id}/client-association` | `requireAnchor` + `CLIENT_ACCESS_GRANT` | `SetClientAssociation` (mode upper-cased/trimmed) | 200 `PrincipalResponse` |
 | `POST /api/principals/{id}/developer-credential` | none — self-or-user-admin inside the op | `SetDeveloperCredential` | 200 `SetDeveloperCredentialResponse {id, clientSecret?}` (`clientSecret` omitted only on a stash miss) |
 | `DELETE /api/principals/{id}/developer-credential` | none | `RevokeDeveloperCredential` | 204 |
 
@@ -422,7 +444,7 @@ DESC`); roles / grants hydrated in one `IN` query each.
 ## 11. Open questions for the owner (summary)
 
 1. `AssignRoles` rewrites every assignment as `ADMIN_ASSIGNED`, silently adopting IdP/SDK-sourced rows.
-2. `SyncPrincipals` does not validate role names (no FK); `removeUnlisted` strips `SDK_SYNC` roles from every USER not in the payload regardless of application.
+2. ~~`SyncPrincipals` does not validate role names (no FK); `removeUnlisted` strips `SDK_SYNC` roles from every USER not in the payload regardless of application.~~ **Superseded 2026-09-25** (`security-fixes-2026-09-24.md` S1.3, commit `6068fe6b`; role-replacement scoping also `037e6f56`): role names must now exist and, on the app-scoped route, belong to the sync's application (§2); `removeUnlisted` was already scoped to the syncing application's `SDK_SYNC` rows (X-02(c)) and the named-principal replacement now follows the same rule. Open: whether a non-super-admin's `passwordHash` on an existing principal should be refused rather than ignored (§2).
 3. Role / application-access / developer-credential mutations have no coarse handler gate and load before authorizing (existence oracle).
 4. Read routes under `/{id}/…` check only `USER_VIEW`, not client scope; by-id read is lenient on clientless principals while the list hides them. **Demonstrated 2026-08-26** by `PrincipalApiTest`: the by-id read *is* scoped (a clientA admin gets 403 on a clientB principal), but `GET /{id}/roles` is **not** — the same caller reads that principal's roles with 200. So one route denies, its sub-route allows, and the list hides entirely. Both halves are pinned by tests so a ruling either way is visible.
 5. `SetClientAssociation` emits `user:updated` (name only) and writes TO_PARTNER grant rows without `client-access-granted` events.

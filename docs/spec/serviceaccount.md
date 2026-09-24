@@ -82,20 +82,28 @@ specifically.
 | `POST /api/service-accounts/{id}/deactivate` | write | 204 |
 | `DELETE /api/service-accounts/{id}` | **delete** | 204 |
 | `GET /api/service-accounts/{id}/roles` | read | 200 role list |
-| `PUT /api/service-accounts/{id}/roles` | **anchor only** | 200 `ServiceAccountRolesAssignedResponse` |
+| `PUT /api/service-accounts/{id}/roles` | **anchor** + `SERVICE_ACCOUNT_UPDATE` | 200 `ServiceAccountRolesAssignedResponse` |
 | `POST /api/service-accounts/{id}/regenerate-token` | write | 200 (see §5) |
 | `POST /api/service-accounts/{id}/regenerate-auth-token` | write | 200 — **alias of the row above** |
 | `POST /api/service-accounts/{id}/regenerate-secret` | write | 200 (see §5) |
 | `POST /api/service-accounts/{id}/regenerate-signing-secret` | write | 200 — **alias** |
-| `POST /api/service-accounts/{id}/token` | **anchor only**, audited | 200 `ServiceAccountTokenResponse` (§8) |
+| `POST /api/service-accounts/{id}/token` | **anchor** + `SERVICE_ACCOUNT_UPDATE`, audited | 200 `ServiceAccountTokenResponse` (§8) |
 
 The two alias pairs are one handler each, registered twice: the SPA calls the
 short paths, `fcsdk` the long ones. Both must exist and behave identically.
 
-**Two routes are anchor-only rather than permission-gated** — role assignment
-and token mint. Both hand out authority rather than editing a record, so the
-gate is the tier, not a permission that could be granted to a client
-administrator.
+**Superseded 2026-09-25** (`security-fixes-2026-09-24.md` S1.2, commit
+`6068fe6b`; `ServiceAccountApi.java`): role assignment and token mint used to
+be anchor-only with no permission ("both hand out authority rather than
+editing a record, so the gate is the tier, not a permission that could be
+granted to a client administrator"). The anchor tier is reach, never
+authority: without a permission, an application's own anchor-reach service
+account could assign itself `platform:super-admin` (role assignment) or mint
+itself a token (token mint) despite holding only `platform:application-service`.
+Both routes now also require `SERVICE_ACCOUNT_UPDATE` — anchor reach still
+gates them (role assignment grants authority in the `principal` aggregate;
+token mint hands out a bearer that acts as the account), but a permission
+is required too, at every tier.
 
 ## 4. Operations
 

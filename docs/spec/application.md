@@ -207,6 +207,21 @@ uses `RoleRepository.findByApplicationId`.
 
 ## 10. Provisioning (ported 2026-09-05, application-provisioning brief)
 
+**Superseded 2026-09-25** (`security-fixes-2026-09-24.md` S1.2, commit
+`6068fe6b`; `ApplicationApi.java`): §3 marks `service-account` (attach),
+`provision-service-account`, `provision-login-client`, and
+`clients/{clientId}/enable`/`disable` as gate "anchor" — anchor reach alone
+is no longer any of their whole gate (the anchor tier is reach, never
+authority). Each now also requires a permission:
+
+| Route | Gate now |
+|---|---|
+| `POST …/{id}/service-account` (attach) | `requireAnchor` + `APPLICATION_UPDATE` — the attached account becomes the application's own identity |
+| `POST …/{id}/provision-service-account` | `requireAnchor` + `SERVICE_ACCOUNT_CREATE` (it creates a service account and issues its credential — the `/api/service-accounts` create permission) + `APPLICATION_UPDATE` (it rewrites the application's service-account link) |
+| `POST …/{id}/provision-login-client` | `requireAnchor` + `OAUTH_CLIENT_CREATE` (the `/api/oauth-clients` create permission — this IS an OAuth client create) + `APPLICATION_UPDATE` |
+| `POST …/{id}/clients/{clientId}/enable` | `requireAnchor` + `APPLICATION_ENABLE_CLIENT` — an enabled application's roles become assignable by that client's admins |
+| `POST …/{id}/clients/{clientId}/disable` | `requireAnchor` + `APPLICATION_DISABLE_CLIENT` |
+
 - `POST …/provision-service-account` (`ProvisionServiceAccount`
   `TxOperation`): creates a service account (with generated webhook
   credentials), its `SERVICE` principal (app-scoped, granted the seeded
