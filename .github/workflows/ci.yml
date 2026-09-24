@@ -57,6 +57,41 @@ jobs:
           name: surefire-reports
           path: "**/target/surefire-reports/*.xml"
 
+  # docs/sdk-release-plan.md §2.2: the committed SDKs must be what the lockfile generates.
+  # They drifted once (generated from Go's spec, not this lockfile) and nothing noticed.
+  # Laravel's generator is pinned in composer.json require-dev (a floating 7.x rewrites
+  # every endpoint); its composer.lock is deliberately untracked (a library).
+  sdks:
+    name: Generated SDKs match the lockfile
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # The SDK's package.json names no packageManager (it is published standalone);
+      # pin the version this repo's e2e runner uses.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.10.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: clients/typescript-sdk/pnpm-lock.yaml
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          tools: composer
+      - name: Regenerate
+        run: make sdk-generate
+      - name: No drift
+        run: |
+          git status --porcelain -- clients sdk/openapi
+          test -z "$(git status --porcelain -- clients sdk/openapi)" || {
+            echo "the committed SDKs differ from what the lockfile generates — run 'make sdk-generate' and commit"
+            git diff --stat -- clients sdk/openapi
+            exit 1
+          }
+
   image:
     name: jlink image (Dockerfile)
     runs-on: ubuntu-latest
