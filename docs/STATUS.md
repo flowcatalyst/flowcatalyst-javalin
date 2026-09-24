@@ -6,6 +6,25 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## fcdev 0.9.0: this repo owns the release stream; function host fetched on first use (2026-09-24, later still)
+
+`docs/spec/fcdev-release-0.9.md` implemented (not yet committed by this agent — see the diff):
+`VERSION` → `0.9.0`, `UpgradeCommand.DEFAULT_REPO` → `flowcatalyst/flowcatalyst-javalin`,
+`scripts/release.sh dev <bump>` / `make release-fcdev`, `release-fcdev.yml`'s `meta` job now fails a
+release whose tag doesn't match `VERSION` at that ref. New: a native `fcdev start` with functions on
+and no host jar statically resolvable (flag / env / beside the binary / the first-use cache path)
+fetches `fc-fnhost.jar` for its OWN version (never "latest"), checksum required
+(`UpgradeCommand#fetchOwnFunctionHostJar`, a `Result<Path, FetchError>`); `fcdev upgrade`'s own
+fc-fnhost.jar fetch now requires the checksum too. Scope addition mid-unit: the native child-process
+branch also now refuses a `java` below feature version 25 (`FnHostLauncher#MIN_JAVA_FEATURE_VERSION`,
+checked via `java -XshowSettings:properties -version`) rather than launching it into
+`UnsupportedClassVersionError`. **Owner action, two items**: disable the Go repository's own
+`release-fcdev.yml` (identical tag prefix + asset names — do not leave both enabled); a developer
+still on the Go-built binary sets `FC_DEV_UPGRADE_REPO=flowcatalyst/flowcatalyst` to keep using Go's
+releases. `docs/backlog.md` has the full note. Reactor: fcdev tests green (41 across
+`UpgradeCommandTest`/`FnHostLauncherTest`/`StartCommandFnHostFetchTest`/`DevPathsTest` alone; full
+module suite run in progress at hand-off — check it before landing).
+
 ## Cookie hardening; fn init ships the function API (2026-09-24, later)
 
 `d2cf1fc9` (`docs/spec/cookie-hardening.md`): deployed session cookie is `__Host-fc_session`

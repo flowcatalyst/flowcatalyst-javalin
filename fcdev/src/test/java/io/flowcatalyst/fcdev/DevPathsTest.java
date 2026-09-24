@@ -50,6 +50,15 @@ class DevPathsTest {
         assertThat(p.userCacheDir()).isEqualTo(Path.of("C:\\Users\\dev\\AppData\\Local"));
     }
 
+    /// `docs/spec/fcdev-release-0.9.md` §3: the first-use fetch's cache path
+    /// — versioned, under `flowcatalyst/fnhost/<version>`.
+    @Test
+    void fnHostCachePathIsVersionedUnderTheDataDir() {
+        var p = DevPaths.resolve(Map.of(), "Linux", "/home/dev");
+        assertThat(p.fnHostCachePath("0.9.0"))
+                .isEqualTo(Path.of("/home/dev/.config/flowcatalyst/fnhost/0.9.0/fc-fnhost.jar"));
+    }
+
     @Test
     void fallbacksWithoutAHome() {
         var p = DevPaths.resolve(Map.of(), "Linux", "");

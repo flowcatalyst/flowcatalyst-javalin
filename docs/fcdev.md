@@ -328,18 +328,29 @@ outbox backend is on the backlog by ruling.
 
 ### `fcdev upgrade`
 
-Self-update from GitHub Releases (`FC_DEV_UPGRADE_REPO`, tags `fcdev/vX.Y.Z`),
+Self-update from GitHub Releases (`FC_DEV_UPGRADE_REPO`, default
+`flowcatalyst/flowcatalyst-javalin` — this repo owns the `fcdev/v*` tag
+stream, `docs/spec/fcdev-release-0.9.md` §1; point the env var at the Go
+repository to keep using its releases instead), tags `fcdev/vX.Y.Z`,
 `--check` / `--force`. The Java binary ships two ways and the command
 detects which it is running as: a native binary
 (`fcdev-v<ver>-<os>-<arch>.tar.gz`, `.zip` on Windows) or an executable jar
 (`fcdev-v<ver>.jar`); any other launch (JBang, `mvn exec`, an IDE) refuses
-with a message. The `.sha256` sidecar is verified when published; the
-replace is atomic.
+with a message. The main asset's `.sha256` sidecar is verified when
+published; the replace is atomic. On the native path it also fetches
+`fc-fnhost.jar` (the function host exec jar) beside the binary when the
+release publishes one — that checksum is REQUIRED (no sidecar, or a
+mismatch, aborts the fetch without installing).
+
+`fcdev start` on a native binary does the same fc-fnhost.jar fetch itself,
+on first use, if no host jar is otherwise found (`docs/spec/fcdev-release-0.9.md`
+§3) — see "fcdev start" below and `docs/spec/function-developer-surface.md` §1.
 
 ### `fcdev version` / `fcdev --version`
 
-`fcdev 0.8.23` — the version comes from `fcdev/src/main/resources/VERSION`
-(a copy of the Go `cmd/fcdev/VERSION`); a release build can append a VCS
+`fcdev 0.9.0` — the version comes from `fcdev/src/main/resources/VERSION`
+(a copy of the Go `cmd/fcdev/VERSION`, now ahead of it — this repo owns the
+release stream); a release build can append a VCS
 revision with `-Dfcdev.vcs.revision=<sha>`. Only the root command accepts a
 version flag (`-v`/`--version`); every subcommand accepts `-h`/`--help`
 alone, matching cobra (Go's `--version`/`-v` is likewise root-only —

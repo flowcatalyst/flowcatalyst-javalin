@@ -2,6 +2,9 @@ package io.flowcatalyst.fcdev;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.sdk.result.Result;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Model.CommandSpec;
@@ -55,7 +58,10 @@ import java.util.zip.ZipInputStream;
         sortOptions = false)
 public final class UpgradeCommand implements Callable<Integer> {
 
-    static final String DEFAULT_REPO = "flowcatalyst/flowcatalyst";
+    private static final Logger LOG = LoggerFactory.getLogger(UpgradeCommand.class);
+
+    static final String DEFAULT_REPO = "flowcatalyst/flowcatalyst-javalin";
+    static final String FN_HOST_ASSET = "fc-fnhost.jar";
     static final String DEFAULT_API_BASE = "https://api.github.com";
     static final String RELEASE_TAG_PREFIX = "fcdev/v";
 
@@ -178,23 +184,141 @@ public final class UpgradeCommand implements Callable<Integer> {
     }
 
     /// `fcdev upgrade` fetching `fc-fnhost.jar` "beside the binary" (spec
-    /// §1): a fixed asset name, no version in it, verified against its
-    /// `.sha256` sidecar exactly like the main asset when one is published.
-    /// Package-visible for direct testing without staging a full native
-    /// release fixture.
+    /// §1): a fixed asset name, no version in it. The checksum is REQUIRED
+    /// (`docs/spec/fcdev-release-0.9.md` §3, last line: "makes the checksum
+    /// required the same way" as [#fetchOwnFunctionHostJar]) — a published
+    /// asset with no `.sha256` sidecar refuses to install rather than
+    /// falling back to an unverified copy. Package-visible for direct
+    /// testing without staging a full native release fixture.
     void fetchFunctionHostJarIfPresent(Release rel, Path dir, PrintWriter out) throws IOException, InterruptedException {
-        String assetUrl = rel.assets().get("fc-fnhost.jar");
+        String assetUrl = rel.assets().get(FN_HOST_ASSET);
         if (assetUrl == null) {
             return;
         }
         out.println("downloading fc-fnhost.jar…");
         byte[] jarBytes = httpGet(assetUrl);
-        String shaUrl = rel.assets().get("fc-fnhost.jar.sha256");
-        if (shaUrl != null) {
-            verifySha256(jarBytes, httpGet(shaUrl));
+        String shaUrl = rel.assets().get(FN_HOST_ASSET + ".sha256");
+        if (shaUrl == null) {
+            throw new IllegalStateException("release " + rel.version() + " publishes " + FN_HOST_ASSET
+                    + " with no .sha256 sidecar — refusing to install an unverified function host jar");
         }
-        replaceFile(dir.resolve("fc-fnhost.jar"), jarBytes);
+        verifySha256(jarBytes, httpGet(shaUrl));
+        replaceFile(dir.resolve(FN_HOST_ASSET), jarBytes);
         out.println("fc-fnhost.jar updated.");
+    }
+
+    // ── first-use fetch (fcdev start, docs/spec/fcdev-release-0.9.md §3) ──
+
+    /// `fcdev start`'s first-use fetch of the function host: a NATIVE fcdev
+    /// with no host jar resolvable from the four static places
+    /// (`--fn-host-jar` / `FC_FN_HOST_JAR` / beside the binary / the cache
+    /// path — [StartCommand#resolveHostJar]) fetches it instead of disabling
+    /// functions. Reuses this class's GitHub-API/HTTP/checksum code — one
+    /// release parser, one HTTP client — rather than a second copy for
+    /// `fcdev start`.
+    ///
+    /// `CONVENTIONS.md` §8: a failed fetch is an EXPECTED outcome — offline,
+    /// this version has no release yet, or the release's checksum is
+    /// missing/mismatched — so this returns a sealed [FetchError], never
+    /// throws, and the caller turns it into the existing
+    /// `FnHostLauncher.Disabled` warning; `fcdev start` still succeeds.
+    ///
+    /// The checksum is REQUIRED (spec §3 item 2): no `.sha256` asset, or a
+    /// mismatch, is a failed fetch — never an unverified install.
+    ///
+    /// @param repo       the upgrade repo (`FC_DEV_UPGRADE_REPO` / [#DEFAULT_REPO])
+    /// @param installDir beside-the-binary directory — used when it exists and is writable
+    /// @param cacheDir   `<fcdev data dir>/fnhost/<version>` (spec §3 item 3) —
+    ///                    used when `installDir` is `null`, missing, or not writable
+    Result<Path, FetchError> fetchOwnFunctionHostJar(String repo, Path installDir, Path cacheDir) {
+        String version = Version.current();
+        String tag = RELEASE_TAG_PREFIX + version;
+
+        Release rel;
+        try {
+            rel = releaseByTag(repo, tag);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Result.err(new FetchError.Offline(String.valueOf(e.getMessage())));
+        } catch (IOException e) {
+            return Result.err(new FetchError.Offline(String.valueOf(e.getMessage())));
+        }
+        if (rel == null) {
+            return Result.err(new FetchError.NoRelease(repo, tag));
+        }
+
+        String jarUrl = rel.assets().get(FN_HOST_ASSET);
+        if (jarUrl == null) {
+            return Result.err(new FetchError.NoRelease(repo, tag));
+        }
+        String shaUrl = rel.assets().get(FN_HOST_ASSET + ".sha256");
+        if (shaUrl == null) {
+            return Result.err(new FetchError.NoChecksum(FN_HOST_ASSET));
+        }
+
+        LOG.atInfo().setMessage("fetching the function host")
+                .addKeyValue("asset", FN_HOST_ASSET)
+                .addKeyValue("version", version)
+                .log();
+        byte[] jarBytes;
+        byte[] shaBytes;
+        try {
+            jarBytes = httpGet(jarUrl);
+            shaBytes = httpGet(shaUrl);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Result.err(new FetchError.Offline(String.valueOf(e.getMessage())));
+        } catch (IOException e) {
+            return Result.err(new FetchError.Offline(String.valueOf(e.getMessage())));
+        }
+
+        try {
+            verifySha256(jarBytes, shaBytes);
+        } catch (IllegalStateException e) {
+            return Result.err(new FetchError.ChecksumMismatch(e.getMessage()));
+        }
+
+        Path dest = writableDirectory(installDir) ? installDir.resolve(FN_HOST_ASSET) : cacheDir.resolve(FN_HOST_ASSET);
+        try {
+            if (dest.getParent() != null) {
+                Files.createDirectories(dest.getParent());
+            }
+            replaceFile(dest, jarBytes);
+        } catch (IOException e) {
+            return Result.err(new FetchError.Offline("could not write " + dest + ": " + e.getMessage()));
+        }
+        return Result.ok(dest);
+    }
+
+    private static boolean writableDirectory(Path dir) {
+        return dir != null && Files.isDirectory(dir) && Files.isWritable(dir);
+    }
+
+    /// Why [#fetchOwnFunctionHostJar] could not produce a usable jar — every
+    /// case is the context [StartCommand] needs to build the
+    /// `FnHostLauncher.Disabled` reason without re-deriving it.
+    public sealed interface FetchError {
+        /// The network request itself failed, or the fetched bytes could not
+        /// be written locally — offline, DNS, an unexpected non-2xx status,
+        /// a local disk error.
+        record Offline(String detail) implements FetchError {
+        }
+
+        /// No `fcdev/v<version>` release exists yet for `repo` (or that
+        /// release does not publish `fc-fnhost.jar`) — most likely this
+        /// build is ahead of its first tagged release.
+        record NoRelease(String repo, String tag) implements FetchError {
+        }
+
+        /// The release publishes `fc-fnhost.jar` but no `.sha256` sidecar —
+        /// the checksum is required, so this is a refusal to install
+        /// unverified content, not a download failure.
+        record NoChecksum(String assetName) implements FetchError {
+        }
+
+        /// The downloaded bytes do not match the published `.sha256`.
+        record ChecksumMismatch(String detail) implements FetchError {
+        }
     }
 
     // ── which artifact ───────────────────────────────────────────────────
@@ -376,13 +500,7 @@ public final class UpgradeCommand implements Callable<Integer> {
     /// filtering as Go's `latestRelease`.
     Release latestRelease(String repo) throws IOException, InterruptedException {
         String api = apiBase + "/repos/" + repo + "/releases?per_page=100";
-        HttpRequest request = HttpRequest.newBuilder(URI.create(api))
-                .timeout(Duration.ofSeconds(30))
-                .header("User-Agent", "fcdev-upgrade")
-                .header("Accept", "application/vnd.github+json")
-                .GET()
-                .build();
-        HttpResponse<String> response = httpClient().send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = getJson(api);
         if (response.statusCode() != 200) {
             throw new IllegalStateException("GitHub API " + api + " returned " + response.statusCode() + ": "
                     + truncate(response.body(), 512));
@@ -401,18 +519,59 @@ public final class UpgradeCommand implements Callable<Integer> {
             if (best != null && compareSemver(ver, best.version()) <= 0) {
                 continue;
             }
-            var assets = new LinkedHashMap<String, String>();
-            if (r.assets() != null) {
-                for (GhAsset a : r.assets()) {
-                    assets.put(a.name(), a.url());
-                }
-            }
-            best = new Release(ver, assets);
+            best = new Release(ver, assetsOf(r));
         }
         if (best == null) {
             throw new IllegalStateException("no " + RELEASE_TAG_PREFIX + "X.Y.Z releases found for " + repo);
         }
         return best;
+    }
+
+    /// The single release tagged exactly `tag` (`GET
+    /// /repos/{repo}/releases/tags/{tag}`) — used by
+    /// [#fetchOwnFunctionHostJar] to ask for the release matching THIS
+    /// fcdev's own version, never "latest" (`docs/spec/fcdev-release-0.9.md`
+    /// §3 item 1/4: a native binary must fetch the function host that
+    /// matches its own release). `null` when GitHub answers 404 (no such
+    /// release) — never thrown, so the caller reports
+    /// [FetchError.NoRelease] rather than a stack trace; any other non-200
+    /// status is still an [IllegalStateException] like [#latestRelease].
+    Release releaseByTag(String repo, String tag) throws IOException, InterruptedException {
+        String api = apiBase + "/repos/" + repo + "/releases/tags/" + tag;
+        HttpResponse<String> response = getJson(api);
+        if (response.statusCode() == 404) {
+            return null;
+        }
+        if (response.statusCode() != 200) {
+            throw new IllegalStateException("GitHub API " + api + " returned " + response.statusCode() + ": "
+                    + truncate(response.body(), 512));
+        }
+        GhRelease r = Json.MAPPER.readValue(response.body(), GhRelease.class);
+        String ver = tag.startsWith(RELEASE_TAG_PREFIX) ? tag.substring(RELEASE_TAG_PREFIX.length()) : tag;
+        return new Release(ver, assetsOf(r));
+    }
+
+    private static Map<String, String> assetsOf(GhRelease r) {
+        var assets = new LinkedHashMap<String, String>();
+        if (r.assets() != null) {
+            for (GhAsset a : r.assets()) {
+                assets.put(a.name(), a.url());
+            }
+        }
+        return assets;
+    }
+
+    /// The one GitHub-API GET, shared by [#latestRelease] and
+    /// [#releaseByTag] — a single HTTP client, a single request shape, so
+    /// there is exactly one place that builds a GitHub API request.
+    private HttpResponse<String> getJson(String api) throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder(URI.create(api))
+                .timeout(Duration.ofSeconds(30))
+                .header("User-Agent", "fcdev-upgrade")
+                .header("Accept", "application/vnd.github+json")
+                .GET()
+                .build();
+        return httpClient().send(request, HttpResponse.BodyHandlers.ofString());
     }
 
     /// The subset of a GitHub release asset this reads.

@@ -1,18 +1,12 @@
 #!/usr/bin/env bash
-# Cut a FlowCatalyst SDK release from this repo.
+# Cut a FlowCatalyst SDK or fcdev release from this repo.
 #
 # Ported from ../flowcatalyst-go/scripts/release.sh (docs/sdk-release-plan.md).
 # Usage: scripts/release.sh <kind> <bump>
-#   <kind>  release line — currently: ts (TypeScript SDK), laravel (Laravel
-#           SDK), java (the sdk/ reactor module)
+#   <kind>  release line — ts (TypeScript SDK), laravel (Laravel SDK), java
+#           (the sdk/ reactor module), dev (fcdev — this repo owns the
+#           `fcdev/v*` tag stream, `docs/spec/fcdev-release-0.9.md` §1/§2)
 #   <bump>  patch | minor | major | X.Y.Z[-suffix]
-#
-# No "dev" kind here: unlike Go's cmd/fcdev/VERSION, this repo's
-# .github/workflows/release-fcdev.yml resolves its version purely from the
-# `fcdev/v*` tag it is pushed against — it does not read a VERSION file — and
-# CALL-OUT 1 in that workflow already leaves fcdev/v* tag ownership an open
-# question against the Go repo. Adding a `dev` kind here is a separate
-# decision for whoever resolves that call-out, not part of the SDK move.
 #
 # The version source of truth is a per-line VERSION file. The bump base is
 # max(VERSION file, highest <prefix>/v* git tag) so a hand-cut tag can never
@@ -26,7 +20,7 @@ kind="${1:-}"
 bump="${2:-}"
 
 usage() {
-	echo "usage: scripts/release.sh <ts|laravel|java> <patch|minor|major|X.Y.Z[-suffix]>" >&2
+	echo "usage: scripts/release.sh <ts|laravel|java|dev> <patch|minor|major|X.Y.Z[-suffix]>" >&2
 	exit 2
 }
 [ -n "$kind" ] && [ -n "$bump" ] || usage
@@ -37,12 +31,15 @@ usage() {
 # sdk/ is a module of this repo's Maven reactor and is versioned by the
 # reactor's own pom (see sdk/pom.xml), not by its own <version>; sdk/VERSION
 # exists only to drive this script's tag numbering, the same way the other
-# two SDKs' VERSION files do.
+# two SDKs' VERSION files do. The dev kind (fcdev) has no manifest either —
+# fcdev/src/main/resources/VERSION IS what io.flowcatalyst.fcdev.Version
+# embeds and what `fcdev upgrade` compares against the tag.
 manifest=""
 case "$kind" in
 	ts)      prefix="typescript-sdk"; version_file="clients/typescript-sdk/VERSION"; label="typescript-sdk"; manifest="clients/typescript-sdk/package.json" ;;
 	laravel) prefix="laravel-sdk";    version_file="clients/laravel-sdk/VERSION";    label="laravel-sdk" ;;
 	java)    prefix="java-sdk";       version_file="sdk/VERSION";                    label="java-sdk" ;;
+	dev)     prefix="fcdev";          version_file="fcdev/src/main/resources/VERSION"; label="fcdev" ;;
 	*)       echo "✗ unknown release kind: $kind" >&2; usage ;;
 esac
 
@@ -151,10 +148,16 @@ git push origin HEAD "$prefix/v$new"
 
 echo ""
 echo "✓ Released $label v$new"
-if [ "$kind" != "java" ]; then
-	echo "  Workflow: https://github.com/flowcatalyst/flowcatalyst-javalin/actions/workflows/split-$prefix.yml"
-else
-	echo "  No split workflow for java-sdk — this is a version bump + tag only"
-	echo "  (docs/sdk-release-plan.md §4: no mirror, no artifact)."
-fi
+case "$kind" in
+	java)
+		echo "  No split workflow for java-sdk — this is a version bump + tag only"
+		echo "  (docs/sdk-release-plan.md §4: no mirror, no artifact)."
+		;;
+	dev)
+		echo "  Workflow: https://github.com/flowcatalyst/flowcatalyst-javalin/actions/workflows/release-fcdev.yml"
+		;;
+	*)
+		echo "  Workflow: https://github.com/flowcatalyst/flowcatalyst-javalin/actions/workflows/split-$prefix.yml"
+		;;
+esac
 echo "  Tag: https://github.com/flowcatalyst/flowcatalyst-javalin/releases/tag/$prefix/v$new"

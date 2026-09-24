@@ -139,4 +139,13 @@ public record DevPaths(Path userDataDir, Path userCacheDir) {
     public Path fnCacheDir() {
         return flowcatalystDir().resolve("fn-cache");
     }
+
+    /// `docs/spec/fcdev-release-0.9.md` §3: the first-use function-host
+    /// fetch's cache path — `<userDataDir>/flowcatalyst/fnhost/<version>/fc-fnhost.jar` —
+    /// used when the directory beside the running native binary is not
+    /// writable. Versioned by `version` (`Version.current()`) so a later
+    /// fcdev build never resolves a host jar cached by an older one.
+    public Path fnHostCachePath(String version) {
+        return flowcatalystDir().resolve("fnhost").resolve(version).resolve("fc-fnhost.jar");
+    }
 }

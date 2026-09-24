@@ -5,24 +5,22 @@ name: Release fcdev
 # checksummed the way `io.flowcatalyst.fcdev.UpgradeCommand` expects so that
 # `fcdev upgrade` can find and verify them.
 #
-# CALL-OUT 1 — tag/repo collision with Go, unresolved here on purpose:
-#   UpgradeCommand.DEFAULT_REPO ("flowcatalyst/flowcatalyst", see
-#   fcdev/src/main/java/io/flowcatalyst/fcdev/UpgradeCommand.java) currently
-#   points at the GO repository, and Go's own release-fcdev.yml publishes
-#   releases under the SAME tag prefix (`fcdev/v*`) and the SAME asset
-#   filenames (`fcdev-v<ver>-<os>-<arch>.tar.gz` etc). Until the Java binary
-#   is the canonical `fcdev`, THIS workflow and Go's release-fcdev.yml must
-#   NOT both publish a release for the same `fcdev/v*` tag — that would be
-#   two different binaries fighting over one release's assets. The owner
-#   must decide which repository owns the `fcdev/v*` tag stream (and update
-#   DEFAULT_REPO / this workflow's target repo accordingly) before this is
-#   turned on for real.
+# Tag/repo ownership (resolved 2026-09-24, `docs/spec/fcdev-release-0.9.md`
+# §1/§2): THIS repository (flowcatalyst-javalin) owns the `fcdev/v*` tag
+# stream from here on — `UpgradeCommand.DEFAULT_REPO` points at
+# `flowcatalyst/flowcatalyst-javalin`, and this is the workflow that
+# publishes for it. The Go repository's own `release-fcdev.yml` publishes
+# under the SAME tag prefix and the SAME asset filenames — running both
+# against the same `fcdev/v*` tag would be two different binaries fighting
+# over one release's assets, so **the Go repository's `release-fcdev.yml`
+# must be disabled** (an owner action, not something this file can enforce);
+# users still on the Go fcdev either reinstall from here or point
+# `FC_DEV_UPGRADE_REPO` at the Go repository to keep using it.
 #
-# CALL-OUT 2 — no GitHub remote yet:
-#   This Java repo (flowcatalyst-javalin) currently has NO git remote
-#   configured, so there is no GitHub repository for this workflow to run
-#   in, and no `gh release` target for it to publish to. This file cannot
-#   run until the repo has a GitHub home.
+# The `meta` job below fails the release outright if the pushed tag's
+# version does not match `fcdev/src/main/resources/VERSION` at that ref —
+# a binary reporting a version other than the one its own release was cut
+# under would break `fcdev upgrade`'s semver comparison silently.
 #
 # Structural difference from Go's release-fcdev.yml: Go cross-compiles all
 # five targets (darwin/linux amd64+arm64, windows amd64) on one Linux
@@ -56,8 +54,8 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
     steps:
-      - name: Resolve tag + version
-        id: meta
+      - name: Resolve tag
+        id: tag
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           if [[ ! "$TAG" =~ ^fcdev/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
@@ -66,6 +64,27 @@ jobs:
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#fcdev/v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      # The binary embeds fcdev/src/main/resources/VERSION
+      # (io.flowcatalyst.fcdev.Version) and `fcdev upgrade` compares that
+      # embedded version against the release it finds — a tag that does not
+      # match VERSION at this ref would ship a binary reporting a version
+      # different from the release it came from.
+      - name: Verify the tag matches VERSION
+        id: meta
+        run: |
+          FILE_VERSION="$(tr -d '[:space:]' < fcdev/src/main/resources/VERSION)"
+          TAG_VERSION="${{ steps.tag.outputs.version }}"
+          if [ "$FILE_VERSION" != "$TAG_VERSION" ]; then
+            echo "Tag fcdev/v$TAG_VERSION does not match fcdev/src/main/resources/VERSION ($FILE_VERSION) at this ref" >&2
+            exit 1
+          fi
+          echo "tag=${{ steps.tag.outputs.tag }}" >> "$GITHUB_OUTPUT"
+          echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build fcdev native (${{ matrix.os }}/${{ matrix.arch }})

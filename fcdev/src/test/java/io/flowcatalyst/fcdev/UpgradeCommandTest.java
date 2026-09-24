@@ -1,6 +1,7 @@
 package io.flowcatalyst.fcdev;
 
 import com.sun.net.httpserver.HttpServer;
+import io.flowcatalyst.sdk.result.Result;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /// a temp file.
 class UpgradeCommandTest {
 
-    private static final byte[] NEW_JAR_BYTES = "NEW-JAR-BYTES-v0.9.0".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] NEW_JAR_BYTES = "NEW-JAR-BYTES-v0.9.1".getBytes(StandardCharsets.UTF_8);
 
     private HttpServer github;
     private String apiBase;
@@ -59,7 +60,7 @@ class UpgradeCommandTest {
         });
         github.start();
         apiBase = "http://127.0.0.1:" + github.getAddress().getPort();
-        shaSidecar.set(sha256Hex(NEW_JAR_BYTES) + "  fcdev-v0.9.0.jar");
+        shaSidecar.set(sha256Hex(NEW_JAR_BYTES) + "  fcdev-v0.9.1.jar");
     }
 
     @AfterEach
@@ -70,9 +71,9 @@ class UpgradeCommandTest {
     private String releasesJson(String base) {
         return """
                 [
-                  {"tag_name":"fcdev/v0.9.0","draft":false,"prerelease":false,"assets":[
-                     {"name":"fcdev-v0.9.0.jar","browser_download_url":"%s/download/jar"},
-                     {"name":"fcdev-v0.9.0.jar.sha256","browser_download_url":"%s/download/sha"}
+                  {"tag_name":"fcdev/v0.9.1","draft":false,"prerelease":false,"assets":[
+                     {"name":"fcdev-v0.9.1.jar","browser_download_url":"%s/download/jar"},
+                     {"name":"fcdev-v0.9.1.jar.sha256","browser_download_url":"%s/download/sha"}
                   ]},
                   {"tag_name":"fcdev/v99.0.0-beta","draft":false,"prerelease":true,"assets":[]},
                   {"tag_name":"typescript-sdk/v2.0.0","draft":false,"prerelease":false,"assets":[]},
@@ -123,7 +124,7 @@ class UpgradeCommandTest {
     /// self file is byte-for-byte unchanged from before the call.
     @Test
     void aMismatchedChecksumAbortsAndLeavesTheSelfFileUntouched() throws Exception {
-        shaSidecar.set("0000000000000000000000000000000000000000000000000000000000000000  fcdev-v0.9.0.jar");
+        shaSidecar.set("0000000000000000000000000000000000000000000000000000000000000000  fcdev-v0.9.1.jar");
         Path self = Files.createTempFile("fcdev-upgrade-test", ".jar");
         byte[] original = "OLD CONTENT — must survive".getBytes(StandardCharsets.UTF_8);
         Files.write(self, original);
@@ -157,7 +158,7 @@ class UpgradeCommandTest {
         var cmd = build(Files.createTempFile("fcdev-upgrade-test", ".jar"));
         var release = cmd.latestRelease("test/repo");
 
-        assertThat(release.version()).isEqualTo("0.9.0");
+        assertThat(release.version()).isEqualTo("0.9.1");
     }
 
     /// A release fixture strictly BELOW [#CURRENT_VERSION] regardless of
@@ -249,6 +250,240 @@ class UpgradeCommandTest {
         cmd.fetchFunctionHostJarIfPresent(rel, dir, new PrintWriter(new StringWriter()));
 
         assertThat(dir.resolve("fc-fnhost.jar")).doesNotExist();
+    }
+
+    /// `docs/spec/fcdev-release-0.9.md` §3, last line: the checksum is now
+    /// REQUIRED here too — an asset with no `.sha256` sidecar must refuse to
+    /// install rather than falling back to an unverified copy. Mutant: treat
+    /// a missing sidecar as ok (the old behaviour).
+    @Test
+    void fcFnhostJarRefusesToInstallWithoutASha256Sidecar() throws Exception {
+        byte[] fnhostBytes = "FN-HOST-NO-SHA".getBytes(StandardCharsets.UTF_8);
+        github.createContext("/download/fnhost-req", exchange -> {
+            exchange.sendResponseHeaders(200, fnhostBytes.length);
+            exchange.getResponseBody().write(fnhostBytes);
+            exchange.close();
+        });
+        var cmd = build(Files.createTempFile("fcdev-upgrade-test", ".jar"));
+        var rel = new UpgradeCommand.Release("0.9.1", Map.of("fc-fnhost.jar", apiBase + "/download/fnhost-req"));
+        Path dir = Files.createTempDirectory("fcdev-upgrade-fnhost-test");
+
+        assertThatThrownBy(() -> cmd.fetchFunctionHostJarIfPresent(rel, dir, new PrintWriter(new StringWriter())))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("sha256");
+        assertThat(dir.resolve("fc-fnhost.jar")).as("must not install an unverified jar").doesNotExist();
+    }
+
+    // ── first-use fetch (fcdev start, docs/spec/fcdev-release-0.9.md §3) ──
+
+    /// Happy path: the release tagged for THIS fcdev's own version publishes
+    /// `fc-fnhost.jar` + a valid `.sha256`. `installDir=null` forces the
+    /// cache-path fallback (spec item 3). Pins BOTH "written to the cache
+    /// path with the served bytes" AND "asks for `fcdev/v<Version.current()>`,
+    /// never latest" — a mutant calling [UpgradeCommand#latestRelease]
+    /// instead would hit the `@BeforeEach` fixture (which publishes
+    /// `fcdev-v0.9.1.jar`, not `fc-fnhost.jar`) and this would observe an
+    /// `Err`, not an `Ok`.
+    @Test
+    void fetchesTheReleaseTaggedForFcdevsOwnVersionAndWritesItToTheCachePath() throws Exception {
+        byte[] fnhostBytes = "FN-HOST-JAR-FIRST-USE".getBytes(StandardCharsets.UTF_8);
+        byte[] shaBytes = (sha256Hex(fnhostBytes) + "  fc-fnhost.jar").getBytes(StandardCharsets.UTF_8);
+        String tag = "fcdev/v" + Version.current();
+        var requestedPath = new AtomicReference<String>();
+        github.createContext("/repos/test/repo/releases/tags", exchange -> {
+            requestedPath.set(exchange.getRequestURI().getPath());
+            String base = "http://127.0.0.1:" + github.getAddress().getPort();
+            if (!exchange.getRequestURI().getPath().equals("/repos/test/repo/releases/tags/" + tag)) {
+                exchange.sendResponseHeaders(404, -1);
+                exchange.close();
+                return;
+            }
+            String json = """
+                    {"tag_name":"%s","draft":false,"prerelease":false,"assets":[
+                       {"name":"fc-fnhost.jar","browser_download_url":"%s/download/fnhost-first-use"},
+                       {"name":"fc-fnhost.jar.sha256","browser_download_url":"%s/download/fnhost-first-use-sha"}
+                    ]}
+                    """.formatted(tag, base, base);
+            byte[] body = json.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        github.createContext("/download/fnhost-first-use-sha", exchange -> {
+            exchange.sendResponseHeaders(200, shaBytes.length);
+            exchange.getResponseBody().write(shaBytes);
+            exchange.close();
+        });
+        github.createContext("/download/fnhost-first-use", exchange -> {
+            exchange.sendResponseHeaders(200, fnhostBytes.length);
+            exchange.getResponseBody().write(fnhostBytes);
+            exchange.close();
+        });
+
+        var env = DevEnv.of(Map.of("FC_DEV_UPGRADE_REPO", "test/repo"));
+        var cmd = new UpgradeCommand(env, apiBase);
+        Path cacheDir = Files.createTempDirectory("fcdev-fnhost-cache-test");
+
+        Result<Path, UpgradeCommand.FetchError> result = cmd.fetchOwnFunctionHostJar("test/repo", null, cacheDir);
+
+        assertThat(result).isInstanceOf(Result.Ok.class);
+        Path written = ((Result.Ok<Path, UpgradeCommand.FetchError>) result).value();
+        assertThat(written).isEqualTo(cacheDir.resolve("fc-fnhost.jar"));
+        assertThat(Files.readAllBytes(written)).isEqualTo(fnhostBytes);
+        assertThat(requestedPath.get()).as("must ask for THIS fcdev's own tagged release, never \"latest\"")
+                .isEqualTo("/repos/test/repo/releases/tags/" + tag);
+    }
+
+    /// Spec item 3: beside the binary is tried FIRST, only falling back to
+    /// the cache path when that directory is not writable.
+    @Test
+    void writesBesideTheBinaryWhenThatDirectoryIsWritable() throws Exception {
+        byte[] fnhostBytes = "FN-HOST-JAR-BESIDE".getBytes(StandardCharsets.UTF_8);
+        byte[] shaBytes = (sha256Hex(fnhostBytes) + "  fc-fnhost.jar").getBytes(StandardCharsets.UTF_8);
+        String tag = "fcdev/v" + Version.current();
+        github.createContext("/repos/test/repo/releases/tags", exchange -> {
+            String base = "http://127.0.0.1:" + github.getAddress().getPort();
+            String json = """
+                    {"tag_name":"%s","draft":false,"prerelease":false,"assets":[
+                       {"name":"fc-fnhost.jar","browser_download_url":"%s/download/fnhost-beside"},
+                       {"name":"fc-fnhost.jar.sha256","browser_download_url":"%s/download/fnhost-beside-sha"}
+                    ]}
+                    """.formatted(tag, base, base);
+            byte[] body = json.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        github.createContext("/download/fnhost-beside", exchange -> {
+            exchange.sendResponseHeaders(200, fnhostBytes.length);
+            exchange.getResponseBody().write(fnhostBytes);
+            exchange.close();
+        });
+        github.createContext("/download/fnhost-beside-sha", exchange -> {
+            exchange.sendResponseHeaders(200, shaBytes.length);
+            exchange.getResponseBody().write(shaBytes);
+            exchange.close();
+        });
+
+        var env = DevEnv.of(Map.of("FC_DEV_UPGRADE_REPO", "test/repo"));
+        var cmd = new UpgradeCommand(env, apiBase);
+        Path installDir = Files.createTempDirectory("fcdev-fnhost-beside-test");
+        Path cacheDir = Files.createTempDirectory("fcdev-fnhost-cache-test");
+
+        Result<Path, UpgradeCommand.FetchError> result = cmd.fetchOwnFunctionHostJar("test/repo", installDir, cacheDir);
+
+        assertThat(result).isInstanceOf(Result.Ok.class);
+        Path written = ((Result.Ok<Path, UpgradeCommand.FetchError>) result).value();
+        assertThat(written).isEqualTo(installDir.resolve("fc-fnhost.jar"));
+        assertThat(cacheDir.resolve("fc-fnhost.jar")).as("must not ALSO write the cache path").doesNotExist();
+    }
+
+    /// Spec item 2: no `.sha256` asset published is a failed fetch — nothing
+    /// written. Mutant: treat a missing checksum as ok.
+    @Test
+    void firstUseFetchMissingChecksumSidecarIsAFailedFetchWithNothingWritten() throws Exception {
+        String tag = "fcdev/v" + Version.current();
+        github.createContext("/repos/test/repo/releases/tags", exchange -> {
+            String base = "http://127.0.0.1:" + github.getAddress().getPort();
+            String json = """
+                    {"tag_name":"%s","draft":false,"prerelease":false,"assets":[
+                       {"name":"fc-fnhost.jar","browser_download_url":"%s/download/fnhost-nosha"}
+                    ]}
+                    """.formatted(tag, base);
+            byte[] body = json.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        github.createContext("/download/fnhost-nosha", exchange -> {
+            byte[] body = "SHOULD-NOT-BE-WRITTEN".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+
+        var env = DevEnv.of(Map.of("FC_DEV_UPGRADE_REPO", "test/repo"));
+        var cmd = new UpgradeCommand(env, apiBase);
+        Path cacheDir = Files.createTempDirectory("fcdev-fnhost-cache-test");
+
+        Result<Path, UpgradeCommand.FetchError> result = cmd.fetchOwnFunctionHostJar("test/repo", null, cacheDir);
+
+        assertThat(result).isInstanceOf(Result.Err.class);
+        assertThat(((Result.Err<Path, UpgradeCommand.FetchError>) result).error())
+                .isInstanceOf(UpgradeCommand.FetchError.NoChecksum.class);
+        assertThat(cacheDir.resolve("fc-fnhost.jar")).doesNotExist();
+    }
+
+    /// Spec item 2: a mismatch is a failed fetch — nothing written. Mutant:
+    /// skip the compare.
+    @Test
+    void firstUseFetchChecksumMismatchIsAFailedFetchWithNothingWritten() throws Exception {
+        byte[] fnhostBytes = "FN-HOST-JAR-MISMATCH".getBytes(StandardCharsets.UTF_8);
+        byte[] wrongSha = "0000000000000000000000000000000000000000000000000000000000000000  fc-fnhost.jar"
+                .getBytes(StandardCharsets.UTF_8);
+        String tag = "fcdev/v" + Version.current();
+        github.createContext("/repos/test/repo/releases/tags", exchange -> {
+            String base = "http://127.0.0.1:" + github.getAddress().getPort();
+            String json = """
+                    {"tag_name":"%s","draft":false,"prerelease":false,"assets":[
+                       {"name":"fc-fnhost.jar","browser_download_url":"%s/download/fnhost-mismatch"},
+                       {"name":"fc-fnhost.jar.sha256","browser_download_url":"%s/download/fnhost-mismatch-sha"}
+                    ]}
+                    """.formatted(tag, base, base);
+            byte[] body = json.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        github.createContext("/download/fnhost-mismatch", exchange -> {
+            exchange.sendResponseHeaders(200, fnhostBytes.length);
+            exchange.getResponseBody().write(fnhostBytes);
+            exchange.close();
+        });
+        github.createContext("/download/fnhost-mismatch-sha", exchange -> {
+            exchange.sendResponseHeaders(200, wrongSha.length);
+            exchange.getResponseBody().write(wrongSha);
+            exchange.close();
+        });
+
+        var env = DevEnv.of(Map.of("FC_DEV_UPGRADE_REPO", "test/repo"));
+        var cmd = new UpgradeCommand(env, apiBase);
+        Path cacheDir = Files.createTempDirectory("fcdev-fnhost-cache-test");
+
+        Result<Path, UpgradeCommand.FetchError> result = cmd.fetchOwnFunctionHostJar("test/repo", null, cacheDir);
+
+        assertThat(result).isInstanceOf(Result.Err.class);
+        assertThat(((Result.Err<Path, UpgradeCommand.FetchError>) result).error())
+                .isInstanceOf(UpgradeCommand.FetchError.ChecksumMismatch.class);
+        assertThat(cacheDir.resolve("fc-fnhost.jar")).doesNotExist();
+    }
+
+    /// No `fcdev/v<version>` release published yet (a build ahead of its
+    /// first tag): a 404 from GitHub is [UpgradeCommand.FetchError.NoRelease],
+    /// never an exception.
+    @Test
+    void firstUseFetchNoReleaseYetYieldsNoRelease() {
+        github.createContext("/repos/test/repo/releases/tags", exchange -> {
+            exchange.sendResponseHeaders(404, -1);
+            exchange.close();
+        });
+
+        var env = DevEnv.of(Map.of("FC_DEV_UPGRADE_REPO", "test/repo"));
+        var cmd = new UpgradeCommand(env, apiBase);
+        Path cacheDir = Path.of("/tmp/never-used-fcdev-fnhost-cache");
+
+        Result<Path, UpgradeCommand.FetchError> result = cmd.fetchOwnFunctionHostJar("test/repo", null, cacheDir);
+
+        assertThat(result).isInstanceOf(Result.Err.class);
+        assertThat(((Result.Err<Path, UpgradeCommand.FetchError>) result).error())
+                .isInstanceOf(UpgradeCommand.FetchError.NoRelease.class);
+    }
+
+    // ── version / repo ownership (spec §1) ─────────────────────────────────
+
+    @Test
+    void versionAndDefaultRepoOwnTheReleaseStreamForThisRepo() {
+        assertThat(Version.current()).isEqualTo("0.9.0");
+        assertThat(UpgradeCommand.DEFAULT_REPO).isEqualTo("flowcatalyst/flowcatalyst-javalin");
     }
 
     // ── pure semver helpers ───────────────────────────────────────────────

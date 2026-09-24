@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -20,6 +21,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.concurrent.TimeUnit;
 
 /// Starts fcdev's function host beside the platform (spec
@@ -40,10 +42,14 @@ import java.util.concurrent.TimeUnit;
 ///   `java -jar <host jar>` instead, with the host's own `FC_FN_*`
 ///   environment variables (never round-tripped through fcdev's in-process
 ///   `DevEnv`), output relayed line-by-line with a `[fn-host] ` prefix.
-/// - **`Disabled`**: functions are on but no JDK or no host jar could be
-///   found — logged as ONE warning naming exactly what was looked for and
-///   both remedies. `fcdev start` still succeeds: a developer not writing
-///   functions must not need a JDK.
+/// - **`Disabled`**: functions are on but no JDK, no JDK new enough
+///   ([#MIN_JAVA_FEATURE_VERSION] — the host jar is release 25 +
+///   `--enable-preview`; an older `java` dies in the child with
+///   `UnsupportedClassVersionError` instead, a confusing failure `fcdev
+///   start` never sees), or no host jar could be found — logged as ONE
+///   warning naming exactly what was looked for and every remedy. `fcdev
+///   start` still succeeds: a developer not writing functions must not need
+///   a JDK.
 public final class FnHostLauncher {
 
     private static final Logger LOG = LoggerFactory.getLogger(FnHostLauncher.class);
@@ -175,12 +181,37 @@ public final class FnHostLauncher {
         Process start(List<String> command, Map<String, String> env) throws IOException;
     }
 
+    /// The resolved `java`'s feature version (`java.specification.version` —
+    /// `"25"`, or `"1.8"`-style for Java 8 and earlier, normalised to the
+    /// int), so [#launchChildProcess] can refuse a `java` too old for the
+    /// function host (release 25 + `--enable-preview`, `CONVENTIONS.md` §8)
+    /// BEFORE spawning it — a Java 21 launched anyway dies in the child with
+    /// `UnsupportedClassVersionError`, a confusing failure `fcdev start`
+    /// itself never sees. Empty when the version could not be determined
+    /// (spawn failure, unparseable output) — treated the same as "too old":
+    /// refuse rather than risk it. Injectable so a test drives the "found
+    /// but too old" branch with a fake, never a real second JVM.
+    @FunctionalInterface
+    public interface JavaVersionResolver {
+        OptionalInt featureVersion(Path java);
+    }
+
     public static final IsNative DEFAULT_IS_NATIVE =
             () -> System.getProperty("org.graalvm.nativeimage.imagecode") != null;
 
     public static final JavaResolver DEFAULT_JAVA_RESOLVER = FnHostLauncher::defaultJavaResolver;
 
     public static final ProcessStarter DEFAULT_PROCESS_STARTER = FnHostLauncher::defaultProcessStarter;
+
+    public static final JavaVersionResolver DEFAULT_JAVA_VERSION_RESOLVER = FnHostLauncher::defaultJavaVersionResolver;
+
+    /// The function host jar is built for release 25 with `--enable-preview`
+    /// (`CONVENTIONS.md` §8) — a preview class file refuses to load on any
+    /// OTHER feature release, older or newer, so this is an exact minimum,
+    /// not "25 or newer" in the usual sense; kept as `<` here since a NEWER
+    /// major (26+) is a distinct, future problem (a recompiled host jar),
+    /// not one `fcdev start` should silently paper over today.
+    static final int MIN_JAVA_FEATURE_VERSION = 25;
 
     private static Optional<Path> defaultJavaResolver() {
         String javaHome = System.getenv("JAVA_HOME");
@@ -218,9 +249,74 @@ public final class FnHostLauncher {
         return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
     }
 
+    /// Runs `<java> -XshowSettings:properties -version` and reads
+    /// `java.specification.version` off its output — chosen over parsing
+    /// `-version`'s banner line because that line's SHAPE is vendor-specific
+    /// (`openjdk version "25" …` vs `java version "25.0.4" …` vs old
+    /// `java version "1.8.0_…"`), while every JDK prints the
+    /// `-XshowSettings:properties` block in the same `key = value` shape and
+    /// `java.specification.version` is the exact field the JLS defines for
+    /// "which release this is" (`"25"`, or `"1.8"` pre-JEP-223). Both flags
+    /// write to stderr, so the process is started with `redirectErrorStream`
+    /// like the production [ProcessStarter] does. A 10s timeout / spawn
+    /// failure / unparseable output all resolve to [OptionalInt#empty] —
+    /// the same "refuse" outcome as a version that is simply too old.
+    private static OptionalInt defaultJavaVersionResolver(Path java) {
+        try {
+            Process process = new ProcessBuilder(java.toString(), "-XshowSettings:properties", "-version")
+                    .redirectErrorStream(true)
+                    .start();
+            String output;
+            try (InputStream in = process.getInputStream()) {
+                output = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            }
+            boolean finished = process.waitFor(10, TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                return OptionalInt.empty();
+            }
+            return parseFeatureVersion(output);
+        } catch (IOException e) {
+            return OptionalInt.empty();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return OptionalInt.empty();
+        }
+    }
+
+    /// `java.specification.version` → its feature-version int (`"25"` → 25,
+    /// legacy `"1.8"` → 8). Package-visible for direct testing against
+    /// captured `-XshowSettings:properties` output without spawning a real
+    /// JVM.
+    static OptionalInt parseFeatureVersion(String propertiesOutput) {
+        for (String line : propertiesOutput.lines().toList()) {
+            String trimmed = line.strip();
+            if (!trimmed.startsWith("java.specification.version")) {
+                continue;
+            }
+            int eq = trimmed.indexOf('=');
+            if (eq < 0) {
+                continue;
+            }
+            String value = trimmed.substring(eq + 1).strip();
+            String feature = value.startsWith("1.") ? value.substring(2) : value;
+            int dot = feature.indexOf('.');
+            if (dot >= 0) {
+                feature = feature.substring(0, dot);
+            }
+            try {
+                return OptionalInt.of(Integer.parseInt(feature));
+            } catch (NumberFormatException e) {
+                return OptionalInt.empty();
+            }
+        }
+        return OptionalInt.empty();
+    }
+
     // ── launch ───────────────────────────────────────────────────────────
 
-    public static Result launch(Settings settings, IsNative isNative, JavaResolver javaResolver, ProcessStarter starter) {
+    public static Result launch(Settings settings, IsNative isNative, JavaResolver javaResolver,
+            JavaVersionResolver javaVersionResolver, ProcessStarter starter) {
         if (!isNative.test()) {
             FnHost host = new FnHost(settings.toHostEnv());
             host.start();
@@ -230,15 +326,25 @@ public final class FnHostLauncher {
                     .log();
             return new InProcess(host);
         }
-        return launchChildProcess(settings, javaResolver, starter);
+        return launchChildProcess(settings, javaResolver, javaVersionResolver, starter);
     }
 
-    private static Result launchChildProcess(Settings settings, JavaResolver javaResolver, ProcessStarter starter) {
+    private static Result launchChildProcess(Settings settings, JavaResolver javaResolver,
+            JavaVersionResolver javaVersionResolver, ProcessStarter starter) {
         Optional<Path> java = javaResolver.resolve();
         if (java.isEmpty()) {
             String reason = "no Java runtime found to run the function host: looked for $JAVA_HOME/bin/java and "
                     + "`java` on PATH — set JAVA_HOME, put `java` on PATH, or start with --no-functions to skip "
                     + "the function host";
+            LOG.warn(reason);
+            return new Disabled(reason);
+        }
+        OptionalInt version = javaVersionResolver.featureVersion(java.get());
+        if (version.isEmpty() || version.getAsInt() < MIN_JAVA_FEATURE_VERSION) {
+            String found = version.isEmpty() ? "its version could not be determined" : "reports Java " + version.getAsInt();
+            String reason = "the function host needs Java " + MIN_JAVA_FEATURE_VERSION + "+ but " + java.get() + " "
+                    + found + ": install Java " + MIN_JAVA_FEATURE_VERSION + "+, set JAVA_HOME to it, "
+                    + "or start with --no-functions to skip the function host";
             LOG.warn(reason);
             return new Disabled(reason);
         }

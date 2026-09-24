@@ -13,6 +13,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -21,6 +23,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// the JVM" (the child-process branch only ever runs for real under a
 /// GraalVM native `fcdev`, which `mvn test` cannot produce).
 class FnHostLauncherTest {
+
+    /// A stub reporting an adequate Java feature version — used by tests
+    /// whose focus is elsewhere (the command line, the env, graceful
+    /// shutdown) so they don't also depend on [FnHostLauncher#MIN_JAVA_FEATURE_VERSION]'s
+    /// exact value.
+    private static final FnHostLauncher.JavaVersionResolver ADEQUATE_JAVA = java -> OptionalInt.of(25);
 
     private static FnHostLauncher.Settings settings(Path hostJar, Path cacheDir) {
         return new FnHostLauncher.Settings("default", "http://localhost:18080",
@@ -48,7 +56,7 @@ class FnHostLauncherTest {
 
         FnHostLauncher.Settings settings = settings(hostJar, dir.resolve("cache"));
         FnHostLauncher.Result result = FnHostLauncher.launch(settings, () -> true,
-                () -> Optional.of(fakeJava), FnHostLauncher.DEFAULT_PROCESS_STARTER);
+                () -> Optional.of(fakeJava), ADEQUATE_JAVA, FnHostLauncher.DEFAULT_PROCESS_STARTER);
 
         assertThat(result).isInstanceOf(FnHostLauncher.ChildProcess.class);
         Process process = ((FnHostLauncher.ChildProcess) result).process();
@@ -92,11 +100,53 @@ class FnHostLauncherTest {
     void missingJavaRuntimeIsDisabledNamingBothRemediesAndNeverThrows(@TempDir Path dir) {
         Path hostJar = dir.resolve("host.jar");
         FnHostLauncher.Result result = FnHostLauncher.launch(settings(hostJar, dir.resolve("cache")),
-                () -> true, Optional::empty, FnHostLauncher.DEFAULT_PROCESS_STARTER);
+                () -> true, Optional::empty, ADEQUATE_JAVA, FnHostLauncher.DEFAULT_PROCESS_STARTER);
 
         assertThat(result).isInstanceOf(FnHostLauncher.Disabled.class);
         String reason = ((FnHostLauncher.Disabled) result).reason();
         assertThat(reason).contains("JAVA_HOME").contains("PATH");
+    }
+
+    /// A resolvable `java` but too old for the function host (release 25 +
+    /// `--enable-preview`, `CONVENTIONS.md` §8): `Disabled`, naming the
+    /// version actually found AND the required one — never an exception, and
+    /// never a real child process spawned (a real Java 21 would die in the
+    /// child with `UnsupportedClassVersionError` instead, a confusing
+    /// failure this check exists to pre-empt). Mutant: skip the version
+    /// check entirely (always "adequate").
+    @Test
+    void javaOlderThanTheMinimumIsDisabledNamingTheVersionFoundAndNeverThrows(@TempDir Path dir) throws Exception {
+        Path fakeJava = writeFakeJavaScript(dir);
+        var capturedPath = new AtomicReference<Path>();
+        FnHostLauncher.JavaVersionResolver tooOld = java -> {
+            capturedPath.set(java);
+            return OptionalInt.of(21);
+        };
+
+        FnHostLauncher.Result result = FnHostLauncher.launch(settings(dir.resolve("host.jar"), dir.resolve("cache")),
+                () -> true, () -> Optional.of(fakeJava), tooOld, FnHostLauncher.DEFAULT_PROCESS_STARTER);
+
+        assertThat(result).isInstanceOf(FnHostLauncher.Disabled.class);
+        String reason = ((FnHostLauncher.Disabled) result).reason();
+        assertThat(reason).as("names the version found").contains("21")
+                .as("names the version required").contains("25");
+        assertThat(capturedPath.get()).as("the resolver must be asked about the RESOLVED java")
+                .isEqualTo(fakeJava);
+    }
+
+    /// A version that could not be determined at all (spawn failure,
+    /// unparseable output) is refused the same as "too old" — never treated
+    /// as "assume it's fine". Mutant: `OptionalInt.empty()` slips past the
+    /// `< MIN_JAVA_FEATURE_VERSION` check.
+    @Test
+    void undeterminableJavaVersionIsDisabledNotAssumedAdequate(@TempDir Path dir) throws Exception {
+        Path fakeJava = writeFakeJavaScript(dir);
+
+        FnHostLauncher.Result result = FnHostLauncher.launch(settings(dir.resolve("host.jar"), dir.resolve("cache")),
+                () -> true, () -> Optional.of(fakeJava), java -> OptionalInt.empty(),
+                FnHostLauncher.DEFAULT_PROCESS_STARTER);
+
+        assertThat(result).isInstanceOf(FnHostLauncher.Disabled.class);
     }
 
     /// A resolvable `java` but no host jar at the configured/default path:
@@ -107,7 +157,7 @@ class FnHostLauncherTest {
         Path missingJar = dir.resolve("does-not-exist.jar");
 
         FnHostLauncher.Result result = FnHostLauncher.launch(settings(missingJar, dir.resolve("cache")),
-                () -> true, () -> Optional.of(fakeJava), FnHostLauncher.DEFAULT_PROCESS_STARTER);
+                () -> true, () -> Optional.of(fakeJava), ADEQUATE_JAVA, FnHostLauncher.DEFAULT_PROCESS_STARTER);
 
         assertThat(result).isInstanceOf(FnHostLauncher.Disabled.class);
         String reason = ((FnHostLauncher.Disabled) result).reason();
@@ -126,7 +176,7 @@ class FnHostLauncherTest {
             throw new IOException("synthetic fork failure");
         };
         FnHostLauncher.Result result = FnHostLauncher.launch(settings(hostJar, dir.resolve("cache")),
-                () -> true, () -> Optional.of(fakeJava), failing);
+                () -> true, () -> Optional.of(fakeJava), ADEQUATE_JAVA, failing);
 
         assertThat(result).isInstanceOf(FnHostLauncher.Disabled.class);
     }
@@ -150,7 +200,8 @@ class FnHostLauncherTest {
                 "fcdev-fn-host", "s3cr3t", 0, 0, 0, dir.resolve("cache"), null);
 
         FnHostLauncher.Result result = FnHostLauncher.launch(settings, () -> false,
-                FnHostLauncher.DEFAULT_JAVA_RESOLVER, FnHostLauncher.DEFAULT_PROCESS_STARTER);
+                FnHostLauncher.DEFAULT_JAVA_RESOLVER, FnHostLauncher.DEFAULT_JAVA_VERSION_RESOLVER,
+                FnHostLauncher.DEFAULT_PROCESS_STARTER);
 
         assertThat(result).isInstanceOf(FnHostLauncher.InProcess.class);
         var host = ((FnHostLauncher.InProcess) result).host();
@@ -159,6 +210,49 @@ class FnHostLauncherTest {
                 .isGreaterThan(0);
 
         FnHostLauncher.close(result);
+    }
+
+    // ── java.specification.version parsing (production resolver) ────────
+
+    /// The exact shape `-XshowSettings:properties` prints on a modern JDK.
+    @Test
+    void parsesTheFeatureVersionFromShowSettingsOutput() {
+        String output = """
+                Property settings:
+                    java.specification.version = 25
+                    java.vendor = Eclipse Adoptium
+                openjdk version "25" 2025-09-16
+                """;
+        assertThat(FnHostLauncher.parseFeatureVersion(output)).hasValue(25);
+    }
+
+    /// Pre-JEP-223 versioning (Java 8 and earlier): `"1.8"` → feature 8.
+    @Test
+    void parsesTheLegacyOneDotEightStyleVersion() {
+        String output = "    java.specification.version = 1.8\n";
+        assertThat(FnHostLauncher.parseFeatureVersion(output)).hasValue(8);
+    }
+
+    /// No matching property line (unrecognised/garbled output): empty, never
+    /// a thrown exception — [#launchChildProcess] treats this as "too old".
+    @Test
+    void unparseableOutputYieldsAnEmptyVersion() {
+        assertThat(FnHostLauncher.parseFeatureVersion("not a properties dump at all")).isEmpty();
+    }
+
+    /// The REAL production resolver ([FnHostLauncher#DEFAULT_JAVA_VERSION_RESOLVER])
+    /// against the REAL `java` this build runs on (`JAVA_HOME`, per
+    /// `CLAUDE.md`) — proves the subprocess + parsing wiring works end to
+    /// end, not just the pure parser above. This repo is pinned to JDK 25
+    /// (`CLAUDE.md` "Build"), so this must resolve to exactly that.
+    @Test
+    void theRealJavaThisBuildRunsOnResolvesToFeatureVersion25() {
+        Optional<Path> java = FnHostLauncher.DEFAULT_JAVA_RESOLVER.resolve();
+        assertThat(java).as("JAVA_HOME must be set for this build").isPresent();
+
+        OptionalInt version = FnHostLauncher.DEFAULT_JAVA_VERSION_RESOLVER.featureVersion(java.get());
+
+        assertThat(version).hasValue(25);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────

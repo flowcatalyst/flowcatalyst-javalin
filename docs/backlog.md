@@ -1828,3 +1828,27 @@ with a native build. Original question:
 platform checkout cannot build it; `fn init` says so and prints `mvn -pl function-api install`.
 Owner question: publish `function-api` (GitHub Packages, the plan's rejected §2.4 option, or
 Maven Central), or ship its jar with fcdev (`fn init` writes it and the pom references it)?
+
+## fcdev 0.9.0: this repo owns the release stream (2026-09-24, **owner action needed**)
+
+`docs/spec/fcdev-release-0.9.md` landed: `VERSION` → `0.9.0` (above Go's 0.8.38, so `fcdev upgrade`
+sees it as newer), `UpgradeCommand.DEFAULT_REPO` → `flowcatalyst/flowcatalyst-javalin`,
+`scripts/release.sh dev <bump>` / `make release-fcdev` tag `fcdev/vX.Y.Z`, and
+`.github/workflows/release-fcdev.yml` now fails the release if the pushed tag's version doesn't
+match `VERSION` at that ref. Also new: a native `fcdev start` with functions on and no host jar
+statically resolvable fetches `fc-fnhost.jar` on first use, for its own version, checksum required
+(`UpgradeCommand#fetchOwnFunctionHostJar`); `fcdev upgrade`'s own `fc-fnhost.jar` fetch now requires
+the checksum too (previously optional); and the native child-process branch now refuses a `java`
+below feature version 25 (`FnHostLauncher#MIN_JAVA_FEATURE_VERSION`) instead of launching it and
+dying with `UnsupportedClassVersionError` in the child.
+
+- **Owner action: disable the Go repository's `.github/workflows/release-fcdev.yml`.** Both
+  repositories' workflows publish under the identical `fcdev/v*` tag prefix and identical asset
+  names — leaving Go's enabled risks two different binaries racing to publish the same release once
+  both remotes exist and both are tagged.
+- **Owner action / user note:** a developer still on the Go-built `fcdev` binary either reinstalls
+  from this repository, or sets `FC_DEV_UPGRADE_REPO=flowcatalyst/flowcatalyst` to keep pointing
+  their existing binary's `fcdev upgrade` at the Go repository's releases.
+- Not done here (out of this unit's scope): the manifest authoring aids (JSON Schema + dry-run
+  route + SPA form/export + `fn init` improvements) and the function-host intermittent test failure
+  — both already tracked elsewhere in this file / `docs/STATUS.md`.

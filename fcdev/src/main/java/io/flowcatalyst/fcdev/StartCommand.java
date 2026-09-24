@@ -3,6 +3,7 @@ package io.flowcatalyst.fcdev;
 import io.flowcatalyst.platform.seed.FunctionDevBootstrap;
 import io.flowcatalyst.platform.shared.database.Pools;
 import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.sdk.result.Result;
 import io.flowcatalyst.server.Env;
 import io.flowcatalyst.server.EnvReader;
 import io.flowcatalyst.server.Frontend;
@@ -203,13 +204,11 @@ public final class StartCommand implements Callable<Integer> {
             FnHostLauncher.Result fnHost = null;
             Path fnCliJson = null;
             if (opts.functions() && fnCreds != null) {
-                var settings = new FnHostLauncher.Settings("default",
-                        "http://localhost:" + running.apiPort(),
+                fnHost = launchFunctionHost(opts, paths, env, "default", "http://localhost:" + running.apiPort(),
                         fnCreds.host().clientId(), fnCreds.host().secret(),
-                        opts.fnPort(), opts.fnPublicPort(), opts.fnMetricsPort(), paths.fnCacheDir(),
-                        resolveHostJar(opts));
-                fnHost = FnHostLauncher.launch(settings, FnHostLauncher.DEFAULT_IS_NATIVE,
-                        FnHostLauncher.DEFAULT_JAVA_RESOLVER, FnHostLauncher.DEFAULT_PROCESS_STARTER);
+                        opts.fnPort(), opts.fnPublicPort(), opts.fnMetricsPort(),
+                        FnHostLauncher.DEFAULT_IS_NATIVE, FnHostLauncher.DEFAULT_JAVA_RESOLVER,
+                        FnHostLauncher.DEFAULT_JAVA_VERSION_RESOLVER, FnHostLauncher.DEFAULT_PROCESS_STARTER);
                 fnCliJson = writeFnCliCredentials(paths, running.apiPort(), opts.fnPort(), opts.fnPublicPort(),
                         fnCreds.cli());
                 LOG.atInfo().setMessage("function host")
@@ -231,21 +230,90 @@ public final class StartCommand implements Callable<Integer> {
         }
     }
 
+    /// `docs/spec/fcdev-release-0.9.md` §3: `fcdev start`'s function-host
+    /// resolution — flag / `FC_FN_HOST_JAR` / beside the binary / the cache
+    /// path — plus, ONLY for a native fcdev with none of those resolving, a
+    /// first-use fetch of fcdev's own release before giving up. Builds
+    /// exactly one [FnHostLauncher.Disabled] when nothing works: a fetch
+    /// failure carries ITS OWN reason (spec item 5), never a second, generic
+    /// "jar not found" warning layered under it by [FnHostLauncher#launch].
+    /// `isNative`/`javaResolver`/`javaVersionResolver`/`processStarter` are
+    /// [FnHostLauncher]'s own seams, forwarded unchanged, so a test drives
+    /// this whole resolve-fetch-launch path on a plain JVM the same way
+    /// `FnHostLauncherTest` already drives `#launch` directly.
+    static FnHostLauncher.Result launchFunctionHost(StartOptions opts, DevPaths paths, DevEnv env,
+            String pool, String platformUrl, String hostClientId, String hostClientSecret,
+            int port, int publicPort, int metricsPort,
+            FnHostLauncher.IsNative isNative, FnHostLauncher.JavaResolver javaResolver,
+            FnHostLauncher.JavaVersionResolver javaVersionResolver, FnHostLauncher.ProcessStarter processStarter) {
+        Path jar = resolveHostJar(opts, paths);
+        if (jar == null && isNative.test()) {
+            String repo = env.str("FC_DEV_UPGRADE_REPO", UpgradeCommand.DEFAULT_REPO);
+            var result = new UpgradeCommand(env).fetchOwnFunctionHostJar(repo, besideBinaryDir(),
+                    paths.fnHostCachePath(Version.current()).getParent());
+            switch (result) {
+                case Result.Ok<Path, UpgradeCommand.FetchError> ok -> jar = ok.value();
+                case Result.Err<Path, UpgradeCommand.FetchError> err -> {
+                    String reason = fetchFailureReason(err.error());
+                    LOG.warn(reason);
+                    return new FnHostLauncher.Disabled(reason);
+                }
+            }
+        }
+        var settings = new FnHostLauncher.Settings(pool, platformUrl, hostClientId, hostClientSecret,
+                port, publicPort, metricsPort, paths.fnCacheDir(), jar);
+        return FnHostLauncher.launch(settings, isNative, javaResolver, javaVersionResolver, processStarter);
+    }
+
     /// `--fn-host-jar` / `FC_FN_HOST_JAR`, else `fc-fnhost.jar` beside the
-    /// running fcdev artifact (`UpgradeCommand#selfPath`'s own resolution) —
-    /// `null` when neither is resolvable, so [FnHostLauncher] reports
-    /// `Disabled` rather than fail `fcdev start`.
-    private static Path resolveHostJar(StartOptions opts) {
+    /// running fcdev artifact (`UpgradeCommand#selfPath`'s own resolution),
+    /// else the first-use fetch's cache path ([DevPaths#fnHostCachePath]) —
+    /// each candidate after the flag/env one is used only when the file
+    /// actually exists there, so [#launchFunctionHost] can tell "nothing
+    /// resolved" (triggering the fetch) from "resolved to a path". `null`
+    /// when none exists.
+    static Path resolveHostJar(StartOptions opts, DevPaths paths) {
         if (!opts.fnHostJar().isEmpty()) {
             return Path.of(opts.fnHostJar());
         }
+        Path besideDir = besideBinaryDir();
+        if (besideDir != null) {
+            Path beside = besideDir.resolve("fc-fnhost.jar");
+            if (Files.isRegularFile(beside)) {
+                return beside;
+            }
+        }
+        Path cached = paths.fnHostCachePath(Version.current());
+        return Files.isRegularFile(cached) ? cached : null;
+    }
+
+    private static Path besideBinaryDir() {
         try {
-            Path self = UpgradeCommand.selfPath();
-            Path dir = self.getParent();
-            return dir == null ? null : dir.resolve("fc-fnhost.jar");
+            return UpgradeCommand.selfPath().getParent();
         } catch (RuntimeException e) {
             return null;
         }
+    }
+
+    /// The combined WARN [#launchFunctionHost] logs (and hands to
+    /// [FnHostLauncher.Disabled]) when the first-use fetch itself fails —
+    /// spec item 5: "the reason and the remedies (`--fn-host-jar`, `fcdev
+    /// upgrade`, `--no-functions`)". An exhaustive switch (no default): a
+    /// new [UpgradeCommand.FetchError] case must name its own wording here,
+    /// never silently borrow another case's.
+    private static String fetchFailureReason(UpgradeCommand.FetchError error) {
+        String why = switch (error) {
+            case UpgradeCommand.FetchError.Offline(String detail) ->
+                    "could not reach the release server (" + detail + ")";
+            case UpgradeCommand.FetchError.NoRelease(String repo, String tag) ->
+                    "no release " + tag + " with a fc-fnhost.jar asset found in " + repo;
+            case UpgradeCommand.FetchError.NoChecksum(String assetName) ->
+                    assetName + " has no .sha256 sidecar published — refusing an unverified install";
+            case UpgradeCommand.FetchError.ChecksumMismatch(String detail) -> "checksum mismatch: " + detail;
+        };
+        return "function host jar not found and could not be fetched: " + why
+                + " — pass --fn-host-jar / FC_FN_HOST_JAR naming its path, run `fcdev upgrade` to fetch it, "
+                + "or start with --no-functions to skip the function host";
     }
 
     /// `fn-cli.json` (owner-only): the `fcdev-fn-cli` credentials, so `fcdev

@@ -23,7 +23,7 @@ MVN := mvn
 NO_EMPTY := -Dsurefire.failIfNoSpecifiedTests=false
 
 .DEFAULT_GOAL := help
-.PHONY: help test test-router test-db test-one fnhost-smoke examples verify native native-server jar run stop init fresh clean toolchain frontend sdk-spec sdk-generate release-ts-sdk release-laravel-sdk release-java-sdk build-java-sdk
+.PHONY: help test test-router test-db test-one fnhost-smoke examples verify native native-server jar run stop init fresh clean toolchain frontend sdk-spec sdk-generate release-ts-sdk release-laravel-sdk release-java-sdk build-java-sdk release-fcdev
 
 help: ## List targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -139,3 +139,6 @@ release-laravel-sdk: ## Cut a Laravel SDK release: BUMP=… (tags laravel-sdk/vX
 
 release-java-sdk: ## Cut a Java SDK release: BUMP=… (bumps sdk/VERSION, tags java-sdk/vX.Y.Z)
 	scripts/release.sh java "$(BUMP)"
+
+release-fcdev: ## Cut an fcdev release: BUMP=… (tags fcdev/vX.Y.Z)
+	scripts/release.sh dev "$(BUMP)"

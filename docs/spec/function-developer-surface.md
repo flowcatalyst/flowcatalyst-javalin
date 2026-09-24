@@ -33,16 +33,32 @@ the platform's); observability on `FC_FN_METRICS_PORT` default 9091.
   - **Native fcdev** (`org.graalvm.nativeimage.imagecode` set — the check `UpgradeCommand` uses) ⇒
     `ChildProcess`: `java -jar <host jar>` with the same env, stdout/stderr relayed with a `[fn-host]`
     prefix, stopped with fcdev (destroy, then `destroyForcibly` after 10 s; also on fcdev's own
-    shutdown hook). `java` = `$JAVA_HOME/bin/java`, else `java` on `PATH`. Host jar = `--fn-host-jar`
-    / `FC_FN_HOST_JAR`, else `fc-fnhost.jar` beside the fcdev binary. **Missing JDK or jar does not
-    fail `fcdev start`**: `Disabled`, one WARN naming exactly what was looked for and both remedies —
-    a developer not writing functions must not need a JDK.
+    shutdown hook). `java` = `$JAVA_HOME/bin/java`, else `java` on `PATH`; its feature version is
+    then checked (`java -XshowSettings:properties -version`, reading `java.specification.version` —
+    chosen over parsing `-version`'s banner line because that line's shape is vendor-specific while
+    every JDK prints the properties dump the same way) — **below Java 25, or undeterminable, is the
+    same `Disabled` outcome as no JDK at all** (`docs/spec/fcdev-release-0.9.md`, 2026-09-24 addition):
+    the function host jar is built for release 25 with `--enable-preview`, and an older `java`
+    launched anyway dies in the child with `UnsupportedClassVersionError` instead of a clear WARN.
+    Host jar resolution order: `--fn-host-jar` / `FC_FN_HOST_JAR`, else `fc-fnhost.jar` beside the
+    fcdev binary, else the first-use fetch's cache path (below) if a jar already landed there. When
+    none of those resolve, a NATIVE fcdev fetches the function host for its own version instead of
+    giving up (`docs/spec/fcdev-release-0.9.md` §3, 2026-09-24): the release tagged
+    `fcdev/v<Version.current()>` (never "latest") in the upgrade repo, asset `fc-fnhost.jar` +
+    REQUIRED `.sha256` sidecar (no sidecar, or a mismatch, is a failed fetch — never an unverified
+    install), stored beside the binary when that directory is writable, else at `<fcdev data
+    dir>/fnhost/<version>/fc-fnhost.jar` so the next start finds it without a network call. **Any
+    failure along this whole chain (no JDK, too old a JDK, offline, no such release, no/mismatched
+    checksum, no jar) does not fail `fcdev start`**: `Disabled`, one WARN naming exactly what was
+    looked for and every remedy (`--fn-host-jar`, `fcdev upgrade`, `--no-functions`) — a developer
+    not writing functions must not need a JDK.
   - The branch is chosen by an injectable "is native" predicate so both are testable on the JVM.
 - `fcdev stop`, the PID file and `fcdev start`'s ready banner include the function host (banner line:
   `functions  http://127.0.0.1:8090/functions/…`).
 - `release-fcdev.yml` additionally attaches `fc-fnhost.jar` (the exec jar) to the release, and
-  `fcdev upgrade` fetches it beside the binary — **describe in the spec, implement the workflow
-  edit, do not run a release**.
+  `fcdev upgrade` fetches it beside the binary — the checksum is REQUIRED there too
+  (`docs/spec/fcdev-release-0.9.md` §3, last line): a published `fc-fnhost.jar` with no `.sha256`
+  sidecar refuses to install rather than falling back to an unverified copy.
 
 ## 2. `fcdev fn` (slice E2)
 
