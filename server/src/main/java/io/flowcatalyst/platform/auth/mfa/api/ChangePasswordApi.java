@@ -166,28 +166,25 @@ public final class ChangePasswordApi {
     /// recovery code also backs a confirmed TOTP. Verification errors are
     /// swallowed as "not this factor" (Go: `verifyAnySecondFactor`), the
     /// same posture as trying the next confirmed factor.
+    /// Every expected miss (wrong code, replay, no PIN issued) is `false` from
+    /// [io.flowcatalyst.platform.auth.mfa.Mfa] itself; what it throws is an
+    /// infrastructure or configuration failure (the store, an undecryptable
+    /// secret) and propagates to the 500 envelope with its cause logged —
+    /// never "That code didn't match" for a database outage.
     private static boolean verifyAnySecondFactor(State s, Principal p, List<MfaMethod> confirmed, String code) {
         for (MfaMethod m : confirmed) {
             boolean ok = switch (m) {
-                case TOTP -> safeVerify(() -> s.mfa().verifyTotp(p.id(), code));
-                case EMAIL_PIN -> safeVerify(() -> s.mfa().verifyLoginEmailPin(p.id(), code));
+                case TOTP -> s.mfa().verifyTotp(p.id(), code);
+                case EMAIL_PIN -> s.mfa().verifyLoginEmailPin(p.id(), code);
             };
             if (ok) {
                 return true;
             }
         }
         if (confirmed.contains(MfaMethod.TOTP)) {
-            return safeVerify(() -> s.mfa().verifyRecoveryCode(p.id(), code));
+            return s.mfa().verifyRecoveryCode(p.id(), code);
         }
         return false;
-    }
-
-    private static boolean safeVerify(java.util.function.BooleanSupplier sup) {
-        try {
-            return sup.getAsBoolean();
-        } catch (RuntimeException e) {
-            return false;
-        }
     }
 
     /// Mirrors `LoginApi#rehash`'s write path, but a failure here fails the

@@ -201,6 +201,25 @@ class ChangePasswordApiTest {
         assertThat(PasswordHash.matches("a whole new passphrase 43", after)).isTrue();
     }
 
+    /// A second factor that cannot be checked (here: an undecryptable TOTP secret) is
+    /// a server fault — a logged 500 — never "That code didn't match", and the
+    /// password stays. Mutant: swallow the verifier's exception as a mismatch.
+    @Test
+    void anUncheckableFactorIsAServerErrorNotAWrongCode() {
+        String email = "mfabroken-" + RUN + "@example.com";
+        String pid = principal(email, PasswordHash.hash(PASSWORD));
+        String secret = enrolTotpDirect(pid);
+        DB.update(IAM_USER_MFA_METHODS).set(IAM_USER_MFA_METHODS.SECRET_ENCRYPTED, "not-an-envelope")
+                .where(IAM_USER_MFA_METHODS.PRINCIPAL_ID.eq(pid)).execute();
+
+        var r = changePassword(pid, email, PASSWORD, "a whole new passphrase 45",
+                Totp.code(secret, Totp.stepOf(Instant.now()) + 1));
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(500);
+        String stillOld = DB.select(IAM_PRINCIPALS.PASSWORD_HASH).from(IAM_PRINCIPALS)
+                .where(IAM_PRINCIPALS.ID.eq(pid)).fetchOne(IAM_PRINCIPALS.PASSWORD_HASH);
+        assertThat(PasswordHash.matches(PASSWORD, stillOld)).isTrue();
+    }
+
     @Test
     void aRecoveryCodeChangesThePasswordWhenTotpIsConfirmed() {
         String email = "recovery-" + RUN + "@example.com";
