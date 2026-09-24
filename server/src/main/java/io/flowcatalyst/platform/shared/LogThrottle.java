@@ -26,6 +26,13 @@ public final class LogThrottle {
         this.nextAllowed = new AtomicLong(nanoTime.getAsLong());
     }
 
+    /// Test seam: the next [#admit] is admitted (for a static throttle, whose
+    /// window an earlier test in the same JVM may have spent).
+    public void resetForTest() {
+        nextAllowed.set(nanoTime.getAsLong());
+        suppressed.set(0);
+    }
+
     /// Present — the count suppressed since the last admitted line — when the
     /// caller should log now; empty when it should not (and it is counted).
     public OptionalLong admit() {

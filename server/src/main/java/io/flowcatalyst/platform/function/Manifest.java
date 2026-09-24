@@ -62,6 +62,10 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
                         List<String> config, List<String> secrets, List<DbRef> db,
                         List<String> httpAllow) {
 
+    private static final org.slf4j.Logger READ_LOG = org.slf4j.LoggerFactory.getLogger(Manifest.class);
+    private static final io.flowcatalyst.platform.shared.LogThrottle DROPPED_LOG =
+            new io.flowcatalyst.platform.shared.LogThrottle(java.time.Duration.ofMinutes(1));
+
     /// The pool a manifest gets when it does not name one (spec §4.3 `POOL_INVALID`).
     public static final DnsLabel DEFAULT_POOL = new DnsLabel("default");
 
@@ -1423,7 +1427,7 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         if (!node.isArray()) return List.of();
         List<Endpoint> endpoints = new ArrayList<>();
         for (JsonNode entry : node) {
-            readEndpoint(entry).ifPresent(endpoints::add);
+            keepOrLog(readEndpoint(entry), endpoints, "endpoint", entry);
         }
         return List.copyOf(endpoints);
     }
@@ -1487,7 +1491,7 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         if (!node.isArray()) return List.of();
         List<SubscriptionSpec> specs = new ArrayList<>();
         for (JsonNode entry : node) {
-            readSubscription(entry, endpoints).ifPresent(specs::add);
+            keepOrLog(readSubscription(entry, endpoints), specs, "subscription", entry);
         }
         return List.copyOf(specs);
     }
@@ -1512,8 +1516,40 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         try {
             return DispatchMode.parseStrict(modeNode.asString());
         } catch (RuntimeException e) {
+            // A present but unreadable mode changes delivery semantics silently otherwise.
+            logDropped("subscription mode (fell back to " + DEFAULT_SUBSCRIPTION_MODE + ")", modeNode);
             return DEFAULT_SUBSCRIPTION_MODE;
         }
+    }
+
+    /// The tolerant reader drops what it cannot read (class doc) — but a live
+    /// function silently losing a route or changing its dispatch mode must
+    /// leave a trace: the stored manifest was accepted strictly when
+    /// published, so a part that no longer reads is drift or corruption.
+    /// Logged throttled (this runs on every repository read of the row);
+    /// manifest entries carry names, never secret values.
+    private static <T> void keepOrLog(Optional<T> parsed, List<T> into, String kind, JsonNode entry) {
+        if (parsed.isPresent()) {
+            into.add(parsed.get());
+        } else {
+            logDropped(kind, entry);
+        }
+    }
+
+    /// Test seam: see [io.flowcatalyst.platform.shared.LogThrottle#resetForTest].
+    static void resetDroppedLogForTest() {
+        DROPPED_LOG.resetForTest();
+    }
+
+    private static void logDropped(String kind, JsonNode entry) {
+        DROPPED_LOG.admit().ifPresent(suppressed -> {
+            String text = String.valueOf(entry);
+            READ_LOG.atWarn().setMessage("a stored function manifest part could not be read and was dropped")
+                    .addKeyValue("part", kind)
+                    .addKeyValue("entry", text.length() > 300 ? text.substring(0, 300) + "…" : text)
+                    .addKeyValue("suppressed_since_last", suppressed)
+                    .log();
+        });
     }
 
     private static List<ScheduleSpec> readSchedules(JsonNode root, List<Endpoint> endpoints) {
@@ -1521,7 +1557,7 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         if (!node.isArray()) return List.of();
         List<ScheduleSpec> specs = new ArrayList<>();
         for (JsonNode entry : node) {
-            readSchedule(entry, endpoints).ifPresent(specs::add);
+            keepOrLog(readSchedule(entry, endpoints), specs, "schedule", entry);
         }
         return List.copyOf(specs);
     }
@@ -1566,7 +1602,7 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         if (!node.isArray()) return List.of();
         List<PublicRoute> routes = new ArrayList<>();
         for (JsonNode entry : node) {
-            readPublicRoute(entry).ifPresent(routes::add);
+            keepOrLog(readPublicRoute(entry), routes, "public route", entry);
         }
         return List.copyOf(routes);
     }
@@ -1617,7 +1653,7 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         if (!node.isArray()) return List.of();
         List<DbRef> refs = new ArrayList<>();
         for (JsonNode entry : node) {
-            readDbRef(entry).ifPresent(refs::add);
+            keepOrLog(readDbRef(entry), refs, "db", entry);
         }
         return List.copyOf(refs);
     }
