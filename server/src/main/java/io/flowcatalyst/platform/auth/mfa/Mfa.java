@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.auth.mfa;
 
+import io.flowcatalyst.platform.shared.SecureTokens;
 import io.flowcatalyst.platform.audit.AuditLog;
 import io.flowcatalyst.platform.audit.AuditLogRepository;
 import io.flowcatalyst.platform.emaildomainmapping.MfaMethod;
@@ -11,11 +12,9 @@ import io.flowcatalyst.sdk.usecase.UseCaseException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -34,7 +33,6 @@ import java.util.function.Supplier;
 public final class Mfa implements MfaService {
 
     private static final Logger LOG = LoggerFactory.getLogger(Mfa.class);
-    private static final SecureRandom RANDOM = new SecureRandom();
 
     /// Go's defaults (`mfa/service.go:48-57`).
     public record Config(String issuer, int pinDigits, Duration pinTtl, int pinMaxAttempts, int recoveryCodeCount,
@@ -341,9 +339,7 @@ public final class Mfa implements MfaService {
     /// The raw cookie value (32 random bytes, base64url); only its hash is stored.
     public String issueTrustedDevice(String principalId, String label, Duration ttl) {
         Duration effective = ttl == null || ttl.isZero() || ttl.isNegative() ? config.trustedDeviceTtl() : ttl;
-        byte[] raw = new byte[32];
-        RANDOM.nextBytes(raw);
-        String token = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
+        String token = SecureTokens.urlSafe(32);
         String stored = label == null || label.isBlank() ? null : label.trim().length() > 250 ? label.trim().substring(0, 250) : label.trim();
         repo.insertTrustedDevice(principalId, RecoveryCodes.sha256Hex(token), stored, clock.instant().plus(effective));
         return token;

@@ -1,10 +1,10 @@
 package io.flowcatalyst.platform.principal.operations;
 
+import io.flowcatalyst.platform.shared.SecureTokens;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 
 import java.security.SecureRandom;
-import java.util.Base64;
 import java.util.Objects;
 
 /// Mints and encrypts a developer client secret (spec §2). **Minting only** —
@@ -72,9 +72,7 @@ public final class DeveloperSecrets {
         if (encryption == null) {
             throw UseCaseException.internal("SECRET", "FLOWCATALYST_APP_KEY not configured; cannot hash developer client secret", null);
         }
-        byte[] bytes = new byte[SECRET_BYTES];
-        random.nextBytes(bytes);
-        String plaintext = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        String plaintext = SecureTokens.urlSafe(SECRET_BYTES);
         return new Issued(plaintext, encryption.hashSecretRef(plaintext));
     }
 

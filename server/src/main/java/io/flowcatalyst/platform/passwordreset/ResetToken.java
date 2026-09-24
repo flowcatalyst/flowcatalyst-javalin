@@ -1,14 +1,13 @@
 package io.flowcatalyst.platform.passwordreset;
 
+import io.flowcatalyst.platform.shared.SecureTokens;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.HexFormat;
 import java.util.Objects;
 
@@ -39,7 +38,6 @@ public record ResetToken(String id, String principalId, String tokenHash, Purpos
     }
 
     public static final int MAX_FACTOR_ATTEMPTS = 5;
-    private static final SecureRandom RANDOM = new SecureRandom();
 
     public ResetToken {
         Objects.requireNonNull(id, "id");
@@ -67,9 +65,7 @@ public record ResetToken(String id, String principalId, String tokenHash, Purpos
 
     /// 32 random bytes, base64url without padding: 43 characters of `[A-Za-z0-9_-]`.
     public static String generateRaw() {
-        byte[] b = new byte[32];
-        RANDOM.nextBytes(b);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(b);
+        return SecureTokens.urlSafe(32);
     }
 
     /// Lower-hex SHA-256 of the raw token (`hash("")` = `e3b0c442…b855`).

@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.passkey;
 
+import io.flowcatalyst.platform.shared.SecureTokens;
 import io.flowcatalyst.platform.shared.json.Json;
 import org.jooq.DSLContext;
 import org.jooq.JSONB;
@@ -9,12 +10,10 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
 import javax.sql.DataSource;
-import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
-import java.util.Base64;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -31,7 +30,6 @@ public final class CeremonyRepository {
     public static final String REGISTRATION = "WebauthnRegistration";
     public static final String AUTHENTICATION = "WebauthnAuthentication";
     public static final Duration TTL = Duration.ofMinutes(10);
-    private static final SecureRandom RANDOM = new SecureRandom();
 
     public record Registration(String principalId, String session, String displayName) {
     }
@@ -53,9 +51,7 @@ public final class CeremonyRepository {
 
     /// 16 random bytes, base64url unpadded: 22 characters.
     public static String newStateId() {
-        byte[] b = new byte[16];
-        RANDOM.nextBytes(b);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(b);
+        return SecureTokens.urlSafe(16);
     }
 
     public void storeRegistration(String stateId, Registration r) {

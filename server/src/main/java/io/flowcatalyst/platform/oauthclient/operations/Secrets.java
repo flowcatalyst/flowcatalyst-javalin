@@ -1,10 +1,9 @@
 package io.flowcatalyst.platform.oauthclient.operations;
 
+import io.flowcatalyst.platform.shared.SecureTokens;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 
-import java.security.SecureRandom;
-import java.util.Base64;
 import java.util.Optional;
 
 /// Client-secret generation and keyed hashing, shared by [CreateOAuthClient]
@@ -19,16 +18,13 @@ import java.util.Optional;
 /// this unit made outside its listed files — see the port brief's report.
 public final class Secrets {
 
-    private static final SecureRandom RANDOM = new SecureRandom();
 
     private Secrets() {
     }
 
     /// 32 random bytes, base64url with no padding — shown once by the handler.
     public static String generatePlaintext() {
-        byte[] bytes = new byte[32];
-        RANDOM.nextBytes(bytes);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        return SecureTokens.urlSafe(32);
     }
 
     /// The at-rest keyed-hash ref for `plaintext` (`"hashed:v1:" + …`) —

@@ -1,7 +1,7 @@
 package io.flowcatalyst.platform.serviceaccount.operations;
 
+import io.flowcatalyst.platform.shared.SecureTokens;
 import java.security.SecureRandom;
-import java.util.Base64;
 
 /// Mints plaintext webhook credentials (spec §4.1, §4.6). Byte-shape
 /// compatible with Go's generators so a minted value looks the same to an
@@ -42,8 +42,6 @@ public final class WebhookSecrets {
     }
 
     public static String generateSigningSecret() {
-        byte[] bytes = new byte[SIGNING_SECRET_BYTES];
-        RANDOM.nextBytes(bytes);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        return SecureTokens.urlSafe(SIGNING_SECRET_BYTES);
     }
 }

@@ -1,9 +1,8 @@
 package io.flowcatalyst.platform.auth.oidc;
 
-import java.security.SecureRandom;
+import io.flowcatalyst.platform.shared.SecureTokens;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.Objects;
 
 /// One in-flight OIDC handshake (`docs/spec/auth-identity.md` §3.1): the
@@ -18,7 +17,6 @@ public record LoginState(String state, String emailDomain, String identityProvid
                          Instant createdAt, Instant expiresAt) {
 
     public static final Duration TTL = Duration.ofMinutes(10);
-    private static final SecureRandom RANDOM = new SecureRandom();
 
     /// The SPA-forwarded `/oauth/authorize` parameters carried through the
     /// IdP round-trip; each stored only when non-empty.
@@ -56,8 +54,6 @@ public record LoginState(String state, String emailDomain, String identityProvid
     }
 
     static String random(int bytes) {
-        byte[] b = new byte[bytes];
-        RANDOM.nextBytes(b);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(b);
+        return SecureTokens.urlSafe(bytes);
     }
 }
