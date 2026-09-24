@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
-import { handler } from "../src/handler.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { handler, UNCAUGHT_REASON } from "../src/handler.js";
 import { Result } from "../src/result.js";
 
 const fixturePath = fileURLToPath(new URL("./fixtures/echo-request.json", import.meta.url));
@@ -61,7 +61,37 @@ describe("handler()", () => {
 		const written = JSON.parse(host.output());
 		expect(written.status).toBe(500);
 		const body = JSON.parse(Buffer.from(written.bodyBase64, "base64").toString("utf-8"));
-		expect(body.error).toBe("boom from the handler");
+		expect(body.error).toBe(UNCAUGHT_REASON);
+	});
+
+	// mutant: answer the exception's message — a webhook or public caller would read internals.
+	it("logs the exception and never answers its message", () => {
+		const host = installHost(echoFixture);
+		const logged: string[] = [];
+		const spy = vi.spyOn(console, "error").mockImplementation((m: string) => {
+			logged.push(m);
+		});
+		try {
+			handler(() => {
+				throw new Error("db password is hunter2");
+			})();
+		} finally {
+			spy.mockRestore();
+		}
+		const written = JSON.parse(host.output());
+		expect(Buffer.from(written.bodyBase64, "base64").toString("utf-8")).not.toContain("hunter2");
+		expect(logged.join("\n")).toContain("db password is hunter2");
+	});
+
+	// mutant: Result.fail(message) — a blank message makes fail() throw, and the exception
+	// escapes into the guest boundary (a trapped instance).
+	it("an exception with a blank message is still a 500, not an escape", () => {
+		const host = installHost(echoFixture);
+		const handle = handler(() => {
+			throw new Error("");
+		});
+		expect(handle()).toBe(0);
+		expect(JSON.parse(host.output()).status).toBe(500);
 	});
 
 	it("turns a non-Error throw into a 500 too", () => {

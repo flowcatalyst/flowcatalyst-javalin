@@ -4,6 +4,10 @@ import { parseRequest } from "./request.js";
 import { Result } from "./result.js";
 import type { Context, FunctionRequest, FunctionResult } from "./types.js";
 
+/// The body reason for an uncaught exception — fixed, so nothing the exception
+/// carries reaches the caller (and never blank, which `Result.fail` refuses).
+export const UNCAUGHT_REASON = "the function failed";
+
 /// Encodes a [FunctionResult] as the ABI's guest-output JSON
 /// (`docs/spec/function-wasm-runtime.md` §3): `{"status", "headers",
 /// "bodyBase64"}`.
@@ -23,7 +27,9 @@ function encodeResult(result: FunctionResult): string {
 /// (`docs/spec/function-js-guest.md` §1): reads `Host.inputString()`,
 /// parses it into a [FunctionRequest], calls `fn`, writes the [FunctionResult]
 /// as the ABI's output JSON, and returns `0`. An uncaught exception from `fn`
-/// becomes `Result.fail(message)` — a `500`, matching Java's
+/// is logged (`console.error`, message and stack) and becomes
+/// `Result.fail(UNCAUGHT_REASON)` — a `500` whose body never carries the
+/// exception's message, matching Java's
 /// `WasmFunction#handle` doc: "never a trapped instance" — a JS exception
 /// that reaches the QuickJS/Extism boundary otherwise traps the whole
 /// instance, exactly what a Wasm function is meant to contain.
@@ -45,8 +51,12 @@ export function handler(fn: (req: FunctionRequest, ctx: Context) => FunctionResu
 			const ctx = buildContext();
 			result = fn(request, ctx);
 		} catch (e) {
-			const message = e instanceof Error ? e.message : String(e);
-			result = Result.fail(message);
+			// Logged for the operator (with the stack), never answered: the caller of a webhook
+			// or public endpoint must not read the function's internals — the JVM host answers
+			// an uncaught exception the same way (`FnHttpServer`: "the function failed").
+			const detail = e instanceof Error ? `${e.message}${e.stack ? `\n${e.stack}` : ""}` : String(e);
+			console.error(`uncaught exception in the handler: ${detail}`);
+			result = Result.fail(UNCAUGHT_REASON);
 		}
 		Host.outputString(encodeResult(result));
 		return 0;
