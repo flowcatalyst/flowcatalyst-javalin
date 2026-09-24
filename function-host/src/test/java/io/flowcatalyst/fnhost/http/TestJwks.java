@@ -180,6 +180,19 @@ final class TestJwks implements AutoCloseable {
     static String mint(RSAPrivateKey key, String kid, String issuer, String subject, String type, String tier,
                         String scope, List<String> clients, List<String> roles, List<String> applications,
                         boolean allApplications, Instant expiresAt) {
+        return mint(key, kid, issuer, subject, type, tier, scope, clients, roles, applications, allApplications,
+                expiresAt, null);
+    }
+
+    /// A token whose `token_use` claim is `tokenUse` (`"identity"` for a relying party's identity token).
+    String mintWithTokenUse(String tokenUse, String subject, String tier, List<String> clients, Instant expiresAt) {
+        return mint(currentPrivate, currentKid, discoveryIssuer, subject, "USER", tier,
+                "platform:function:function:view", clients, List.of(), List.of(), true, expiresAt, tokenUse);
+    }
+
+    static String mint(RSAPrivateKey key, String kid, String issuer, String subject, String type, String tier,
+                        String scope, List<String> clients, List<String> roles, List<String> applications,
+                        boolean allApplications, Instant expiresAt, String tokenUse) {
         try {
             JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder()
                     .subject(subject)
@@ -193,6 +206,9 @@ final class TestJwks implements AutoCloseable {
                     .claim("roles", roles)
                     .claim("applications", applications)
                     .claim("all_applications", allApplications);
+            if (tokenUse != null) {
+                claims.claim("token_use", tokenUse);
+            }
             SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(kid).build(), claims.build());
             jwt.sign(new RSASSASigner(key));
             return jwt.serialize();

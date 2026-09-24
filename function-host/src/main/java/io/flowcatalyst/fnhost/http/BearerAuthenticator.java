@@ -78,6 +78,12 @@ public final class BearerAuthenticator {
         JwtVerifier verifier =
                 new JwtVerifier(new JwtVerifier.Config(issuer, JwtVerifier.RsaKeys.of(keys)), clock);
         return switch (verifier.verify(token)) {
+            // An identity token (issued to relying parties without API access and to portal
+            // identities) is not an API credential — the platform's own Authenticator refuses
+            // it as a bearer, and so must a function endpoint, or a relying party could replay
+            // a user's identity token (tier and all) at an `auth: platform` endpoint.
+            case JwtVerifier.Verified(TokenClaims claims) when TokenClaims.TOKEN_USE_IDENTITY.equals(claims.tokenUse()) ->
+                    new Rejected("an identity token is not an API credential");
             case JwtVerifier.Verified(TokenClaims claims) -> new Authenticated(claims);
             case JwtVerifier.Rejected(String reason) -> new Rejected(reason);
         };

@@ -533,6 +533,71 @@ class FnHttpServerTest {
         }
     }
 
+    /// The platform mints `clients`/`applications` as `"{id}:{label}"` pairs. The
+    /// function must see bare ids (its `clientId()`/`canAccessClient` are written
+    /// against ids), and the versioned path's reach check must match them — both
+    /// compared the raw pairs, so every real non-anchor token failed. Mutants:
+    /// pass the claims through verbatim; compare raw in `hasReach`.
+    @Test
+    void pairFormScopeClaimsReachTheFunctionAsBareIdsAndPassTheReachCheck(@TempDir Path dir) throws Exception {
+        try (TestJwks jwks = new TestJwks()) {
+            Path counter = dir.resolve("counter-pairs");
+            Path jar = FnHttpTestSupport.functionJar(dir, "echo-pairs", "fixture.http.EchoFn", echoSource(counter));
+            var manifest = FnHttpTestSupport.manifest("p", false, 10, 5000, "fixture.http.EchoFn",
+                    """
+                    [{"path":"/api/*","auth":"platform"}]
+                    """);
+            var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_pairs", "v1", 1, jar, manifest, null, "app_1", "clt_1");
+            var options = new FnHttpServer.Options("127.0.0.1", 0, 512, jwks.issuer, Clock.systemUTC());
+            try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options)) {
+                String token = jwks.mint("prn_pairs", "SERVICE", "CLIENT",
+                        "platform:function:function:view platform:function:version:invoke",
+                        List.of("clt_1:acme"), List.of(), List.of("app_1:billing"), false,
+                        Instant.now().plusSeconds(300));
+
+                var ok = h.get("/functions/" + ADDR.render() + "/api/x", "Authorization", "Bearer " + token);
+                assertThat(ok.statusCode()).as(new String(ok.body(), StandardCharsets.UTF_8)).isEqualTo(200);
+                JsonNode body = FnHttpTestSupport.json(ok.body());
+                assertThat(body.path("principalClients").valueStream().map(JsonNode::asString).toList())
+                        .as("mutant: pass the pair claims through verbatim").containsExactly("clt_1");
+                assertThat(body.path("principalClientId").asString()).isEqualTo("clt_1");
+                assertThat(body.path("principalApplications").valueStream().map(JsonNode::asString).toList())
+                        .containsExactly("app_1");
+
+                var versioned = h.get("/functions/" + ADDR.render() + ":1/api/x", "Authorization", "Bearer " + token);
+                assertThat(versioned.statusCode()).as("mutant: compare the raw pairs in hasReach").isEqualTo(200);
+            }
+        }
+    }
+
+    /// An identity token (issued to relying parties and portal identities) is not an
+    /// API credential: the platform refuses it as a bearer, and so does a function
+    /// endpoint. Mutant: accept any verified token.
+    @Test
+    void anIdentityTokenIsRefusedAtAPlatformEndpoint(@TempDir Path dir) throws Exception {
+        try (TestJwks jwks = new TestJwks()) {
+            Path counter = dir.resolve("counter-identity");
+            Path jar = FnHttpTestSupport.functionJar(dir, "echo-identity", "fixture.http.EchoFn", echoSource(counter));
+            var manifest = FnHttpTestSupport.manifest("p", false, 10, 5000, "fixture.http.EchoFn",
+                    """
+                    [{"path":"/api/*","auth":"platform"}]
+                    """);
+            var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_identity", "v1", 1, jar, manifest, null, null, null);
+            var options = new FnHttpServer.Options("127.0.0.1", 0, 512, jwks.issuer, Clock.systemUTC());
+            try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options)) {
+                String identity = jwks.mintWithTokenUse("identity", "prn_rp_user", "ANCHOR", List.of("*"),
+                        Instant.now().plusSeconds(300));
+                String api = jwks.mintWithTokenUse("api", "prn_rp_user", "ANCHOR", List.of("*"),
+                        Instant.now().plusSeconds(300));
+
+                assertThat(h.get("/functions/" + ADDR.render() + "/api/x", "Authorization", "Bearer " + identity)
+                        .statusCode()).isEqualTo(401);
+                assertThat(h.get("/functions/" + ADDR.render() + "/api/x", "Authorization", "Bearer " + api)
+                        .statusCode()).as("the same token as an API credential is accepted").isEqualTo(200);
+            }
+        }
+    }
+
     /// Defect fix: the issuer comes from discovery
     /// (`<platformUrl>/.well-known/openid-configuration`'s `issuer`), never
     /// from `platformUrl` itself — [TestJwks]'s own address (`issuer`) and its

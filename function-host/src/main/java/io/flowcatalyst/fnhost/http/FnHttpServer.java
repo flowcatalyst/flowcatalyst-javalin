@@ -16,6 +16,7 @@ import io.flowcatalyst.platform.function.HttpMethod;
 import io.flowcatalyst.platform.function.Manifest;
 import io.flowcatalyst.platform.function.RoutePattern;
 import io.flowcatalyst.platform.shared.auth.Permission;
+import io.flowcatalyst.platform.shared.auth.ScopeClaim;
 import io.flowcatalyst.platform.shared.auth.TokenClaims;
 import io.flowcatalyst.sdk.tsid.Tsid;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
@@ -627,13 +628,17 @@ public final class FnHttpServer implements AutoCloseable {
         if (entry.clientId() == null) {
             return false; // a platform-owned function needs anchor
         }
-        if (!claims.clients().contains(entry.clientId())) {
+        // The claims carry "{id}:{label}" pairs (or the "*" sentinel), never bare ids —
+        // comparing them raw denied every non-anchor caller. ScopeClaim is the one parser.
+        ScopeClaim.Parsed clients = ScopeClaim.parse(claims.clients());
+        if (!clients.wildcard() && !clients.ids().contains(entry.clientId())) {
             return false;
         }
         if (entry.applicationId() == null) {
             return true;
         }
-        return claims.allApplications() || claims.applications().contains(entry.applicationId());
+        ScopeClaim.Parsed applications = ScopeClaim.parse(claims.applications());
+        return claims.allApplications() || applications.wildcard() || applications.ids().contains(entry.applicationId());
     }
 
     // ── endpoint match (spec §2 step 4) ─────────────────────────────────────
@@ -897,10 +902,20 @@ public final class FnHttpServer implements AutoCloseable {
     /// principal may carry several real ids — so [Caller.Principal#clientId]
     /// derives the single unambiguous one, rather than this method
     /// collapsing the list itself).
+    ///
+    /// `clients` and `applications` arrive as `"{id}:{label}"` pairs (or `"*"`);
+    /// the function sees bare ids, exactly as the platform's own
+    /// `Authenticator` builds an `AuthContext` — `canAccessClient(id)` and
+    /// `clientId()` are written against ids, and the pair form must not leak
+    /// past this boundary ([ScopeClaim]).
     private static Caller.Principal principalFrom(TokenClaims claims) {
         String type = claims.principalType() == null ? "unknown" : claims.principalType();
-        return new Caller.Principal(claims.subject(), type, claims.tier(), claims.clients(), claims.roles(),
-                claims.applications(), claims.allApplications(), Set.copyOf(claims.permissions()));
+        ScopeClaim.Parsed clients = ScopeClaim.parse(claims.clients());
+        ScopeClaim.Parsed applications = ScopeClaim.parse(claims.applications());
+        return new Caller.Principal(claims.subject(), type, claims.tier(),
+                clients.wildcard() ? List.of(ScopeClaim.WILDCARD) : clients.ids(), claims.roles(),
+                applications.ids(), claims.allApplications() || applications.wildcard(),
+                Set.copyOf(claims.permissions()));
     }
 
     // ── building the Request value (spec §2) ────────────────────────────────
