@@ -1865,3 +1865,53 @@ runtimes: on return, check pgjdbc's `PgConnection#getTransactionState()` and `RO
 `IDLE`, and `DISCARD ALL` / `RESET ALL` if session settings matter — a `DbPools` wrapper around the
 `DataSource` it hands out. Also from W4: no per-call connection cap, so a guest holding `poolSize`
 open transactions waits on itself until the deadline.
+
+## Overnight review 2026-09-24/25 — owner questions and deliberate deferrals
+
+Four read-only reviews (auth surface, functions + delivery, Result/exception use, duplication) ran
+overnight; fixes landed per `docs/spec/security-fixes-2026-09-24.md` and in the commits of that night.
+What is left needs a ruling or was judged not worth changing:
+
+**Owner questions**
+1. **SSRF policy for delivery URLs** — subscription endpoints, scheduled-job and ingest target URLs
+   are only checked as `^https?://.+`; a tenant can target internal addresses (loopback, link-local
+   incl. 169.254.169.254, the function host's private listener) and read up to 64 KiB of the
+   response back through the attempts API. Block private/link-local/ULA outside dev mode, checked at
+   create and against the resolved address at send (DNS rebinding)? Deployed dispatch uses internal
+   Service Connect aliases — those would need an explicit allowance.
+2. **Router auth open by default** — with `FC_ROUTER_AUTH_USER` unset, `/messages`, breaker resets
+   and `/api/test/*` are open on the API port (documented, `Env.java`). Refuse to start outside dev
+   mode unless `AUTH_MODE=NONE` is explicit?
+3. **nOAuth on multi-tenant OIDC** — with a multi-tenant Entra IdP and no tenant pin, identity comes
+   from the mutable `email` claim (and `preferred_username` fallback; `email_verified` ignored).
+   Require a pinned tenant, and/or `email_verified`? (Entra often omits `email_verified`.)
+4. **Principal sync `passwordHash`** (S1) — applied only on create, and on an existing principal only
+   for a super-admin caller. Confirm, or drop it for existing principals entirely.
+5. **Refresh replay leeway** (S2 review) — 10 s: a token rotated out moments ago may be presented
+   again (SDK requests racing at expiry, a retry after a lost response) and gets a sibling in the
+   same family; after that it is reuse and revokes the family. Strict alternative: every second
+   presentation revokes (signs out users of the Laravel/TS SDKs, which refresh without a lock).
+6. **`/oauth/authorize` Bearer fallback** (C-Q25) — kept but narrowed to session tokens. Drop it?
+7. **2FA email-challenge budget** — reuses the password-reset policies (20/h per IP, 5/h per
+   address). And `/auth/password-setup/request` still sends mail unlimited — same limiter?
+8. **Unmapped email domain at `/auth/oidc/login`** answers 500 `OIDC_RESOLVE_FAILED` (spec
+   auth-identity §4.3, Go parity) — a user's typo, not a server fault. 400/404 instead?
+9. **Function outbound HTTP response cap** — `AllowlistHttpCaller` reads the whole body; an
+   allowlisted host returning GBs exhausts the host. A fixed cap changes the author contract.
+10. **Listener idle timeouts** — neither the platform nor the function host sets one; a slow-body
+    client holds a connection indefinitely. A plain idle timeout would cut long invocations that
+    are working silently, so it needs a request-phase-aware design.
+11. **Public API shapes** — `EventEmitException` (function-api: an expected outcome as an unchecked
+    exception) and the SDK's `WebhookSignature.verify` (void + throw) contradict CONVENTIONS §8 but
+    are published contracts mirrored in the TS/Laravel SDKs.
+12. **Versioned call to a not-yet-prepared candidate** answers 404 `VERSION_NOT_AVAILABLE` like a
+    refused one; a 503 + Retry-After would tell a caller to wait.
+
+**Reviewed and deliberately left**
+- `MarkVersionReady`'s `VERSION_NOT_PUBLISHED` conflict caught in the heartbeat: one named constant,
+  one documented catch, inside the envelope's own contract; a sealed result would mean redesigning
+  `TxOperation`.
+- `FunctionAddress.parse` / `DnsLabel.parse` catches in `FunctionControlApi` / `CreateFunction`:
+  validation-error remaps at the envelope boundary, not control flow.
+- `QueueMetrics` / `ProcessingTimeMetrics` positional `long`s (the duplication review): every call
+  site agrees today; low value.
