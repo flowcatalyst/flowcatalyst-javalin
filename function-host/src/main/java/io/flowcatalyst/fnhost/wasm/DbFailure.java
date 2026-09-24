@@ -11,8 +11,9 @@ import java.util.Objects;
 /// never a trap. Every case states its own [#code] and [#message]; none is
 /// defaulted.
 ///
-/// None of these carries SQL text or parameter values, and none is ever logged:
-/// the guest is the only reader.
+/// None of these carries SQL text or parameter values. They are the guest's to
+/// read; the one exception is an unavailable database, which the host also logs
+/// (name, SQLSTATE and the driver's exception only — [DbSession]).
 sealed interface DbFailure permits DbFailure.NotDeclared, DbFailure.BadRequest, DbFailure.TxUnknown,
         DbFailure.NoTimeLeft, DbFailure.NoInvocation, DbFailure.Sql {
 

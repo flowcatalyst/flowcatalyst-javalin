@@ -1,6 +1,7 @@
 package io.flowcatalyst.fnhost.wasm;
 
 import io.flowcatalyst.fnhost.context.InvocationDeadline;
+import io.flowcatalyst.platform.shared.LogThrottle;
 import io.flowcatalyst.fnhost.wasm.DbFailure.BadRequest;
 import io.flowcatalyst.fnhost.wasm.DbFailure.NoTimeLeft;
 import io.flowcatalyst.fnhost.wasm.DbFailure.NotDeclared;
@@ -10,6 +11,8 @@ import io.flowcatalyst.sdk.result.Result;
 import io.flowcatalyst.sdk.result.Result.Err;
 import io.flowcatalyst.sdk.result.Result.Ok;
 import org.postgresql.jdbc.PgStatement;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 
 import javax.sql.DataSource;
@@ -57,6 +60,8 @@ final class DbSession implements AutoCloseable {
     static final ScopedValue<DbSession> CURRENT = ScopedValue.newInstance();
 
     private static final SecureRandom TX_IDS = new SecureRandom();
+    private static final Logger LOG = LoggerFactory.getLogger(DbSession.class);
+    private static final LogThrottle UNAVAILABLE_LOG = new LogThrottle(Duration.ofSeconds(10));
 
     private final Map<String, DataSource> declared;
     private final Clock clock;
@@ -103,13 +108,13 @@ final class DbSession implements AutoCloseable {
             // The wait at the pool's gate is untimed; the deadline interrupt ends it (57014).
             connection = ds.getConnection();
         } catch (SQLException e) {
-            return Result.err(Sql.of(e));
+            return Result.err(sqlFailure(in.path("db").asString(), e));
         }
         try {
             connection.setAutoCommit(false);
         } catch (SQLException e) {
             closeQuietly(connection);
-            return Result.err(Sql.of(e));
+            return Result.err(sqlFailure(in.path("db").asString(), e));
         }
         String id = newTxId();
         transactions.put(id, new OpenTx(in.path("db").asString(), connection));
@@ -193,7 +198,7 @@ final class DbSession implements AutoCloseable {
             if (tx == null || !tx.db().equals(in.path("db").asString())) {
                 return Result.err(new TxUnknown());
             }
-            return run(tx.connection(), sqlNode.asString(), params, query);
+            return run(tx.db(), tx.connection(), sqlNode.asString(), params, query);
         }
         if (closed) {
             return Result.err(new DbFailure.NoInvocation());
@@ -201,14 +206,16 @@ final class DbSession implements AutoCloseable {
         if (timeoutMillis() < 1) {
             return Result.err(new NoTimeLeft()); // not even worth a borrow
         }
+        String db = in.path("db").asString();
         try (Connection connection = ds.getConnection()) {
-            return run(connection, sqlNode.asString(), params, query);
+            return run(db, connection, sqlNode.asString(), params, query);
         } catch (SQLException e) {
-            return Result.err(Sql.of(e));
+            return Result.err(sqlFailure(db, e));
         }
     }
 
-    private Result<byte[], DbFailure> run(Connection connection, String sql, JsonNode params, boolean query) {
+    private Result<byte[], DbFailure> run(String db, Connection connection, String sql, JsonNode params,
+                                          boolean query) {
         long timeout = timeoutMillis();
         if (timeout < 1) {
             return Result.err(new NoTimeLeft());
@@ -232,7 +239,8 @@ final class DbSession implements AutoCloseable {
             }
             long updated = ps.executeLargeUpdate();
             return Result.ok(("{\"updated\":" + updated + "}").getBytes(StandardCharsets.UTF_8));
-        } catch (SQLException e) {            return Result.err(Sql.of(e));
+        } catch (SQLException e) {
+            return Result.err(sqlFailure(db, e));
         }
     }
 
@@ -283,10 +291,30 @@ final class DbSession implements AutoCloseable {
                     // closed below regardless
                 }
             }
-            return Result.err(Sql.of(e));
+            return Result.err(sqlFailure(tx.db(), e));
         } finally {
             closeQuietly(connection);
         }
+    }
+
+    /// The guest gets the failure as a value either way. An unavailable
+    /// database (connection lost, pool or server out of connections) is also the
+    /// operator's problem, which the guest may never report: logged host-side —
+    /// the database's name, the SQLSTATE and the driver's exception, never the
+    /// SQL text or a parameter value — at most once per interval per session
+    /// kind (it can fire on every statement).
+    private static Sql sqlFailure(String db, SQLException e) {
+        Sql failure = Sql.of(e);
+        if (failure.sqlClass() == DbFailure.SqlClass.DB_UNAVAILABLE) {
+            UNAVAILABLE_LOG.admit().ifPresent(suppressed -> LOG.atWarn()
+                    .setMessage("a Wasm function's database is unavailable")
+                    .addKeyValue("db", db)
+                    .addKeyValue("sql_state", e.getSQLState())
+                    .addKeyValue("suppressed_since_last", suppressed)
+                    .setCause(e)
+                    .log());
+        }
+        return failure;
     }
 
     private Result<DataSource, DbFailure> dataSource(JsonNode in) {

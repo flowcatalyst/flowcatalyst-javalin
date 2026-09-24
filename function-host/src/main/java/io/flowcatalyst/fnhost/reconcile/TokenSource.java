@@ -30,6 +30,10 @@ public final class TokenSource {
     /// A token is refreshed once it is within this margin of its declared
     /// expiry (spec §1.1: "cached until 60 s before expiry").
     private static final Duration EXPIRY_MARGIN = Duration.ofSeconds(60);
+    /// A platform that accepts the connection and never answers must not stall the
+    /// reconcile loop (the token is minted inside it) — the same bound the other
+    /// control-plane calls use.
+    static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
 
     private final HttpClient client;
     private final String platformUrl;
@@ -92,6 +96,7 @@ public final class TokenSource {
                 + "&client_secret=" + urlEncode(clientSecret);
         HttpRequest request = HttpRequest.newBuilder(URI.create(platformUrl + "/oauth/token"))
                 .header("Content-Type", "application/x-www-form-urlencoded")
+                .timeout(REQUEST_TIMEOUT)
                 .POST(HttpRequest.BodyPublishers.ofString(form))
                 .build();
         HttpResponse<String> response;
