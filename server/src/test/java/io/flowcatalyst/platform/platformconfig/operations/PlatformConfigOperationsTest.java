@@ -172,7 +172,10 @@ class PlatformConfigOperationsTest {
         assertThat(audits.getFirst().get("principal_id")).isEqualTo(PRINCIPAL);
         var opJson = json(audits.getFirst().get("operation_json", String.class));
         assertThat(opJson.get("applicationCode").asText()).isEqualTo(app);
-        assertThat(opJson.get("value").asText()).isEqualTo("mail.example.com");
+        // docs/spec/audit-redaction.md: no valueType means "keep the current type", which may be
+        // SECRET, so the value is masked unless the command says PLAIN explicitly (an explicit
+        // PLAIN value is still recorded — PlatformConfigApiTest pins that).
+        assertThat(opJson.get("value").asText()).isEqualTo("***");
     }
 
     /// A second set on the same coordinate updates the row in place.

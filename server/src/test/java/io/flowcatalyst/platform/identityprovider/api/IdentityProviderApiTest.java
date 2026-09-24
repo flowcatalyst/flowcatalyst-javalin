@@ -168,7 +168,8 @@ class IdentityProviderApiTest {
         assertThat(stored).startsWith("encrypted:");
         assertThat(ENCRYPTION.decrypt(stored)).isEqualTo(new Decryption.Plaintext("plain-secret"));
         assertThat(DB.fetchOne("SELECT operation_json::text AS j FROM aud_logs WHERE entity_id = ? AND operation = 'CreateCommand'", id).get("j", String.class))
-                .doesNotContain("plain-secret").contains("encrypted:");
+                .as("docs/spec/audit-redaction.md: neither the plaintext nor the ciphertext reaches the audit row")
+                .doesNotContain("plain-secret").doesNotContain("encrypted:").contains("\"oidcClientSecretRef\": \"***\"");
 
         var get = http.get("/api/identity-providers/" + id, ANCHOR);
         assertThat(get.statusCode()).isEqualTo(200);
