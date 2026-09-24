@@ -6,6 +6,17 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## Cookie hardening; fn init ships the function API (2026-09-24, later)
+
+`d2cf1fc9` (`docs/spec/cookie-hardening.md`): deployed session cookie is `__Host-fc_session`
+(reader accepts only it; logout also expires a leftover `fc_session`; **users sign in once after
+the deploy**), fc-server refuses `FC_AUTH_ALLOW_TEST_HEADERS=true` without dev mode, and a composed
+login test pins `Secure`/`HttpOnly`/`Lax`/`Path=/`/no `Domain`. `b49b67e7`: `fn init` writes the
+function API into the project's `lib/m2` (owner: fcdev, not a Maven repository); a test builds a
+fresh scaffold with `mvn package`. Reactor green: server 5258 · function-host 355 · fcdev 232.
+Owed: native fcdev check of the `fn-init/` resource; SDK release ownership (Go still has split
+workflows) and tokens.
+
 ## function-host intermittent: root cause found and fixed (2026-09-24)
 
 `9d1b4e09`: tests bound the host on `0.0.0.0:0` and dialled `127.0.0.1`; on macOS (SO_REUSEADDR) a
