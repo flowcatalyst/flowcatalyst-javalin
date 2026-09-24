@@ -91,6 +91,12 @@ class DispatchJobReadNormalizer implements DenormalizerInterface, NormalizerInte
         elseif (\array_key_exists('createdAt', $data) && $data['createdAt'] === null) {
             $object->setCreatedAt(null);
         }
+        if (\array_key_exists('descriptor', $data) && $data['descriptor'] !== null) {
+            $object->setDescriptor($data['descriptor']);
+        }
+        elseif (\array_key_exists('descriptor', $data) && $data['descriptor'] === null) {
+            $object->setDescriptor(null);
+        }
         if (\array_key_exists('dispatchMode', $data) && $data['dispatchMode'] !== null) {
             $object->setDispatchMode($data['dispatchMode']);
         }
@@ -120,6 +126,22 @@ class DispatchJobReadNormalizer implements DenormalizerInterface, NormalizerInte
         }
         elseif (\array_key_exists('lastAttemptAt', $data) && $data['lastAttemptAt'] === null) {
             $object->setLastAttemptAt(null);
+        }
+        if (\array_key_exists('messageGroup', $data) && $data['messageGroup'] !== null) {
+            $object->setMessageGroup($data['messageGroup']);
+        }
+        elseif (\array_key_exists('messageGroup', $data) && $data['messageGroup'] === null) {
+            $object->setMessageGroup(null);
+        }
+        if (\array_key_exists('metadata', $data) && $data['metadata'] !== null) {
+            $values = [];
+            foreach ($data['metadata'] as $value) {
+                $values[] = $this->denormalizer->denormalize($value, \FlowCatalyst\Generated\Model\MetadataDTO::class, 'json', $context);
+            }
+            $object->setMetadata($values);
+        }
+        elseif (\array_key_exists('metadata', $data) && $data['metadata'] === null) {
+            $object->setMetadata(null);
         }
         if (\array_key_exists('mode', $data) && $data['mode'] !== null) {
             $object->setMode($data['mode']);
@@ -207,6 +229,9 @@ class DispatchJobReadNormalizer implements DenormalizerInterface, NormalizerInte
             $dataArray['correlationId'] = $data->getCorrelationId();
         }
         $dataArray['createdAt'] = $data->getCreatedAt()->format('Y-m-d\TH:i:sP');
+        if ($data->isInitialized('descriptor') && null !== $data->getDescriptor()) {
+            $dataArray['descriptor'] = $data->getDescriptor();
+        }
         if ($data->isInitialized('dispatchMode') && null !== $data->getDispatchMode()) {
             $dataArray['dispatchMode'] = $data->getDispatchMode();
         }
@@ -217,6 +242,16 @@ class DispatchJobReadNormalizer implements DenormalizerInterface, NormalizerInte
         $dataArray['kind'] = $data->getKind();
         if ($data->isInitialized('lastAttemptAt') && null !== $data->getLastAttemptAt()) {
             $dataArray['lastAttemptAt'] = $data->getLastAttemptAt()->format('Y-m-d\TH:i:sP');
+        }
+        if ($data->isInitialized('messageGroup') && null !== $data->getMessageGroup()) {
+            $dataArray['messageGroup'] = $data->getMessageGroup();
+        }
+        if ($data->isInitialized('metadata') && null !== $data->getMetadata()) {
+            $values = [];
+            foreach ($data->getMetadata() as $value) {
+                $values[] = $this->normalizer->normalize($value, 'json', $context);
+            }
+            $dataArray['metadata'] = $values;
         }
         $dataArray['mode'] = $data->getMode();
         if ($data->isInitialized('priority') && null !== $data->getPriority()) {

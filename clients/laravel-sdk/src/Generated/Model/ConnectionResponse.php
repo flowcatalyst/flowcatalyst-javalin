@@ -21,6 +21,10 @@ class ConnectionResponse
     /**
      * @var string|null
      */
+    protected $applicationCode;
+    /**
+     * @var string|null
+     */
     protected $clientId;
     /**
      * @var string|null
@@ -57,6 +61,10 @@ class ConnectionResponse
     /**
      * @var string|null
      */
+    protected $source;
+    /**
+     * @var string|null
+     */
     protected $status;
     /**
      * @var \DateTime|null
@@ -82,6 +90,24 @@ class ConnectionResponse
     {
         $this->initialized['dollarSchema'] = true;
         $this->dollarSchema = $dollarSchema;
+        return $this;
+    }
+    /**
+     * @return string|null
+     */
+    public function getApplicationCode(): ?string
+    {
+        return $this->applicationCode;
+    }
+    /**
+     * @param string|null $applicationCode
+     *
+     * @return self
+     */
+    public function setApplicationCode(?string $applicationCode): self
+    {
+        $this->initialized['applicationCode'] = true;
+        $this->applicationCode = $applicationCode;
         return $this;
     }
     /**
@@ -244,6 +270,24 @@ class ConnectionResponse
     {
         $this->initialized['serviceAccountId'] = true;
         $this->serviceAccountId = $serviceAccountId;
+        return $this;
+    }
+    /**
+     * @return string|null
+     */
+    public function getSource(): ?string
+    {
+        return $this->source;
+    }
+    /**
+     * @param string|null $source
+     *
+     * @return self
+     */
+    public function setSource(?string $source): self
+    {
+        $this->initialized['source'] = true;
+        $this->source = $source;
         return $this;
     }
     /**

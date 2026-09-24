@@ -37,6 +37,10 @@ class AttemptDTO
      */
     protected $errorType;
     /**
+     * @var RequestSummary|null
+     */
+    protected $request;
+    /**
      * @var string|null
      */
     protected $responseBody;
@@ -154,6 +158,24 @@ class AttemptDTO
     {
         $this->initialized['errorType'] = true;
         $this->errorType = $errorType;
+        return $this;
+    }
+    /**
+     * @return RequestSummary|null
+     */
+    public function getRequest(): ?RequestSummary
+    {
+        return $this->request;
+    }
+    /**
+     * @param RequestSummary|null $request
+     *
+     * @return self
+     */
+    public function setRequest(?RequestSummary $request): self
+    {
+        $this->initialized['request'] = true;
+        $this->request = $request;
         return $this;
     }
     /**

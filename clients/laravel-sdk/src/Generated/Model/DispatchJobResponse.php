@@ -53,6 +53,10 @@ class DispatchJobResponse
     /**
      * @var string|null
      */
+    protected $descriptor;
+    /**
+     * @var string|null
+     */
     protected $dispatchPoolId;
     /**
      * @var int|null
@@ -330,6 +334,24 @@ class DispatchJobResponse
     {
         $this->initialized['dataOnly'] = true;
         $this->dataOnly = $dataOnly;
+        return $this;
+    }
+    /**
+     * @return string|null
+     */
+    public function getDescriptor(): ?string
+    {
+        return $this->descriptor;
+    }
+    /**
+     * @param string|null $descriptor
+     *
+     * @return self
+     */
+    public function setDescriptor(?string $descriptor): self
+    {
+        $this->initialized['descriptor'] = true;
+        $this->descriptor = $descriptor;
         return $this;
     }
     /**

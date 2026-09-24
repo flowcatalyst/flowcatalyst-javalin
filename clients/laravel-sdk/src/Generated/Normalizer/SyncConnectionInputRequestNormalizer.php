@@ -11,7 +11,7 @@ use Symfony\Component\Serializer\Normalizer\DenormalizerInterface;
 use Symfony\Component\Serializer\Normalizer\NormalizerAwareInterface;
 use Symfony\Component\Serializer\Normalizer\NormalizerAwareTrait;
 use Symfony\Component\Serializer\Normalizer\NormalizerInterface;
-class UpdateConnectionRequestNormalizer implements DenormalizerInterface, NormalizerInterface, DenormalizerAwareInterface, NormalizerAwareInterface
+class SyncConnectionInputRequestNormalizer implements DenormalizerInterface, NormalizerInterface, DenormalizerAwareInterface, NormalizerAwareInterface
 {
     use DenormalizerAwareTrait;
     use NormalizerAwareTrait;
@@ -19,15 +19,15 @@ class UpdateConnectionRequestNormalizer implements DenormalizerInterface, Normal
     use ValidatorTrait;
     public function supportsDenormalization(mixed $data, string $type, ?string $format = null, array $context = []): bool
     {
-        return $type === \FlowCatalyst\Generated\Model\UpdateConnectionRequest::class;
+        return $type === \FlowCatalyst\Generated\Model\SyncConnectionInputRequest::class;
     }
     public function supportsNormalization(mixed $data, ?string $format = null, array $context = []): bool
     {
-        return is_object($data) && get_class($data) === \FlowCatalyst\Generated\Model\UpdateConnectionRequest::class;
+        return is_object($data) && get_class($data) === \FlowCatalyst\Generated\Model\SyncConnectionInputRequest::class;
     }
     public function denormalize(mixed $data, string $type, ?string $format = null, array $context = []): mixed
     {
-        $object = new \FlowCatalyst\Generated\Model\UpdateConnectionRequest();
+        $object = new \FlowCatalyst\Generated\Model\SyncConnectionInputRequest();
         if (null === $data || false === \is_array($data)) {
             return $object;
         }
@@ -37,61 +37,36 @@ class UpdateConnectionRequestNormalizer implements DenormalizerInterface, Normal
         if (isset($data['$recursiveRef'])) {
             return new Reference($data['$recursiveRef'], $context['document-origin']);
         }
-        if (\array_key_exists('$schema', $data) && $data['$schema'] !== null) {
-            $object->setDollarSchema($data['$schema']);
-            unset($data['$schema']);
+        if (\array_key_exists('code', $data) && $data['code'] !== null) {
+            $object->setCode($data['code']);
         }
-        elseif (\array_key_exists('$schema', $data) && $data['$schema'] === null) {
-            $object->setDollarSchema(null);
-        }
-        if (\array_key_exists('applicationCode', $data) && $data['applicationCode'] !== null) {
-            $object->setApplicationCode($data['applicationCode']);
-            unset($data['applicationCode']);
-        }
-        elseif (\array_key_exists('applicationCode', $data) && $data['applicationCode'] === null) {
-            $object->setApplicationCode(null);
+        elseif (\array_key_exists('code', $data) && $data['code'] === null) {
+            $object->setCode(null);
         }
         if (\array_key_exists('description', $data) && $data['description'] !== null) {
             $object->setDescription($data['description']);
-            unset($data['description']);
         }
         elseif (\array_key_exists('description', $data) && $data['description'] === null) {
             $object->setDescription(null);
         }
         if (\array_key_exists('externalId', $data) && $data['externalId'] !== null) {
             $object->setExternalId($data['externalId']);
-            unset($data['externalId']);
         }
         elseif (\array_key_exists('externalId', $data) && $data['externalId'] === null) {
             $object->setExternalId(null);
         }
         if (\array_key_exists('name', $data) && $data['name'] !== null) {
             $object->setName($data['name']);
-            unset($data['name']);
         }
         elseif (\array_key_exists('name', $data) && $data['name'] === null) {
             $object->setName(null);
-        }
-        if (\array_key_exists('status', $data) && $data['status'] !== null) {
-            $object->setStatus($data['status']);
-            unset($data['status']);
-        }
-        elseif (\array_key_exists('status', $data) && $data['status'] === null) {
-            $object->setStatus(null);
-        }
-        foreach ($data as $key => $value) {
-            if (preg_match('/.*/', (string) $key)) {
-                $object[$key] = $value;
-            }
         }
         return $object;
     }
     public function normalize(mixed $data, ?string $format = null, array $context = []): array|string|int|float|bool|\ArrayObject|null
     {
         $dataArray = [];
-        if ($data->isInitialized('applicationCode') && null !== $data->getApplicationCode()) {
-            $dataArray['applicationCode'] = $data->getApplicationCode();
-        }
+        $dataArray['code'] = $data->getCode();
         if ($data->isInitialized('description') && null !== $data->getDescription()) {
             $dataArray['description'] = $data->getDescription();
         }
@@ -99,18 +74,10 @@ class UpdateConnectionRequestNormalizer implements DenormalizerInterface, Normal
             $dataArray['externalId'] = $data->getExternalId();
         }
         $dataArray['name'] = $data->getName();
-        if ($data->isInitialized('status') && null !== $data->getStatus()) {
-            $dataArray['status'] = $data->getStatus();
-        }
-        foreach ($data as $key => $value) {
-            if (preg_match('/.*/', (string) $key)) {
-                $dataArray[$key] = $value;
-            }
-        }
         return $dataArray;
     }
     public function getSupportedTypes(?string $format = null): array
     {
-        return [\FlowCatalyst\Generated\Model\UpdateConnectionRequest::class => false];
+        return [\FlowCatalyst\Generated\Model\SyncConnectionInputRequest::class => false];
     }
 }

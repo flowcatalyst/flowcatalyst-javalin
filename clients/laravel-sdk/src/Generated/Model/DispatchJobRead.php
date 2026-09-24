@@ -51,6 +51,10 @@ class DispatchJobRead
     /**
      * @var string|null
      */
+    protected $descriptor;
+    /**
+     * @var string|null
+     */
     protected $dispatchMode;
     /**
      * @var string|null
@@ -68,6 +72,14 @@ class DispatchJobRead
      * @var \DateTime|null
      */
     protected $lastAttemptAt;
+    /**
+     * @var string|null
+     */
+    protected $messageGroup;
+    /**
+     * @var list<MetadataDTO>|null
+     */
+    protected $metadata;
     /**
      * @var string|null
      */
@@ -273,6 +285,24 @@ class DispatchJobRead
     /**
      * @return string|null
      */
+    public function getDescriptor(): ?string
+    {
+        return $this->descriptor;
+    }
+    /**
+     * @param string|null $descriptor
+     *
+     * @return self
+     */
+    public function setDescriptor(?string $descriptor): self
+    {
+        $this->initialized['descriptor'] = true;
+        $this->descriptor = $descriptor;
+        return $this;
+    }
+    /**
+     * @return string|null
+     */
     public function getDispatchMode(): ?string
     {
         return $this->dispatchMode;
@@ -358,6 +388,42 @@ class DispatchJobRead
     {
         $this->initialized['lastAttemptAt'] = true;
         $this->lastAttemptAt = $lastAttemptAt;
+        return $this;
+    }
+    /**
+     * @return string|null
+     */
+    public function getMessageGroup(): ?string
+    {
+        return $this->messageGroup;
+    }
+    /**
+     * @param string|null $messageGroup
+     *
+     * @return self
+     */
+    public function setMessageGroup(?string $messageGroup): self
+    {
+        $this->initialized['messageGroup'] = true;
+        $this->messageGroup = $messageGroup;
+        return $this;
+    }
+    /**
+     * @return list<MetadataDTO>|null
+     */
+    public function getMetadata(): ?array
+    {
+        return $this->metadata;
+    }
+    /**
+     * @param list<MetadataDTO>|null $metadata
+     *
+     * @return self
+     */
+    public function setMetadata(?array $metadata): self
+    {
+        $this->initialized['metadata'] = true;
+        $this->metadata = $metadata;
         return $this;
     }
     /**

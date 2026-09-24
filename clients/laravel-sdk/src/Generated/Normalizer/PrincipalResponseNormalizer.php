@@ -144,6 +144,12 @@ class PrincipalResponseNormalizer implements DenormalizerInterface, NormalizerIn
         elseif (\array_key_exists('scope', $data) && $data['scope'] === null) {
             $object->setScope(null);
         }
+        if (\array_key_exists('serviceAccountId', $data) && $data['serviceAccountId'] !== null) {
+            $object->setServiceAccountId($data['serviceAccountId']);
+        }
+        elseif (\array_key_exists('serviceAccountId', $data) && $data['serviceAccountId'] === null) {
+            $object->setServiceAccountId(null);
+        }
         if (\array_key_exists('twoFactorMethods', $data) && $data['twoFactorMethods'] !== null) {
             $values_2 = [];
             foreach ($data['twoFactorMethods'] as $value_2) {
@@ -203,6 +209,9 @@ class PrincipalResponseNormalizer implements DenormalizerInterface, NormalizerIn
         }
         $dataArray['roles'] = $values_1;
         $dataArray['scope'] = $data->getScope();
+        if ($data->isInitialized('serviceAccountId') && null !== $data->getServiceAccountId()) {
+            $dataArray['serviceAccountId'] = $data->getServiceAccountId();
+        }
         if ($data->isInitialized('twoFactorMethods') && null !== $data->getTwoFactorMethods()) {
             $values_2 = [];
             foreach ($data->getTwoFactorMethods() as $value_2) {

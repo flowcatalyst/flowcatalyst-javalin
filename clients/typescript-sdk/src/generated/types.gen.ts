@@ -4,23 +4,6 @@ export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});
 };
 
-export type AccessListResponse = {
-    /**
-     * A URL to the JSON Schema for this object.
-     */
-    readonly $schema?: string;
-    items: Array<AccessResponse>;
-};
-
-export type AccessResponse = {
-    applicationCode: string;
-    canRead: boolean;
-    canWrite: boolean;
-    createdAt: string;
-    id: string;
-    roleCode: string;
-};
-
 export type AddNoteRequest = {
     /**
      * A URL to the JSON Schema for this object.
@@ -265,6 +248,7 @@ export type AttemptDto = {
     durationMillis?: number;
     errorMessage?: string;
     errorType?: string;
+    request?: RequestSummary;
     responseBody?: string;
     responseCode?: number;
     success: boolean;
@@ -649,6 +633,7 @@ export type ConnectionResponse = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
+    applicationCode?: string;
     clientId?: string;
     clientIdentifier?: string;
     code: string;
@@ -658,6 +643,7 @@ export type ConnectionResponse = {
     id: string;
     name: string;
     serviceAccountId: string;
+    source: string;
     status: string;
     updatedAt: string;
 };
@@ -748,6 +734,10 @@ export type CreateConnectionRequest = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
+    /**
+     * Optional application this connection belongs to. Omitted means shared (usable from any application).
+     */
+    applicationCode?: string;
     clientId?: string;
     /**
      * Connection code (lowercase, alphanumeric, hyphens)
@@ -1223,6 +1213,18 @@ export type CreatedResponse = {
     id: string;
 };
 
+export type DeliveryPlan = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    body: string;
+    headers: {
+        [key: string]: string;
+    };
+    request: RequestSummary;
+};
+
 export type DeveloperUserListResponse = {
     /**
      * A URL to the JSON Schema for this object.
@@ -1255,11 +1257,14 @@ export type DispatchJobRead = {
     completedAt?: string;
     correlationId?: string;
     createdAt: string;
+    descriptor?: string;
     dispatchMode?: string;
     eventId?: string;
     id: string;
     kind: string;
     lastAttemptAt?: string;
+    messageGroup?: string;
+    metadata?: Array<MetadataDto>;
     mode: string;
     priority?: number;
     scheduledFor?: string;
@@ -1285,6 +1290,7 @@ export type DispatchJobResponse = {
     correlationId?: string;
     createdAt: string;
     dataOnly: boolean;
+    descriptor?: string;
     dispatchPoolId?: string;
     durationMillis?: number;
     eventId?: string;
@@ -1488,16 +1494,6 @@ export type FireNowResponse = {
     id: string;
     instanceId: string;
     scheduledJobId: string;
-};
-
-export type GrantAccessRequest = {
-    /**
-     * A URL to the JSON Schema for this object.
-     */
-    readonly $schema?: string;
-    canWrite: boolean;
-    roleCode: string;
-    [key: string]: unknown | string | boolean | undefined;
 };
 
 export type GrantClientAccessRequest = {
@@ -1916,6 +1912,7 @@ export type PrincipalResponse = {
     name: string;
     roles: Array<string>;
     scope: string;
+    serviceAccountId?: string;
     twoFactorMethods?: Array<string>;
     type: string;
     updatedAt: string;
@@ -2120,6 +2117,16 @@ export type RequestDto = {
     id: string;
     name: string;
     principalId: string;
+};
+
+export type RequestSummary = {
+    bearer: boolean;
+    headers?: Array<string>;
+    signature: boolean;
+    signedBy?: string;
+    target?: string;
+    timestamp?: string;
+    unsignedReason?: string;
 };
 
 export type RequeueRequest = {
@@ -2343,6 +2350,7 @@ export type ServiceAccountResponse = {
     id: string;
     lastUsedAt?: string;
     name: string;
+    oauthClientId?: string;
     principalId?: string;
     roles: Array<string>;
     scope?: string;
@@ -2502,6 +2510,23 @@ export type SuspendClientRequest = {
     readonly $schema?: string;
     reason: string;
     [key: string]: unknown | string | undefined;
+};
+
+export type SyncConnectionInputRequest = {
+    code: string;
+    description?: string;
+    externalId?: string;
+    name: string;
+};
+
+export type SyncConnectionsRequest = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    clientId?: string;
+    connections: Array<SyncConnectionInputRequest>;
+    [key: string]: unknown | string | Array<SyncConnectionInputRequest> | undefined;
 };
 
 export type SyncDispatchPoolInputRequest = {
@@ -2733,6 +2758,10 @@ export type SyncSubscriptionEventTypeRequest = {
 
 export type SyncSubscriptionInputRequest = {
     code: string;
+    /**
+     * Connection code — stable across environments, unlike connectionId. By default resolves a connection owned by THIS application; set sharedConnection to resolve it among the shared (application-less) connections instead. Within either namespace, a client-scoped sync (clientId set) prefers its own client's connection, falling back to a global one; a client-less sync only resolves a global connection.
+     */
+    connectionCode?: string;
     connectionId?: string;
     dataOnly?: boolean;
     description?: string;
@@ -2741,6 +2770,10 @@ export type SyncSubscriptionInputRequest = {
     maxRetries?: number;
     mode?: string;
     name: string;
+    /**
+     * Resolve connectionCode among the shared (application-less) connections instead of this application's own. Requires connectionCode.
+     */
+    sharedConnection?: boolean;
     target: string;
     timeoutSeconds?: number;
 };
@@ -2750,6 +2783,7 @@ export type SyncSubscriptionsRequest = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
+    clientId?: string;
     subscriptions: Array<SyncSubscriptionInputRequest>;
     [key: string]: unknown | string | Array<SyncSubscriptionInputRequest> | undefined;
 };
@@ -2861,6 +2895,7 @@ export type UpdateConnectionRequest = {
      * A URL to the JSON Schema for this object.
      */
     readonly $schema?: string;
+    applicationCode?: string;
     description?: string;
     externalId?: string;
     name: string;
@@ -3106,10 +3141,6 @@ export type WriteInstanceLogRequest = {
     message: string;
     metadata?: unknown;
     [key: string]: unknown | string | undefined;
-};
-
-export type AccessListResponseWritable = {
-    items: Array<AccessResponse>;
 };
 
 export type AddNoteRequestWritable = {
@@ -3430,6 +3461,7 @@ export type ConnectionListResponseWritable = {
 };
 
 export type ConnectionResponseWritable = {
+    applicationCode?: string;
     clientId?: string;
     clientIdentifier?: string;
     code: string;
@@ -3439,6 +3471,7 @@ export type ConnectionResponseWritable = {
     id: string;
     name: string;
     serviceAccountId: string;
+    source: string;
     status: string;
     updatedAt: string;
 };
@@ -3500,6 +3533,10 @@ export type CreateClientRequestWritable = {
 };
 
 export type CreateConnectionRequestWritable = {
+    /**
+     * Optional application this connection belongs to. Omitted means shared (usable from any application).
+     */
+    applicationCode?: string;
     clientId?: string;
     /**
      * Connection code (lowercase, alphanumeric, hyphens)
@@ -3874,6 +3911,14 @@ export type CreatedResponseWritable = {
     id: string;
 };
 
+export type DeliveryPlanWritable = {
+    body: string;
+    headers: {
+        [key: string]: string;
+    };
+    request: RequestSummary;
+};
+
 export type DeveloperUserListResponseWritable = {
     principals: Array<PrincipalResponseWritable>;
     total: number;
@@ -3897,6 +3942,7 @@ export type DispatchJobResponseWritable = {
     correlationId?: string;
     createdAt: string;
     dataOnly: boolean;
+    descriptor?: string;
     dispatchPoolId?: string;
     durationMillis?: number;
     eventId?: string;
@@ -4024,12 +4070,6 @@ export type FireNowResponseWritable = {
     id: string;
     instanceId: string;
     scheduledJobId: string;
-};
-
-export type GrantAccessRequestWritable = {
-    canWrite: boolean;
-    roleCode: string;
-    [key: string]: unknown | boolean | string;
 };
 
 export type GrantClientAccessRequestWritable = {
@@ -4260,6 +4300,7 @@ export type PrincipalResponseWritable = {
     name: string;
     roles: Array<string>;
     scope: string;
+    serviceAccountId?: string;
     twoFactorMethods?: Array<string>;
     type: string;
     updatedAt: string;
@@ -4489,6 +4530,7 @@ export type ServiceAccountResponseWritable = {
     id: string;
     lastUsedAt?: string;
     name: string;
+    oauthClientId?: string;
     principalId?: string;
     roles: Array<string>;
     scope?: string;
@@ -4590,6 +4632,12 @@ export type SuspendClientRequestWritable = {
     [key: string]: unknown | string;
 };
 
+export type SyncConnectionsRequestWritable = {
+    clientId?: string;
+    connections: Array<SyncConnectionInputRequest>;
+    [key: string]: unknown | string | Array<SyncConnectionInputRequest> | undefined;
+};
+
 export type SyncDispatchPoolsRequestWritable = {
     pools: Array<SyncDispatchPoolInputRequest>;
     [key: string]: unknown | Array<SyncDispatchPoolInputRequest>;
@@ -4670,8 +4718,9 @@ export type SyncScheduledJobsResultResponseWritable = {
 };
 
 export type SyncSubscriptionsRequestWritable = {
+    clientId?: string;
     subscriptions: Array<SyncSubscriptionInputRequest>;
-    [key: string]: unknown | Array<SyncSubscriptionInputRequest>;
+    [key: string]: unknown | string | Array<SyncSubscriptionInputRequest> | undefined;
 };
 
 export type SyncUsersRequestWritable = {
@@ -4726,6 +4775,7 @@ export type UpdateClientRequestWritable = {
 };
 
 export type UpdateConnectionRequestWritable = {
+    applicationCode?: string;
     description?: string;
     externalId?: string;
     name: string;
@@ -5109,6 +5159,41 @@ export type ListApplicationRolesResponses = {
 };
 
 export type ListApplicationRolesResponse = ListApplicationRolesResponses[keyof ListApplicationRolesResponses];
+
+export type SyncConnectionsData = {
+    body: SyncConnectionsRequestWritable;
+    path: {
+        /**
+         * Application code
+         */
+        appCode: string;
+    };
+    query?: {
+        /**
+         * Remove API/CODE connections not in the list
+         */
+        removeUnlisted?: boolean;
+    };
+    url: '/api/applications/{appCode}/connections/sync';
+};
+
+export type SyncConnectionsErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type SyncConnectionsError = SyncConnectionsErrors[keyof SyncConnectionsErrors];
+
+export type SyncConnectionsResponses = {
+    /**
+     * OK
+     */
+    200: SyncResultResponse;
+};
+
+export type SyncConnectionsResponse = SyncConnectionsResponses[keyof SyncConnectionsResponses];
 
 export type SyncDispatchPoolsData = {
     body: SyncDispatchPoolsRequestWritable;
@@ -6841,6 +6926,10 @@ export type ListDispatchJobsData = {
          * RFC3339 timestamp
          */
         until?: string;
+        /**
+         * Exact message group
+         */
+        messageGroup?: string;
         limit?: number;
         offset?: number;
         /**
@@ -6997,6 +7086,10 @@ export type ListDispatchJobsRawData = {
          * RFC3339 timestamp
          */
         until?: string;
+        /**
+         * Exact message group
+         */
+        messageGroup?: string;
         limit?: number;
         offset?: number;
         /**
@@ -7074,6 +7167,10 @@ export type ListDispatchJobsRawAliasData = {
          * RFC3339 timestamp
          */
         until?: string;
+        /**
+         * Exact message group
+         */
+        messageGroup?: string;
         limit?: number;
         offset?: number;
         /**
@@ -7293,6 +7390,33 @@ export type GetDispatchJobRawResponses = {
 };
 
 export type GetDispatchJobRawResponse = GetDispatchJobRawResponses[keyof GetDispatchJobRawResponses];
+
+export type SignDispatchJobData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/dispatch-jobs/{id}/sign';
+};
+
+export type SignDispatchJobErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type SignDispatchJobError = SignDispatchJobErrors[keyof SignDispatchJobErrors];
+
+export type SignDispatchJobResponses = {
+    /**
+     * OK
+     */
+    200: DeliveryPlan;
+};
+
+export type SignDispatchJobResponse = SignDispatchJobResponses[keyof SignDispatchJobResponses];
 
 export type ListDispatchPoolsData = {
     body?: never;
@@ -8910,33 +9034,6 @@ export type RotateOAuthClientSecretResponses = {
 
 export type RotateOAuthClientSecretResponse2 = RotateOAuthClientSecretResponses[keyof RotateOAuthClientSecretResponses];
 
-export type RevokePlatformConfigAccessData = {
-    body?: never;
-    path: {
-        id: string;
-    };
-    query?: never;
-    url: '/api/platform-config/access/{id}';
-};
-
-export type RevokePlatformConfigAccessErrors = {
-    /**
-     * Error
-     */
-    default: ErrorModel;
-};
-
-export type RevokePlatformConfigAccessError = RevokePlatformConfigAccessErrors[keyof RevokePlatformConfigAccessErrors];
-
-export type RevokePlatformConfigAccessResponses = {
-    /**
-     * No Content
-     */
-    204: void;
-};
-
-export type RevokePlatformConfigAccessResponse = RevokePlatformConfigAccessResponses[keyof RevokePlatformConfigAccessResponses];
-
 export type ListPlatformConfigPropertiesData = {
     body?: never;
     path: {
@@ -8963,60 +9060,6 @@ export type ListPlatformConfigPropertiesResponses = {
 };
 
 export type ListPlatformConfigPropertiesResponse = ListPlatformConfigPropertiesResponses[keyof ListPlatformConfigPropertiesResponses];
-
-export type ListPlatformConfigAccessData = {
-    body?: never;
-    path: {
-        app: string;
-    };
-    query?: never;
-    url: '/api/platform-config/{app}/access';
-};
-
-export type ListPlatformConfigAccessErrors = {
-    /**
-     * Error
-     */
-    default: ErrorModel;
-};
-
-export type ListPlatformConfigAccessError = ListPlatformConfigAccessErrors[keyof ListPlatformConfigAccessErrors];
-
-export type ListPlatformConfigAccessResponses = {
-    /**
-     * OK
-     */
-    200: AccessListResponse;
-};
-
-export type ListPlatformConfigAccessResponse = ListPlatformConfigAccessResponses[keyof ListPlatformConfigAccessResponses];
-
-export type GrantPlatformConfigAccessData = {
-    body: GrantAccessRequestWritable;
-    path: {
-        app: string;
-    };
-    query?: never;
-    url: '/api/platform-config/{app}/access';
-};
-
-export type GrantPlatformConfigAccessErrors = {
-    /**
-     * Error
-     */
-    default: ErrorModel;
-};
-
-export type GrantPlatformConfigAccessError = GrantPlatformConfigAccessErrors[keyof GrantPlatformConfigAccessErrors];
-
-export type GrantPlatformConfigAccessResponses = {
-    /**
-     * Created
-     */
-    201: CreatedResponse;
-};
-
-export type GrantPlatformConfigAccessResponse = GrantPlatformConfigAccessResponses[keyof GrantPlatformConfigAccessResponses];
 
 export type ListCorsOriginsData = {
     body?: never;

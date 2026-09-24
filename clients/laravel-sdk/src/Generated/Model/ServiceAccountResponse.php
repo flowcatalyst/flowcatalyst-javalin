@@ -61,6 +61,10 @@ class ServiceAccountResponse
     /**
      * @var string|null
      */
+    protected $oauthClientId;
+    /**
+     * @var string|null
+     */
     protected $principalId;
     /**
      * @var list<string>|null
@@ -274,6 +278,24 @@ class ServiceAccountResponse
     {
         $this->initialized['name'] = true;
         $this->name = $name;
+        return $this;
+    }
+    /**
+     * @return string|null
+     */
+    public function getOauthClientId(): ?string
+    {
+        return $this->oauthClientId;
+    }
+    /**
+     * @param string|null $oauthClientId
+     *
+     * @return self
+     */
+    public function setOauthClientId(?string $oauthClientId): self
+    {
+        $this->initialized['oauthClientId'] = true;
+        $this->oauthClientId = $oauthClientId;
         return $this;
     }
     /**

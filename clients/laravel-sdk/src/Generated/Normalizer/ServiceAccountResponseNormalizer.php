@@ -110,6 +110,12 @@ class ServiceAccountResponseNormalizer implements DenormalizerInterface, Normali
         elseif (\array_key_exists('name', $data) && $data['name'] === null) {
             $object->setName(null);
         }
+        if (\array_key_exists('oauthClientId', $data) && $data['oauthClientId'] !== null) {
+            $object->setOauthClientId($data['oauthClientId']);
+        }
+        elseif (\array_key_exists('oauthClientId', $data) && $data['oauthClientId'] === null) {
+            $object->setOauthClientId(null);
+        }
         if (\array_key_exists('principalId', $data) && $data['principalId'] !== null) {
             $object->setPrincipalId($data['principalId']);
         }
@@ -163,6 +169,9 @@ class ServiceAccountResponseNormalizer implements DenormalizerInterface, Normali
             $dataArray['lastUsedAt'] = $data->getLastUsedAt()->format('Y-m-d\TH:i:sP');
         }
         $dataArray['name'] = $data->getName();
+        if ($data->isInitialized('oauthClientId') && null !== $data->getOauthClientId()) {
+            $dataArray['oauthClientId'] = $data->getOauthClientId();
+        }
         if ($data->isInitialized('principalId') && null !== $data->getPrincipalId()) {
             $dataArray['principalId'] = $data->getPrincipalId();
         }

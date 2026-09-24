@@ -40,11 +40,20 @@ class SyncSubscriptionInputRequestNormalizer implements DenormalizerInterface, N
         if (\array_key_exists('dataOnly', $data) && \is_int($data['dataOnly'])) {
             $data['dataOnly'] = (bool) $data['dataOnly'];
         }
+        if (\array_key_exists('sharedConnection', $data) && \is_int($data['sharedConnection'])) {
+            $data['sharedConnection'] = (bool) $data['sharedConnection'];
+        }
         if (\array_key_exists('code', $data) && $data['code'] !== null) {
             $object->setCode($data['code']);
         }
         elseif (\array_key_exists('code', $data) && $data['code'] === null) {
             $object->setCode(null);
+        }
+        if (\array_key_exists('connectionCode', $data) && $data['connectionCode'] !== null) {
+            $object->setConnectionCode($data['connectionCode']);
+        }
+        elseif (\array_key_exists('connectionCode', $data) && $data['connectionCode'] === null) {
+            $object->setConnectionCode(null);
         }
         if (\array_key_exists('connectionId', $data) && $data['connectionId'] !== null) {
             $object->setConnectionId($data['connectionId']);
@@ -98,6 +107,12 @@ class SyncSubscriptionInputRequestNormalizer implements DenormalizerInterface, N
         elseif (\array_key_exists('name', $data) && $data['name'] === null) {
             $object->setName(null);
         }
+        if (\array_key_exists('sharedConnection', $data) && $data['sharedConnection'] !== null) {
+            $object->setSharedConnection($data['sharedConnection']);
+        }
+        elseif (\array_key_exists('sharedConnection', $data) && $data['sharedConnection'] === null) {
+            $object->setSharedConnection(null);
+        }
         if (\array_key_exists('target', $data) && $data['target'] !== null) {
             $object->setTarget($data['target']);
         }
@@ -116,6 +131,9 @@ class SyncSubscriptionInputRequestNormalizer implements DenormalizerInterface, N
     {
         $dataArray = [];
         $dataArray['code'] = $data->getCode();
+        if ($data->isInitialized('connectionCode') && null !== $data->getConnectionCode()) {
+            $dataArray['connectionCode'] = $data->getConnectionCode();
+        }
         if ($data->isInitialized('connectionId') && null !== $data->getConnectionId()) {
             $dataArray['connectionId'] = $data->getConnectionId();
         }
@@ -140,6 +158,9 @@ class SyncSubscriptionInputRequestNormalizer implements DenormalizerInterface, N
             $dataArray['mode'] = $data->getMode();
         }
         $dataArray['name'] = $data->getName();
+        if ($data->isInitialized('sharedConnection') && null !== $data->getSharedConnection()) {
+            $dataArray['sharedConnection'] = $data->getSharedConnection();
+        }
         $dataArray['target'] = $data->getTarget();
         if ($data->isInitialized('timeoutSeconds') && null !== $data->getTimeoutSeconds()) {
             $dataArray['timeoutSeconds'] = $data->getTimeoutSeconds();

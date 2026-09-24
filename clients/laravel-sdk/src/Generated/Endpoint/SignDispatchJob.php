@@ -2,24 +2,24 @@
 
 namespace FlowCatalyst\Generated\Endpoint;
 
-class ListPlatformConfigAccess extends \FlowCatalyst\Generated\Runtime\Client\BaseEndpoint implements \FlowCatalyst\Generated\Runtime\Client\Endpoint
+class SignDispatchJob extends \FlowCatalyst\Generated\Runtime\Client\BaseEndpoint implements \FlowCatalyst\Generated\Runtime\Client\Endpoint
 {
-    protected $app;
+    protected $id;
     /**
-     * @param string $app
+     * @param string $id
      */
-    public function __construct(string $app)
+    public function __construct(string $id)
     {
-        $this->app = $app;
+        $this->id = $id;
     }
     use \FlowCatalyst\Generated\Runtime\Client\EndpointTrait;
     public function getMethod(): string
     {
-        return 'GET';
+        return 'POST';
     }
     public function getUri(): string
     {
-        return str_replace(['{app}'], [$this->app], '/api/platform-config/{app}/access');
+        return str_replace(['{id}'], [$this->id], '/api/dispatch-jobs/{id}/sign');
     }
     public function getBody(\Symfony\Component\Serializer\SerializerInterface $serializer, $streamFactory = null): array
     {
@@ -33,14 +33,14 @@ class ListPlatformConfigAccess extends \FlowCatalyst\Generated\Runtime\Client\Ba
      * {@inheritdoc}
      *
      *
-     * @return null|\FlowCatalyst\Generated\Model\AccessListResponse|\FlowCatalyst\Generated\Model\ErrorModel
+     * @return null|\FlowCatalyst\Generated\Model\DeliveryPlan|\FlowCatalyst\Generated\Model\ErrorModel
      */
     protected function transformResponseBody(\Psr\Http\Message\ResponseInterface $response, \Symfony\Component\Serializer\SerializerInterface $serializer, ?string $contentType = null)
     {
         $status = $response->getStatusCode();
         $body = (string) $response->getBody();
         if (is_null($contentType) === false && (200 === $status && mb_strpos(strtolower($contentType), 'application/json') !== false)) {
-            return $serializer->deserialize($body, 'FlowCatalyst\Generated\Model\AccessListResponse', 'json');
+            return $serializer->deserialize($body, 'FlowCatalyst\Generated\Model\DeliveryPlan', 'json');
         }
         if (mb_strpos(strtolower($contentType), 'application/json') !== false) {
             return $serializer->deserialize($body, 'FlowCatalyst\Generated\Model\ErrorModel', 'json');

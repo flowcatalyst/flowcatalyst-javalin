@@ -2,7 +2,7 @@
 
 namespace FlowCatalyst\Generated\Model;
 
-class SyncSubscriptionsRequest extends \ArrayObject
+class DeliveryPlan
 {
     /**
      * @var array
@@ -21,11 +21,15 @@ class SyncSubscriptionsRequest extends \ArrayObject
     /**
      * @var string|null
      */
-    protected $clientId;
+    protected $body;
     /**
-     * @var list<SyncSubscriptionInputRequest>|null
+     * @var array<string, string>|null
      */
-    protected $subscriptions;
+    protected $headers;
+    /**
+     * @var RequestSummary|null
+     */
+    protected $request;
     /**
      * A URL to the JSON Schema for this object.
      *
@@ -51,37 +55,55 @@ class SyncSubscriptionsRequest extends \ArrayObject
     /**
      * @return string|null
      */
-    public function getClientId(): ?string
+    public function getBody(): ?string
     {
-        return $this->clientId;
+        return $this->body;
     }
     /**
-     * @param string|null $clientId
+     * @param string|null $body
      *
      * @return self
      */
-    public function setClientId(?string $clientId): self
+    public function setBody(?string $body): self
     {
-        $this->initialized['clientId'] = true;
-        $this->clientId = $clientId;
+        $this->initialized['body'] = true;
+        $this->body = $body;
         return $this;
     }
     /**
-     * @return list<SyncSubscriptionInputRequest>|null
+     * @return array<string, string>|null
      */
-    public function getSubscriptions(): ?array
+    public function getHeaders(): ?iterable
     {
-        return $this->subscriptions;
+        return $this->headers;
     }
     /**
-     * @param list<SyncSubscriptionInputRequest>|null $subscriptions
+     * @param array<string, string>|null $headers
      *
      * @return self
      */
-    public function setSubscriptions(?array $subscriptions): self
+    public function setHeaders(?iterable $headers): self
     {
-        $this->initialized['subscriptions'] = true;
-        $this->subscriptions = $subscriptions;
+        $this->initialized['headers'] = true;
+        $this->headers = $headers;
+        return $this;
+    }
+    /**
+     * @return RequestSummary|null
+     */
+    public function getRequest(): ?RequestSummary
+    {
+        return $this->request;
+    }
+    /**
+     * @param RequestSummary|null $request
+     *
+     * @return self
+     */
+    public function setRequest(?RequestSummary $request): self
+    {
+        $this->initialized['request'] = true;
+        $this->request = $request;
         return $this;
     }
 }

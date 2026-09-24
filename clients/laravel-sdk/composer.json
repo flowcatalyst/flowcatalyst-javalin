@@ -34,7 +34,7 @@
 	"require-dev": {
 		"orchestra/testbench": "^8.0|^9.0|^10.0|^11.0",
 		"phpunit/phpunit": "^10.0|^11.0|^12.0",
-		"jane-php/open-api-3": "^7.6"
+		"jane-php/open-api-3": "7.11.2"
 	},
 	"suggest": {
 		"doctrine/dbal": "Required for MySQL/PostgreSQL migrations"

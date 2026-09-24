@@ -98,6 +98,12 @@ class DispatchJobResponseNormalizer implements DenormalizerInterface, Normalizer
         elseif (\array_key_exists('dataOnly', $data) && $data['dataOnly'] === null) {
             $object->setDataOnly(null);
         }
+        if (\array_key_exists('descriptor', $data) && $data['descriptor'] !== null) {
+            $object->setDescriptor($data['descriptor']);
+        }
+        elseif (\array_key_exists('descriptor', $data) && $data['descriptor'] === null) {
+            $object->setDescriptor(null);
+        }
         if (\array_key_exists('dispatchPoolId', $data) && $data['dispatchPoolId'] !== null) {
             $object->setDispatchPoolId($data['dispatchPoolId']);
         }
@@ -301,6 +307,9 @@ class DispatchJobResponseNormalizer implements DenormalizerInterface, Normalizer
         }
         $dataArray['createdAt'] = $data->getCreatedAt()->format('Y-m-d\TH:i:sP');
         $dataArray['dataOnly'] = $data->getDataOnly();
+        if ($data->isInitialized('descriptor') && null !== $data->getDescriptor()) {
+            $dataArray['descriptor'] = $data->getDescriptor();
+        }
         if ($data->isInitialized('dispatchPoolId') && null !== $data->getDispatchPoolId()) {
             $dataArray['dispatchPoolId'] = $data->getDispatchPoolId();
         }

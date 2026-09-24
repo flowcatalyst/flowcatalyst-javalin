@@ -13,6 +13,7 @@ class ListDispatchJobsRaw extends \FlowCatalyst\Generated\Runtime\Client\BaseEnd
      *    "code"?: string,
      *    "since"?: string, //RFC3339 timestamp
      *    "until"?: string, //RFC3339 timestamp
+     *    "messageGroup"?: string, //Exact message group
      *    "limit"?: int,
      *    "offset"?: int,
      *    "size"?: int, //Max rows (default 50, max 1000)
@@ -50,7 +51,7 @@ class ListDispatchJobsRaw extends \FlowCatalyst\Generated\Runtime\Client\BaseEnd
     protected function getQueryOptionsResolver(): \Symfony\Component\OptionsResolver\OptionsResolver
     {
         $optionsResolver = parent::getQueryOptionsResolver();
-        $optionsResolver->setDefined(['status', 'clientId', 'dispatchPoolId', 'subscriptionId', 'code', 'since', 'until', 'limit', 'offset', 'size', 'clientIds', 'statuses', 'applications', 'subdomains', 'aggregates', 'codes', 'source', 'sort']);
+        $optionsResolver->setDefined(['status', 'clientId', 'dispatchPoolId', 'subscriptionId', 'code', 'since', 'until', 'messageGroup', 'limit', 'offset', 'size', 'clientIds', 'statuses', 'applications', 'subdomains', 'aggregates', 'codes', 'source', 'sort']);
         $optionsResolver->setRequired([]);
         $optionsResolver->setDefaults([]);
         $optionsResolver->addAllowedTypes('status', ['string']);
@@ -60,6 +61,7 @@ class ListDispatchJobsRaw extends \FlowCatalyst\Generated\Runtime\Client\BaseEnd
         $optionsResolver->addAllowedTypes('code', ['string']);
         $optionsResolver->addAllowedTypes('since', ['string']);
         $optionsResolver->addAllowedTypes('until', ['string']);
+        $optionsResolver->addAllowedTypes('messageGroup', ['string']);
         $optionsResolver->addAllowedTypes('limit', ['int']);
         $optionsResolver->addAllowedTypes('offset', ['int']);
         $optionsResolver->addAllowedTypes('size', ['int']);

@@ -17,6 +17,12 @@ class SyncSubscriptionInputRequest
      */
     protected $code;
     /**
+     * Connection code — stable across environments, unlike connectionId. By default resolves a connection owned by THIS application; set sharedConnection to resolve it among the shared (application-less) connections instead. Within either namespace, a client-scoped sync (clientId set) prefers its own client's connection, falling back to a global one; a client-less sync only resolves a global connection.
+     *
+     * @var string|null
+     */
+    protected $connectionCode;
+    /**
      * @var string|null
      */
     protected $connectionId;
@@ -49,6 +55,12 @@ class SyncSubscriptionInputRequest
      */
     protected $name;
     /**
+     * Resolve connectionCode among the shared (application-less) connections instead of this application's own. Requires connectionCode.
+     *
+     * @var bool|null
+     */
+    protected $sharedConnection;
+    /**
      * @var string|null
      */
     protected $target;
@@ -72,6 +84,28 @@ class SyncSubscriptionInputRequest
     {
         $this->initialized['code'] = true;
         $this->code = $code;
+        return $this;
+    }
+    /**
+     * Connection code — stable across environments, unlike connectionId. By default resolves a connection owned by THIS application; set sharedConnection to resolve it among the shared (application-less) connections instead. Within either namespace, a client-scoped sync (clientId set) prefers its own client's connection, falling back to a global one; a client-less sync only resolves a global connection.
+     *
+     * @return string|null
+     */
+    public function getConnectionCode(): ?string
+    {
+        return $this->connectionCode;
+    }
+    /**
+     * Connection code — stable across environments, unlike connectionId. By default resolves a connection owned by THIS application; set sharedConnection to resolve it among the shared (application-less) connections instead. Within either namespace, a client-scoped sync (clientId set) prefers its own client's connection, falling back to a global one; a client-less sync only resolves a global connection.
+     *
+     * @param string|null $connectionCode
+     *
+     * @return self
+     */
+    public function setConnectionCode(?string $connectionCode): self
+    {
+        $this->initialized['connectionCode'] = true;
+        $this->connectionCode = $connectionCode;
         return $this;
     }
     /**
@@ -216,6 +250,28 @@ class SyncSubscriptionInputRequest
     {
         $this->initialized['name'] = true;
         $this->name = $name;
+        return $this;
+    }
+    /**
+     * Resolve connectionCode among the shared (application-less) connections instead of this application's own. Requires connectionCode.
+     *
+     * @return bool|null
+     */
+    public function getSharedConnection(): ?bool
+    {
+        return $this->sharedConnection;
+    }
+    /**
+     * Resolve connectionCode among the shared (application-less) connections instead of this application's own. Requires connectionCode.
+     *
+     * @param bool|null $sharedConnection
+     *
+     * @return self
+     */
+    public function setSharedConnection(?bool $sharedConnection): self
+    {
+        $this->initialized['sharedConnection'] = true;
+        $this->sharedConnection = $sharedConnection;
         return $this;
     }
     /**

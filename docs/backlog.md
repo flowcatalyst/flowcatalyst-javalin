@@ -1793,11 +1793,13 @@ routes are gone; an invite sign-in writes a `USER_LOGIN` SUCCESS row.
 
 - **Drop `app_platform_config_access` after cutover.** Java no longer reads or writes it; kept only
   because Go shares the schema. One migration, once Go is off.
-- **The TS and Laravel SDK copies still carry the three withdrawn endpoints.** They were last
-  generated from Go's spec (`6b9e52b0`, Go `52993a0`), not Java's lockfile, so `make sdk-generate`
-  brings unrelated drift: `$schema` fields in the TS types, and every Laravel endpoint rewritten
-  because `clients/laravel-sdk/composer.lock` is untracked and the generator floats (a newer
-  jane-openapi emits `rawurlencode` / `stripos`). Owed as its own unit: commit the Laravel
-  lockfile (pin the generator), regenerate both from the Java lockfile, review the drift, and
-  decide the SDK version bump (`docs/sdk-release-plan.md`). The Java SDK's copy
-  (`sdk/openapi/openapi.json`) is already in step with the lockfile.
+- **SDKs regenerated from the Java lockfile (2026-09-24).** Both copies now match it: the three
+  access endpoints are gone and `syncConnections` / `signDispatchJob` plus several additive fields
+  (connections, dispatch jobs, service accounts) arrived — they had been generated from Go's spec.
+  The Laravel generator is pinned (`jane-php/open-api-3` `7.11.2` in `require-dev`; the untracked
+  `composer.lock` is right for a library, and the pin makes a fresh checkout reproduce the committed
+  code — a floating 7.x rewrites every endpoint). **Not released:** the owner picks the bump
+  (removing endpoints is breaking; on 0.x that is a minor: TS 0.11.27 → 0.12.0, Laravel 0.10.26 →
+  0.11.0) and runs `scripts/release.sh`. **Still owed:** the CI staleness check promised by
+  `docs/sdk-release-plan.md` §2.2 (`make sdk-generate` then `git diff --exit-code clients/`) was
+  never built.

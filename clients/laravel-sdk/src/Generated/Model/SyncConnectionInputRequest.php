@@ -2,7 +2,7 @@
 
 namespace FlowCatalyst\Generated\Model;
 
-class UpdateConnectionRequest extends \ArrayObject
+class SyncConnectionInputRequest
 {
     /**
      * @var array
@@ -13,15 +13,9 @@ class UpdateConnectionRequest extends \ArrayObject
         return array_key_exists($property, $this->initialized);
     }
     /**
-     * A URL to the JSON Schema for this object.
-     *
      * @var string|null
      */
-    protected $dollarSchema;
-    /**
-     * @var string|null
-     */
-    protected $applicationCode;
+    protected $code;
     /**
      * @var string|null
      */
@@ -35,47 +29,21 @@ class UpdateConnectionRequest extends \ArrayObject
      */
     protected $name;
     /**
-     * @var string|null
-     */
-    protected $status;
-    /**
-     * A URL to the JSON Schema for this object.
-     *
      * @return string|null
      */
-    public function getDollarSchema(): ?string
+    public function getCode(): ?string
     {
-        return $this->dollarSchema;
+        return $this->code;
     }
     /**
-     * A URL to the JSON Schema for this object.
-     *
-     * @param string|null $dollarSchema
+     * @param string|null $code
      *
      * @return self
      */
-    public function setDollarSchema(?string $dollarSchema): self
+    public function setCode(?string $code): self
     {
-        $this->initialized['dollarSchema'] = true;
-        $this->dollarSchema = $dollarSchema;
-        return $this;
-    }
-    /**
-     * @return string|null
-     */
-    public function getApplicationCode(): ?string
-    {
-        return $this->applicationCode;
-    }
-    /**
-     * @param string|null $applicationCode
-     *
-     * @return self
-     */
-    public function setApplicationCode(?string $applicationCode): self
-    {
-        $this->initialized['applicationCode'] = true;
-        $this->applicationCode = $applicationCode;
+        $this->initialized['code'] = true;
+        $this->code = $code;
         return $this;
     }
     /**
@@ -130,24 +98,6 @@ class UpdateConnectionRequest extends \ArrayObject
     {
         $this->initialized['name'] = true;
         $this->name = $name;
-        return $this;
-    }
-    /**
-     * @return string|null
-     */
-    public function getStatus(): ?string
-    {
-        return $this->status;
-    }
-    /**
-     * @param string|null $status
-     *
-     * @return self
-     */
-    public function setStatus(?string $status): self
-    {
-        $this->initialized['status'] = true;
-        $this->status = $status;
         return $this;
     }
 }

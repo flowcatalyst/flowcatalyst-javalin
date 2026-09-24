@@ -19,6 +19,12 @@ class CreateConnectionRequest extends \ArrayObject
      */
     protected $dollarSchema;
     /**
+     * Optional application this connection belongs to. Omitted means shared (usable from any application).
+     *
+     * @var string|null
+     */
+    protected $applicationCode;
+    /**
      * @var string|null
      */
     protected $clientId;
@@ -64,6 +70,28 @@ class CreateConnectionRequest extends \ArrayObject
     {
         $this->initialized['dollarSchema'] = true;
         $this->dollarSchema = $dollarSchema;
+        return $this;
+    }
+    /**
+     * Optional application this connection belongs to. Omitted means shared (usable from any application).
+     *
+     * @return string|null
+     */
+    public function getApplicationCode(): ?string
+    {
+        return $this->applicationCode;
+    }
+    /**
+     * Optional application this connection belongs to. Omitted means shared (usable from any application).
+     *
+     * @param string|null $applicationCode
+     *
+     * @return self
+     */
+    public function setApplicationCode(?string $applicationCode): self
+    {
+        $this->initialized['applicationCode'] = true;
+        $this->applicationCode = $applicationCode;
         return $this;
     }
     /**

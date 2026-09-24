@@ -89,6 +89,20 @@ class Client extends \FlowCatalyst\Generated\Runtime\Client\Client
     }
     /**
      * @param string $appCode Application code
+     * @param null|\FlowCatalyst\Generated\Model\SyncConnectionsRequest $requestBody
+     * @param array{
+     *    "removeUnlisted"?: bool, //Remove API/CODE connections not in the list
+     * } $queryParameters
+     * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
+     *
+     * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\SyncResultResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
+     */
+    public function syncConnections(string $appCode, ?\FlowCatalyst\Generated\Model\SyncConnectionsRequest $requestBody = null, array $queryParameters = [], string $fetch = self::FETCH_OBJECT)
+    {
+        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\SyncConnections($appCode, $requestBody, $queryParameters), $fetch);
+    }
+    /**
+     * @param string $appCode Application code
      * @param null|\FlowCatalyst\Generated\Model\SyncDispatchPoolsRequest $requestBody
      * @param array{
      *    "removeUnlisted"?: bool, //Archive pools not in the list
@@ -772,6 +786,7 @@ class Client extends \FlowCatalyst\Generated\Runtime\Client\Client
      *    "code"?: string,
      *    "since"?: string, //RFC3339 timestamp
      *    "until"?: string, //RFC3339 timestamp
+     *    "messageGroup"?: string, //Exact message group
      *    "limit"?: int,
      *    "offset"?: int,
      *    "size"?: int, //Max rows (default 50, max 1000)
@@ -830,6 +845,7 @@ class Client extends \FlowCatalyst\Generated\Runtime\Client\Client
      *    "code"?: string,
      *    "since"?: string, //RFC3339 timestamp
      *    "until"?: string, //RFC3339 timestamp
+     *    "messageGroup"?: string, //Exact message group
      *    "limit"?: int,
      *    "offset"?: int,
      *    "size"?: int, //Max rows (default 50, max 1000)
@@ -859,6 +875,7 @@ class Client extends \FlowCatalyst\Generated\Runtime\Client\Client
      *    "code"?: string,
      *    "since"?: string, //RFC3339 timestamp
      *    "until"?: string, //RFC3339 timestamp
+     *    "messageGroup"?: string, //Exact message group
      *    "limit"?: int,
      *    "offset"?: int,
      *    "size"?: int, //Max rows (default 50, max 1000)
@@ -938,6 +955,16 @@ class Client extends \FlowCatalyst\Generated\Runtime\Client\Client
     public function getDispatchJobRaw(string $id, string $fetch = self::FETCH_OBJECT)
     {
         return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\GetDispatchJobRaw($id), $fetch);
+    }
+    /**
+     * @param string $id
+     * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
+     *
+     * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\DeliveryPlan|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
+     */
+    public function signDispatchJob(string $id, string $fetch = self::FETCH_OBJECT)
+    {
+        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\SignDispatchJob($id), $fetch);
     }
     /**
      * @param array{
@@ -1565,16 +1592,6 @@ class Client extends \FlowCatalyst\Generated\Runtime\Client\Client
         return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\RotateOAuthClientSecret($id, $requestBody), $fetch);
     }
     /**
-     * @param string $id
-     * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
-     *
-     * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
-     */
-    public function revokePlatformConfigAccess(string $id, string $fetch = self::FETCH_OBJECT)
-    {
-        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\RevokePlatformConfigAccess($id), $fetch);
-    }
-    /**
      * @param string $app
      * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
      *
@@ -1583,27 +1600,6 @@ class Client extends \FlowCatalyst\Generated\Runtime\Client\Client
     public function listPlatformConfigProperties(string $app, string $fetch = self::FETCH_OBJECT)
     {
         return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\ListPlatformConfigProperties($app), $fetch);
-    }
-    /**
-     * @param string $app
-     * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
-     *
-     * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\AccessListResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
-     */
-    public function listPlatformConfigAccess(string $app, string $fetch = self::FETCH_OBJECT)
-    {
-        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\ListPlatformConfigAccess($app), $fetch);
-    }
-    /**
-     * @param string $app
-     * @param null|\FlowCatalyst\Generated\Model\GrantAccessRequest $requestBody
-     * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)
-     *
-     * @return ($fetch is 'object' ? null|\FlowCatalyst\Generated\Model\CreatedResponse|\FlowCatalyst\Generated\Model\ErrorModel : \Psr\Http\Message\ResponseInterface)
-     */
-    public function grantPlatformConfigAccess(string $app, ?\FlowCatalyst\Generated\Model\GrantAccessRequest $requestBody = null, string $fetch = self::FETCH_OBJECT)
-    {
-        return $this->executeEndpoint(new \FlowCatalyst\Generated\Endpoint\GrantPlatformConfigAccess($app, $requestBody), $fetch);
     }
     /**
      * @param string $fetch Fetch mode to use (can be OBJECT or RESPONSE)

@@ -43,6 +43,12 @@ class ConnectionResponseNormalizer implements DenormalizerInterface, NormalizerI
         elseif (\array_key_exists('$schema', $data) && $data['$schema'] === null) {
             $object->setDollarSchema(null);
         }
+        if (\array_key_exists('applicationCode', $data) && $data['applicationCode'] !== null) {
+            $object->setApplicationCode($data['applicationCode']);
+        }
+        elseif (\array_key_exists('applicationCode', $data) && $data['applicationCode'] === null) {
+            $object->setApplicationCode(null);
+        }
         if (\array_key_exists('clientId', $data) && $data['clientId'] !== null) {
             $object->setClientId($data['clientId']);
         }
@@ -97,6 +103,12 @@ class ConnectionResponseNormalizer implements DenormalizerInterface, NormalizerI
         elseif (\array_key_exists('serviceAccountId', $data) && $data['serviceAccountId'] === null) {
             $object->setServiceAccountId(null);
         }
+        if (\array_key_exists('source', $data) && $data['source'] !== null) {
+            $object->setSource($data['source']);
+        }
+        elseif (\array_key_exists('source', $data) && $data['source'] === null) {
+            $object->setSource(null);
+        }
         if (\array_key_exists('status', $data) && $data['status'] !== null) {
             $object->setStatus($data['status']);
         }
@@ -114,6 +126,9 @@ class ConnectionResponseNormalizer implements DenormalizerInterface, NormalizerI
     public function normalize(mixed $data, ?string $format = null, array $context = []): array|string|int|float|bool|\ArrayObject|null
     {
         $dataArray = [];
+        if ($data->isInitialized('applicationCode') && null !== $data->getApplicationCode()) {
+            $dataArray['applicationCode'] = $data->getApplicationCode();
+        }
         if ($data->isInitialized('clientId') && null !== $data->getClientId()) {
             $dataArray['clientId'] = $data->getClientId();
         }
@@ -131,6 +146,7 @@ class ConnectionResponseNormalizer implements DenormalizerInterface, NormalizerI
         $dataArray['id'] = $data->getId();
         $dataArray['name'] = $data->getName();
         $dataArray['serviceAccountId'] = $data->getServiceAccountId();
+        $dataArray['source'] = $data->getSource();
         $dataArray['status'] = $data->getStatus();
         $dataArray['updatedAt'] = $data->getUpdatedAt()->format('Y-m-d\TH:i:sP');
         return $dataArray;

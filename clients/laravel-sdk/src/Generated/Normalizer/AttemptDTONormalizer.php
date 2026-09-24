@@ -76,6 +76,12 @@ class AttemptDTONormalizer implements DenormalizerInterface, NormalizerInterface
         elseif (\array_key_exists('errorType', $data) && $data['errorType'] === null) {
             $object->setErrorType(null);
         }
+        if (\array_key_exists('request', $data) && $data['request'] !== null) {
+            $object->setRequest($this->denormalizer->denormalize($data['request'], \FlowCatalyst\Generated\Model\RequestSummary::class, 'json', $context));
+        }
+        elseif (\array_key_exists('request', $data) && $data['request'] === null) {
+            $object->setRequest(null);
+        }
         if (\array_key_exists('responseBody', $data) && $data['responseBody'] !== null) {
             $object->setResponseBody($data['responseBody']);
         }
@@ -112,6 +118,9 @@ class AttemptDTONormalizer implements DenormalizerInterface, NormalizerInterface
         }
         if ($data->isInitialized('errorType') && null !== $data->getErrorType()) {
             $dataArray['errorType'] = $data->getErrorType();
+        }
+        if ($data->isInitialized('request') && null !== $data->getRequest()) {
+            $dataArray['request'] = $this->normalizer->normalize($data->getRequest(), 'json', $context);
         }
         if ($data->isInitialized('responseBody') && null !== $data->getResponseBody()) {
             $dataArray['responseBody'] = $data->getResponseBody();

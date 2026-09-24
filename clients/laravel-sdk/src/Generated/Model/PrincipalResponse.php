@@ -75,6 +75,10 @@ class PrincipalResponse
      */
     protected $scope;
     /**
+     * @var string|null
+     */
+    protected $serviceAccountId;
+    /**
      * @var list<string>|null
      */
     protected $twoFactorMethods;
@@ -358,6 +362,24 @@ class PrincipalResponse
     {
         $this->initialized['scope'] = true;
         $this->scope = $scope;
+        return $this;
+    }
+    /**
+     * @return string|null
+     */
+    public function getServiceAccountId(): ?string
+    {
+        return $this->serviceAccountId;
+    }
+    /**
+     * @param string|null $serviceAccountId
+     *
+     * @return self
+     */
+    public function setServiceAccountId(?string $serviceAccountId): self
+    {
+        $this->initialized['serviceAccountId'] = true;
+        $this->serviceAccountId = $serviceAccountId;
         return $this;
     }
     /**

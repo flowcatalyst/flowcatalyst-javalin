@@ -11,7 +11,7 @@ use Symfony\Component\Serializer\Normalizer\DenormalizerInterface;
 use Symfony\Component\Serializer\Normalizer\NormalizerAwareInterface;
 use Symfony\Component\Serializer\Normalizer\NormalizerAwareTrait;
 use Symfony\Component\Serializer\Normalizer\NormalizerInterface;
-class GrantAccessRequestNormalizer implements DenormalizerInterface, NormalizerInterface, DenormalizerAwareInterface, NormalizerAwareInterface
+class SyncConnectionsRequestNormalizer implements DenormalizerInterface, NormalizerInterface, DenormalizerAwareInterface, NormalizerAwareInterface
 {
     use DenormalizerAwareTrait;
     use NormalizerAwareTrait;
@@ -19,15 +19,15 @@ class GrantAccessRequestNormalizer implements DenormalizerInterface, NormalizerI
     use ValidatorTrait;
     public function supportsDenormalization(mixed $data, string $type, ?string $format = null, array $context = []): bool
     {
-        return $type === \FlowCatalyst\Generated\Model\GrantAccessRequest::class;
+        return $type === \FlowCatalyst\Generated\Model\SyncConnectionsRequest::class;
     }
     public function supportsNormalization(mixed $data, ?string $format = null, array $context = []): bool
     {
-        return is_object($data) && get_class($data) === \FlowCatalyst\Generated\Model\GrantAccessRequest::class;
+        return is_object($data) && get_class($data) === \FlowCatalyst\Generated\Model\SyncConnectionsRequest::class;
     }
     public function denormalize(mixed $data, string $type, ?string $format = null, array $context = []): mixed
     {
-        $object = new \FlowCatalyst\Generated\Model\GrantAccessRequest();
+        $object = new \FlowCatalyst\Generated\Model\SyncConnectionsRequest();
         if (null === $data || false === \is_array($data)) {
             return $object;
         }
@@ -37,9 +37,6 @@ class GrantAccessRequestNormalizer implements DenormalizerInterface, NormalizerI
         if (isset($data['$recursiveRef'])) {
             return new Reference($data['$recursiveRef'], $context['document-origin']);
         }
-        if (\array_key_exists('canWrite', $data) && \is_int($data['canWrite'])) {
-            $data['canWrite'] = (bool) $data['canWrite'];
-        }
         if (\array_key_exists('$schema', $data) && $data['$schema'] !== null) {
             $object->setDollarSchema($data['$schema']);
             unset($data['$schema']);
@@ -47,23 +44,27 @@ class GrantAccessRequestNormalizer implements DenormalizerInterface, NormalizerI
         elseif (\array_key_exists('$schema', $data) && $data['$schema'] === null) {
             $object->setDollarSchema(null);
         }
-        if (\array_key_exists('canWrite', $data) && $data['canWrite'] !== null) {
-            $object->setCanWrite($data['canWrite']);
-            unset($data['canWrite']);
+        if (\array_key_exists('clientId', $data) && $data['clientId'] !== null) {
+            $object->setClientId($data['clientId']);
+            unset($data['clientId']);
         }
-        elseif (\array_key_exists('canWrite', $data) && $data['canWrite'] === null) {
-            $object->setCanWrite(null);
+        elseif (\array_key_exists('clientId', $data) && $data['clientId'] === null) {
+            $object->setClientId(null);
         }
-        if (\array_key_exists('roleCode', $data) && $data['roleCode'] !== null) {
-            $object->setRoleCode($data['roleCode']);
-            unset($data['roleCode']);
+        if (\array_key_exists('connections', $data) && $data['connections'] !== null) {
+            $values = [];
+            foreach ($data['connections'] as $value) {
+                $values[] = $this->denormalizer->denormalize($value, \FlowCatalyst\Generated\Model\SyncConnectionInputRequest::class, 'json', $context);
+            }
+            $object->setConnections($values);
+            unset($data['connections']);
         }
-        elseif (\array_key_exists('roleCode', $data) && $data['roleCode'] === null) {
-            $object->setRoleCode(null);
+        elseif (\array_key_exists('connections', $data) && $data['connections'] === null) {
+            $object->setConnections(null);
         }
-        foreach ($data as $key => $value) {
+        foreach ($data as $key => $value_1) {
             if (preg_match('/.*/', (string) $key)) {
-                $object[$key] = $value;
+                $object[$key] = $value_1;
             }
         }
         return $object;
@@ -71,17 +72,23 @@ class GrantAccessRequestNormalizer implements DenormalizerInterface, NormalizerI
     public function normalize(mixed $data, ?string $format = null, array $context = []): array|string|int|float|bool|\ArrayObject|null
     {
         $dataArray = [];
-        $dataArray['canWrite'] = $data->getCanWrite();
-        $dataArray['roleCode'] = $data->getRoleCode();
-        foreach ($data as $key => $value) {
+        if ($data->isInitialized('clientId') && null !== $data->getClientId()) {
+            $dataArray['clientId'] = $data->getClientId();
+        }
+        $values = [];
+        foreach ($data->getConnections() as $value) {
+            $values[] = $this->normalizer->normalize($value, 'json', $context);
+        }
+        $dataArray['connections'] = $values;
+        foreach ($data as $key => $value_1) {
             if (preg_match('/.*/', (string) $key)) {
-                $dataArray[$key] = $value;
+                $dataArray[$key] = $value_1;
             }
         }
         return $dataArray;
     }
     public function getSupportedTypes(?string $format = null): array
     {
-        return [\FlowCatalyst\Generated\Model\GrantAccessRequest::class => false];
+        return [\FlowCatalyst\Generated\Model\SyncConnectionsRequest::class => false];
     }
 }

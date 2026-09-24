@@ -2,7 +2,7 @@
 
 namespace FlowCatalyst\Generated\Model;
 
-class GrantAccessRequest extends \ArrayObject
+class SyncConnectionsRequest extends \ArrayObject
 {
     /**
      * @var array
@@ -19,13 +19,13 @@ class GrantAccessRequest extends \ArrayObject
      */
     protected $dollarSchema;
     /**
-     * @var bool|null
-     */
-    protected $canWrite;
-    /**
      * @var string|null
      */
-    protected $roleCode;
+    protected $clientId;
+    /**
+     * @var list<SyncConnectionInputRequest>|null
+     */
+    protected $connections;
     /**
      * A URL to the JSON Schema for this object.
      *
@@ -49,39 +49,39 @@ class GrantAccessRequest extends \ArrayObject
         return $this;
     }
     /**
-     * @return bool|null
+     * @return string|null
      */
-    public function getCanWrite(): ?bool
+    public function getClientId(): ?string
     {
-        return $this->canWrite;
+        return $this->clientId;
     }
     /**
-     * @param bool|null $canWrite
+     * @param string|null $clientId
      *
      * @return self
      */
-    public function setCanWrite(?bool $canWrite): self
+    public function setClientId(?string $clientId): self
     {
-        $this->initialized['canWrite'] = true;
-        $this->canWrite = $canWrite;
+        $this->initialized['clientId'] = true;
+        $this->clientId = $clientId;
         return $this;
     }
     /**
-     * @return string|null
+     * @return list<SyncConnectionInputRequest>|null
      */
-    public function getRoleCode(): ?string
+    public function getConnections(): ?array
     {
-        return $this->roleCode;
+        return $this->connections;
     }
     /**
-     * @param string|null $roleCode
+     * @param list<SyncConnectionInputRequest>|null $connections
      *
      * @return self
      */
-    public function setRoleCode(?string $roleCode): self
+    public function setConnections(?array $connections): self
     {
-        $this->initialized['roleCode'] = true;
-        $this->roleCode = $roleCode;
+        $this->initialized['connections'] = true;
+        $this->connections = $connections;
         return $this;
     }
 }

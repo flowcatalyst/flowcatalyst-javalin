@@ -44,6 +44,13 @@ class SyncSubscriptionsRequestNormalizer implements DenormalizerInterface, Norma
         elseif (\array_key_exists('$schema', $data) && $data['$schema'] === null) {
             $object->setDollarSchema(null);
         }
+        if (\array_key_exists('clientId', $data) && $data['clientId'] !== null) {
+            $object->setClientId($data['clientId']);
+            unset($data['clientId']);
+        }
+        elseif (\array_key_exists('clientId', $data) && $data['clientId'] === null) {
+            $object->setClientId(null);
+        }
         if (\array_key_exists('subscriptions', $data) && $data['subscriptions'] !== null) {
             $values = [];
             foreach ($data['subscriptions'] as $value) {
@@ -65,6 +72,9 @@ class SyncSubscriptionsRequestNormalizer implements DenormalizerInterface, Norma
     public function normalize(mixed $data, ?string $format = null, array $context = []): array|string|int|float|bool|\ArrayObject|null
     {
         $dataArray = [];
+        if ($data->isInitialized('clientId') && null !== $data->getClientId()) {
+            $dataArray['clientId'] = $data->getClientId();
+        }
         $values = [];
         foreach ($data->getSubscriptions() as $value) {
             $values[] = $this->normalizer->normalize($value, 'json', $context);

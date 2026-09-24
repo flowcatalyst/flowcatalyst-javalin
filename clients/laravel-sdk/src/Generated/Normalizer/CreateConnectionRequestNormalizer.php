@@ -44,6 +44,13 @@ class CreateConnectionRequestNormalizer implements DenormalizerInterface, Normal
         elseif (\array_key_exists('$schema', $data) && $data['$schema'] === null) {
             $object->setDollarSchema(null);
         }
+        if (\array_key_exists('applicationCode', $data) && $data['applicationCode'] !== null) {
+            $object->setApplicationCode($data['applicationCode']);
+            unset($data['applicationCode']);
+        }
+        elseif (\array_key_exists('applicationCode', $data) && $data['applicationCode'] === null) {
+            $object->setApplicationCode(null);
+        }
         if (\array_key_exists('clientId', $data) && $data['clientId'] !== null) {
             $object->setClientId($data['clientId']);
             unset($data['clientId']);
@@ -96,6 +103,9 @@ class CreateConnectionRequestNormalizer implements DenormalizerInterface, Normal
     public function normalize(mixed $data, ?string $format = null, array $context = []): array|string|int|float|bool|\ArrayObject|null
     {
         $dataArray = [];
+        if ($data->isInitialized('applicationCode') && null !== $data->getApplicationCode()) {
+            $dataArray['applicationCode'] = $data->getApplicationCode();
+        }
         if ($data->isInitialized('clientId') && null !== $data->getClientId()) {
             $dataArray['clientId'] = $data->getClientId();
         }
