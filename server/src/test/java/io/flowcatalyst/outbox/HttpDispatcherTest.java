@@ -270,7 +270,8 @@ class HttpDispatcherTest {
         var outcomes = dispatcher(failingSource, null).send(OutboxItemType.EVENT, List.of(item("a", "{}")));
 
         assertThat(outcomes).containsExactly(
-                new HttpDispatcher.ItemOutcome.Failure(OutboxStatus.GATEWAY_ERROR, "auth: token endpoint down"));
+                new HttpDispatcher.ItemOutcome.Failure(OutboxStatus.GATEWAY_ERROR,
+                        "auth: IllegalStateException: token endpoint down"));
         assertThat(calls).as("never reached the HTTP server").hasValue(0);
     }
 
