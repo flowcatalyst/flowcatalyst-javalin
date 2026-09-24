@@ -1800,6 +1800,5 @@ routes are gone; an invite sign-in writes a `USER_LOGIN` SUCCESS row.
   `composer.lock` is right for a library, and the pin makes a fresh checkout reproduce the committed
   code — a floating 7.x rewrites every endpoint). **Not released:** the owner picks the bump
   (removing endpoints is breaking; on 0.x that is a minor: TS 0.11.27 → 0.12.0, Laravel 0.10.26 →
-  0.11.0) and runs `scripts/release.sh`. **Still owed:** the CI staleness check promised by
-  `docs/sdk-release-plan.md` §2.2 (`make sdk-generate` then `git diff --exit-code clients/`) was
-  never built.
+  0.11.0) and runs `scripts/release.sh`. The CI staleness check promised by `docs/sdk-release-plan.md` §2.2 is now the `sdks`
+  job in `ci.yml` (first run on GitHub unobserved — watch it after the push).
