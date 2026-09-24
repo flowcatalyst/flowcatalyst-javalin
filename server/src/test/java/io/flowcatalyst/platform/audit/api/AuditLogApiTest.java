@@ -217,6 +217,24 @@ class AuditLogApiTest {
 
     // ── Get by id ──────────────────────────────────────────────────────────
 
+    /// A row stored before source-side redaction (or by an SDK that predates it)
+    /// is served redacted whether or not the sweep has run. Mutant: serve the
+    /// stored JSON as is.
+    @Test
+    void aLegacyRowWithASecretIsServedRedactedOnEveryReadRoute() {
+        String entity = entityId();
+        // its own aggregate, so the row counts other tests assert are untouched
+        String id = seed(aggregate("legacy"), entity, principal, BASE.minusSeconds(40), new OtherCommand("legacy"));
+        AuditLogFixture.DB.execute("update aud_logs set operation_json = ?::jsonb where id = ?",
+                "{\"note\":\"legacy\",\"clientSecret\":\"hunter2\"}", id);
+
+        var one = ok(http.get("/api/audit-logs/" + id, ANCHOR)).get("operationJson").asText();
+        assertThat(one).doesNotContain("hunter2").contains("\"clientSecret\":\"***\"");
+        var listed = ok(http.get("/api/audit-logs?entityType=" + entityType("legacy") + "&entityId=" + entity, ANCHOR))
+                .get("auditLogs").get(0).get("operationJson").asText();
+        assertThat(listed).doesNotContain("hunter2");
+    }
+
     @Test
     void getByIdAnswersTheEntryOrTheNotFoundEnvelope() {
         var get = ok(http.get("/api/audit-logs/" + idsNewestFirst.get(1), ANCHOR));

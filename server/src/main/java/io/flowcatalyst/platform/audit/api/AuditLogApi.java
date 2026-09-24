@@ -2,6 +2,7 @@ package io.flowcatalyst.platform.audit.api;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import io.flowcatalyst.platform.audit.AuditLog;
+import io.flowcatalyst.platform.audit.StoredAuditRedaction;
 import io.flowcatalyst.platform.audit.AuditLogRepository;
 import io.flowcatalyst.platform.audit.AuditLogRepository.CursorFilter;
 import io.flowcatalyst.platform.audit.AuditLogRepository.Facet;
@@ -165,9 +166,13 @@ public final class AuditLogApi {
             String clientId,
             Instant performedAt) {
 
+        /// Redacted on read ([StoredAuditRedaction]): a row stored before
+        /// source-side redaction, or sent by an SDK that predates it, is never
+        /// served with its secret — whether or not the sweep has run.
         public static AuditLogResponse from(AuditLog a) {
             return new AuditLogResponse(a.id(), a.entityType(), a.entityId(), a.operation(),
-                    a.operationJson() == null ? null : Json.write(a.operationJson()),
+                    a.operationJson() == null ? null
+                            : Json.write(StoredAuditRedaction.redact(a.operation(), a.operationJson())),
                     a.principalId(), a.principalName(), a.applicationId(), a.clientId(), a.performedAt());
         }
     }
