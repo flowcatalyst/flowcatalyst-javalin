@@ -75,6 +75,24 @@ public final class ServiceAccountRepository implements Persist<ServiceAccount> {
         return findOne(T.ID.eq(id));
     }
 
+    /// The account `id` names — its own `sac_…` id, **or the id of the service
+    /// principal linked to it**. `app_applications.service_account_id` holds
+    /// the principal's id (`application.md` §1.1), and a connection an
+    /// application's sync writes copies it (`code-first-connections.md` §3,
+    /// Go does the same), so a stored "service account id" can be either kind.
+    /// Every place that resolves a stored reference into the account that signs
+    /// — the delivery signer and the signing-reach check alike — must use this,
+    /// or the two disagree (a reference one reads as dangling, the other signs).
+    public Optional<ServiceAccount> findByIdOrServicePrincipalId(String id) {
+        Optional<ServiceAccount> direct = findById(id);
+        if (direct.isPresent() || id == null) {
+            return direct;
+        }
+        return dsl.select(P.SERVICE_ACCOUNT_ID).from(P).where(P.ID.eq(id)).and(P.SERVICE_ACCOUNT_ID.isNotNull())
+                .fetchOptional(P.SERVICE_ACCOUNT_ID)
+                .flatMap(this::findById);
+    }
+
     public Optional<ServiceAccount> findByCode(String code) {
         return findOne(T.CODE.eq(code));
     }

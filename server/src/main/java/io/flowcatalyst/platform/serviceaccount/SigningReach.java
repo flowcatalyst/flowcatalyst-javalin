@@ -119,7 +119,9 @@ public final class SigningReach {
 
     public static SigningReach of(ServiceAccountRepository accounts, PrincipalRepository principals,
                                   ApplicationRepository applications) {
-        return new SigningReach(accounts::findById,
+        // The same resolution the delivery signer uses — a reference this reads as
+        // dangling must never be one the signer signs with.
+        return new SigningReach(accounts::findByIdOrServicePrincipalId,
                 principalId -> principals.findById(principalId).map(Principal::serviceAccountId),
                 code -> applications.findByCode(code).map(Application::id));
     }

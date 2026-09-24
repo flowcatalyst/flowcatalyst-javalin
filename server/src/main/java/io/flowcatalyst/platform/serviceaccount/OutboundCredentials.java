@@ -97,7 +97,9 @@ public record OutboundCredentials(String token, String signingSecret, String rea
     /// generic and the caller (`DeliveryCredentials#named`) builds the final
     /// reason.
     public static ById resolveById(ServiceAccountRepository serviceAccounts, String serviceAccountId) {
-        var found = serviceAccounts.findById(serviceAccountId);
+        // Either id kind: a sync-written connection stores the application's service
+        // PRINCIPAL id ([ServiceAccountRepository#findByIdOrServicePrincipalId]).
+        var found = serviceAccounts.findByIdOrServicePrincipalId(serviceAccountId);
         if (found.isEmpty()) {
             return new ById.Missing();
         }
