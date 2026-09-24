@@ -1,5 +1,7 @@
 package io.flowcatalyst.router.pool;
 
+import io.flowcatalyst.platform.shared.Failures;
+import io.flowcatalyst.platform.shared.LogThrottle;
 import io.flowcatalyst.router.observability.Warnings;
 
 import io.flowcatalyst.router.policy.BreakerRegistry;
@@ -8,6 +10,9 @@ import io.flowcatalyst.router.wire.MediationOutcome;
 import io.flowcatalyst.router.wire.MediationType;
 import io.flowcatalyst.router.wire.Message;
 import io.flowcatalyst.router.wire.WebhookSigner;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.URI;
@@ -30,6 +35,10 @@ import java.util.Optional;
 /// `RetryPolicy` and is applied by [Pool]. What stays here is the mapping
 /// from a response to an outcome, and the circuit breaker.
 public final class HttpMediator implements Mediator {
+
+    private static final Logger LOG = LoggerFactory.getLogger(HttpMediator.class);
+    /// Per mediator: one stack trace per interval from the request-building catch below.
+    private final LogThrottle buildFailureLog = new LogThrottle(Duration.ofSeconds(10));
 
     /// Per-request budget in production (spec constant 22). Long because a
     /// target legitimately doing slow work should not be abandoned; the
@@ -128,7 +137,15 @@ public final class HttpMediator implements Mediator {
         try {
             headers = buildHeaders(message, body);
         } catch (RuntimeException e) {
-            return MediationOutcome.ErrorConfig.undeliverable(0, "could not build request: " + e.getMessage());
+            // Terminal for this message, so the operator needs the stack trace — a bug here
+            // discards messages (throttled: it can fire on every one).
+            buildFailureLog.admit().ifPresent(suppressed -> LOG.atError()
+                    .setMessage("could not build the delivery request; the message is undeliverable")
+                    .addKeyValue("message_id", message.id())
+                    .addKeyValue("suppressed_since_last", suppressed)
+                    .setCause(e)
+                    .log());
+            return MediationOutcome.ErrorConfig.undeliverable(0, "could not build request: " + Failures.describe(e));
         }
         try {
             var response = transport.send(target, body, headers, requestTimeout);
@@ -144,7 +161,7 @@ public final class HttpMediator implements Mediator {
             // DNS, refused, TLS, reset — we never learned anything about the
             // message, so this is unavailability.
             return new MediationOutcome.ErrorConnection(SERVER_ERROR_DELAY_SECONDS,
-                    "request failed: " + e.getMessage());
+                    "request failed: " + Failures.describe(e));
         }
     }
 

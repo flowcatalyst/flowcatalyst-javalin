@@ -1,5 +1,6 @@
 package io.flowcatalyst.outbox;
 
+import io.flowcatalyst.platform.shared.Failures;
 import io.flowcatalyst.platform.shared.json.Json;
 import tools.jackson.core.JacksonException;
 
@@ -106,7 +107,7 @@ public final class HttpDispatcher {
         try {
             response = client.send(request, HttpResponse.BodyHandlers.ofString());
         } catch (IOException e) {
-            return sameFailureForAll(items.size(), OutboxStatus.GATEWAY_ERROR, "request: " + e.getMessage());
+            return sameFailureForAll(items.size(), OutboxStatus.GATEWAY_ERROR, "request: " + Failures.describe(e));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return sameFailureForAll(items.size(), OutboxStatus.GATEWAY_ERROR, "request: interrupted");

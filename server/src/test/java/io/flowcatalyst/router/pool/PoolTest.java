@@ -209,11 +209,24 @@ class PoolTest {
         // process down, but the message must still survive it.
         mediator.throwOnce("m1", new IllegalStateException("kaboom"));
         mediator.answer("m1", MediationOutcome.Success.of(200));
+        Logger poolLog = (Logger) LoggerFactory.getLogger(Pool.class);
+        var appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        poolLog.addAppender(appender);
+        try {
+            pool(4, 0).submit(immediate("m1"));
 
-        pool(4, 0).submit(immediate("m1"));
-
-        await(() -> broker.acked.contains("m1"));
-        assertThat(mediator.attempts("m1")).isEqualTo(2);
+            await(() -> broker.acked.contains("m1"));
+            assertThat(mediator.attempts("m1")).isEqualTo(2);
+            // The retry hides the bug from everything but the log: the stack trace must be there.
+            assertThat(appender.list).anySatisfy(e -> {
+                assertThat(e.getLevel()).isEqualTo(Level.ERROR);
+                assertThat(e.getThrowableProxy()).isNotNull();
+                assertThat(e.getThrowableProxy().getMessage()).isEqualTo("kaboom");
+            });
+        } finally {
+            poolLog.detachAppender(appender);
+        }
     }
 
     // ── Backpressure and lifecycle ──────────────────────────────────────

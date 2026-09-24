@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.scheduler.jobs;
 
+import io.flowcatalyst.platform.shared.Failures;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJob;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstance;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstanceRepository;
@@ -126,7 +127,8 @@ public final class JobDispatcher {
                     .timeout(timeout)
                     .header("Content-Type", "application/json");
         } catch (RuntimeException e) {
-            fail(instance.id(), instance.jobCode(), "Network/HTTP error: " + e.getMessage(), attemptsAfter,
+            // The job's own target URL does not parse — configuration, not the network.
+            fail(instance.id(), instance.jobCode(), "invalid target URL: " + Failures.describe(e), attemptsAfter,
                     job.deliveryMaxAttempts(), false, 0);
             return;
         }
@@ -139,7 +141,7 @@ public final class JobDispatcher {
         try {
             response = client.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
         } catch (IOException e) {
-            fail(instance.id(), instance.jobCode(), "Network/HTTP error: " + e.getMessage(), attemptsAfter,
+            fail(instance.id(), instance.jobCode(), "Network/HTTP error: " + Failures.describe(e), attemptsAfter,
                     job.deliveryMaxAttempts(), signed, 0);
             return;
         } catch (InterruptedException e) {

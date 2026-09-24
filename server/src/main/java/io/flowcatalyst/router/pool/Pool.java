@@ -14,6 +14,8 @@ import io.flowcatalyst.router.wire.MediationOutcome;
 import io.flowcatalyst.router.concurrent.Concurrently;
 import io.flowcatalyst.router.observability.jfr.DispatchEvent;
 import io.flowcatalyst.router.observability.jfr.GroupDecisionEvent;
+import io.flowcatalyst.platform.shared.Failures;
+import io.flowcatalyst.platform.shared.LogThrottle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -137,6 +139,8 @@ public final class Pool implements AutoCloseable {
     }
 
     private final Config config;
+    /// One stack trace per interval when the mediator throws (it can on every message).
+    private final LogThrottle unexpectedFailureLog = new LogThrottle(Duration.ofSeconds(10));
     private final Backoffs backoffs;
     private final Mediator mediator;
     private final Broker broker;
@@ -832,8 +836,17 @@ public final class Pool implements AutoCloseable {
             // scaffolding: an unexpected failure is a retry, not a lost
             // message. Reported as unavailability because we cannot claim the
             // target rejected anything.
+            // A mediator that throws is a bug, and the retry would hide it: the stack
+            // trace goes to the log (throttled — it can fire on every message).
+            unexpectedFailureLog.admit().ifPresent(suppressed -> log.atError()
+                    .setMessage("mediator threw; the message is retried")
+                    .addKeyValue("pool", config.code())
+                    .addKeyValue("message_id", message.id())
+                    .addKeyValue("suppressed_since_last", suppressed)
+                    .setCause(e)
+                    .log());
             return failed(event, message, new MediationOutcome.ErrorConnection(
-                    (int) UNEXPECTED_FAILURE_DELAY.toSeconds(), "unexpected failure: " + e));
+                    (int) UNEXPECTED_FAILURE_DELAY.toSeconds(), "unexpected failure: " + Failures.describe(e)));
         } finally {
             event.end();
             mediating.remove(worker);

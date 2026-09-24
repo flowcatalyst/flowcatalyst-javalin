@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.dispatchjob.processing;
 
+import io.flowcatalyst.platform.shared.Failures;
 import io.flowcatalyst.platform.dispatchjob.Attempt;
 import io.flowcatalyst.platform.dispatchjob.AttemptErrorType;
 import io.flowcatalyst.platform.dispatchjob.DispatchJob;
@@ -140,7 +141,7 @@ public final class SubscriberDelivery {
             // DNS, refused, TLS, reset — nothing was learned about the
             // message, so this is unavailability, not a rejection.
             return withRequestInfo(new DeliveryResult.Failed(AttemptErrorType.CONNECTION, null,
-                    "request failed: " + e.getMessage(), null, null), built.info());
+                    "request failed: " + Failures.describe(e), null, null), built.info());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return withRequestInfo(new DeliveryResult.Failed(AttemptErrorType.CONNECTION, null, "interrupted", null, null),

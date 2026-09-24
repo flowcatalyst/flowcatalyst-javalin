@@ -1,5 +1,6 @@
 package io.flowcatalyst.mcp;
 
+import io.flowcatalyst.platform.shared.Failures;
 import io.flowcatalyst.http.oauth.TokenManager;
 import io.flowcatalyst.platform.shared.json.Json;
 import tools.jackson.core.JacksonException;
@@ -98,7 +99,7 @@ public final class PlatformClient {
         try {
             response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
         } catch (IOException e) {
-            throw new PlatformException(0, "request failed: " + e.getMessage(), e);
+            throw new PlatformException(0, "request failed: " + Failures.describe(e), e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new PlatformException(0, "request interrupted", e);
