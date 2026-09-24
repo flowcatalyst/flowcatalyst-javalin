@@ -124,11 +124,15 @@ discarded (it is `parseStrict`'s editor hint, M1 §2, never part of the wire sha
 on export.
 
 **Validate** (`functionsApi.checkManifest`, M2.2) sends the live model plus a typed alias
-(default `live`) and renders: an invalid manifest's errors (code + message; an `ENDPOINT_*` code
-is additionally shown under the Endpoints section, next to the field an author would go fix), or
-a valid manifest's promote plan, rendered by `manifestPlanText.ts#renderPlanLines` — line-for-line
-the same `+`/`~`/`-`/`!` format as `fcdev fn validate` (`ValidateCommand.java#printText`; the two
-are kept in lockstep by hand, there is no shared source).
+(default `live`) and renders: an invalid manifest's errors (code + message; every error's
+`details.pointer`, spec `manifest-all-errors.md`, attaches it to the form field the pointer names —
+`/endpoints/1/auth` under endpoint 1's Auth field — falling back to its section (a whole-array
+pointer, or a pre-pointer response with no `details.pointer` at all, matched by the old
+code-prefix rule), then to the flat error list, which always shows every error regardless), or a
+valid manifest's promote plan, rendered by `manifestPlanText.ts#renderPlanLines` — line-for-line
+the same `+`/`~`/`-`/`!` format as `fcdev fn validate` (`ValidateCommand.java#printText`, which
+also now prints each error as `code pointer: message`; the two are kept in lockstep by hand, there
+is no shared source).
 
 **Export** (`manifestModel.ts#exportManifest`) downloads `manifest.json`: `"$schema"` first
 (pointing at `GET /api/schemas/function-manifest.json` on the SPA's own origin), then every field
@@ -190,6 +194,7 @@ never crash the list (this exact case took the platform down once; `function-api
 | U10 | (M4) `manifestPlanText.ts#renderPlanLines` renders create/update/delete/settings-missing/no-changes lines in `ValidateCommand.java`'s exact `+`/`~`/`-`/`!` format, both as a pure function and as rendered by the drawer's Validate result | swap a line's prefix; render a plan generically instead of via `renderPlanLines` |
 | U11 | the manifest editor: a form edit re-serialises the JSON view; a valid JSON edit updates the form; an invalid JSON edit leaves the form on the last valid model (disabled, with a warning) rather than corrupting it | drop the form→JSON sync; apply an unparseable document to the model anyway |
 | U12 | Validate sends the drawer's **current** (live-edited) model, not a snapshot taken at mount, and a server `ENDPOINT_*` error is additionally rendered under the Endpoints section next to the flat error list | send a captured copy from mount; always render zero endpoint-section errors |
+| U13 | (`manifest-all-errors.md` §3) An error's `details.pointer` attaches it under the exact field the pointer names (`/endpoints/1/auth` → endpoint 1's Auth field), not just the section; a pointer that names no rendered field still appears in the flat error list | attach every error to its section regardless of pointer, so a field-level pointer never reaches its field |
 | U13 | "Publish with this manifest" opens the publish drawer with the **exact current edited model** (not the manifest the editor started from); the publish drawer's own `initialManifest` prop pre-fills its manifest text so publish can proceed without re-choosing a manifest file | pass the original `initialManifest` prop through unedited; ignore the prop in the publish drawer |
 | E1 | **e2e** (`e2e/tests/functions.spec.ts`, Playwright, against the Java platform as the others run): as the bootstrap admin, claim `hello.localhost`, publish the sample jar (`examples/function-hello`, built by the flow's setup or a checked-in fixture jar) with its manifest through the SPA, watch the version reach `READY` (the in-process fcdev host reports it), promote, and assert the Hosts panel shows `LOADED` and the Public routes tab shows `hello.localhost` verified | — (integration pin) |
 | E2 | step 12 of E1: edit the live version as new, remove its subscription, Validate shows `- subscription … (delete)`, publish from the editor, promote, Validate again shows `no changes` (removal, not addition: adding needs a second seeded event type) | the dry run and promote disagreeing — the re-validate is not empty |

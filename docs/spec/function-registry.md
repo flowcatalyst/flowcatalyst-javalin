@@ -240,6 +240,13 @@ The repository turns a pattern into column equalities (§6.1), never a `LIKE`.
   optional position*; it throws `IllegalStateException` naming the version only when `runtime` or
   `entrypoint` is unreadable. `fn_versions.manifest` is a foreign shape (CONVENTIONS §8).
 
+`Manifest.check(...)` (spec `manifest-all-errors.md`) is the actual publish-reader parser: it walks
+the whole document and returns every independent problem it finds (each with an RFC 6901 JSON
+Pointer to where it is), or the parsed manifest when there were none — `parseStrict` is now a thin
+wrapper that throws the first problem in document order, so publish's own contract (first error,
+400) is unchanged. `manifest/check` and `fn validate` use `check` directly to show an author every
+mistake in one round trip.
+
 Both read a Jackson tree from `Json.MAPPER`; no second mapper, no annotations-driven binding for the
 strict path (unknown-key rejection is per level and must name the key). `toJson()` writes the shape
 of §4.1 with `Json.MAPPER`; `readStored(parseStrict(x).toJson())` round-trips to an equal record.

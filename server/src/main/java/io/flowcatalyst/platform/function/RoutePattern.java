@@ -68,6 +68,22 @@ public record RoutePattern(String value, List<Segment> segments) implements Comp
         }
     }
 
+    /// The message [#parse] throws on any malformed input, exposed so
+    /// [Manifest]'s collecting parser can reuse it via [#tryParse] without
+    /// catching this class's exception (`CONVENTIONS.md` §8).
+    public static final String INVALID_MESSAGE =
+            "route path must start with '/' and contain only literal, {param} or trailing '*' segments";
+
+    /// Non-throwing companion of [#parse]: empty on any malformed input,
+    /// never throws.
+    public static Optional<RoutePattern> tryParse(String raw) {
+        try {
+            return Optional.of(parse(raw));
+        } catch (UseCaseException e) {
+            return Optional.empty();
+        }
+    }
+
     /// @throws UseCaseException validation `ROUTE_PATTERN_INVALID`
     public static RoutePattern parse(String raw) {
         if (raw == null || raw.isEmpty() || raw.charAt(0) != '/') throw invalid();
@@ -233,7 +249,6 @@ public record RoutePattern(String value, List<Segment> segments) implements Comp
     }
 
     private static UseCaseException invalid() {
-        return UseCaseException.validation("ROUTE_PATTERN_INVALID",
-                "route path must start with '/' and contain only literal, {param} or trailing '*' segments");
+        return UseCaseException.validation("ROUTE_PATTERN_INVALID", INVALID_MESSAGE);
     }
 }

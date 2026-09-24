@@ -37,6 +37,15 @@ public record SettingKey(String value) {
         return value != null && PATTERN.matcher(value).matches();
     }
 
+    /// The message [#parse] throws for an invalid key, exposed so a caller
+    /// that enforces the same rule under its own error code
+    /// (`Manifest`'s `CONFIG_INVALID`/`DB_INVALID`) can reuse the exact text
+    /// after its own [#isValid] check, without catching this class's
+    /// exception (`CONVENTIONS.md` §8).
+    public static String invalidMessage(String value) {
+        return "'" + value + "' is not a valid setting key: expected " + PATTERN.pattern();
+    }
+
     /// @throws UseCaseException validation `SETTING_KEY_INVALID`
     public static SettingKey parse(String value) {
         return new SettingKey(value);

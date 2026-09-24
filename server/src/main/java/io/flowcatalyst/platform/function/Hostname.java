@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 
 /// A route's public hostname (spec `function-registry.md` §5.1): lower-cased
 /// (DNS is case-insensitive, and `fn_domains`/`fn_routes` check `hostname =
@@ -20,6 +21,22 @@ public record Hostname(String value) {
 
     public Hostname {
         Objects.requireNonNull(value, "value");
+    }
+
+    /// The message [#invalid] throws, exposed so [Manifest]'s collecting
+    /// parser can reuse it via [#tryParse] without catching this class's
+    /// exception (`CONVENTIONS.md` §8).
+    public static final String INVALID_MESSAGE = "hostname must be a lower-cased DNS name of at least two labels, "
+            + "with no trailing dot, wildcard, port or IP literal";
+
+    /// Non-throwing companion of [#parse]: empty on any malformed input,
+    /// never throws.
+    public static Optional<Hostname> tryParse(String raw) {
+        try {
+            return Optional.of(parse(raw));
+        } catch (UseCaseException e) {
+            return Optional.empty();
+        }
     }
 
     /// @throws UseCaseException validation `HOSTNAME_INVALID`
@@ -67,7 +84,6 @@ public record Hostname(String value) {
     }
 
     private static UseCaseException invalid() {
-        return UseCaseException.validation("HOSTNAME_INVALID",
-                "hostname must be a lower-cased DNS name of at least two labels, with no trailing dot, wildcard, port or IP literal");
+        return UseCaseException.validation("HOSTNAME_INVALID", INVALID_MESSAGE);
     }
 }

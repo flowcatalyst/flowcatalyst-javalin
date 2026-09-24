@@ -279,6 +279,61 @@ describe("ManifestEditorDrawer", () => {
 		expect(errorsBox.text()).toContain("ENDPOINT_AUTH_REQUIRED");
 	});
 
+	// Pins: an error whose details.pointer names a specific field
+	// ("/endpoints/1/auth") renders under THAT field, not endpoint 0's and not
+	// just the section-level message; an error whose pointer names nothing the
+	// form renders falls back to the flat error list (spec
+	// `manifest-all-errors.md` §3, §4 test 5). Mutant tried: attach every
+	// error to the endpoints section message regardless of pointer -> endpoint
+	// 1's auth field's own error slot stays empty and this test fails
+	// (confirmed).
+	it("a pointer-carrying error renders under its named field; an unmatched pointer falls back to the error list", async () => {
+		const response: CheckManifestResponse = {
+			valid: false,
+			errors: [
+				{
+					code: "ENDPOINT_AUTH_REQUIRED",
+					message: "endpoints[1].auth is required",
+					details: { pointer: "/endpoints/1/auth" },
+				},
+				{
+					code: "SOME_UNMAPPED_CODE",
+					message: "nothing here maps to a field",
+					details: { pointer: "/nope/not/a/real/field" },
+				},
+			],
+		};
+		mocks.checkManifest.mockResolvedValue(response);
+
+		const wrapper = await mountDrawer({
+			runtime: "jvm",
+			entrypoint: "com.example.fn.Handler",
+			endpoints: [
+				{ path: "/first", auth: "platform" },
+				{ path: "/second", auth: "platform" },
+			],
+		});
+		await wrapper.get('[data-testid="manifest-validate-button"]').trigger("click");
+		await flushPromises();
+
+		const rows = wrapper.findAll('[data-testid="endpoint-row"]');
+		expect(rows).toHaveLength(2);
+		expect(rows[0].find(".fc-field-error").exists()).toBe(false);
+		const secondRowError = rows[1].find(".fc-field-error");
+		expect(secondRowError.exists()).toBe(true);
+		expect(secondRowError.text()).toContain("endpoints[1].auth is required");
+
+		// The pointer-matched error must not ALSO duplicate into the
+		// section-level ("endpoints-section-error") slot.
+		expect(wrapper.find('[data-testid="endpoints-section-error"]').exists()).toBe(false);
+
+		// The unmapped-pointer error never gets a field/section/row slot — it
+		// only ever surfaces in the flat list.
+		const errorsBox = wrapper.get('[data-testid="manifest-errors"]');
+		expect(errorsBox.text()).toContain("SOME_UNMAPPED_CODE");
+		expect(errorsBox.text()).toContain("nothing here maps to a field");
+	});
+
 	// Pins: a valid response's plan is rendered using the SAME text form as
 	// `fn validate` (not just "some JSON dump") — specifically that a
 	// `delete` action produces a `-` line. Mutant tried: render plan actions

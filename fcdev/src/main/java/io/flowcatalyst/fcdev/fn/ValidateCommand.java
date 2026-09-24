@@ -70,8 +70,10 @@ public final class ValidateCommand implements Callable<Integer> {
     private void printText(JsonNode response, boolean valid) {
         PrintWriter out = spec.commandLine().getOut();
         if (!valid) {
+            // spec `manifest-all-errors.md` §3: every problem, one per line, "code pointer: message".
             for (JsonNode error : response.path("errors")) {
-                out.printf("error: %s: %s%n", error.path("code").asString(), error.path("message").asString());
+                String pointer = error.path("details").path("pointer").asString("");
+                out.printf("%s %s: %s%n", error.path("code").asString(), pointer, error.path("message").asString());
             }
             return;
         }

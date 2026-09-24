@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.function;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 
 import java.util.Locale;
+import java.util.Optional;
 
 /// How **the host** authenticates a call before it reaches the function
 /// (spec `function-invocation.md` §3). Replaces package A's `AuthMode`
@@ -40,16 +41,27 @@ public enum EndpointAuth {
     /// [Manifest]'s `ENDPOINT_AUTH_REQUIRED`, never this method's concern —
     /// callers only reach this once a value is known to be present.
     ///
-    /// @throws UseCaseException validation `ENDPOINT_INVALID`
-    public static EndpointAuth parseStrict(String raw) {
+    /// The message [#parseStrict] throws on an unrecognised value, exposed
+    /// so [Manifest]'s collecting parser can reuse it via [#tryParseStrict]
+    /// without catching this class's exception (`CONVENTIONS.md` §8).
+    public static final String INVALID_MESSAGE = "auth must be webhook, platform or none";
+
+    /// Non-throwing companion of [#parseStrict]: empty on any unrecognised
+    /// value, never throws.
+    public static Optional<EndpointAuth> tryParseStrict(String raw) {
         String lower = raw == null ? "" : raw.toLowerCase(Locale.ROOT);
         return switch (lower) {
-            case "webhook" -> WEBHOOK;
-            case "platform" -> PLATFORM;
-            case "none" -> NONE;
-            default -> throw UseCaseException.validation("ENDPOINT_INVALID",
-                    "auth must be webhook, platform or none");
+            case "webhook" -> Optional.of(WEBHOOK);
+            case "platform" -> Optional.of(PLATFORM);
+            case "none" -> Optional.of(NONE);
+            default -> Optional.empty();
         };
+    }
+
+    /// @throws UseCaseException validation `ENDPOINT_INVALID`
+    public static EndpointAuth parseStrict(String raw) {
+        return tryParseStrict(raw)
+                .orElseThrow(() -> UseCaseException.validation("ENDPOINT_INVALID", INVALID_MESSAGE));
     }
 
     /// The lower-case spelling used in the manifest's own JSON shape.

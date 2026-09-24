@@ -2,6 +2,7 @@ package io.flowcatalyst.platform.function;
 
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.sdk.result.Result;
 import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import org.junit.jupiter.api.Test;
@@ -9,6 +10,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import tools.jackson.databind.JsonNode;
 
+import java.util.List;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -668,6 +670,19 @@ class ManifestTest {
         assertCode(() -> parseJvm(json), "SCHEDULE_DUPLICATE");
     }
 
+    /// The duplicate key joins cron and timezone with NUL, which neither can contain. A cron holds
+    /// spaces, so a space-joined key makes these two distinct schedules collide.
+    @Test
+    void cronAndTimezoneThatJoinToTheSameSpacedStringAreNotDuplicates() {
+        String json = """
+                {"runtime":"jvm","entrypoint":"x","endpoints":[{"path":"/jobs/*","auth":"webhook"}],
+                 "schedules":[
+                    {"cron":"0 12 * * *","timezone":"X Y","path":"/jobs/a"},
+                    {"cron":"0 12 * * * X","timezone":"Y","path":"/jobs/b"}]}
+                """;
+        assertThat(parseJvm(json).schedules()).hasSize(2);
+    }
+
     @Test
     void scheduleSameCronDifferentTimezoneIsNotADuplicate() {
         String json = """
@@ -946,6 +961,291 @@ class ManifestTest {
                 """;
         Manifest manifest = Manifest.readStored(readTree(json));
         assertThat(manifest.subscriptions()).isEmpty();
+    }
+
+    // ── check — every independent problem (spec `manifest-all-errors.md` §4 tests 1–2) ───
+
+    /// One (input, expected first-problem code) pair reused from the cases
+    /// above, driven through [Manifest#check] instead of the throwing
+    /// [Manifest#parseStrict]: spec §4 test 1, "for every invalid-manifest
+    /// case already in ManifestTest (each has one mistake), check returns
+    /// exactly one problem, whose code and message equal what parseStrict
+    /// throws." `runtime`/`ceilings` let a handful of cases exercise the
+    /// WASM entrypoint rule and a tightened ceiling, the same as their
+    /// throwing counterparts above.
+    private record InvalidCase(String json, Runtime runtime, ClientCeilings ceilings, String expectedCode) {
+        static InvalidCase of(String json, String expectedCode) {
+            return new InvalidCase(json, Runtime.JVM, UNRESTRICTED, expectedCode);
+        }
+
+        static InvalidCase wasm(String json, String expectedCode) {
+            return new InvalidCase(json, Runtime.WASM, UNRESTRICTED, expectedCode);
+        }
+
+        static InvalidCase of(String json, ClientCeilings ceilings, String expectedCode) {
+            return new InvalidCase(json, Runtime.JVM, ceilings, expectedCode);
+        }
+    }
+
+    private static final ClientCeilings TIGHT_CEILINGS = new ClientCeilings(30_000, 10, 64, 4);
+
+    static Stream<InvalidCase> everyInvalidCase() {
+        return Stream.of(
+                // — root / unknown keys —
+                InvalidCase.of("[]", "MANIFEST_REQUIRED"),
+                InvalidCase.of("null", "MANIFEST_REQUIRED"),
+                InvalidCase.of("\"x\"", "MANIFEST_REQUIRED"),
+                InvalidCase.of("""
+                        {"runtime":"jvm","entrypoint":"x","bogus":1,
+                         "endpoints":[{"path":"/a","auth":"none"}]}
+                        """, "MANIFEST_UNKNOWN_FIELD"),
+                InvalidCase.of("""
+                        {"runtime":"jvm","entrypoint":"x","limits":{"maxConcurency":1},
+                         "endpoints":[{"path":"/a","auth":"none"}]}
+                        """, "MANIFEST_UNKNOWN_FIELD"),
+                // NOTE: unlike manifestUnknownFieldDeeplyNestedInEndpoint above, "path" is
+                // present here — {"pth":"/a"} alone would ALSO be missing "path", a second,
+                // genuinely independent mistake, not the one this table's precondition wants.
+                InvalidCase.of(
+                        "{\"runtime\":\"jvm\",\"entrypoint\":\"x\",\"endpoints\":[{\"path\":\"/a\",\"auth\":\"none\",\"pth\":\"oops\"}]}",
+                        "MANIFEST_UNKNOWN_FIELD"),
+                InvalidCase.of(withWebhookAndSubscription("\"eventType\":\"a:b:c\",\"path\":\"/events/a\",\"bogus\":1"),
+                        "MANIFEST_UNKNOWN_FIELD"),
+                InvalidCase.of("{\"runtime\":\"jvm\",\"entrypoint\":\"x\",\"warm\":\"yes\"}", "MANIFEST_INVALID"),
+
+                // — runtime / entrypoint / pool —
+                InvalidCase.of("{\"entrypoint\":\"x\"}", "RUNTIME_INVALID"),
+                InvalidCase.of("{\"runtime\":\"dotnet\",\"entrypoint\":\"x\"}", "RUNTIME_INVALID"),
+                InvalidCase.of("{\"runtime\":\"wasm\",\"entrypoint\":\"handle\"}", "RUNTIME_MISMATCH"),
+                InvalidCase.of("{\"runtime\":\"jvm\"}", "ENTRYPOINT_REQUIRED"),
+                InvalidCase.of("{\"runtime\":\"jvm\",\"entrypoint\":\"  \"}", "ENTRYPOINT_REQUIRED"),
+                InvalidCase.of("{\"runtime\":\"jvm\",\"entrypoint\":\"123bad\"}", "ENTRYPOINT_INVALID"),
+                InvalidCase.wasm("{\"runtime\":\"wasm\",\"entrypoint\":\"not a name\"}", "ENTRYPOINT_INVALID"),
+                InvalidCase.of("{\"runtime\":\"jvm\",\"entrypoint\":\"x\",\"pool\":\"Bad Pool\"}", "POOL_INVALID"),
+
+                // — limits —
+                InvalidCase.of(withLimits("\"maxDurationMs\": 0"), "LIMIT_INVALID"),
+                InvalidCase.of(withLimits("\"maxDurationMs\": 5000000000"), "LIMIT_INVALID"),
+                InvalidCase.of(withLimits("\"maxConcurrency\": 20"), TIGHT_CEILINGS, "LIMIT_OVER_CEILING"),
+                InvalidCase.of(withLimits("\"wasmMemoryMb\": 64"), "LIMIT_NOT_APPLICABLE"),
+
+                // — endpoints —
+                InvalidCase.of(withEndpoint("\"path\":\"/a\""), "ENDPOINT_AUTH_REQUIRED"),
+                InvalidCase.of(withEndpoint("\"path\":\"/a\",\"auth\":\"bearer\""), "ENDPOINT_INVALID"),
+                InvalidCase.of(withEndpoint("\"path\":\"not-a-path\",\"auth\":\"none\""), "ENDPOINT_INVALID"),
+                InvalidCase.of(withEndpoint("\"path\":\"/a\",\"auth\":\"none\",\"methods\":[]"), "ENDPOINT_INVALID"),
+                InvalidCase.of(withEndpoint("\"path\":\"/a\",\"auth\":\"none\",\"methods\":[\"TRACE\"]"),
+                        "ENDPOINT_INVALID"),
+                InvalidCase.of(withEndpoint("\"path\":\"/a\",\"auth\":\"none\",\"methods\":[\"GET\",\"get\"]"),
+                        "ENDPOINT_INVALID"),
+                InvalidCase.of(withEndpoint("\"path\":\"/a\",\"auth\":\"none\",\"maxBodyBytes\":0"),
+                        "ENDPOINT_INVALID"),
+                InvalidCase.of(withEndpoint("\"path\":\"/a\",\"auth\":\"none\",\"timeoutMs\":-5"),
+                        "ENDPOINT_INVALID"),
+                InvalidCase.of(withEndpoint("\"path\":\"/a\",\"auth\":\"none\",\"cors\":{\"origins\":[\"  \"]}"),
+                        "ENDPOINT_INVALID"),
+                InvalidCase.of(withEndpoint("\"path\":\"/a\",\"auth\":\"none\","
+                        + "\"cors\":{\"origins\":[\"*\"],\"allowCredentials\":true}"), "ENDPOINT_INVALID"),
+                InvalidCase.of(withEndpoint("\"path\":\"/a\",\"auth\":\"webhook\",\"methods\":[\"GET\"]"),
+                        "ENDPOINT_INVALID"),
+
+                // — route ambiguity —
+                InvalidCase.of("""
+                        {"runtime":"jvm","entrypoint":"x","endpoints":[
+                            {"path":"/a/{x}","auth":"none"},
+                            {"path":"/a/{y}","auth":"none"}
+                        ]}""", "ROUTE_AMBIGUOUS"),
+
+                // — subscriptions / schedules —
+                InvalidCase.of("""
+                        {"runtime":"jvm","entrypoint":"x",
+                         "endpoints":[{"path":"/events/invoice-created","auth":"platform"}],
+                         "subscriptions":[{"eventType":"a:b:c","path":"/events/invoice-created"}]}
+                        """, "SUBSCRIPTION_PATH_NOT_WEBHOOK"),
+                InvalidCase.of("""
+                        {"runtime":"jvm","entrypoint":"x",
+                         "endpoints":[{"path":"/events/*","auth":"webhook"},{"path":"/events/special","auth":"platform"}],
+                         "subscriptions":[{"eventType":"a:b:c","path":"/events/special"}]}
+                        """, "SUBSCRIPTION_PATH_NOT_WEBHOOK"),
+                InvalidCase.of("""
+                        {"runtime":"jvm","entrypoint":"x",
+                         "endpoints":[{"path":"/jobs/invoice-created","auth":"platform"}],
+                         "schedules":[{"cron":"* * * * *","path":"/jobs/invoice-created"}]}
+                        """, "SCHEDULE_PATH_NOT_WEBHOOK"),
+                InvalidCase.of("""
+                        {"runtime":"jvm","entrypoint":"x","endpoints":[{"path":"/events/*","auth":"webhook"}],
+                         "subscriptions":[{"eventType":"a:b:c","path":"/events/{id}"}]}
+                        """, "SUBSCRIPTION_INVALID"),
+                InvalidCase.of(withWebhookAndSubscription("\"path\":\"/events/a\""), "SUBSCRIPTION_INVALID"),
+                InvalidCase.of(withWebhookAndSubscription(
+                        "\"eventType\":\"a:b:c\",\"path\":\"/events/a\",\"mode\":\"immediate\""),
+                        "SUBSCRIPTION_INVALID"),
+                InvalidCase.of("""
+                        {"runtime":"jvm","entrypoint":"x","endpoints":[{"path":"/events/*","auth":"webhook"}],
+                         "subscriptions":[
+                            {"eventType":"a:b:c","path":"/events/a"},
+                            {"eventType":"a:b:c","path":"/events/a"}]}
+                        """, "SUBSCRIPTION_DUPLICATE"),
+                InvalidCase.of("""
+                        {"runtime":"jvm","entrypoint":"x","endpoints":[{"path":"/jobs/*","auth":"webhook"}],
+                         "schedules":[{"path":"/jobs/hourly"}]}
+                        """, "SCHEDULE_INVALID"),
+                InvalidCase.of("""
+                        {"runtime":"jvm","entrypoint":"x","endpoints":[{"path":"/jobs/*","auth":"webhook"}],
+                         "schedules":[
+                            {"cron":"0 * * * *","timezone":"UTC","path":"/jobs/hourly"},
+                            {"cron":"0 * * * *","timezone":"UTC","path":"/jobs/hourly"}]}
+                        """, "SCHEDULE_DUPLICATE"),
+
+                // — public routes —
+                InvalidCase.of(withPublic("\"hostname\":\"not a hostname\""), "PUBLIC_ROUTE_INVALID"),
+                InvalidCase.of(withPublic("\"hostname\":\"api.acme.com\",\"pathPrefix\":\"/a/{id}\""),
+                        "PUBLIC_ROUTE_INVALID"),
+                InvalidCase.of(withPublic("\"hostname\":\"api.acme.com\",\"aliasPrefixes\":[\"live\"]"),
+                        "PUBLIC_ROUTE_INVALID"),
+                InvalidCase.of(withPublic("\"hostname\":\"api.acme.com\",\"aliasPrefixes\":[\"qa\",\"qa\"]"),
+                        "PUBLIC_ROUTE_INVALID"),
+                InvalidCase.of("""
+                        {"runtime":"jvm","entrypoint":"x","public":[
+                            {"hostname":"api.acme.com","pathPrefix":"/a"},
+                            {"hostname":"api.acme.com","pathPrefix":"/a"}]}
+                        """, "PUBLIC_ROUTE_DUPLICATE"),
+
+                // — db / config / secrets —
+                InvalidCase.of(withDb("{\"name\":\"Bad Name\",\"secretRef\":\"s\"}"), "DB_INVALID"),
+                InvalidCase.of(withDb("{\"name\":\"main\",\"secretRef\":\"  \"}"), "DB_INVALID"),
+                InvalidCase.of(withDb(
+                        "{\"name\":\"main\",\"secretRef\":\"a\"},{\"name\":\"main\",\"secretRef\":\"b\"}"),
+                        "DB_INVALID"),
+                InvalidCase.of(withDb("{\"name\":\"main\",\"secretRef\":\"1bad\"}"), "DB_INVALID"),
+                InvalidCase.of(withConfig("\"  \""), "CONFIG_INVALID"),
+                InvalidCase.of(withConfig("\"A\", \"A\""), "CONFIG_INVALID"),
+                InvalidCase.of("{\"runtime\":\"jvm\",\"entrypoint\":\"x\",\"config\":{}}", "CONFIG_INVALID"),
+                InvalidCase.of(withConfig("\"1BAD\""), "CONFIG_INVALID"));
+    }
+
+    /// Spec §4 test 1 (load-bearing): for every case above (one mistake
+    /// each), `check` returns exactly ONE problem, and it is the same
+    /// code/message `parseStrict` throws.
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("everyInvalidCase")
+    void checkReturnsExactlyOneProblemEqualToWhatParseStrictThrows(InvalidCase c) {
+        JsonNode root = readTree(c.json());
+
+        UseCaseException thrown = null;
+        try {
+            Manifest.parseStrict(root, c.runtime(), DEFAULTS, c.ceilings());
+        } catch (UseCaseException e) {
+            thrown = e;
+        }
+        assertThat(thrown).as("parseStrict must throw for: " + c.json()).isNotNull();
+        assertThat(thrown.code()).as("the table's expected code must match what parseStrict actually throws")
+                .isEqualTo(c.expectedCode());
+
+        Result<Manifest, Manifest.ManifestRejected> result =
+                Manifest.check(root, c.runtime(), DEFAULTS, c.ceilings());
+        assertThat(result).as("check must reject the same input").isInstanceOf(Result.Err.class);
+        Manifest.ManifestRejected rejected = ((Result.Err<Manifest, Manifest.ManifestRejected>) result).error();
+        assertThat(rejected.problems()).as("no cascades: exactly one problem per single mistake").hasSize(1);
+        assertThat(rejected.problems().get(0).code()).isEqualTo(thrown.code());
+        assertThat(rejected.problems().get(0).message()).isEqualTo(thrown.error().message());
+    }
+
+    /// Spec §2's cascade-avoidance rule, pinned directly: a subscription's
+    /// path matches ONLY an endpoint whose own `auth` is unrecognised (a
+    /// genuine, independent endpoint mistake); the subscription must not
+    /// ALSO be reported as `SUBSCRIPTION_PATH_NOT_WEBHOOK` — that would be
+    /// a cascade, not an independent problem. Mutant: drop the "matched an
+    /// endpoint that itself failed to parse — not reported again"
+    /// early-return in `Manifest#requireWebhookMatch` → this manifest
+    /// reports TWO problems instead of one (confirmed: reverting that guard
+    /// makes this test fail with `hasSize(2)`).
+    @Test
+    void dropSkipWhenInputFailedGuardIsCaught() {
+        String json = """
+                {"runtime":"jvm","entrypoint":"x",
+                 "endpoints":[{"path":"/events/created","auth":"bearer"}],
+                 "subscriptions":[{"eventType":"a:b:c","path":"/events/created"}]}
+                """;
+        Result<Manifest, Manifest.ManifestRejected> result =
+                Manifest.check(readTree(json), Runtime.JVM, DEFAULTS, UNRESTRICTED);
+        assertThat(result).isInstanceOf(Result.Err.class);
+        Manifest.ManifestRejected rejected = ((Result.Err<Manifest, Manifest.ManifestRejected>) result).error();
+        assertThat(rejected.problems()).as("only the endpoint's own mistake, not a cascaded subscription problem")
+                .hasSize(1);
+        assertThat(rejected.problems().get(0).code()).isEqualTo("ENDPOINT_INVALID");
+        assertThat(rejected.problems().get(0).pointer()).isEqualTo("/endpoints/0/auth");
+    }
+
+    /// Spec §4 test 2 (load-bearing): six independent mistakes across six
+    /// different sections all come back at once, in document order, each
+    /// with the pointer spec §4 test 2 names — the exact worked example.
+    /// Mutant: return after the first problem instead of continuing to
+    /// collect → `problems()` has size 1, not 6 (confirmed by temporarily
+    /// making `Manifest#check` return as soon as `c.failed()` is true right
+    /// after the FIRST field parse, instead of after all of them run).
+    @Test
+    void sixIndependentMistakesAreAllReportedInDocumentOrderWithPointers() {
+        String json = """
+                {"x":1,"runtime":"jvm","entrypoint":"com.acme.Fn","pool":"Bad Pool",
+                 "endpoints":[
+                    {"path":"/events/*","auth":"webhook"},
+                    {"path":"/foo"},
+                    {"path":"/other","auth":"none","cors":{"origins":["https://app.acme.com/callback"]}}
+                 ],
+                 "subscriptions":[
+                    {"eventType":"billing:invoice:created","path":"/events/created"},
+                    {"eventType":"billing:invoice:created","path":"/events/created2"}
+                 ],
+                 "db":[{"name":"Bad Name","secretRef":"billing/dsn"}]}
+                """;
+
+        Result<Manifest, Manifest.ManifestRejected> result =
+                Manifest.check(readTree(json), Runtime.JVM, DEFAULTS, UNRESTRICTED);
+        assertThat(result).isInstanceOf(Result.Err.class);
+        Manifest.ManifestRejected rejected = ((Result.Err<Manifest, Manifest.ManifestRejected>) result).error();
+
+        List<Manifest.ManifestProblem> problems = rejected.problems();
+        assertThat(problems).as("mutant: return after the first problem").hasSize(6);
+
+        assertThat(problems.get(0).code()).isEqualTo("MANIFEST_UNKNOWN_FIELD");
+        assertThat(problems.get(0).pointer()).isEqualTo("/x");
+
+        assertThat(problems.get(1).code()).isEqualTo("POOL_INVALID");
+        assertThat(problems.get(1).pointer()).isEqualTo("/pool");
+
+        assertThat(problems.get(2).code()).isEqualTo("ENDPOINT_AUTH_REQUIRED");
+        assertThat(problems.get(2).pointer()).isEqualTo("/endpoints/1/auth");
+
+        assertThat(problems.get(3).code()).isEqualTo("ENDPOINT_INVALID");
+        assertThat(problems.get(3).pointer()).isEqualTo("/endpoints/2/cors/origins/0");
+
+        assertThat(problems.get(4).code()).isEqualTo("SUBSCRIPTION_DUPLICATE");
+        assertThat(problems.get(4).pointer()).isEqualTo("/subscriptions/1");
+
+        assertThat(problems.get(5).code()).isEqualTo("DB_INVALID");
+        assertThat(problems.get(5).pointer()).isEqualTo("/db/0/name");
+    }
+
+    /// Spec §1: `parseStrict` throws exactly the FIRST of the six problems
+    /// above — publish's contract stays byte-for-byte the same as before
+    /// `check` collected every problem.
+    @Test
+    void publishStillRejectsOnlyTheFirstOfTheSixMistakes() {
+        String json = """
+                {"x":1,"runtime":"jvm","entrypoint":"com.acme.Fn","pool":"Bad Pool",
+                 "endpoints":[
+                    {"path":"/events/*","auth":"webhook"},
+                    {"path":"/foo"},
+                    {"path":"/other","auth":"none","cors":{"origins":["https://app.acme.com/callback"]}}
+                 ],
+                 "subscriptions":[
+                    {"eventType":"billing:invoice:created","path":"/events/created"},
+                    {"eventType":"billing:invoice:created","path":"/events/created2"}
+                 ],
+                 "db":[{"name":"Bad Name","secretRef":"billing/dsn"}]}
+                """;
+        assertCode(() -> parseJvm(json), "MANIFEST_UNKNOWN_FIELD");
     }
 
     // ── fixture builders ──────────────────────────────────────────────────────

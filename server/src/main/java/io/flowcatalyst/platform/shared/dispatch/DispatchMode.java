@@ -6,6 +6,8 @@ import io.flowcatalyst.sdk.usecase.UseCaseException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Optional;
+
 /// How a message is sequenced relative to its message group — the router's
 /// wire field, the dispatch-job's stored column, and the subscription's
 /// dispatch setting are all this one type (ledger `X-01`, merged
@@ -109,15 +111,27 @@ public enum DispatchMode {
     /// when the field is *absent*, and lets this reject anything present
     /// but wrong.
     ///
+    /// The message [#parseStrict] throws on an unrecognised value, exposed
+    /// so [io.flowcatalyst.platform.function.Manifest]'s collecting parser
+    /// can reuse it via [#tryParseStrict] without catching this class's
+    /// exception (`CONVENTIONS.md` §8).
+    public static final String INVALID_MESSAGE = "mode must be IMMEDIATE, NEXT_ON_ERROR or BLOCK_ON_ERROR";
+
+    /// Non-throwing companion of [#parseStrict]: empty on an absent or
+    /// unrecognised value, never throws.
+    public static Optional<DispatchMode> tryParseStrict(String raw) {
+        return switch (raw) {
+            case "IMMEDIATE" -> Optional.of(IMMEDIATE);
+            case "NEXT_ON_ERROR" -> Optional.of(NEXT_ON_ERROR);
+            case "BLOCK_ON_ERROR" -> Optional.of(BLOCK_ON_ERROR);
+            case null, default -> Optional.empty();
+        };
+    }
+
     /// @throws UseCaseException validation `DISPATCH_MODE_INVALID`
     public static DispatchMode parseStrict(String raw) {
-        return switch (raw) {
-            case "IMMEDIATE" -> IMMEDIATE;
-            case "NEXT_ON_ERROR" -> NEXT_ON_ERROR;
-            case "BLOCK_ON_ERROR" -> BLOCK_ON_ERROR;
-            case null, default -> throw UseCaseException.validation("DISPATCH_MODE_INVALID",
-                    "mode must be IMMEDIATE, NEXT_ON_ERROR or BLOCK_ON_ERROR");
-        };
+        return tryParseStrict(raw)
+                .orElseThrow(() -> UseCaseException.validation("DISPATCH_MODE_INVALID", INVALID_MESSAGE));
     }
 
     /// Whether a message/job in this mode must be sequenced within its

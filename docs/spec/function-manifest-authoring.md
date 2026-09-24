@@ -111,18 +111,21 @@ Answer, always 200 when the function exists and the caller may publish (auth/404
 { "valid": true, "errors": [], "plan": { …PromotePlan as JSON… } }
 ```
 
-- `errors` holds what publishing this manifest would reject: the `parseStrict` error (one — the
-  parser stops at the first; collecting all is a backlog item, not this unit) and the
-  `onPublish` cross-checks (event types, cron/zone, signing secret, warm capacity, hostname
-  ownership). `valid` is `errors` empty.
+- `errors` holds what publishing this manifest would reject: **every** `Manifest.check` parse
+  problem (`manifest-all-errors.md` — the M2.2 backlog note "collecting all is a backlog item" is
+  resolved there; each entry's `details.pointer` is an RFC 6901 JSON Pointer to where in the
+  manifest it is) plus the `onPublish` cross-checks (event types, cron/zone, signing secret, warm
+  capacity, hostname ownership), the latter run only once the manifest itself parsed. `valid` is
+  `errors` empty.
 - `plan` is computed only when `valid`: the plan for promoting this manifest, as the next version,
   to `alias`. `settingsMissing` non-empty does **not** make `valid` false — it is a promote
   precondition, reported in the plan so the author can set the keys first.
-- **Result, not exceptions.** Add `Manifest.check(root, runtime, defaults, ceilings)` returning
-  `Result<Manifest, UseCaseError>`: the one place that converts `parseStrict`'s exception into a
-  value (documented as the bridge until the parser itself returns `Result`). `onPublish`'s checks
-  get a non-throwing sibling returning a list of the same errors, used by both the throwing publish
-  path and this route — one implementation of each check.
+- **Result, not exceptions.** `Manifest.check(root, runtime, defaults, ceilings)` returns
+  `Result<Manifest, Manifest.ManifestRejected>` — the collecting parser itself
+  (`manifest-all-errors.md` §1), not a bridge over `parseStrict`'s exception; `parseStrict` is now
+  the thin wrapper, throwing the first problem in document order for publish's unchanged contract.
+  `onPublish`'s checks get a non-throwing sibling returning a list of the same errors, used by both
+  the throwing publish path and this route — one implementation of each check.
 - Documented in `functions.openapi.json` (operation `checkManifest`, request/response schemas,
   `PromotePlan` components), exercised in `FunctionOpenApiCoverageTest`, present in
   `LockfileCoverageTest`'s function-route equality.

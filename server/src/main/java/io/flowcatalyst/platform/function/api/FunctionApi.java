@@ -258,9 +258,11 @@ public final class FunctionApi {
     /// spec `function-manifest-authoring.md` M2.2: `POST
     /// /api/functions/{address}/manifest/check` — same permission
     /// (`FUNCTION_PUBLISH`) and reach as [#publish], answers 200 always once
-    /// authorised and reachable. `errors` is [Manifest#check]'s parse error
-    /// (at most one) plus [TriggerSync#checkPublish]'s cross-checks — exactly
-    /// what a real publish of this manifest would reject; `plan` is
+    /// authorised and reachable. `errors` is every one of [Manifest#check]'s
+    /// parse problems (spec `manifest-all-errors.md`) plus
+    /// [TriggerSync#checkPublish]'s cross-checks, run only when the manifest
+    /// parsed — exactly what a real publish of this manifest would reject
+    /// (publish itself still rejects on the first problem only); `plan` is
     /// [TriggerSync#plan] for promoting the manifest, AS THE NEXT VERSION, to
     /// `alias` (default `live`), computed only when `errors` is empty.
     /// `settingsMissing` alone never makes `valid` false (spec M2.2: it is a
@@ -279,8 +281,12 @@ public final class FunctionApi {
         List<ManifestErrorResponse> errors = new ArrayList<>();
         PromotePlanResponse planResponse = null;
         switch (Manifest.check(req.manifest(), f.runtime(), s.limits(), ceilings)) {
-            case Result.Err<Manifest, UseCaseError>(UseCaseError e) -> errors.add(ManifestErrorResponse.from(e));
-            case Result.Ok<Manifest, UseCaseError>(Manifest manifest) -> {
+            case Result.Err<Manifest, Manifest.ManifestRejected>(Manifest.ManifestRejected rejected) -> {
+                for (Manifest.ManifestProblem problem : rejected.problems()) {
+                    errors.add(ManifestErrorResponse.from(problem));
+                }
+            }
+            case Result.Ok<Manifest, Manifest.ManifestRejected>(Manifest manifest) -> {
                 for (UseCaseError e : s.triggerSync().checkPublish(f, manifest)) {
                     errors.add(ManifestErrorResponse.from(e));
                 }
@@ -956,6 +962,12 @@ public final class FunctionApi {
     public record ManifestErrorResponse(String code, String message, Map<String, Object> details) {
         static ManifestErrorResponse from(UseCaseError e) {
             return new ManifestErrorResponse(e.code(), e.message(), e.details());
+        }
+
+        /// One of [Manifest#check]'s collected problems — `details.pointer` is
+        /// the [Manifest.ManifestProblem#pointer] (spec `manifest-all-errors.md` §3).
+        static ManifestErrorResponse from(Manifest.ManifestProblem p) {
+            return new ManifestErrorResponse(p.code(), p.message(), Map.of("pointer", p.pointer()));
         }
     }
 

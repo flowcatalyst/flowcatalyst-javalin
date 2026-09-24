@@ -19,6 +19,7 @@ import {
 	functionsApi,
 	type CheckManifestResponse,
 	type Manifest,
+	type ManifestErrorResponse,
 	type PublishResponse,
 } from "@/api/functions";
 import {
@@ -91,13 +92,52 @@ const planLines = computed(() =>
 	checkResult.value?.plan ? renderPlanLines(checkResult.value.plan) : [],
 );
 
-// Errors whose code names an endpoint problem get shown under the Endpoints
-// section too, next to the field an author would actually go fix, not just
-// buried in the flat list (spec: "attached to the field when the code maps
-// to one").
-const endpointErrors = computed(() =>
-	(checkResult.value?.errors ?? []).filter((e) => e.code.startsWith("ENDPOINT_")),
-);
+// Pointer-based error attachment (spec `manifest-all-errors.md` §3): a
+// `check` error carries `details.pointer`, an RFC 6901 JSON Pointer to
+// where in the manifest it is. Each error is attached to the form field its
+// pointer names (`/endpoints/1/auth` -> endpoint 1's auth field), falling
+// back to its section (`/endpoints`, or no pointer at all — the shape
+// publish's own errors and a pre-pointer server still send), then to the
+// flat error list below (which always shows every error regardless, so
+// nothing attached here is ever hidden from it).
+function errorPointer(e: ManifestErrorResponse): string | undefined {
+	const details = e.details as Record<string, unknown> | undefined;
+	const pointer = details?.["pointer"];
+	return typeof pointer === "string" ? pointer : undefined;
+}
+
+/** Errors whose pointer is exactly `/topKey/i/field` — the field-level
+ * attachment `FcFormField`'s `:error` prop renders. */
+function fieldError(topKey: string, i: number, field: string): string | undefined {
+	const target = `/${topKey}/${i}/${field}`;
+	const match = (checkResult.value?.errors ?? []).find((e) => errorPointer(e) === target);
+	return match?.message;
+}
+
+/** Errors whose pointer is exactly `/topKey/i` — a row-level problem (the
+ * entry itself, not one of its fields: "must be an object", a duplicate). */
+function rowErrors(topKey: string, i: number): ManifestErrorResponse[] {
+	const target = `/${topKey}/${i}`;
+	return (checkResult.value?.errors ?? []).filter((e) => errorPointer(e) === target);
+}
+
+/** Section-level fallback: a whole-array problem (`/topKey`), or — for a
+ * response with no pointer at all — the old code-prefix mapping, so an
+ * error from a server/publish path that never sends `details.pointer`
+ * still lands somewhere sensible instead of only the flat list. */
+function sectionErrors(topKey: string, codePrefix: string): ManifestErrorResponse[] {
+	return (checkResult.value?.errors ?? []).filter((e) => {
+		const pointer = errorPointer(e);
+		if (pointer === undefined) return e.code.startsWith(codePrefix);
+		return pointer === `/${topKey}`;
+	});
+}
+
+const endpointErrors = computed(() => sectionErrors("endpoints", "ENDPOINT_"));
+const subscriptionErrors = computed(() => sectionErrors("subscriptions", "SUBSCRIPTION_"));
+const scheduleErrors = computed(() => sectionErrors("schedules", "SCHEDULE_"));
+const publicRouteErrors = computed(() => sectionErrors("public", "PUBLIC_ROUTE_"));
+const dbErrors = computed(() => sectionErrors("db", "DB_"));
 
 async function validate() {
 	validating.value = true;
@@ -396,27 +436,40 @@ const modeOptions = optionsOf<NonNullable<Subscription["mode"]>>({
             class="list-row"
             data-testid="endpoint-row"
           >
+            <Message
+              v-for="(err, idx) in rowErrors('endpoints', i)"
+              :key="idx"
+              severity="error"
+              :closable="false"
+              data-testid="endpoint-row-error"
+            >
+              <strong>{{ err.code }}</strong> {{ err.message }}
+            </Message>
             <div class="fc-form-grid">
-              <FcFormField label="Path" required>
+              <FcFormField label="Path" required :error="fieldError('endpoints', i, 'path')">
                 <InputText v-model="ep.path" data-testid="endpoint-path-input" />
               </FcFormField>
-              <FcFormField label="Auth" required>
+              <FcFormField label="Auth" required :error="fieldError('endpoints', i, 'auth')">
                 <Select v-model="ep.auth" :options="authOptions" data-testid="endpoint-auth-select" />
               </FcFormField>
-              <FcFormField label="Methods" help="Absent/empty means every method.">
+              <FcFormField
+                label="Methods"
+                help="Absent/empty means every method."
+                :error="fieldError('endpoints', i, 'methods')"
+              >
                 <MultiSelect
                   :model-value="ep.methods ?? []"
                   :options="methodOptions"
                   @update:model-value="(v: string[]) => (ep.methods = v.length ? (v as never) : undefined)"
                 />
               </FcFormField>
-              <FcFormField label="Max body bytes">
+              <FcFormField label="Max body bytes" :error="fieldError('endpoints', i, 'maxBodyBytes')">
                 <InputNumber
                   :model-value="ep.maxBodyBytes ?? null"
                   @update:model-value="(v) => (ep.maxBodyBytes = v ?? undefined)"
                 />
               </FcFormField>
-              <FcFormField label="Timeout (ms)">
+              <FcFormField label="Timeout (ms)" :error="fieldError('endpoints', i, 'timeoutMs')">
                 <InputNumber
                   :model-value="ep.timeoutMs ?? null"
                   @update:model-value="(v) => (ep.timeoutMs = v ?? undefined)"
@@ -466,30 +519,48 @@ const modeOptions = optionsOf<NonNullable<Subscription["mode"]>>({
         </FcFormSection>
 
         <FcFormSection title="Subscriptions" flat>
+          <Message
+            v-for="(err, idx) in subscriptionErrors"
+            :key="idx"
+            severity="error"
+            :closable="false"
+            data-testid="subscriptions-section-error"
+          >
+            <strong>{{ err.code }}</strong> {{ err.message }}
+          </Message>
           <div v-for="(s, i) in model.subscriptions ?? []" :key="i" class="list-row" data-testid="subscription-row">
+            <Message
+              v-for="(err, idx) in rowErrors('subscriptions', i)"
+              :key="idx"
+              severity="error"
+              :closable="false"
+              data-testid="subscription-row-error"
+            >
+              <strong>{{ err.code }}</strong> {{ err.message }}
+            </Message>
             <div class="fc-form-grid">
-              <FcFormField label="Event type" required>
+              <FcFormField label="Event type" required :error="fieldError('subscriptions', i, 'eventType')">
                 <InputText v-model="s.eventType" data-testid="subscription-event-type-input" />
               </FcFormField>
-              <FcFormField label="Path" required>
+              <FcFormField label="Path" required :error="fieldError('subscriptions', i, 'path')">
                 <InputText v-model="s.path" />
               </FcFormField>
-              <FcFormField label="Mode">
+              <FcFormField label="Mode" :error="fieldError('subscriptions', i, 'mode')">
                 <Select :model-value="s.mode ?? 'IMMEDIATE'" :options="modeOptions" @update:model-value="(v) => (s.mode = v)" />
               </FcFormField>
-              <FcFormField label="Max retries">
+              <FcFormField label="Max retries" :error="fieldError('subscriptions', i, 'maxRetries')">
                 <InputNumber
                   :model-value="s.maxRetries ?? null"
                   @update:model-value="(v) => (s.maxRetries = v ?? undefined)"
                 />
               </FcFormField>
-              <FcFormField label="Timeout (s)">
+              <FcFormField label="Timeout (s)" :error="fieldError('subscriptions', i, 'timeoutSeconds')">
                 <InputNumber
                   :model-value="s.timeoutSeconds ?? null"
                   @update:model-value="(v) => (s.timeoutSeconds = v ?? undefined)"
                 />
               </FcFormField>
-              <FcFormField label="Data only">
+              <FcFormField label="Data only" :error="fieldError('subscriptions', i, 'dataOnly')">
                 <Checkbox
                   :model-value="!!s.dataOnly"
                   binary
@@ -503,15 +574,33 @@ const modeOptions = optionsOf<NonNullable<Subscription["mode"]>>({
         </FcFormSection>
 
         <FcFormSection title="Schedules" flat>
+          <Message
+            v-for="(err, idx) in scheduleErrors"
+            :key="idx"
+            severity="error"
+            :closable="false"
+            data-testid="schedules-section-error"
+          >
+            <strong>{{ err.code }}</strong> {{ err.message }}
+          </Message>
           <div v-for="(s, i) in model.schedules ?? []" :key="i" class="list-row" data-testid="schedule-row">
+            <Message
+              v-for="(err, idx) in rowErrors('schedules', i)"
+              :key="idx"
+              severity="error"
+              :closable="false"
+              data-testid="schedule-row-error"
+            >
+              <strong>{{ err.code }}</strong> {{ err.message }}
+            </Message>
             <div class="fc-form-grid">
-              <FcFormField label="Cron" required>
+              <FcFormField label="Cron" required :error="fieldError('schedules', i, 'cron')">
                 <InputText v-model="s.cron" />
               </FcFormField>
-              <FcFormField label="Timezone">
+              <FcFormField label="Timezone" :error="fieldError('schedules', i, 'timezone')">
                 <InputText v-model="s.timezone" />
               </FcFormField>
-              <FcFormField label="Path" required>
+              <FcFormField label="Path" required :error="fieldError('schedules', i, 'path')">
                 <InputText v-model="s.path" />
               </FcFormField>
               <FcFormField label="Payload (JSON)" span :error="schedulePayloadErrors[i]">
@@ -528,15 +617,41 @@ const modeOptions = optionsOf<NonNullable<Subscription["mode"]>>({
         </FcFormSection>
 
         <FcFormSection title="Public routes" flat>
+          <Message
+            v-for="(err, idx) in publicRouteErrors"
+            :key="idx"
+            severity="error"
+            :closable="false"
+            data-testid="public-routes-section-error"
+          >
+            <strong>{{ err.code }}</strong> {{ err.message }}
+          </Message>
           <div v-for="(p, i) in model.public ?? []" :key="i" class="list-row" data-testid="public-route-row">
+            <Message
+              v-for="(err, idx) in rowErrors('public', i)"
+              :key="idx"
+              severity="error"
+              :closable="false"
+              data-testid="public-route-row-error"
+            >
+              <strong>{{ err.code }}</strong> {{ err.message }}
+            </Message>
             <div class="fc-form-grid">
-              <FcFormField label="Hostname" required>
+              <FcFormField label="Hostname" required :error="fieldError('public', i, 'hostname')">
                 <InputText v-model="p.hostname" />
               </FcFormField>
-              <FcFormField label="Path prefix" help="Defaults to &quot;/&quot; when absent.">
+              <FcFormField
+                label="Path prefix"
+                help="Defaults to &quot;/&quot; when absent."
+                :error="fieldError('public', i, 'pathPrefix')"
+              >
                 <InputText v-model="p.pathPrefix" />
               </FcFormField>
-              <FcFormField label="Alias prefixes" help="comma-separated; opt-in, never &quot;live&quot;">
+              <FcFormField
+                label="Alias prefixes"
+                help="comma-separated; opt-in, never &quot;live&quot;"
+                :error="fieldError('public', i, 'aliasPrefixes')"
+              >
                 <InputText
                   :model-value="joinList(p.aliasPrefixes)"
                   @update:model-value="(v: string | undefined) => (p.aliasPrefixes = parseList(v))"
@@ -573,15 +688,33 @@ const modeOptions = optionsOf<NonNullable<Subscription["mode"]>>({
         </FcFormSection>
 
         <FcFormSection title="Database connections" flat>
+          <Message
+            v-for="(err, idx) in dbErrors"
+            :key="idx"
+            severity="error"
+            :closable="false"
+            data-testid="db-section-error"
+          >
+            <strong>{{ err.code }}</strong> {{ err.message }}
+          </Message>
           <div v-for="(d, i) in model.db ?? []" :key="i" class="list-row" data-testid="db-row">
+            <Message
+              v-for="(err, idx) in rowErrors('db', i)"
+              :key="idx"
+              severity="error"
+              :closable="false"
+              data-testid="db-row-error"
+            >
+              <strong>{{ err.code }}</strong> {{ err.message }}
+            </Message>
             <div class="fc-form-grid">
-              <FcFormField label="Name" required>
+              <FcFormField label="Name" required :error="fieldError('db', i, 'name')">
                 <InputText v-model="d.name" />
               </FcFormField>
-              <FcFormField label="Secret ref" required>
+              <FcFormField label="Secret ref" required :error="fieldError('db', i, 'secretRef')">
                 <InputText v-model="d.secretRef" />
               </FcFormField>
-              <FcFormField label="Pool size">
+              <FcFormField label="Pool size" :error="fieldError('db', i, 'poolSize')">
                 <InputNumber
                   :model-value="d.poolSize ?? null"
                   @update:model-value="(v) => (d.poolSize = v ?? undefined)"

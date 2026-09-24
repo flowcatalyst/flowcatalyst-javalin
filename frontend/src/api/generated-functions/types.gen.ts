@@ -276,12 +276,16 @@ export type CheckManifestRequest = {
 };
 
 /**
- * One entry of CheckManifestResponse#errors — the same shape a real publish rejection's error body carries.
+ * One entry of CheckManifestResponse#errors — the same shape a real publish rejection's error body carries. A manifest-parse problem's details carries a pointer (RFC 6901 JSON Pointer, "" = the document root) to where in the manifest it is; a cross-check problem (event type not found, etc.) may carry other detail keys or none.
  */
 export type ManifestErrorResponse = {
     code: string;
     message: string;
     details?: {
+        /**
+         * RFC 6901 JSON Pointer into the manifest document where this problem is; "" means the document root. Present on a manifest-parse problem, absent on most cross-check problems.
+         */
+        pointer?: string;
         [key: string]: unknown;
     };
 };

@@ -4,7 +4,6 @@ import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.subscription.Subscription;
 import io.flowcatalyst.sdk.result.Result;
-import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
@@ -246,139 +245,270 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         }
     }
 
-    // ── parseStrict — the publish reader ─────────────────────────────────────
+    // ── check — every independent problem, with a JSON Pointer ───────────────
+    // spec `manifest-all-errors.md`: the parser reports every independent
+    // problem in the document, not just the first. `pointer` is RFC 6901
+    // (`""` = the document root); `code`/`message` are exactly what
+    // `parseStrict` (below) throws for the first-encountered problem, so
+    // publish's contract is unchanged.
 
-    /// The publish reader: validates every rule below (first failure wins,
-    /// in the order the fields are read) and rejects unknown keys at every
-    /// level.
-    ///
-    /// @throws UseCaseException validation, one of the codes documented on this class
-    public static Manifest parseStrict(JsonNode root, Runtime functionRuntime, FunctionLimits defaults,
-                                        ClientCeilings ceilings) {
+    /// One independent problem `check` found (spec `manifest-all-errors.md`
+    /// §1): `code`/`message` are the same pair `parseStrict` throws for the
+    /// first problem in document order; `pointer` is an RFC 6901 JSON
+    /// Pointer to where in the document it is (`""` = the document root).
+    public record ManifestProblem(String code, String message, String pointer) {
+        public ManifestProblem {
+            Objects.requireNonNull(code, "code");
+            Objects.requireNonNull(message, "message");
+            Objects.requireNonNull(pointer, "pointer");
+        }
+    }
+
+    /// Every independent problem `check` found in one manifest document
+    /// (spec §1) — never empty.
+    public record ManifestRejected(List<ManifestProblem> problems) {
+        public ManifestRejected {
+            problems = List.copyOf(problems);
+            if (problems.isEmpty()) {
+                throw new IllegalArgumentException("problems must not be empty");
+            }
+        }
+    }
+
+    /// The mutable collector threaded through every `parse*` helper below
+    /// (spec §1): a helper that fails records its problem(s) here and
+    /// yields `Optional.empty()` — never throws, and never a placeholder
+    /// value later code could mistake for real.
+    private static final class Collector {
+        private final List<ManifestProblem> problems = new ArrayList<>();
+
+        void add(String code, String message, String pointer) {
+            problems.add(new ManifestProblem(code, message, pointer));
+        }
+
+        boolean failed() {
+            return !problems.isEmpty();
+        }
+
+        List<ManifestProblem> problems() {
+            return problems;
+        }
+    }
+
+    /// A field whose valid value may legitimately be `null` (`Cors`, a
+    /// schedule's `timezone`) — distinguishes "absent, no error" (`ok=true,
+    /// value=null`) from "present but invalid" (`ok=false`), which a plain
+    /// `Optional` cannot (`Optional.empty()` would mean both).
+    private record Field<T>(boolean ok, T value) {
+        static <T> Field<T> of(T value) {
+            return new Field<>(true, value);
+        }
+
+        static <T> Field<T> failed() {
+            return new Field<>(false, null);
+        }
+    }
+
+    /// One `endpoints[i]` entry's outcome: `path` is populated whenever the
+    /// entry's `path` field itself parsed as a [RoutePattern], independently
+    /// of whether the rest of the entry is valid; `endpoint` is populated
+    /// only when the WHOLE entry parsed with no problems. The split is what
+    /// lets a subscription/schedule whose path matches an entry that failed
+    /// for some OTHER reason recognise that (spec §2) without re-parsing.
+    private record EndpointOutcome(Optional<RoutePattern> path, Optional<Endpoint> endpoint) {
+    }
+
+    /// One candidate a literal subscription/schedule path can match against
+    /// (spec §2): `path` the pattern attempted, `endpoint` the fully
+    /// resolved endpoint if (and only if) that entry parsed cleanly.
+    private record EndpointParse(RoutePattern path, Optional<Endpoint> endpoint) {
+    }
+
+    /// [#parseEndpointsField]'s result: `endpoints` (only the entries that
+    /// parsed with no problems — what `ROUTE_AMBIGUOUS` and the final
+    /// manifest see) and `attempts` (every entry whose `path` field itself
+    /// parsed, valid or not — what a subscription/schedule's webhook-match
+    /// check matches against, spec §2).
+    private record EndpointsResult(List<Endpoint> endpoints, List<EndpointParse> attempts) {
+    }
+
+    /// The publish reader's collecting parser (spec `manifest-all-errors.md`
+    /// §1): walks the whole document and returns every independent problem
+    /// it found, each with a [ManifestProblem#pointer] to where it is, or
+    /// the parsed [Manifest] when there were none. [#parseStrict] is the
+    /// bridge to the envelope's exception contract, throwing the first
+    /// problem in document order — the same code and message this returns
+    /// as `problems().get(0)`.
+    public static Result<Manifest, ManifestRejected> check(JsonNode root, Runtime functionRuntime,
+                                                             FunctionLimits defaults, ClientCeilings ceilings) {
         Objects.requireNonNull(functionRuntime, "functionRuntime");
         Objects.requireNonNull(defaults, "defaults");
         Objects.requireNonNull(ceilings, "ceilings");
         if (root == null || !root.isObject()) {
-            throw UseCaseException.validation("MANIFEST_REQUIRED", "manifest is required and must be an object");
+            // spec §2: MANIFEST_REQUIRED is the only problem when it occurs.
+            return Result.err(new ManifestRejected(List.of(
+                    new ManifestProblem("MANIFEST_REQUIRED", "manifest is required and must be an object", ""))));
         }
-        rejectUnknown(root, TOP_KEYS_WITH_SCHEMA_ESCAPE, "");
-        requireSchemaFieldIsStringIfPresent(root);
 
-        Runtime runtime = parseRuntimeField(root, functionRuntime);
-        String entrypoint = parseEntrypointField(root, runtime);
-        DnsLabel pool = parsePoolField(root);
-        boolean warm = parseWarmField(root);
-        Limits limits = parseLimitsField(root, runtime, defaults, ceilings);
-        List<Endpoint> endpoints = parseEndpointsField(root, limits, ceilings);
-        List<SubscriptionSpec> subscriptions = parseSubscriptionsField(root, endpoints);
-        List<ScheduleSpec> schedules = parseSchedulesField(root, endpoints);
-        List<PublicRoute> publicRoutes = parsePublicField(root);
-        List<DbRef> db = parseDbField(root, defaults, ceilings);
-        List<String> config = parseSettingKeyList(root, "config");
-        List<String> secrets = parseSettingKeyList(root, "secrets");
-        List<String> httpAllow = parseSimpleStringList(root, "httpAllow");
+        Collector c = new Collector();
+        rejectUnknownAll(c, root, TOP_KEYS_WITH_SCHEMA_ESCAPE, "", "");
+        checkSchemaField(c, root);
 
-        return new Manifest(runtime, entrypoint, pool, warm, limits, endpoints, subscriptions, schedules,
-                publicRoutes, config, secrets, db, httpAllow);
+        Optional<Runtime> runtime = parseRuntimeField(c, root, functionRuntime);
+        Optional<String> entrypoint = parseEntrypointField(c, root, runtime);
+        Optional<DnsLabel> pool = parsePoolField(c, root);
+        Optional<Boolean> warm = parseWarmField(c, root);
+        Optional<Limits> limits = parseLimitsField(c, root, runtime, defaults, ceilings);
+        EndpointsResult endpointsResult = parseEndpointsField(c, root, limits, ceilings);
+        Optional<List<SubscriptionSpec>> subscriptions = parseSubscriptionsField(c, root, endpointsResult);
+        Optional<List<ScheduleSpec>> schedules = parseSchedulesField(c, root, endpointsResult);
+        Optional<List<PublicRoute>> publicRoutes = parsePublicField(c, root);
+        Optional<List<DbRef>> db = parseDbField(c, root, defaults, ceilings);
+        Optional<List<String>> config = parseSettingKeyList(c, root, "config");
+        Optional<List<String>> secrets = parseSettingKeyList(c, root, "secrets");
+        Optional<List<String>> httpAllow = parseSimpleStringList(c, root, "httpAllow");
+
+        if (c.failed()) {
+            return Result.err(new ManifestRejected(c.problems()));
+        }
+        return Result.ok(new Manifest(runtime.get(), entrypoint.get(), pool.get(), warm.get(), limits.get(),
+                endpointsResult.endpoints(), subscriptions.get(), schedules.get(), publicRoutes.get(), config.get(),
+                secrets.get(), db.get(), httpAllow.get()));
+    }
+
+    // ── parseStrict — the publish reader ─────────────────────────────────────
+
+    /// The publish reader (spec `manifest-all-errors.md` §1): [#check] then,
+    /// on a rejection, throws the FIRST problem in document order — same
+    /// code, same message [#check] returns as `problems().get(0)`. Publish's
+    /// contract is therefore unchanged from before this class collected
+    /// every problem.
+    ///
+    /// @throws UseCaseException validation, one of the codes documented on this class
+    public static Manifest parseStrict(JsonNode root, Runtime functionRuntime, FunctionLimits defaults,
+                                        ClientCeilings ceilings) {
+        return check(root, functionRuntime, defaults, ceilings).orElseThrow(rejected -> {
+            ManifestProblem first = rejected.problems().get(0);
+            return UseCaseException.validation(first.code(), first.message());
+        });
     }
 
     /// `$schema` (spec `function-manifest-authoring.md` M1.2): an optional top-level string,
     /// present only so an editor can point at the published JSON Schema; any other JSON type is
     /// `MANIFEST_INVALID`. [#toJson] never writes it back.
-    private static void requireSchemaFieldIsStringIfPresent(JsonNode root) {
+    private static void checkSchemaField(Collector c, JsonNode root) {
         JsonNode schemaNode = root.path("$schema");
         if (schemaNode.isMissingNode() || schemaNode.isNull()) return;
         if (!schemaNode.isString()) {
-            throw UseCaseException.validation("MANIFEST_INVALID", "$schema must be a string");
+            c.add("MANIFEST_INVALID", "$schema must be a string", "/$schema");
         }
     }
 
-    /// spec `function-manifest-authoring.md` M2.2: the ONE place [#parseStrict]'s
-    /// exception becomes a value — the bridge until the parser itself returns
-    /// [Result] (`CONVENTIONS.md` §8's rule; documented here as the deliberate
-    /// exception to "expected outcomes are `Result`, not exceptions", since
-    /// [#parseStrict] is also the publish reader every existing operation
-    /// still calls for its thrown form). Used by the `manifest/check` route
-    /// (`FunctionApi`) so an invalid manifest is a value the handler switches
-    /// on, never a caught exception.
-    public static Result<Manifest, UseCaseError> check(JsonNode root, Runtime functionRuntime, FunctionLimits defaults,
-                                                         ClientCeilings ceilings) {
-        try {
-            return Result.ok(parseStrict(root, functionRuntime, defaults, ceilings));
-        } catch (UseCaseException e) {
-            return Result.err(e.error());
+    private static Optional<Runtime> parseRuntimeField(Collector c, JsonNode root, Runtime functionRuntime) {
+        Optional<Runtime> parsed = Runtime.tryParseStrict(root.path("runtime").asString());
+        if (parsed.isEmpty()) {
+            c.add("RUNTIME_INVALID", Runtime.INVALID_MESSAGE, "/runtime");
+            return Optional.empty();
         }
-    }
-
-    private static Runtime parseRuntimeField(JsonNode root, Runtime functionRuntime) {
-        Runtime runtime = Runtime.parseStrict(root.path("runtime").asString());
+        Runtime runtime = parsed.get();
         if (runtime != functionRuntime) {
-            throw UseCaseException.validation("RUNTIME_MISMATCH",
-                    "manifest runtime '" + runtime.wireValue() + "' does not match the function's runtime '"
-                            + functionRuntime.wireValue() + "'");
+            c.add("RUNTIME_MISMATCH", "manifest runtime '" + runtime.wireValue()
+                    + "' does not match the function's runtime '" + functionRuntime.wireValue() + "'", "/runtime");
+            return Optional.empty();
         }
-        return runtime;
+        return Optional.of(runtime);
     }
 
-    private static String parseEntrypointField(JsonNode root, Runtime runtime) {
+    /// The pattern check is runtime-dependent (spec §2: skipped when
+    /// `runtime` itself is invalid) — `entrypoint` still has a genuine value
+    /// either way, so this never needs a placeholder.
+    private static Optional<String> parseEntrypointField(Collector c, JsonNode root, Optional<Runtime> runtime) {
         String raw = root.path("entrypoint").asString();
         if (raw.isBlank()) {
-            throw UseCaseException.validation("ENTRYPOINT_REQUIRED", "entrypoint is required");
+            c.add("ENTRYPOINT_REQUIRED", "entrypoint is required", "/entrypoint");
+            return Optional.empty();
         }
-        Pattern pattern = runtime == Runtime.JVM ? JVM_ENTRYPOINT : WASM_ENTRYPOINT;
+        if (runtime.isEmpty()) {
+            return Optional.of(raw);
+        }
+        Pattern pattern = runtime.get() == Runtime.JVM ? JVM_ENTRYPOINT : WASM_ENTRYPOINT;
         if (!pattern.matcher(raw).matches()) {
-            throw UseCaseException.validation("ENTRYPOINT_INVALID", runtime == Runtime.JVM
-                    ? "entrypoint must be a binary class name" : "entrypoint must be a wasm export name");
+            c.add("ENTRYPOINT_INVALID", runtime.get() == Runtime.JVM
+                    ? "entrypoint must be a binary class name" : "entrypoint must be a wasm export name",
+                    "/entrypoint");
+            return Optional.empty();
         }
-        return raw;
+        return Optional.of(raw);
     }
 
-    private static DnsLabel parsePoolField(JsonNode root) {
+    private static Optional<DnsLabel> parsePoolField(Collector c, JsonNode root) {
         JsonNode node = root.path("pool");
-        if (node.isMissingNode() || node.isNull()) return DEFAULT_POOL;
+        if (node.isMissingNode() || node.isNull()) return Optional.of(DEFAULT_POOL);
         if (!node.isString() || !DnsLabel.isValid(node.asString())) {
-            throw UseCaseException.validation("POOL_INVALID", "pool must be a DNS label");
+            c.add("POOL_INVALID", "pool must be a DNS label", "/pool");
+            return Optional.empty();
         }
-        return new DnsLabel(node.asString());
+        return Optional.of(new DnsLabel(node.asString()));
     }
 
-    private static boolean parseWarmField(JsonNode root) {
+    private static Optional<Boolean> parseWarmField(Collector c, JsonNode root) {
         JsonNode node = root.path("warm");
-        if (node.isMissingNode() || node.isNull()) return false;
+        if (node.isMissingNode() || node.isNull()) return Optional.of(false);
         if (!node.isBoolean()) {
-            throw UseCaseException.validation("MANIFEST_INVALID", "warm must be a boolean");
+            c.add("MANIFEST_INVALID", "warm must be a boolean", "/warm");
+            return Optional.empty();
         }
-        return node.asBoolean();
+        return Optional.of(node.asBoolean());
     }
 
-    private static Limits parseLimitsField(JsonNode root, Runtime runtime, FunctionLimits defaults,
-                                            ClientCeilings ceilings) {
+    /// `maxDurationMs`/`maxConcurrency` are independent of `runtime` and
+    /// always checked; `wasmMemoryMb` applicability is runtime-dependent and
+    /// skipped when `runtime` is invalid (spec §2) — `wasmMemoryMb` is then
+    /// simply left unresolved (`null`), never a guess, which is safe because
+    /// a `runtime` problem already means this manifest is rejected.
+    private static Optional<Limits> parseLimitsField(Collector c, JsonNode root, Optional<Runtime> runtime,
+                                                      FunctionLimits defaults, ClientCeilings ceilings) {
         JsonNode node = root.path("limits");
         boolean present = !node.isMissingNode() && !node.isNull();
         if (present) {
-            if (!node.isObject()) throw UseCaseException.validation("LIMIT_INVALID", "limits must be an object");
-            rejectUnknown(node, LIMITS_KEYS, "limits");
+            if (!node.isObject()) {
+                c.add("LIMIT_INVALID", "limits must be an object", "/limits");
+                return Optional.empty();
+            }
+            rejectUnknownAll(c, node, LIMITS_KEYS, "limits", "/limits");
         } else {
             node = Json.MAPPER.createObjectNode();
         }
 
-        int maxDurationMs = resolveLimit(node, "maxDurationMs", defaults.maxDurationMs(), ceilings.maxDurationMs());
-        int maxConcurrency =
-                resolveLimit(node, "maxConcurrency", defaults.maxConcurrency(), ceilings.maxConcurrency());
+        Optional<Integer> maxDurationMs =
+                resolveLimit(c, node, "maxDurationMs", defaults.maxDurationMs(), ceilings.maxDurationMs());
+        Optional<Integer> maxConcurrency =
+                resolveLimit(c, node, "maxConcurrency", defaults.maxConcurrency(), ceilings.maxConcurrency());
 
-        JsonNode wasmNode = node.path("wasmMemoryMb");
-        boolean wasmPresent = !wasmNode.isMissingNode() && !wasmNode.isNull();
-        Integer wasmMemoryMb;
-        if (runtime == Runtime.JVM) {
-            if (wasmPresent) {
-                throw UseCaseException.validation("LIMIT_NOT_APPLICABLE",
-                        "wasmMemoryMb is not applicable to a jvm function");
+        Integer wasmMemoryMb = null;
+        boolean wasmOk = true;
+        if (runtime.isPresent()) {
+            JsonNode wasmNode = node.path("wasmMemoryMb");
+            boolean wasmPresent = !wasmNode.isMissingNode() && !wasmNode.isNull();
+            if (runtime.get() == Runtime.JVM) {
+                if (wasmPresent) {
+                    c.add("LIMIT_NOT_APPLICABLE", "wasmMemoryMb is not applicable to a jvm function",
+                            "/limits/wasmMemoryMb");
+                    wasmOk = false;
+                }
+            } else {
+                Optional<Integer> resolved =
+                        resolveLimit(c, node, "wasmMemoryMb", defaults.wasmMemoryMb(), ceilings.wasmMemoryMb());
+                if (resolved.isEmpty()) {
+                    wasmOk = false;
+                } else {
+                    wasmMemoryMb = resolved.get();
+                }
             }
-            wasmMemoryMb = null;
-        } else {
-            wasmMemoryMb = resolveLimit(node, "wasmMemoryMb", defaults.wasmMemoryMb(), ceilings.wasmMemoryMb());
         }
-        return new Limits(maxDurationMs, maxConcurrency, wasmMemoryMb);
+
+        if (maxDurationMs.isEmpty() || maxConcurrency.isEmpty() || !wasmOk) return Optional.empty();
+        return Optional.of(new Limits(maxDurationMs.get(), maxConcurrency.get(), wasmMemoryMb));
     }
 
     /// True when `node` is an integral JSON number that fits a Java `int`
@@ -391,112 +521,171 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
 
     /// Absent ⇒ `min(default, ceiling)`; present ⇒ must be a positive
     /// integer (`LIMIT_INVALID`) not exceeding the ceiling (`LIMIT_OVER_CEILING`).
-    private static int resolveLimit(JsonNode limitsNode, String key, int defaultValue, int ceiling) {
+    private static Optional<Integer> resolveLimit(Collector c, JsonNode limitsNode, String key, int defaultValue,
+                                                    int ceiling) {
         JsonNode node = limitsNode.path(key);
         if (node.isMissingNode() || node.isNull()) {
-            return Math.min(defaultValue, ceiling);
+            return Optional.of(Math.min(defaultValue, ceiling));
         }
         if (!fitsInt(node) || node.asInt() <= 0) {
-            throw UseCaseException.validation("LIMIT_INVALID", key + " must be a positive integer");
+            c.add("LIMIT_INVALID", key + " must be a positive integer", "/limits/" + key);
+            return Optional.empty();
         }
         int value = node.asInt();
         if (value > ceiling) {
-            throw UseCaseException.validation("LIMIT_OVER_CEILING",
-                    key + " is " + value + ", which exceeds the ceiling of " + ceiling);
+            c.add("LIMIT_OVER_CEILING", key + " is " + value + ", which exceeds the ceiling of " + ceiling,
+                    "/limits/" + key);
+            return Optional.empty();
         }
-        return value;
+        return Optional.of(value);
     }
 
     // ── endpoints ─────────────────────────────────────────────────────────
 
-    private static List<Endpoint> parseEndpointsField(JsonNode root, Limits limits, ClientCeilings ceilings) {
+    /// spec §2: `endpoints` only carries entries that parsed with no
+    /// problems (what `ROUTE_AMBIGUOUS` and the final manifest see);
+    /// `attempts` carries every entry whose `path` field itself parsed,
+    /// valid or not, for a subscription/schedule's webhook-match check.
+    private static EndpointsResult parseEndpointsField(Collector c, JsonNode root, Optional<Limits> limits,
+                                                        ClientCeilings ceilings) {
         JsonNode node = root.path("endpoints");
-        if (node.isMissingNode() || node.isNull()) return List.of();
-        if (!node.isArray()) throw UseCaseException.validation("ENDPOINT_INVALID", "endpoints must be an array");
+        if (node.isMissingNode() || node.isNull()) return new EndpointsResult(List.of(), List.of());
+        if (!node.isArray()) {
+            c.add("ENDPOINT_INVALID", "endpoints must be an array", "/endpoints");
+            return new EndpointsResult(List.of(), List.of());
+        }
 
         List<Endpoint> endpoints = new ArrayList<>();
+        List<EndpointParse> attempts = new ArrayList<>();
         for (int i = 0; i < node.size(); i++) {
-            endpoints.add(parseEndpoint(node.get(i), "endpoints[" + i + "]", limits, ceilings));
+            String dotted = "endpoints[" + i + "]";
+            String pointer = "/endpoints/" + i;
+            EndpointOutcome outcome = parseEndpoint(c, node.get(i), dotted, pointer, limits, ceilings);
+            outcome.endpoint().ifPresent(endpoints::add);
+            outcome.path().ifPresent(p -> attempts.add(new EndpointParse(p, outcome.endpoint())));
         }
-        checkEndpointAmbiguity(endpoints);
-        return List.copyOf(endpoints);
+        checkEndpointAmbiguity(c, endpoints);
+        return new EndpointsResult(List.copyOf(endpoints), List.copyOf(attempts));
     }
 
-    private static Endpoint parseEndpoint(JsonNode node, String path, Limits limits, ClientCeilings ceilings) {
-        if (!node.isObject()) throw UseCaseException.validation("ENDPOINT_INVALID", path + " must be an object");
-        rejectUnknown(node, ENDPOINT_KEYS, path);
-
-        RoutePattern pattern = parseRoutePath(node, path);
-        EndpointAuth auth = parseEndpointAuth(node, path);
-        List<HttpMethod> methods = parseMethods(node, path);
-        if (auth == EndpointAuth.WEBHOOK && !methods.isEmpty()
-                && !(methods.size() == 1 && methods.get(0) == HttpMethod.POST)) {
-            throw UseCaseException.validation("ENDPOINT_INVALID",
-                    path + ": a webhook endpoint's methods, if given, must be exactly [\"POST\"]");
+    private static EndpointOutcome parseEndpoint(Collector c, JsonNode node, String dotted, String pointer,
+                                                  Optional<Limits> limits, ClientCeilings ceilings) {
+        if (!node.isObject()) {
+            c.add("ENDPOINT_INVALID", dotted + " must be an object", pointer);
+            return new EndpointOutcome(Optional.empty(), Optional.empty());
         }
-        Cors cors = parseCors(node, path);
-        int maxBodyBytes = parsePositiveOrDefault(node, "maxBodyBytes", path, Endpoint.DEFAULT_MAX_BODY_BYTES,
-                "ENDPOINT_INVALID");
-        int timeoutMs = parseTimeoutMs(node, path, limits, ceilings);
+        rejectUnknownAll(c, node, ENDPOINT_KEYS, dotted, pointer);
 
-        return new Endpoint(pattern, auth, methods, cors, maxBodyBytes, timeoutMs);
+        Optional<RoutePattern> pattern = parseRoutePath(c, node, dotted, pointer);
+        Optional<EndpointAuth> auth = parseEndpointAuth(c, node, dotted, pointer);
+        Optional<List<HttpMethod>> methods = parseMethods(c, node, dotted, pointer);
+        boolean methodsAuthOk = true;
+        if (auth.isPresent() && methods.isPresent() && auth.get() == EndpointAuth.WEBHOOK
+                && !methods.get().isEmpty()
+                && !(methods.get().size() == 1 && methods.get().get(0) == HttpMethod.POST)) {
+            c.add("ENDPOINT_INVALID",
+                    dotted + ": a webhook endpoint's methods, if given, must be exactly [\"POST\"]", pointer);
+            methodsAuthOk = false;
+        }
+
+        JsonNode corsNode = node.path("cors");
+        Cors cors = null;
+        boolean corsOk = true;
+        if (!corsNode.isMissingNode() && !corsNode.isNull()) {
+            Field<Cors> parsedCors = parseCors(c, corsNode, dotted, pointer);
+            if (parsedCors.ok()) {
+                cors = parsedCors.value();
+            } else {
+                corsOk = false;
+            }
+        }
+
+        Optional<Integer> maxBodyBytes = parsePositiveOrDefault(c, node, "maxBodyBytes", dotted, pointer,
+                Endpoint.DEFAULT_MAX_BODY_BYTES, "ENDPOINT_INVALID");
+        Optional<Integer> timeoutMs = parseTimeoutMs(c, node, dotted, pointer, limits, ceilings);
+
+        if (pattern.isEmpty() || auth.isEmpty() || methods.isEmpty() || !methodsAuthOk || !corsOk
+                || maxBodyBytes.isEmpty() || timeoutMs.isEmpty()) {
+            return new EndpointOutcome(pattern, Optional.empty());
+        }
+        Endpoint endpoint =
+                new Endpoint(pattern.get(), auth.get(), methods.get(), cors, maxBodyBytes.get(), timeoutMs.get());
+        return new EndpointOutcome(pattern, Optional.of(endpoint));
     }
 
-    private static RoutePattern parseRoutePath(JsonNode node, String path) {
+    private static Optional<RoutePattern> parseRoutePath(Collector c, JsonNode node, String dotted, String pointer) {
         JsonNode pathNode = node.path("path");
         if (!pathNode.isString()) {
-            throw UseCaseException.validation("ENDPOINT_INVALID", path + ".path is required");
+            c.add("ENDPOINT_INVALID", dotted + ".path is required", pointer + "/path");
+            return Optional.empty();
         }
-        try {
-            return RoutePattern.parse(pathNode.asString());
-        } catch (UseCaseException e) {
-            throw UseCaseException.validation("ENDPOINT_INVALID", path + ".path: " + e.error().message());
+        Optional<RoutePattern> parsed = RoutePattern.tryParse(pathNode.asString());
+        if (parsed.isEmpty()) {
+            c.add("ENDPOINT_INVALID", dotted + ".path: " + RoutePattern.INVALID_MESSAGE, pointer + "/path");
         }
+        return parsed;
     }
 
     /// `auth` is required — an absent value is `ENDPOINT_AUTH_REQUIRED`,
     /// distinct from an unrecognised one (`ENDPOINT_INVALID`, thrown by
     /// [EndpointAuth#parseStrict]) — spec §3: "no default".
-    private static EndpointAuth parseEndpointAuth(JsonNode node, String path) {
+    private static Optional<EndpointAuth> parseEndpointAuth(Collector c, JsonNode node, String dotted,
+                                                              String pointer) {
         JsonNode authNode = node.path("auth");
         if (authNode.isMissingNode() || authNode.isNull()) {
-            throw UseCaseException.validation("ENDPOINT_AUTH_REQUIRED", path + ".auth is required");
+            c.add("ENDPOINT_AUTH_REQUIRED", dotted + ".auth is required", pointer + "/auth");
+            return Optional.empty();
         }
         if (!authNode.isString()) {
-            throw UseCaseException.validation("ENDPOINT_INVALID", path + ".auth must be a string");
+            c.add("ENDPOINT_INVALID", dotted + ".auth must be a string", pointer + "/auth");
+            return Optional.empty();
         }
-        return EndpointAuth.parseStrict(authNode.asString());
+        Optional<EndpointAuth> parsed = EndpointAuth.tryParseStrict(authNode.asString());
+        if (parsed.isEmpty()) {
+            c.add("ENDPOINT_INVALID", EndpointAuth.INVALID_MESSAGE, pointer + "/auth");
+        }
+        return parsed;
     }
 
     /// `methods` absent/`null` ⇒ every method (spec §3); present ⇒ a
-    /// non-empty array of distinct, recognised methods.
-    private static List<HttpMethod> parseMethods(JsonNode node, String path) {
+    /// non-empty array of distinct, recognised methods — every entry is
+    /// checked independently (spec: "every independent problem").
+    private static Optional<List<HttpMethod>> parseMethods(Collector c, JsonNode node, String dotted,
+                                                             String pointer) {
         JsonNode methodsNode = node.path("methods");
-        if (methodsNode.isMissingNode() || methodsNode.isNull()) return List.of();
+        if (methodsNode.isMissingNode() || methodsNode.isNull()) return Optional.of(List.of());
         if (!methodsNode.isArray() || methodsNode.isEmpty()) {
-            throw UseCaseException.validation("ENDPOINT_INVALID",
-                    path + ".methods, if given, must be a non-empty array");
+            c.add("ENDPOINT_INVALID", dotted + ".methods, if given, must be a non-empty array",
+                    pointer + "/methods");
+            return Optional.empty();
         }
         List<HttpMethod> methods = new ArrayList<>();
         Set<HttpMethod> seen = new HashSet<>();
-        for (JsonNode entry : methodsNode) {
+        boolean ok = true;
+        for (int i = 0; i < methodsNode.size(); i++) {
+            JsonNode entry = methodsNode.get(i);
+            String entryPointer = pointer + "/methods/" + i;
             if (!entry.isString()) {
-                throw UseCaseException.validation("ENDPOINT_INVALID", path + ".methods entries must be strings");
+                c.add("ENDPOINT_INVALID", dotted + ".methods entries must be strings", entryPointer);
+                ok = false;
+                continue;
             }
-            HttpMethod method;
-            try {
-                method = HttpMethod.parseStrict(entry.asString());
-            } catch (RuntimeException e) {
-                throw UseCaseException.validation("ENDPOINT_INVALID",
-                        path + ".methods has an unrecognised entry '" + entry.asString() + "'");
+            Optional<HttpMethod> method = HttpMethod.tryParseStrict(entry.asString());
+            if (method.isEmpty()) {
+                c.add("ENDPOINT_INVALID", dotted + ".methods has an unrecognised entry '" + entry.asString() + "'",
+                        entryPointer);
+                ok = false;
+                continue;
             }
-            if (!seen.add(method)) {
-                throw UseCaseException.validation("ENDPOINT_INVALID",
-                        path + ".methods has a duplicate entry '" + method.name() + "'");
+            if (!seen.add(method.get())) {
+                c.add("ENDPOINT_INVALID", dotted + ".methods has a duplicate entry '" + method.get().name() + "'",
+                        entryPointer);
+                ok = false;
+                continue;
             }
-            methods.add(method);
+            methods.add(method.get());
         }
-        return List.copyOf(methods);
+        return ok ? Optional.of(List.copyOf(methods)) : Optional.empty();
     }
 
     /// A publish-time origin: exactly `*`, or `scheme://host[:port]` with no
@@ -505,94 +694,141 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
     private static final Pattern ORIGIN_FORMAT =
             Pattern.compile("^[A-Za-z][A-Za-z0-9+.-]*://[^/@?#\\s]+(:\\d+)?$");
 
-    private static Cors parseCors(JsonNode node, String path) {
-        JsonNode corsNode = node.path("cors");
-        if (corsNode.isMissingNode() || corsNode.isNull()) return null;
+    /// Called only once the caller has confirmed `corsNode` is present
+    /// (spec: `cors` absent ⇒ `null`, no error — handled by the caller so
+    /// `Field`'s `ok=true, value=null` never needs to mean two different
+    /// things).
+    private static Field<Cors> parseCors(Collector c, JsonNode corsNode, String dotted, String pointer) {
         if (!corsNode.isObject()) {
-            throw UseCaseException.validation("ENDPOINT_INVALID", path + ".cors must be an object");
+            c.add("ENDPOINT_INVALID", dotted + ".cors must be an object", pointer + "/cors");
+            return Field.failed();
         }
-        String corsPath = path + ".cors";
-        rejectUnknown(corsNode, CORS_KEYS, corsPath);
-        List<String> origins = parseStringList(corsNode, "origins", corsPath);
-        for (String origin : origins) {
-            if (!"*".equals(origin) && !ORIGIN_FORMAT.matcher(origin).matches()) {
-                throw UseCaseException.validation("ENDPOINT_INVALID",
-                        corsPath + ".origins entry '" + origin + "' must be '*' or 'scheme://host[:port]' with no path");
+        String corsDotted = dotted + ".cors";
+        String corsPointer = pointer + "/cors";
+        rejectUnknownAll(c, corsNode, CORS_KEYS, corsDotted, corsPointer);
+
+        Optional<List<String>> origins = parseStringList(c, corsNode, "origins", corsDotted, corsPointer);
+        boolean originsFormatOk = true;
+        if (origins.isPresent()) {
+            List<String> values = origins.get();
+            for (int i = 0; i < values.size(); i++) {
+                String origin = values.get(i);
+                if (!"*".equals(origin) && !ORIGIN_FORMAT.matcher(origin).matches()) {
+                    c.add("ENDPOINT_INVALID", corsDotted + ".origins entry '" + origin
+                            + "' must be '*' or 'scheme://host[:port]' with no path",
+                            corsPointer + "/origins/" + i);
+                    originsFormatOk = false;
+                }
             }
         }
-        List<String> methods = parseStringList(corsNode, "methods", corsPath);
-        List<String> headers = parseStringList(corsNode, "headers", corsPath);
+        Optional<List<String>> methods = parseStringList(c, corsNode, "methods", corsDotted, corsPointer);
+        Optional<List<String>> headers = parseStringList(c, corsNode, "headers", corsDotted, corsPointer);
+
         JsonNode credNode = corsNode.path("allowCredentials");
-        boolean allowCredentials;
+        Optional<Boolean> allowCredentials;
         if (credNode.isMissingNode() || credNode.isNull()) {
-            allowCredentials = false;
+            allowCredentials = Optional.of(false);
         } else if (credNode.isBoolean()) {
-            allowCredentials = credNode.asBoolean();
+            allowCredentials = Optional.of(credNode.asBoolean());
         } else {
-            throw UseCaseException.validation("ENDPOINT_INVALID", corsPath + ".allowCredentials must be a boolean");
+            c.add("ENDPOINT_INVALID", corsDotted + ".allowCredentials must be a boolean",
+                    corsPointer + "/allowCredentials");
+            allowCredentials = Optional.empty();
         }
+
         // Spec §4: "*" with allowCredentials is rejected at publish — browsers refuse it,
-        // and "reflect any origin with credentials" is the classic hole.
-        if (allowCredentials && origins.contains("*")) {
-            throw UseCaseException.validation("ENDPOINT_INVALID",
-                    corsPath + ": origins must not contain '*' when allowCredentials is true");
+        // and "reflect any origin with credentials" is the classic hole. Only meaningful
+        // once both inputs resolved (spec §2: no cascades).
+        boolean crossOk = true;
+        if (origins.isPresent() && allowCredentials.isPresent() && allowCredentials.get()
+                && origins.get().contains("*")) {
+            c.add("ENDPOINT_INVALID", corsDotted + ": origins must not contain '*' when allowCredentials is true",
+                    corsPointer);
+            crossOk = false;
         }
-        return new Cors(origins, methods, headers, allowCredentials);
+
+        if (origins.isEmpty() || !originsFormatOk || methods.isEmpty() || headers.isEmpty()
+                || allowCredentials.isEmpty() || !crossOk) {
+            return Field.failed();
+        }
+        return Field.of(new Cors(origins.get(), methods.get(), headers.get(), allowCredentials.get()));
     }
 
-    private static List<String> parseStringList(JsonNode node, String key, String path) {
+    /// Every entry is checked independently (spec: "every independent
+    /// problem") — a malformed entry does not stop the rest of the list
+    /// from being checked.
+    private static Optional<List<String>> parseStringList(Collector c, JsonNode node, String key, String dotted,
+                                                            String pointer) {
         JsonNode listNode = node.path(key);
-        if (listNode.isMissingNode() || listNode.isNull()) return List.of();
+        if (listNode.isMissingNode() || listNode.isNull()) return Optional.of(List.of());
         if (!listNode.isArray()) {
-            throw UseCaseException.validation("ENDPOINT_INVALID", path + "." + key + " must be an array");
+            c.add("ENDPOINT_INVALID", dotted + "." + key + " must be an array", pointer + "/" + key);
+            return Optional.empty();
         }
         List<String> values = new ArrayList<>();
-        for (JsonNode entry : listNode) {
+        boolean ok = true;
+        for (int i = 0; i < listNode.size(); i++) {
+            JsonNode entry = listNode.get(i);
             if (!entry.isString() || entry.asString().isBlank()) {
-                throw UseCaseException.validation("ENDPOINT_INVALID",
-                        path + "." + key + " entries must be non-blank strings");
+                c.add("ENDPOINT_INVALID", dotted + "." + key + " entries must be non-blank strings",
+                        pointer + "/" + key + "/" + i);
+                ok = false;
+                continue;
             }
             values.add(entry.asString());
         }
-        return List.copyOf(values);
+        return ok ? Optional.of(List.copyOf(values)) : Optional.empty();
     }
 
-    private static int parsePositiveOrDefault(JsonNode node, String key, String path, int defaultValue,
-                                               String code) {
+    private static Optional<Integer> parsePositiveOrDefault(Collector c, JsonNode node, String key, String dotted,
+                                                              String pointer, int defaultValue, String code) {
         JsonNode value = node.path(key);
-        if (value.isMissingNode() || value.isNull()) return defaultValue;
+        if (value.isMissingNode() || value.isNull()) return Optional.of(defaultValue);
         if (!fitsInt(value) || value.asInt() <= 0) {
-            throw UseCaseException.validation(code, path + "." + key + " must be a positive integer");
+            c.add(code, dotted + "." + key + " must be a positive integer", pointer + "/" + key);
+            return Optional.empty();
         }
-        return value.asInt();
+        return Optional.of(value.asInt());
     }
 
-    private static int parseTimeoutMs(JsonNode node, String path, Limits limits, ClientCeilings ceilings) {
+    /// Absent ⇒ defaults to the resolved `limits.maxDurationMs()` — spec §2:
+    /// when `limits` itself is invalid, that default cannot be resolved, so
+    /// this check is skipped entirely (empty, no NEW problem recorded); the
+    /// endpoint is then simply left out of the result, same as any other
+    /// endpoint that failed to build.
+    private static Optional<Integer> parseTimeoutMs(Collector c, JsonNode node, String dotted, String pointer,
+                                                      Optional<Limits> limits, ClientCeilings ceilings) {
         JsonNode value = node.path("timeoutMs");
-        if (value.isMissingNode() || value.isNull()) return limits.maxDurationMs();
+        if (value.isMissingNode() || value.isNull()) {
+            return limits.map(Limits::maxDurationMs);
+        }
         if (!fitsInt(value) || value.asInt() <= 0) {
-            throw UseCaseException.validation("ENDPOINT_INVALID", path + ".timeoutMs must be a positive integer");
+            c.add("ENDPOINT_INVALID", dotted + ".timeoutMs must be a positive integer", pointer + "/timeoutMs");
+            return Optional.empty();
         }
         int timeoutMs = value.asInt();
         if (timeoutMs > ceilings.maxDurationMs()) {
-            throw UseCaseException.validation("LIMIT_OVER_CEILING",
-                    "timeoutMs is " + timeoutMs + ", which exceeds the ceiling of " + ceilings.maxDurationMs());
+            c.add("LIMIT_OVER_CEILING",
+                    "timeoutMs is " + timeoutMs + ", which exceeds the ceiling of " + ceilings.maxDurationMs(),
+                    pointer + "/timeoutMs");
+            return Optional.empty();
         }
-        return timeoutMs;
+        return Optional.of(timeoutMs);
     }
 
     /// Two endpoints that share a method (absent/empty `methods` on either
     /// side means "every method", so it always shares) and whose patterns
-    /// are ambiguous (spec `function-registry.md` §5.3) are `ROUTE_AMBIGUOUS`.
-    private static void checkEndpointAmbiguity(List<Endpoint> endpoints) {
+    /// are ambiguous (spec `function-registry.md` §5.3) are `ROUTE_AMBIGUOUS`
+    /// — every ambiguous pair is reported (spec: "every independent
+    /// problem"), not just the first.
+    private static void checkEndpointAmbiguity(Collector c, List<Endpoint> endpoints) {
         for (int i = 0; i < endpoints.size(); i++) {
             for (int j = i + 1; j < endpoints.size(); j++) {
                 Endpoint a = endpoints.get(i);
                 Endpoint b = endpoints.get(j);
                 if (shareMethod(a, b) && a.path().ambiguousWith(b.path())) {
-                    throw UseCaseException.validation("ROUTE_AMBIGUOUS",
-                            "endpoint '" + a.path().value() + "' and endpoint '" + b.path().value()
-                                    + "' are ambiguous");
+                    c.add("ROUTE_AMBIGUOUS", "endpoint '" + a.path().value() + "' and endpoint '" + b.path().value()
+                            + "' are ambiguous", "/endpoints");
                 }
             }
         }
@@ -610,348 +846,490 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
 
     /// A literal path (spec §3: "must ... be a literal path, not a
     /// pattern") — a [RoutePattern] with only [RoutePattern.Literal] segments.
-    private static RoutePattern parseLiteralPath(JsonNode node, String key, String path, String code) {
+    private static Optional<RoutePattern> parseLiteralPath(Collector c, JsonNode node, String key, String dotted,
+                                                             String pointer, String code) {
         JsonNode pathNode = node.path(key);
         if (!pathNode.isString()) {
-            throw UseCaseException.validation(code, path + "." + key + " is required");
+            c.add(code, dotted + "." + key + " is required", pointer + "/" + key);
+            return Optional.empty();
         }
-        RoutePattern pattern;
-        try {
-            pattern = RoutePattern.parse(pathNode.asString());
-        } catch (UseCaseException e) {
-            throw UseCaseException.validation(code, path + "." + key + ": " + e.error().message());
+        Optional<RoutePattern> parsed = RoutePattern.tryParse(pathNode.asString());
+        if (parsed.isEmpty()) {
+            c.add(code, dotted + "." + key + ": " + RoutePattern.INVALID_MESSAGE, pointer + "/" + key);
+            return Optional.empty();
         }
-        for (RoutePattern.Segment segment : pattern.segments()) {
+        for (RoutePattern.Segment segment : parsed.get().segments()) {
             if (!(segment instanceof RoutePattern.Literal)) {
-                throw UseCaseException.validation(code, path + "." + key + " must be a literal path, not a pattern");
+                c.add(code, dotted + "." + key + " must be a literal path, not a pattern", pointer + "/" + key);
+                return Optional.empty();
             }
         }
-        return pattern;
+        return parsed;
     }
 
     /// Spec §3: the entry's `path` must match an endpoint whose `auth` is
-    /// `webhook`; when several endpoints match, the most specific
+    /// `webhook`; when several attempts match, the most specific
     /// ([RoutePattern#compareTo] order, the same order [RoutePattern#firstMatch]
-    /// uses) decides which endpoint actually serves that path.
-    private static void requireWebhookMatch(RoutePattern literalPath, List<Endpoint> endpoints, String path,
-                                             String code) {
-        Optional<Endpoint> winner = endpoints.stream()
-                .filter(e -> e.path().match(literalPath.value()).isPresent())
-                .min(Comparator.comparing(Endpoint::path));
-        if (winner.isEmpty() || winner.get().auth() != EndpointAuth.WEBHOOK) {
-            throw UseCaseException.validation(code,
-                    path + ".path '" + literalPath.value() + "' does not match a webhook endpoint");
+    /// uses) decides. Spec §2: when the winning match is an endpoint entry
+    /// that itself failed to parse, that is not ALSO reported here — the
+    /// endpoint's own problem already names it.
+    private static boolean requireWebhookMatch(Collector c, RoutePattern literalPath, EndpointsResult endpoints,
+                                                String dotted, String pointer, String code) {
+        Optional<EndpointParse> winner = endpoints.attempts().stream()
+                .filter(a -> a.path().match(literalPath.value()).isPresent())
+                .min(Comparator.comparing(EndpointParse::path));
+        if (winner.isEmpty()) {
+            c.add(code, dotted + ".path '" + literalPath.value() + "' does not match a webhook endpoint",
+                    pointer + "/path");
+            return false;
         }
+        Optional<Endpoint> resolved = winner.get().endpoint();
+        if (resolved.isEmpty()) {
+            return true;
+        }
+        if (resolved.get().auth() != EndpointAuth.WEBHOOK) {
+            c.add(code, dotted + ".path '" + literalPath.value() + "' does not match a webhook endpoint",
+                    pointer + "/path");
+            return false;
+        }
+        return true;
     }
 
-    private static List<SubscriptionSpec> parseSubscriptionsField(JsonNode root, List<Endpoint> endpoints) {
+    private static Optional<List<SubscriptionSpec>> parseSubscriptionsField(Collector c, JsonNode root,
+                                                                              EndpointsResult endpoints) {
         JsonNode node = root.path("subscriptions");
-        if (node.isMissingNode() || node.isNull()) return List.of();
+        if (node.isMissingNode() || node.isNull()) return Optional.of(List.of());
         if (!node.isArray()) {
-            throw UseCaseException.validation("SUBSCRIPTION_INVALID", "subscriptions must be an array");
+            c.add("SUBSCRIPTION_INVALID", "subscriptions must be an array", "/subscriptions");
+            return Optional.empty();
         }
         List<SubscriptionSpec> specs = new ArrayList<>();
         Set<String> eventTypes = new HashSet<>();
+        boolean ok = true;
         for (int i = 0; i < node.size(); i++) {
-            SubscriptionSpec spec = parseSubscriptionSpec(node.get(i), "subscriptions[" + i + "]", endpoints);
-            if (!eventTypes.add(spec.eventType())) {
-                throw UseCaseException.validation("SUBSCRIPTION_DUPLICATE",
-                        "duplicate subscription for eventType '" + spec.eventType() + "'");
+            String dotted = "subscriptions[" + i + "]";
+            String pointer = "/subscriptions/" + i;
+            Optional<SubscriptionSpec> spec = parseSubscriptionSpec(c, node.get(i), dotted, pointer, endpoints);
+            if (spec.isEmpty()) {
+                ok = false;
+                continue;
             }
-            specs.add(spec);
+            if (!eventTypes.add(spec.get().eventType())) {
+                c.add("SUBSCRIPTION_DUPLICATE",
+                        "duplicate subscription for eventType '" + spec.get().eventType() + "'", pointer);
+                ok = false;
+                continue;
+            }
+            specs.add(spec.get());
         }
-        return List.copyOf(specs);
+        return ok ? Optional.of(List.copyOf(specs)) : Optional.empty();
     }
 
-    private static SubscriptionSpec parseSubscriptionSpec(JsonNode node, String path, List<Endpoint> endpoints) {
-        if (!node.isObject()) throw UseCaseException.validation("SUBSCRIPTION_INVALID", path + " must be an object");
-        rejectUnknown(node, SUBSCRIPTION_KEYS, path);
+    private static Optional<SubscriptionSpec> parseSubscriptionSpec(Collector c, JsonNode node, String dotted,
+                                                                      String pointer, EndpointsResult endpoints) {
+        if (!node.isObject()) {
+            c.add("SUBSCRIPTION_INVALID", dotted + " must be an object", pointer);
+            return Optional.empty();
+        }
+        rejectUnknownAll(c, node, SUBSCRIPTION_KEYS, dotted, pointer);
 
         JsonNode eventTypeNode = node.path("eventType");
+        boolean eventTypeOk = true;
+        String eventType = null;
         if (!eventTypeNode.isString() || eventTypeNode.asString().isBlank()) {
-            throw UseCaseException.validation("SUBSCRIPTION_INVALID", path + ".eventType is required");
+            c.add("SUBSCRIPTION_INVALID", dotted + ".eventType is required", pointer + "/eventType");
+            eventTypeOk = false;
+        } else {
+            eventType = eventTypeNode.asString();
         }
-        String eventType = eventTypeNode.asString();
 
-        RoutePattern subscriptionPath = parseLiteralPath(node, "path", path, "SUBSCRIPTION_INVALID");
-        requireWebhookMatch(subscriptionPath, endpoints, path, "SUBSCRIPTION_PATH_NOT_WEBHOOK");
+        Optional<RoutePattern> subscriptionPath =
+                parseLiteralPath(c, node, "path", dotted, pointer, "SUBSCRIPTION_INVALID");
+        boolean webhookOk = subscriptionPath.isEmpty()
+                || requireWebhookMatch(c, subscriptionPath.get(), endpoints, dotted, pointer,
+                        "SUBSCRIPTION_PATH_NOT_WEBHOOK");
 
-        DispatchMode mode = parseSubscriptionMode(node, path);
-        int maxRetries = parsePositiveOrDefault(node, "maxRetries", path, Subscription.DEFAULT_MAX_RETRIES,
-                "SUBSCRIPTION_INVALID");
-        int timeoutSeconds = parsePositiveOrDefault(node, "timeoutSeconds", path,
+        Optional<DispatchMode> mode = parseSubscriptionMode(c, node, dotted, pointer);
+        Optional<Integer> maxRetries = parsePositiveOrDefault(c, node, "maxRetries", dotted, pointer,
+                Subscription.DEFAULT_MAX_RETRIES, "SUBSCRIPTION_INVALID");
+        Optional<Integer> timeoutSeconds = parsePositiveOrDefault(c, node, "timeoutSeconds", dotted, pointer,
                 Subscription.DEFAULT_TIMEOUT_SECONDS, "SUBSCRIPTION_INVALID");
-        boolean dataOnly = parseBooleanOrDefault(node, "dataOnly", path, DEFAULT_SUBSCRIPTION_DATA_ONLY,
-                "SUBSCRIPTION_INVALID");
+        Optional<Boolean> dataOnly = parseBooleanOrDefault(c, node, "dataOnly", dotted, pointer,
+                DEFAULT_SUBSCRIPTION_DATA_ONLY, "SUBSCRIPTION_INVALID");
 
-        return new SubscriptionSpec(eventType, subscriptionPath, mode, maxRetries, timeoutSeconds, dataOnly);
+        if (!eventTypeOk || subscriptionPath.isEmpty() || !webhookOk || mode.isEmpty() || maxRetries.isEmpty()
+                || timeoutSeconds.isEmpty() || dataOnly.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(new SubscriptionSpec(eventType, subscriptionPath.get(), mode.get(), maxRetries.get(),
+                timeoutSeconds.get(), dataOnly.get()));
     }
 
     /// Absent ⇒ [Manifest#DEFAULT_SUBSCRIPTION_MODE] (`IMMEDIATE`); present ⇒
-    /// [DispatchMode#parseStrict], wrapped as `SUBSCRIPTION_INVALID`.
-    private static DispatchMode parseSubscriptionMode(JsonNode node, String path) {
+    /// [DispatchMode#tryParseStrict], reported as `SUBSCRIPTION_INVALID`.
+    private static Optional<DispatchMode> parseSubscriptionMode(Collector c, JsonNode node, String dotted,
+                                                                  String pointer) {
         JsonNode modeNode = node.path("mode");
-        if (modeNode.isMissingNode() || modeNode.isNull()) return DEFAULT_SUBSCRIPTION_MODE;
+        if (modeNode.isMissingNode() || modeNode.isNull()) return Optional.of(DEFAULT_SUBSCRIPTION_MODE);
         if (!modeNode.isString()) {
-            throw UseCaseException.validation("SUBSCRIPTION_INVALID", path + ".mode must be a string");
+            c.add("SUBSCRIPTION_INVALID", dotted + ".mode must be a string", pointer + "/mode");
+            return Optional.empty();
         }
-        try {
-            return DispatchMode.parseStrict(modeNode.asString());
-        } catch (UseCaseException e) {
-            throw UseCaseException.validation("SUBSCRIPTION_INVALID", path + ".mode: " + e.error().message());
+        Optional<DispatchMode> parsed = DispatchMode.tryParseStrict(modeNode.asString());
+        if (parsed.isEmpty()) {
+            c.add("SUBSCRIPTION_INVALID", dotted + ".mode: " + DispatchMode.INVALID_MESSAGE, pointer + "/mode");
         }
+        return parsed;
     }
 
-    private static String optionalText(JsonNode node, String key, String path, String code) {
+    private static Field<String> optionalText(Collector c, JsonNode node, String key, String dotted, String pointer,
+                                               String code) {
         JsonNode value = node.path(key);
-        if (value.isMissingNode() || value.isNull()) return null;
+        if (value.isMissingNode() || value.isNull()) return Field.of(null);
         if (!value.isString()) {
-            throw UseCaseException.validation(code, path + "." + key + " must be a string");
+            c.add(code, dotted + "." + key + " must be a string", pointer + "/" + key);
+            return Field.failed();
         }
-        return value.asString();
+        return Field.of(value.asString());
     }
 
-    private static boolean parseBooleanOrDefault(JsonNode node, String key, String path, boolean defaultValue,
-                                                  String code) {
+    private static Optional<Boolean> parseBooleanOrDefault(Collector c, JsonNode node, String key, String dotted,
+                                                             String pointer, boolean defaultValue, String code) {
         JsonNode value = node.path(key);
-        if (value.isMissingNode() || value.isNull()) return defaultValue;
+        if (value.isMissingNode() || value.isNull()) return Optional.of(defaultValue);
         if (!value.isBoolean()) {
-            throw UseCaseException.validation(code, path + "." + key + " must be a boolean");
+            c.add(code, dotted + "." + key + " must be a boolean", pointer + "/" + key);
+            return Optional.empty();
         }
-        return value.asBoolean();
+        return Optional.of(value.asBoolean());
     }
 
-    private static List<ScheduleSpec> parseSchedulesField(JsonNode root, List<Endpoint> endpoints) {
+    private static Optional<List<ScheduleSpec>> parseSchedulesField(Collector c, JsonNode root,
+                                                                      EndpointsResult endpoints) {
         JsonNode node = root.path("schedules");
-        if (node.isMissingNode() || node.isNull()) return List.of();
-        if (!node.isArray()) throw UseCaseException.validation("SCHEDULE_INVALID", "schedules must be an array");
-
+        if (node.isMissingNode() || node.isNull()) return Optional.of(List.of());
+        if (!node.isArray()) {
+            c.add("SCHEDULE_INVALID", "schedules must be an array", "/schedules");
+            return Optional.empty();
+        }
         List<ScheduleSpec> specs = new ArrayList<>();
         Set<String> seen = new HashSet<>();
+        boolean ok = true;
         for (int i = 0; i < node.size(); i++) {
-            ScheduleSpec spec = parseScheduleSpec(node.get(i), "schedules[" + i + "]", endpoints);
-            String key = spec.cron() + " " + (spec.timezone() == null ? "" : spec.timezone());
-            if (!seen.add(key)) {
-                throw UseCaseException.validation("SCHEDULE_DUPLICATE",
-                        "duplicate schedule for cron '" + spec.cron() + "' timezone '" + spec.timezone() + "'");
+            String dotted = "schedules[" + i + "]";
+            String pointer = "/schedules/" + i;
+            Optional<ScheduleSpec> spec = parseScheduleSpec(c, node.get(i), dotted, pointer, endpoints);
+            if (spec.isEmpty()) {
+                ok = false;
+                continue;
             }
-            specs.add(spec);
+            String key = spec.get().cron() + "\0" + (spec.get().timezone() == null ? "" : spec.get().timezone());
+            if (!seen.add(key)) {
+                c.add("SCHEDULE_DUPLICATE", "duplicate schedule for cron '" + spec.get().cron() + "' timezone '"
+                        + spec.get().timezone() + "'", pointer);
+                ok = false;
+                continue;
+            }
+            specs.add(spec.get());
         }
-        return List.copyOf(specs);
+        return ok ? Optional.of(List.copyOf(specs)) : Optional.empty();
     }
 
-    private static ScheduleSpec parseScheduleSpec(JsonNode node, String path, List<Endpoint> endpoints) {
-        if (!node.isObject()) throw UseCaseException.validation("SCHEDULE_INVALID", path + " must be an object");
-        rejectUnknown(node, SCHEDULE_KEYS, path);
+    private static Optional<ScheduleSpec> parseScheduleSpec(Collector c, JsonNode node, String dotted,
+                                                              String pointer, EndpointsResult endpoints) {
+        if (!node.isObject()) {
+            c.add("SCHEDULE_INVALID", dotted + " must be an object", pointer);
+            return Optional.empty();
+        }
+        rejectUnknownAll(c, node, SCHEDULE_KEYS, dotted, pointer);
 
         JsonNode cronNode = node.path("cron");
+        boolean cronOk = true;
+        String cron = null;
         if (!cronNode.isString() || cronNode.asString().isBlank()) {
-            throw UseCaseException.validation("SCHEDULE_INVALID", path + ".cron is required");
+            c.add("SCHEDULE_INVALID", dotted + ".cron is required", pointer + "/cron");
+            cronOk = false;
+        } else {
+            cron = cronNode.asString();
         }
-        String cron = cronNode.asString();
-        String timezone = optionalText(node, "timezone", path, "SCHEDULE_INVALID");
+        Field<String> timezone = optionalText(c, node, "timezone", dotted, pointer, "SCHEDULE_INVALID");
 
-        RoutePattern schedulePath = parseLiteralPath(node, "path", path, "SCHEDULE_INVALID");
-        requireWebhookMatch(schedulePath, endpoints, path, "SCHEDULE_PATH_NOT_WEBHOOK");
+        Optional<RoutePattern> schedulePath = parseLiteralPath(c, node, "path", dotted, pointer, "SCHEDULE_INVALID");
+        boolean webhookOk = schedulePath.isEmpty()
+                || requireWebhookMatch(c, schedulePath.get(), endpoints, dotted, pointer, "SCHEDULE_PATH_NOT_WEBHOOK");
 
         JsonNode payloadNode = node.path("payload");
         JsonNode payload = (payloadNode.isMissingNode() || payloadNode.isNull()) ? null : payloadNode;
 
-        return new ScheduleSpec(cron, timezone, schedulePath, payload);
+        if (!cronOk || !timezone.ok() || schedulePath.isEmpty() || !webhookOk) {
+            return Optional.empty();
+        }
+        return Optional.of(new ScheduleSpec(cron, timezone.value(), schedulePath.get(), payload));
     }
 
     // ── public routes ─────────────────────────────────────────────────────
 
-    private static List<PublicRoute> parsePublicField(JsonNode root) {
+    private static Optional<List<PublicRoute>> parsePublicField(Collector c, JsonNode root) {
         JsonNode node = root.path("public");
-        if (node.isMissingNode() || node.isNull()) return List.of();
-        if (!node.isArray()) throw UseCaseException.validation("PUBLIC_ROUTE_INVALID", "public must be an array");
-
+        if (node.isMissingNode() || node.isNull()) return Optional.of(List.of());
+        if (!node.isArray()) {
+            c.add("PUBLIC_ROUTE_INVALID", "public must be an array", "/public");
+            return Optional.empty();
+        }
         List<PublicRoute> routes = new ArrayList<>();
         Set<String> seen = new HashSet<>();
+        boolean ok = true;
         for (int i = 0; i < node.size(); i++) {
-            PublicRoute route = parsePublicRoute(node.get(i), "public[" + i + "]");
-            String key = route.hostname().value() + " " + route.pathPrefix().value();
-            if (!seen.add(key)) {
-                throw UseCaseException.validation("PUBLIC_ROUTE_DUPLICATE",
-                        "duplicate public route for '" + route.hostname().value() + route.pathPrefix().value()
-                                + "'");
+            String dotted = "public[" + i + "]";
+            String pointer = "/public/" + i;
+            Optional<PublicRoute> route = parsePublicRoute(c, node.get(i), dotted, pointer);
+            if (route.isEmpty()) {
+                ok = false;
+                continue;
             }
-            routes.add(route);
+            String key = route.get().hostname().value() + "\0" + route.get().pathPrefix().value();
+            if (!seen.add(key)) {
+                c.add("PUBLIC_ROUTE_DUPLICATE", "duplicate public route for '" + route.get().hostname().value()
+                        + route.get().pathPrefix().value() + "'", pointer);
+                ok = false;
+                continue;
+            }
+            routes.add(route.get());
         }
-        return List.copyOf(routes);
+        return ok ? Optional.of(List.copyOf(routes)) : Optional.empty();
     }
 
-    private static PublicRoute parsePublicRoute(JsonNode node, String path) {
-        if (!node.isObject()) throw UseCaseException.validation("PUBLIC_ROUTE_INVALID", path + " must be an object");
-        rejectUnknown(node, PUBLIC_ROUTE_KEYS, path);
+    private static Optional<PublicRoute> parsePublicRoute(Collector c, JsonNode node, String dotted,
+                                                            String pointer) {
+        if (!node.isObject()) {
+            c.add("PUBLIC_ROUTE_INVALID", dotted + " must be an object", pointer);
+            return Optional.empty();
+        }
+        rejectUnknownAll(c, node, PUBLIC_ROUTE_KEYS, dotted, pointer);
 
         JsonNode hostnameNode = node.path("hostname");
+        Optional<Hostname> hostname;
         if (!hostnameNode.isString()) {
-            throw UseCaseException.validation("PUBLIC_ROUTE_INVALID", path + ".hostname is required");
-        }
-        Hostname hostname;
-        try {
-            hostname = Hostname.parse(hostnameNode.asString());
-        } catch (UseCaseException e) {
-            throw UseCaseException.validation("PUBLIC_ROUTE_INVALID", path + ".hostname: " + e.error().message());
+            c.add("PUBLIC_ROUTE_INVALID", dotted + ".hostname is required", pointer + "/hostname");
+            hostname = Optional.empty();
+        } else {
+            hostname = Hostname.tryParse(hostnameNode.asString());
+            if (hostname.isEmpty()) {
+                c.add("PUBLIC_ROUTE_INVALID", dotted + ".hostname: " + Hostname.INVALID_MESSAGE,
+                        pointer + "/hostname");
+            }
         }
 
         JsonNode prefixNode = node.path("pathPrefix");
-        RoutePattern pathPrefix = (prefixNode.isMissingNode() || prefixNode.isNull())
-                ? PublicRoute.DEFAULT_PATH_PREFIX
-                : parseLiteralPath(node, "pathPrefix", path, "PUBLIC_ROUTE_INVALID");
+        Optional<RoutePattern> pathPrefix = (prefixNode.isMissingNode() || prefixNode.isNull())
+                ? Optional.of(PublicRoute.DEFAULT_PATH_PREFIX)
+                : parseLiteralPath(c, node, "pathPrefix", dotted, pointer, "PUBLIC_ROUTE_INVALID");
 
-        List<String> aliasPrefixes = parseAliasPrefixesField(node, path);
+        Optional<List<String>> aliasPrefixes = parseAliasPrefixesField(c, node, dotted, pointer);
 
-        return new PublicRoute(hostname, pathPrefix, aliasPrefixes);
+        if (hostname.isEmpty() || pathPrefix.isEmpty() || aliasPrefixes.isEmpty()) return Optional.empty();
+        return Optional.of(new PublicRoute(hostname.get(), pathPrefix.get(), aliasPrefixes.get()));
     }
 
     /// spec `function-zones-and-aliases.md` §3: each entry a DNS label
     /// (reusing [DnsLabel]'s own format/length rule — `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`,
     /// ≤ 63 characters), never `live` (that name is reserved for the exact
-    /// hostname match), no duplicates. Absent/empty ⇒ `[]` (exact match only).
-    private static List<String> parseAliasPrefixesField(JsonNode node, String path) {
+    /// hostname match), no duplicates. Absent/empty ⇒ `[]` (exact match
+    /// only). Every entry is checked independently.
+    private static Optional<List<String>> parseAliasPrefixesField(Collector c, JsonNode node, String dotted,
+                                                                    String pointer) {
         JsonNode aliasNode = node.path("aliasPrefixes");
-        if (aliasNode.isMissingNode() || aliasNode.isNull()) return List.of();
+        if (aliasNode.isMissingNode() || aliasNode.isNull()) return Optional.of(List.of());
         if (!aliasNode.isArray()) {
-            throw UseCaseException.validation("PUBLIC_ROUTE_INVALID", path + ".aliasPrefixes must be an array");
+            c.add("PUBLIC_ROUTE_INVALID", dotted + ".aliasPrefixes must be an array", pointer + "/aliasPrefixes");
+            return Optional.empty();
         }
         List<String> out = new ArrayList<>();
         Set<String> seen = new HashSet<>();
+        boolean ok = true;
         for (int i = 0; i < aliasNode.size(); i++) {
             JsonNode entry = aliasNode.get(i);
-            String entryPath = path + ".aliasPrefixes[" + i + "]";
+            String entryDotted = dotted + ".aliasPrefixes[" + i + "]";
+            String entryPointer = pointer + "/aliasPrefixes/" + i;
             if (!entry.isString() || !DnsLabel.isValid(entry.asString())) {
-                throw UseCaseException.validation("PUBLIC_ROUTE_INVALID", entryPath + " must be a DNS label");
+                c.add("PUBLIC_ROUTE_INVALID", entryDotted + " must be a DNS label", entryPointer);
+                ok = false;
+                continue;
             }
             String value = entry.asString();
             if (Function.LIVE.equals(value)) {
-                throw UseCaseException.validation("PUBLIC_ROUTE_INVALID", entryPath + " must not be 'live'");
+                c.add("PUBLIC_ROUTE_INVALID", entryDotted + " must not be 'live'", entryPointer);
+                ok = false;
+                continue;
             }
             if (!seen.add(value)) {
-                throw UseCaseException.validation("PUBLIC_ROUTE_INVALID", entryPath + " is a duplicate");
+                c.add("PUBLIC_ROUTE_INVALID", entryDotted + " is a duplicate", entryPointer);
+                ok = false;
+                continue;
             }
             out.add(value);
         }
-        return List.copyOf(out);
+        return ok ? Optional.of(List.copyOf(out)) : Optional.empty();
     }
 
     // ── db / config / secrets / httpAllow ────────────────────────────────────
 
-    private static List<DbRef> parseDbField(JsonNode root, FunctionLimits defaults, ClientCeilings ceilings) {
+    private static Optional<List<DbRef>> parseDbField(Collector c, JsonNode root, FunctionLimits defaults,
+                                                        ClientCeilings ceilings) {
         JsonNode node = root.path("db");
-        if (node.isMissingNode() || node.isNull()) return List.of();
-        if (!node.isArray()) throw UseCaseException.validation("DB_INVALID", "db must be an array");
+        if (node.isMissingNode() || node.isNull()) return Optional.of(List.of());
+        if (!node.isArray()) {
+            c.add("DB_INVALID", "db must be an array", "/db");
+            return Optional.empty();
+        }
 
         List<DbRef> refs = new ArrayList<>();
         Set<String> names = new HashSet<>();
+        boolean ok = true;
         for (int i = 0; i < node.size(); i++) {
-            String path = "db[" + i + "]";
+            String dotted = "db[" + i + "]";
+            String pointer = "/db/" + i;
             JsonNode entry = node.get(i);
-            if (!entry.isObject()) throw UseCaseException.validation("DB_INVALID", path + " must be an object");
-            rejectUnknown(entry, DB_KEYS, path);
+            if (!entry.isObject()) {
+                c.add("DB_INVALID", dotted + " must be an object", pointer);
+                ok = false;
+                continue;
+            }
+            rejectUnknownAll(c, entry, DB_KEYS, dotted, pointer);
 
             JsonNode nameNode = entry.path("name");
+            Optional<String> name = Optional.empty();
             if (!nameNode.isString() || !DnsLabel.isValid(nameNode.asString())) {
-                throw UseCaseException.validation("DB_INVALID", path + ".name must be a DNS label");
-            }
-            String name = nameNode.asString();
-            if (!names.add(name)) {
-                throw UseCaseException.validation("DB_INVALID", path + ".name '" + name + "' is duplicated");
+                c.add("DB_INVALID", dotted + ".name must be a DNS label", pointer + "/name");
+            } else {
+                String n = nameNode.asString();
+                if (!names.add(n)) {
+                    c.add("DB_INVALID", dotted + ".name '" + n + "' is duplicated", pointer + "/name");
+                } else {
+                    name = Optional.of(n);
+                }
             }
 
             JsonNode secretRefNode = entry.path("secretRef");
+            Optional<String> secretRef = Optional.empty();
             if (!secretRefNode.isString() || secretRefNode.asString().isBlank()) {
-                throw UseCaseException.validation("DB_INVALID", path + ".secretRef is required");
+                c.add("DB_INVALID", dotted + ".secretRef is required", pointer + "/secretRef");
+            } else if (!SettingKey.isValid(secretRefNode.asString())) {
+                c.add("DB_INVALID", dotted + ".secretRef: " + SettingKey.invalidMessage(secretRefNode.asString()),
+                        pointer + "/secretRef");
+            } else {
+                secretRef = Optional.of(secretRefNode.asString());
             }
-            requireSettingKey(secretRefNode.asString(), path + ".secretRef", "DB_INVALID");
 
-            int poolSize = resolvePoolSize(entry, path, defaults.dbPoolSize(), ceilings.dbPoolSize());
-            refs.add(new DbRef(new DnsLabel(name), secretRefNode.asString(), poolSize));
+            Optional<Integer> poolSize =
+                    resolvePoolSize(c, entry, dotted, pointer, defaults.dbPoolSize(), ceilings.dbPoolSize());
+
+            if (name.isEmpty() || secretRef.isEmpty() || poolSize.isEmpty()) {
+                ok = false;
+                continue;
+            }
+            refs.add(new DbRef(new DnsLabel(name.get()), secretRef.get(), poolSize.get()));
         }
-        return List.copyOf(refs);
+        return ok ? Optional.of(List.copyOf(refs)) : Optional.empty();
     }
 
-    private static int resolvePoolSize(JsonNode entry, String path, int defaultValue, int ceiling) {
+    private static Optional<Integer> resolvePoolSize(Collector c, JsonNode entry, String dotted, String pointer,
+                                                       int defaultValue, int ceiling) {
         JsonNode node = entry.path("poolSize");
-        if (node.isMissingNode() || node.isNull()) return Math.min(defaultValue, ceiling);
+        if (node.isMissingNode() || node.isNull()) return Optional.of(Math.min(defaultValue, ceiling));
         if (!fitsInt(node) || node.asInt() <= 0) {
-            throw UseCaseException.validation("DB_INVALID", path + ".poolSize must be a positive integer");
+            c.add("DB_INVALID", dotted + ".poolSize must be a positive integer", pointer + "/poolSize");
+            return Optional.empty();
         }
         int value = node.asInt();
         if (value > ceiling) {
-            throw UseCaseException.validation("LIMIT_OVER_CEILING",
-                    path + ".poolSize is " + value + ", which exceeds the ceiling of " + ceiling);
+            c.add("LIMIT_OVER_CEILING", dotted + ".poolSize is " + value + ", which exceeds the ceiling of "
+                    + ceiling, pointer + "/poolSize");
+            return Optional.empty();
         }
-        return value;
+        return Optional.of(value);
     }
 
-    private static List<String> parseSimpleStringList(JsonNode root, String key) {
+    private static Optional<List<String>> parseSimpleStringList(Collector c, JsonNode root, String key) {
         JsonNode node = root.path(key);
-        if (node.isMissingNode() || node.isNull()) return List.of();
-        if (!node.isArray()) throw UseCaseException.validation("CONFIG_INVALID", key + " must be an array");
+        if (node.isMissingNode() || node.isNull()) return Optional.of(List.of());
+        if (!node.isArray()) {
+            c.add("CONFIG_INVALID", key + " must be an array", "/" + key);
+            return Optional.empty();
+        }
         List<String> values = new ArrayList<>();
         Set<String> seen = new HashSet<>();
-        for (JsonNode entry : node) {
+        boolean ok = true;
+        for (int i = 0; i < node.size(); i++) {
+            JsonNode entry = node.get(i);
+            String pointer = "/" + key + "/" + i;
             if (!entry.isString() || entry.asString().isBlank()) {
-                throw UseCaseException.validation("CONFIG_INVALID", key + " entries must be non-blank strings");
+                c.add("CONFIG_INVALID", key + " entries must be non-blank strings", pointer);
+                ok = false;
+                continue;
             }
             String value = entry.asString();
             if (!seen.add(value)) {
-                throw UseCaseException.validation("CONFIG_INVALID", key + " has a duplicate entry '" + value + "'");
+                c.add("CONFIG_INVALID", key + " has a duplicate entry '" + value + "'", pointer);
+                ok = false;
+                continue;
             }
             values.add(value);
         }
-        return List.copyOf(values);
+        return ok ? Optional.of(List.copyOf(values)) : Optional.empty();
     }
 
     /// `config`/`secrets`: [#parseSimpleStringList]'s shape check plus the
     /// [SettingKey] format rule (spec `function-context.md` §1: "the
     /// manifest's config/secrets/secretRef entries are held to the same
     /// rule") — the code stays `CONFIG_INVALID`, wrapping
-    /// [SettingKey]'s `SETTING_KEY_INVALID` message.
-    private static List<String> parseSettingKeyList(JsonNode root, String key) {
+    /// [SettingKey]'s own message via [SettingKey#invalidMessage]. Every
+    /// entry is checked independently.
+    private static Optional<List<String>> parseSettingKeyList(Collector c, JsonNode root, String key) {
         JsonNode node = root.path(key);
-        if (node.isMissingNode() || node.isNull()) return List.of();
-        if (!node.isArray()) throw UseCaseException.validation("CONFIG_INVALID", key + " must be an array");
+        if (node.isMissingNode() || node.isNull()) return Optional.of(List.of());
+        if (!node.isArray()) {
+            c.add("CONFIG_INVALID", key + " must be an array", "/" + key);
+            return Optional.empty();
+        }
         List<String> values = new ArrayList<>();
         Set<String> seen = new HashSet<>();
-        for (JsonNode entry : node) {
+        boolean ok = true;
+        for (int i = 0; i < node.size(); i++) {
+            JsonNode entry = node.get(i);
+            String pointer = "/" + key + "/" + i;
             if (!entry.isString() || entry.asString().isBlank()) {
-                throw UseCaseException.validation("CONFIG_INVALID", key + " entries must be non-blank strings");
+                c.add("CONFIG_INVALID", key + " entries must be non-blank strings", pointer);
+                ok = false;
+                continue;
             }
             String value = entry.asString();
-            requireSettingKey(value, key, "CONFIG_INVALID");
+            if (!SettingKey.isValid(value)) {
+                c.add("CONFIG_INVALID", key + ": " + SettingKey.invalidMessage(value), pointer);
+                ok = false;
+                continue;
+            }
             if (!seen.add(value)) {
-                throw UseCaseException.validation("CONFIG_INVALID", key + " has a duplicate entry '" + value + "'");
+                c.add("CONFIG_INVALID", key + " has a duplicate entry '" + value + "'", pointer);
+                ok = false;
+                continue;
             }
             values.add(value);
         }
-        return List.copyOf(values);
-    }
-
-    /// [SettingKey#parse], with `raw`'s `SETTING_KEY_INVALID` message
-    /// rewrapped under `code` and `path` (spec §1) — so `config`/`secrets`
-    /// keep `CONFIG_INVALID` and a `db[].secretRef` keeps `DB_INVALID`
-    /// while sharing the one key-format rule.
-    private static void requireSettingKey(String raw, String path, String code) {
-        try {
-            SettingKey.parse(raw);
-        } catch (UseCaseException e) {
-            throw UseCaseException.validation(code, path + ": " + e.error().message());
-        }
+        return ok ? Optional.of(List.copyOf(values)) : Optional.empty();
     }
 
     /// Checked for `node` as soon as it is entered, before any of its fields
     /// are validated for content; the message names the full JSON path
-    /// (`limits.maxConcurency`, `endpoints[0].pth`).
-    private static void rejectUnknown(JsonNode node, Set<String> allowed, String path) {
+    /// (`limits.maxConcurency`, `endpoints[0].pth`) — every unknown key is
+    /// reported (spec §2), and the known keys beside them are still parsed.
+    private static void rejectUnknownAll(Collector c, JsonNode node, Set<String> allowed, String dottedPath,
+                                          String pointerPath) {
         for (var entry : node.properties()) {
             if (!allowed.contains(entry.getKey())) {
-                String fullPath = path.isEmpty() ? entry.getKey() : path + "." + entry.getKey();
-                throw UseCaseException.validation("MANIFEST_UNKNOWN_FIELD",
-                        fullPath + " is not a recognised manifest field");
+                String fullDotted = dottedPath.isEmpty() ? entry.getKey() : dottedPath + "." + entry.getKey();
+                String fullPointer = pointerPath + "/" + entry.getKey();
+                c.add("MANIFEST_UNKNOWN_FIELD", fullDotted + " is not a recognised manifest field", fullPointer);
             }
         }
     }

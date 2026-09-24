@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.function;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 
 import java.util.Locale;
+import java.util.Optional;
 
 /// The runtime a function executes in (spec `function-registry.md` §4.1,
 /// §4.4). Stored as the constant name (`JVM` / `WASM`) in a plain column per
@@ -22,16 +23,28 @@ public enum Runtime {
         };
     }
 
+    /// The message [#parseStrict] throws on an unrecognised value, exposed
+    /// so [Manifest]'s collecting parser can reuse it via [#tryParseStrict]
+    /// without catching this class's exception (`CONVENTIONS.md` §8).
+    public static final String INVALID_MESSAGE = "runtime is required and must be jvm or wasm";
+
+    /// Non-throwing companion of [#parseStrict]: empty when `raw` is not
+    /// (case-insensitively) `jvm` or `wasm`, never throws.
+    public static Optional<Runtime> tryParseStrict(String raw) {
+        String lower = raw == null ? "" : raw.toLowerCase(Locale.ROOT);
+        return switch (lower) {
+            case "jvm" -> Optional.of(JVM);
+            case "wasm" -> Optional.of(WASM);
+            default -> Optional.empty();
+        };
+    }
+
     /// Wire reader — case-insensitive (spec §4.4).
     ///
     /// @throws UseCaseException validation `RUNTIME_INVALID`
     public static Runtime parseStrict(String raw) {
-        String lower = raw == null ? "" : raw.toLowerCase(Locale.ROOT);
-        return switch (lower) {
-            case "jvm" -> JVM;
-            case "wasm" -> WASM;
-            default -> throw UseCaseException.validation("RUNTIME_INVALID", "runtime is required and must be jvm or wasm");
-        };
+        return tryParseStrict(raw)
+                .orElseThrow(() -> UseCaseException.validation("RUNTIME_INVALID", INVALID_MESSAGE));
     }
 
     /// The lower-case spelling used in the manifest's own JSON shape (spec §4.4).
