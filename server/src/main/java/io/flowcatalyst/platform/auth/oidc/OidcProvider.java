@@ -8,6 +8,7 @@ import com.nimbusds.jose.proc.SecurityContext;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.proc.DefaultJWTClaimsVerifier;
 import com.nimbusds.jwt.proc.DefaultJWTProcessor;
+import io.flowcatalyst.platform.shared.Failures;
 import io.flowcatalyst.platform.shared.json.Json;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.JsonNode;
@@ -152,13 +153,32 @@ public final class OidcProvider {
             r = post(form + "&client_secret=" + enc(config.clientSecret().get()), false);
         }
         if (r.statusCode() != 200) {
-            throw new ExchangeException("token endpoint answered " + r.statusCode());
+            throw new ExchangeException("token endpoint answered " + r.statusCode() + idpError(r.body()));
         }
         try {
             JsonNode body = Json.MAPPER.readTree(r.body());
             return new ExchangeResult(stringField(body, "id_token"), stringField(body, "access_token"));
         } catch (RuntimeException e) {
             throw new ExchangeException("token endpoint answered a body that is not JSON", e);
+        }
+    }
+
+    /// The IdP's own reason (RFC 6749 §5.2 `error` / `error_description`) for a
+    /// refused exchange — `": invalid_client — AADSTS7000218: …"` — or empty when
+    /// the body carries none. The IdP's words, never secret material; without
+    /// them an operator sees only "answered 400". Capped, so a hostile or
+    /// broken IdP cannot flood the log line.
+    static String idpError(String body) {
+        if (body == null || body.isBlank()) return "";
+        try {
+            JsonNode j = Json.MAPPER.readTree(body);
+            String error = stringField(j, "error").orElse(null);
+            if (error == null) return "";
+            String description = stringField(j, "error_description").orElse(null);
+            String detail = description == null ? error : error + " — " + description;
+            return ": " + (detail.length() > 500 ? detail.substring(0, 500) + "…" : detail);
+        } catch (RuntimeException e) {
+            return ""; // not JSON: the status alone is all there is
         }
     }
 
@@ -206,7 +226,7 @@ public final class OidcProvider {
         try {
             return http.send(b.build(), HttpResponse.BodyHandlers.ofString());
         } catch (IOException e) {
-            throw new ExchangeException("token endpoint unreachable: " + e.getMessage(), e);
+            throw new ExchangeException("token endpoint unreachable: " + Failures.describe(e), e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new ExchangeException("interrupted", e);
