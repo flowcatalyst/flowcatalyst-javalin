@@ -30,6 +30,7 @@
 // fixtures/functions.ts above createFunctionViaUi/setConfigAndSecretViaUi
 // for what those closed (docs/functions.md §12).
 import path from "node:path";
+import * as fs from "node:fs";
 import { existsSync } from "node:fs";
 import {
     test,
@@ -74,6 +75,26 @@ const JAR_PATH = path.resolve(
 
 const GREETING_VALUE = "Hello from the E2E flow";
 const API_KEY_VALUE = "e2e-api-key-value";
+
+/// A copy of `jarPath` with a different digest and identical entries: the zip end-of-central-
+/// directory record gets an archive comment. Readers locate the EOCD from the end and honour its
+/// comment length, so the copy is as loadable as the original.
+function jarWithDistinctDigest(jarPath: string, outPath: string): string {
+    const jar = fs.readFileSync(jarPath);
+    let eocd = -1;
+    for (let i = jar.length - 22; i >= Math.max(0, jar.length - 22 - 0xffff); i--) {
+        if (jar.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) throw new Error(`no end-of-central-directory record in ${jarPath}`);
+    if (jar.readUInt16LE(eocd + 20) !== 0 || eocd + 22 !== jar.length) {
+        throw new Error(`${jarPath} already carries an archive comment`);
+    }
+    const comment = Buffer.from("e2e manifest-editor step", "utf8");
+    const out = Buffer.concat([jar, comment]);
+    out.writeUInt16LE(comment.length, eocd + 20);
+    fs.writeFileSync(outPath, out);
+    return outPath;
+}
 
 test.describe("functions", () => {
     test("claim a domain, publish, configure, promote, and reach the function", async ({ adminPage: page }) => {
@@ -297,7 +318,9 @@ expect(publishRes.ok(), publishResBody).toBe(true);
         await expect(page.getByTestId("manifest-plan")).toContainText(`- subscription ${EVENT_TYPE} (delete)`);
 
         await page.getByTestId("manifest-publish-button").click();
-        await page.getByTestId("publish-jar-input").setInputFiles(JAR_PATH);
+        // A function never publishes the same artifact twice (VERSION_DIGEST_EXISTS), and only the
+        // manifest changed here — so publish a byte-different copy of the jar.
+        await page.getByTestId("publish-jar-input").setInputFiles(jarWithDistinctDigest(JAR_PATH, test.info().outputPath("function-hello-e2.jar")));
         const editedPublish = page.waitForResponse(
             (r) => new URL(r.url()).pathname === `/api/functions/${FN_ADDRESS}/versions` && r.request().method() === "POST",
         );
