@@ -138,8 +138,8 @@ public final class TwoFactorApi {
                 HttpError.writeLoginSurface(ctx, 503, "BACKOFF_UNAVAILABLE", "login is temporarily unavailable; try again shortly");
                 return;
             }
-            if (!d.allowed()) {
-                ctx.header("Retry-After", Long.toString(d.retryAfterSecs()));
+            if (d instanceof BackoffCheck.Decision.Denied denied) {
+                ctx.header("Retry-After", Long.toString(denied.retryAfterSecs()));
                 HttpError.writeLoginSurface(ctx, 429, "TOO_MANY_REQUESTS", "too many failed login attempts; try again later");
                 return;
             }

@@ -315,9 +315,9 @@ public final class OAuthTokenApi {
             return;
         }
         if (code.codeChallenge() != null) {
-            OAuthError pkce = Pkce.verify(code.codeChallenge(), code.codeChallengeMethod(), req.codeVerifier());
-            if (pkce != null) {
-                pkce.write(ctx);
+            Optional<OAuthError> pkce = Pkce.verify(code.codeChallenge(), code.codeChallengeMethod(), req.codeVerifier());
+            if (pkce.isPresent()) {
+                pkce.get().write(ctx);
                 return;
             }
         }

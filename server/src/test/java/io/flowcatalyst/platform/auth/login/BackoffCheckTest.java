@@ -53,16 +53,16 @@ class BackoffCheckTest {
 
     @Test
     void underTheFreeAttemptsThereIsNoDelay() {
-        assertThat(BackoffCheck.decide(P, NOW, stats(3, NOW, null)).allowed()).isTrue();
+        assertThat(BackoffCheck.decide(P, NOW, stats(3, NOW, null))).isInstanceOf(BackoffCheck.Decision.Allowed.class);
     }
 
     @Test
     void aPairDelayDeniesForTheRemainderAndClearsWhenItHasElapsed() {
         var d = BackoffCheck.decide(P, NOW, stats(6, NOW.minusSeconds(3), null)); // required 8, elapsed 3
-        assertThat(d.allowed()).isFalse();
-        assertThat(d.retryAfterSecs()).isEqualTo(5);
-        assertThat(d.reason()).isEqualTo(BackoffCheck.Reason.PAIR_BACKOFF);
-        assertThat(BackoffCheck.decide(P, NOW, stats(6, NOW.minusSeconds(8), null)).allowed()).isTrue();
+        assertThat(d).isInstanceOf(BackoffCheck.Decision.Denied.class);
+        assertThat(((BackoffCheck.Decision.Denied) d).retryAfterSecs()).isEqualTo(5);
+        assertThat(((BackoffCheck.Decision.Denied) d).reason()).isEqualTo(BackoffCheck.Reason.PAIR_BACKOFF);
+        assertThat(BackoffCheck.decide(P, NOW, stats(6, NOW.minusSeconds(8), null))).isInstanceOf(BackoffCheck.Decision.Allowed.class);
     }
 
     // ── window 2: the ceiling as a lock (spec §6 table) ────────────────────
@@ -70,15 +70,15 @@ class BackoffCheckTest {
     @Test
     void underTheCeilingIsAllowed() {
         // 99 failures in-window: the repository reports no trip (fewer than ceiling rows).
-        assertThat(BackoffCheck.decide(P, NOW, stats(0, null, null)).allowed()).isTrue();
+        assertThat(BackoffCheck.decide(P, NOW, stats(0, null, null))).isInstanceOf(BackoffCheck.Decision.Allowed.class);
     }
 
     @Test
     void tripDeniesWithTheLockAdvertised() {
         var d = BackoffCheck.decide(P, NOW, stats(0, null, NOW)); // 100th failure just now → countEnds 3600 > lock 900
-        assertThat(d.allowed()).isFalse();
-        assertThat(d.reason()).isEqualTo(BackoffCheck.Reason.GLOBAL_CEILING);
-        assertThat(d.retryAfterSecs()).as("the later of lockEnds and countEnds").isEqualTo(3600);
+        assertThat(d).isInstanceOf(BackoffCheck.Decision.Denied.class);
+        assertThat(((BackoffCheck.Decision.Denied) d).reason()).isEqualTo(BackoffCheck.Reason.GLOBAL_CEILING);
+        assertThat(((BackoffCheck.Decision.Denied) d).retryAfterSecs()).as("the later of lockEnds and countEnds").isEqualTo(3600);
     }
 
     @Test
@@ -87,13 +87,13 @@ class BackoffCheckTest {
         // old, the last one 10 min ago. The count clears in 60 s; the lock
         // (from the LAST failure) holds for another 5 min.
         var d = BackoffCheck.decide(P, NOW, stats(0, null, NOW.minusSeconds(59 * 60), NOW.minusSeconds(10 * 60)));
-        assertThat(d.allowed()).isFalse();
-        assertThat(d.retryAfterSecs()).as("the lock outlives the count").isEqualTo(5 * 60);
+        assertThat(d).isInstanceOf(BackoffCheck.Decision.Denied.class);
+        assertThat(((BackoffCheck.Decision.Denied) d).retryAfterSecs()).as("the lock outlives the count").isEqualTo(5 * 60);
 
         // Go's anchor (oldest of the set) would have allowed this at +60 s —
         // the deviation recorded in the backlog.
         var goShaped = BackoffCheck.decide(P, NOW.plusSeconds(61), stats(0, null, NOW.minusSeconds(59 * 60), NOW.minusSeconds(10 * 60)));
-        assertThat(goShaped.allowed()).isFalse();
+        assertThat(goShaped).isInstanceOf(BackoffCheck.Decision.Denied.class);
     }
 
     @Test
@@ -102,22 +102,22 @@ class BackoffCheckTest {
         // ago (lock ended 5 min ago), the ceiling-th 40 min ago (count clears
         // in 20 min) — denied, Retry-After = time to countEnds, not 900.
         var d = BackoffCheck.decide(P, NOW, stats(0, null, NOW.minusSeconds(40 * 60), NOW.minusSeconds(20 * 60)));
-        assertThat(d.allowed()).isFalse();
-        assertThat(d.retryAfterSecs()).as("time to countEnds, not the 900 s lock").isEqualTo(20 * 60);
+        assertThat(d).isInstanceOf(BackoffCheck.Decision.Denied.class);
+        assertThat(((BackoffCheck.Decision.Denied) d).retryAfterSecs()).as("time to countEnds, not the 900 s lock").isEqualTo(20 * 60);
     }
 
     @Test
     void lockAndWindowBothExpiredIsAllowed() {
-        assertThat(BackoffCheck.decide(P, NOW, stats(0, null, NOW.minusSeconds(3601), NOW.minusSeconds(901))).allowed()).isTrue();
-        assertThat(BackoffCheck.decide(P, NOW, stats(0, null, NOW.minusSeconds(3601), NOW.minusSeconds(899))).allowed())
-                .as("the window cleared but the lock has not").isFalse();
+        assertThat(BackoffCheck.decide(P, NOW, stats(0, null, NOW.minusSeconds(3601), NOW.minusSeconds(901)))).isInstanceOf(BackoffCheck.Decision.Allowed.class);
+        assertThat(BackoffCheck.decide(P, NOW, stats(0, null, NOW.minusSeconds(3601), NOW.minusSeconds(899))))
+                .as("the window cleared but the lock has not").isInstanceOf(BackoffCheck.Decision.Denied.class);
     }
 
     @Test
     void retryAfterIsNeverBelowOneSecond() {
         var d = BackoffCheck.decide(P, NOW, stats(0, null, NOW.minusMillis(3600_000 - 200)));
-        assertThat(d.allowed()).isFalse();
-        assertThat(d.retryAfterSecs()).isEqualTo(1);
+        assertThat(d).isInstanceOf(BackoffCheck.Decision.Denied.class);
+        assertThat(((BackoffCheck.Decision.Denied) d).retryAfterSecs()).isEqualTo(1);
     }
 
     // ── against the repository: the two cases that would silently regress ──
@@ -154,17 +154,18 @@ class BackoffCheckTest {
         }
 
         var denied = check.check(ID, "10.0.0.1", now);
-        assertThat(denied.allowed()).isFalse();
-        assertThat(denied.retryAfterSecs()).as("lock end = fifth failure + 900 s").isEqualTo(890);
+        assertThat(denied).isInstanceOf(BackoffCheck.Decision.Denied.class);
+        assertThat(((BackoffCheck.Decision.Denied) denied).retryAfterSecs()).as("lock end = fifth failure + 900 s").isEqualTo(890);
 
         // Denied attempts are not recorded by the caller (spec §4). Simulate
         // five more denials: nothing written, so the timeline is unchanged.
-        assertThat(check.check(ID, "10.0.0.1", now.plusSeconds(300)).retryAfterSecs()).isEqualTo(590);
+        assertThat(((BackoffCheck.Decision.Denied) check.check(ID, "10.0.0.1", now.plusSeconds(300))).retryAfterSecs()).isEqualTo(590);
 
         // Waiting exactly the advertised interval lets the caller through.
-        assertThat(check.check(ID, "10.0.0.1", now.plusSeconds(890)).allowed())
-                .as("Retry-After is honest — the assertion the whole change exists for").isTrue();
-        assertThat(check.check(ID, "10.0.0.1", now.plusSeconds(889)).allowed()).isFalse();
+        assertThat(check.check(ID, "10.0.0.1", now.plusSeconds(890)))
+                .as("Retry-After is honest — the assertion the whole change exists for")
+                .isInstanceOf(BackoffCheck.Decision.Allowed.class);
+        assertThat(check.check(ID, "10.0.0.1", now.plusSeconds(889))).isInstanceOf(BackoffCheck.Decision.Denied.class);
     }
 
     @Test
@@ -176,8 +177,9 @@ class BackoffCheckTest {
         failureAt(id, now.minusSeconds(30));
         failureAt(id, now.minusSeconds(20));
         failureAt(id, now.minusSeconds(15));
-        assertThat(check.check(id, "", now).allowed()).isFalse();
+        assertThat(check.check(id, "", now)).isInstanceOf(BackoffCheck.Decision.Denied.class);
         REPO.recordAttempt(LoginAttempt.attempt(AttemptType.USER_LOGIN, AttemptOutcome.SUCCESS, null, id, null, "10.0.0.1", null));
-        assertThat(check.check(id, "", now.plusSeconds(1)).allowed()).as("cutoff moves to the success").isTrue();
+        assertThat(check.check(id, "", now.plusSeconds(1))).as("cutoff moves to the success")
+                .isInstanceOf(BackoffCheck.Decision.Allowed.class);
     }
 }

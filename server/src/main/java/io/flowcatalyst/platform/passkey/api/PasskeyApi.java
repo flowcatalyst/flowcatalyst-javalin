@@ -185,9 +185,9 @@ public final class PasskeyApi {
                 HttpError.write(ctx, 503, "BACKOFF_UNAVAILABLE", "login is temporarily unavailable; try again shortly", Map.of());
                 return;
             }
-            if (!d.allowed()) {
+            if (d instanceof BackoffCheck.Decision.Denied denied) {
                 // Ruling I-Q24: the platform envelope, not huma's.
-                ctx.header("Retry-After", Long.toString(d.retryAfterSecs()));
+                ctx.header("Retry-After", Long.toString(denied.retryAfterSecs()));
                 HttpError.write(ctx, 429, "TOO_MANY_REQUESTS", "Too many failed attempts — try again later", Map.of());
                 return;
             }

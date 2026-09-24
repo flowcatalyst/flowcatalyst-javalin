@@ -4,6 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
+import java.util.Optional;
 
 /// PKCE verification at the token endpoint (`docs/spec/auth-core.md` §6.2a
 /// "authorization_code", Go `verifyPKCE`): the verifier's length and
@@ -15,25 +16,25 @@ public final class Pkce {
     private Pkce() {
     }
 
-    /// The RFC 6749 error a failed verification maps to; `null` when it passed.
-    public static OAuthError verify(String challenge, String method, String verifier) {
+    /// The RFC 6749 error a failed verification maps to; empty when it passed.
+    public static Optional<OAuthError> verify(String challenge, String method, String verifier) {
         if (verifier == null || verifier.isEmpty()) {
-            return OAuthError.invalidGrant("Missing code_verifier");
+            return Optional.of(OAuthError.invalidGrant("Missing code_verifier"));
         }
         if (verifier.length() < 43 || verifier.length() > 128) {
-            return OAuthError.invalidGrant("code_verifier must be 43-128 characters");
+            return Optional.of(OAuthError.invalidGrant("code_verifier must be 43-128 characters"));
         }
         for (int i = 0; i < verifier.length(); i++) {
             if (!isUnreserved(verifier.charAt(i))) {
-                return OAuthError.invalidGrant("code_verifier contains invalid characters");
+                return Optional.of(OAuthError.invalidGrant("code_verifier contains invalid characters"));
             }
         }
         String m = method == null || method.isEmpty() ? "S256" : method;
         String computed = "S256".equals(m) ? s256(verifier) : verifier;
         if (!MessageDigest.isEqual(computed.getBytes(StandardCharsets.UTF_8), challenge.getBytes(StandardCharsets.UTF_8))) {
-            return OAuthError.invalidGrant("Invalid code_verifier");
+            return Optional.of(OAuthError.invalidGrant("Invalid code_verifier"));
         }
-        return null;
+        return Optional.empty();
     }
 
     /// `base64url(sha256(verifier))`, unpadded — what a client sends as its challenge.

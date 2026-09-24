@@ -36,14 +36,26 @@ public final class BackoffCheck {
     /// Why a decision denied.
     public enum Reason { PAIR_BACKOFF, GLOBAL_CEILING }
 
-    /// @param allowed        whether the attempt may proceed
-    /// @param retryAfterSecs the honest `Retry-After` when denied (≥ 1); 0 when allowed
-    /// @param reason         which gate denied; `null` when allowed
-    public record Decision(boolean allowed, long retryAfterSecs, Reason reason) {
-        public static final Decision ALLOWED = new Decision(true, 0, null);
+    /// The gate's answer: the attempt may proceed, or it is denied with the
+    /// honest `Retry-After` and which gate denied it — a denial always carries
+    /// both, an allowance neither (no `null` reason, no `0` retry).
+    public sealed interface Decision {
+        Allowed ALLOWED = new Allowed();
+
+        record Allowed() implements Decision {
+        }
+
+        /// @param retryAfterSecs the honest `Retry-After` (≥ 1)
+        /// @param reason         which gate denied
+        record Denied(long retryAfterSecs, Reason reason) implements Decision {
+            public Denied {
+                retryAfterSecs = Math.max(1, retryAfterSecs);
+                Objects.requireNonNull(reason, "reason");
+            }
+        }
 
         static Decision denied(long retryAfterSecs, Reason reason) {
-            return new Decision(false, Math.max(1, retryAfterSecs), reason);
+            return new Denied(retryAfterSecs, reason);
         }
     }
 

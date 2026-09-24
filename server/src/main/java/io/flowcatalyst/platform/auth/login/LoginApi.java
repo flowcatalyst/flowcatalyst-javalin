@@ -164,7 +164,7 @@ public final class LoginApi {
             }
             if (s.backoff() != null) {
                 BackoffCheck.Decision d = s.backoff().check(email, ClientIp.of(ctx), s.clock().instant());
-                if (!d.allowed()) {
+                if (d instanceof BackoffCheck.Decision.Denied) {
                     return null;
                 }
             }
@@ -230,8 +230,8 @@ public final class LoginApi {
                 backoffUnavailable(ctx);
                 return;
             }
-            if (!d.allowed()) {
-                tooManyRequests(ctx, d.retryAfterSecs()); // nothing recorded: the timeline freezes (spec §4)
+            if (d instanceof BackoffCheck.Decision.Denied denied) {
+                tooManyRequests(ctx, denied.retryAfterSecs()); // nothing recorded: the timeline freezes (spec §4)
                 return;
             }
         }
