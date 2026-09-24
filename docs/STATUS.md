@@ -19,8 +19,15 @@ fcdev 256 with one intermittent `FnCliEndToEndTest` "no bytes" — same macOS fa
 the fixture probed-and-released an ephemeral fn port that embedded Postgres (also port 0, on
 `localhost`) could then take, and the wildcard host bind succeeds beside it. Fixed test-side:
 `fcdev` fixtures take ports below the ephemeral range (`TestPorts`). Not pinned by a test — a
-1-in-N race cannot be asserted cheaply. **In progress:** W3 (JavaScript guest library,
-`function-hello-js`, `fn init --lang js`) and W4 (`fc_db_*`) in worktrees. **Owed:** native fcdev
+1-in-N race cannot be asserted cheaply. **W4 landed** `d7cb3bef` (`docs/spec/function-wasm-db.md`):
+`fc_db_query/execute/begin/commit/rollback` over the manifest's `db[]` pools (the same `DbPools`),
+a per-call `DbSession` bound as a ScopedValue (tx ids 128-bit random, unreachable from another
+call), force-release in `WasmFunction.handle`'s `finally`, millisecond statement timeouts from the
+invocation deadline (pgjdbc `setQueryTimeoutMs`), 10 000-row / 8 MiB caps while streaming, SQLSTATE
+→ error values, nothing logged; orchestrator re-ran the release, shared-tx-map and no-timeout
+mutants (all killed). function-host 464 · fcdev 256 from clean. Backlog: a connection can return to
+the pool mid-transaction (JVM and Wasm alike). **In progress:** W3 (JavaScript guest library,
+`function-hello-js`, `fn init --lang js`) in a worktree. **Owed:** native fcdev
 boot check now that fcdev links Endive (runtime class definition under native-image).
 
 ## fcdev 0.9.0: this repo owns the release stream; function host fetched on first use (2026-09-24, later still)

@@ -1852,3 +1852,16 @@ dying with `UnsupportedClassVersionError` in the child.
 - Not done here (out of this unit's scope): the manifest authoring aids (JSON Schema + dry-run
   route + SPA form/export + `fn init` improvements) and the function-host intermittent test failure
   — both already tracked elsewhere in this file / `docs/STATUS.md`.
+
+## Function database connections can go back to the pool mid-transaction (2026-09-24, W4 review)
+
+JVM and Wasm functions alike: a statement that opens a server-side transaction in autocommit
+(`BEGIN` sent as SQL, or `BEGIN; INSERT …` as one string) returns its pooled connection with the
+transaction still open — Hikari rolls back on return only when *it* saw autocommit off — so the next
+borrower's statements run inside it, hold its locks, and may never commit. Session state (`SET
+search_path`, `SET statement_timeout`) persists the same way. Not adversarial under the trust model
+(all functions are the operator's), but a cross-invocation footgun. Cheap guard, one place for both
+runtimes: on return, check pgjdbc's `PgConnection#getTransactionState()` and `ROLLBACK` if not
+`IDLE`, and `DISCARD ALL` / `RESET ALL` if session settings matter — a `DbPools` wrapper around the
+`DataSource` it hands out. Also from W4: no per-call connection cap, so a guest holding `poolSize`
+open transactions waits on itself until the deadline.
