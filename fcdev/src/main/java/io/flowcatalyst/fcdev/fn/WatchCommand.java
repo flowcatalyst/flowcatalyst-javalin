@@ -182,7 +182,7 @@ public final class WatchCommand implements Callable<Integer> {
             // already be live (an unchanged file saved again) — that is
             // success, not a cycle failure.
             switch (Promoter.promoteOrUnchanged(spec, root, root.client(), address, version, wait, clockMillis, sleepMillis)) {
-                case null -> {
+                case Promoter.PromoteOutcome.TimedOut ignored -> {
                     out.printf("v%d: timed out waiting for READY%n", version);
                     return;
                 }

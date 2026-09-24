@@ -92,7 +92,7 @@ public final class DeployCommand implements Callable<Integer> {
             // the existing version, no error" is unreachable otherwise once the
             // first deploy already promoted it.
             switch (Promoter.promoteOrUnchanged(spec, root, platform, addr, version, wait, clockMillis, sleepMillis)) {
-                case null -> {
+                case Promoter.PromoteOutcome.TimedOut ignored -> {
                     return 1;
                 }
                 case Promoter.PromoteOutcome.Unchanged ignored -> {

@@ -42,13 +42,18 @@ final class Promoter {
 
         record Unchanged() implements PromoteOutcome {
         }
+
+        /// `--wait` ran out before the new version went live; the timeout
+        /// message is already printed.
+        record TimedOut() implements PromoteOutcome {
+        }
     }
 
     /// [#promote] (the `live`-only overload), but `ALIAS_UNCHANGED` comes
     /// back as [PromoteOutcome.Unchanged] instead of a thrown
     /// [FnClientException] — every other failure still throws unchanged.
-    /// `null` on a timeout, same convention as [#promote] — the timeout
-    /// message is already printed.
+    /// [PromoteOutcome.TimedOut] on a timeout — the timeout message is
+    /// already printed.
     static PromoteOutcome promoteOrUnchanged(CommandSpec spec, FnCommand root, FnClient platform, String address,
                                               int version, Duration wait, LongSupplier clockMillis,
                                               LongConsumer sleepMillis) {
@@ -61,7 +66,7 @@ final class Promoter {
             }
             throw e;
         }
-        return response == null ? null : new PromoteOutcome.Moved(response);
+        return response == null ? new PromoteOutcome.TimedOut() : new PromoteOutcome.Moved(response);
     }
 
     /// @return the promote response on success, or `null` on a timeout — the
