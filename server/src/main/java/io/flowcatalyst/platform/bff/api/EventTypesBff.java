@@ -177,6 +177,7 @@ public final class EventTypesBff {
     /// applies name/description only, never a schema (Go parity, event_types.go).
     private static void syncPlatform(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), EVENT_TYPE_SYNC); // security-fixes S1.2: the tier is reach, the permission authority
         String applicationCode = "platform";
         if (!ctx.body().isBlank()) {
             var body = ctx.bodyAsClass(SyncPlatformRequest.class);

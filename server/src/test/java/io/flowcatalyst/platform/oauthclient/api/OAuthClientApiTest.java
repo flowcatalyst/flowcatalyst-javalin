@@ -71,7 +71,7 @@ class OAuthClientApiTest {
     private static final PortalAppRepository PORTAL_APP_REPO = new PortalAppRepository(TestPg.dataSource());
     private static final OAuthClientApi.State state = new OAuthClientApi.State(
             new OAuthClientRepository(TestPg.dataSource(), new ApplicationRepository(TestPg.dataSource())),
-            UOW, ENCRYPTION, PORTAL_APP_REPO);
+            UOW, ENCRYPTION, PORTAL_APP_REPO, new io.flowcatalyst.platform.principal.PrincipalRepository(TestPg.dataSource()));
     private static TestHttp http;
 
     @BeforeAll

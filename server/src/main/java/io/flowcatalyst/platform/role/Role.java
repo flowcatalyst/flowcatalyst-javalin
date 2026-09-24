@@ -14,9 +14,19 @@ import java.util.TreeSet;
 /// The role aggregate root (spec: `docs/spec/role.md`). A role is a named,
 /// global set of permission codes; principals reference it by `name`
 /// (`{applicationCode}:{shortName}`), never by id, and there is no client
-/// dimension — so the only invariant the aggregate guards is its **source**
+/// dimension — so the invariants the aggregate guards are its **source**
 /// (spec §2): `CODE` roles belong to the built-in catalogue and refuse the
-/// admin update / delete.
+/// admin update / delete; and **confinement** (security-fixes S1.5): every
+/// permission a role is given must belong to the role's own application —
+/// its first segment is the role's [#owningApplicationCode()] — so a
+/// `platform:` permission (the super-admin wildcard included) can only ever
+/// sit on a `platform:` role, and an application's SDK credential cannot
+/// mint platform authority by syncing `myapp:admin` with `platform:*:*:*`.
+/// Every transition that sets permissions enforces it ([#withPermissions],
+/// [#update], [#grant], [#syncedFromSdk], [#syncedFromCatalogue]);
+/// [#revoke] does not, so a stray code already stored on a legacy row can
+/// still be removed. Rows are read back through the canonical constructor
+/// unchecked — a legacy row is loaded, never refused.
 ///
 /// Immutable record: each transition returns a copy and throws
 /// [UseCaseException] when an invariant is violated, so an operation is
@@ -89,6 +99,31 @@ public record Role(
         return source == RoleSource.CODE;
     }
 
+    /// The application this role belongs to: its `applicationCode`, or — on
+    /// a legacy row without one — the first segment of its name.
+    public String owningApplicationCode() {
+        if (applicationCode != null && !applicationCode.isBlank()) return applicationCode;
+        int colon = name.indexOf(':');
+        return colon < 0 ? name : name.substring(0, colon);
+    }
+
+    /// The confinement rule (security-fixes S1.5): every code's first
+    /// segment is this role's application.
+    ///
+    /// @throws UseCaseException validation `PERMISSION_OUTSIDE_APPLICATION`
+    private List<String> confined(List<String> codes) {
+        String app = owningApplicationCode();
+        for (String code : codes) {
+            String first = code == null ? "" : code.split(":", 2)[0];
+            if (!first.equals(app)) {
+                throw UseCaseException.validation("PERMISSION_OUTSIDE_APPLICATION",
+                        "Permission '" + code + "' does not belong to application '" + app
+                                + "'; a role may only hold its own application's permissions");
+            }
+        }
+        return codes;
+    }
+
     /// Whether the role grants `permission`, honouring `*` segment wildcards
     /// in the held codes (the shared matcher, spec §1).
     public boolean hasPermission(String permission) {
@@ -109,7 +144,7 @@ public record Role(
                 changes.displayName() == null ? displayName : changes.displayName().strip(),
                 changes.description() == null ? description : changes.description(),
                 applicationCode,
-                changes.permissions() == null ? permissions : changes.permissions(),
+                changes.permissions() == null ? permissions : confined(changes.permissions()),
                 source,
                 changes.clientManaged() == null ? clientManaged : changes.clientManaged(),
                 createdAt, Instant.now());
@@ -135,25 +170,29 @@ public record Role(
 
     /// Adds `permission` to the set; a no-op copy when already held. Allowed
     /// on every source, including `CODE` (spec §2, open question 1).
+    ///
+    /// @throws UseCaseException validation `PERMISSION_OUTSIDE_APPLICATION` (confinement)
     public Role grant(String permission) {
+        confined(List.of(permission));
         if (permissions.contains(permission)) {
             return this;
         }
         var next = new ArrayList<>(permissions);
         next.add(permission);
-        return withPermissions(next);
+        return replacePermissions(next);
     }
 
-    /// Removes `permission` from the set (a no-op copy when absent).
+    /// Removes `permission` from the set (a no-op copy when absent). Not
+    /// confinement-checked: removing a stray code must always be possible.
     public Role revoke(String permission) {
-        return withPermissions(permissions.stream().filter(p -> !p.equals(permission)).toList());
+        return replacePermissions(permissions.stream().filter(p -> !p.equals(permission)).toList());
     }
 
     /// The catalogue sync's refresh of a `CODE` role: display name,
     /// description and permissions are taken from the catalogue wholesale
     /// (spec §7.2).
     public Role syncedFromCatalogue(String newDisplayName, String newDescription, List<String> newPermissions) {
-        return new Role(id, applicationId, name, newDisplayName, newDescription, applicationCode, newPermissions,
+        return new Role(id, applicationId, name, newDisplayName, newDescription, applicationCode, confined(newPermissions),
                 source, clientManaged, createdAt, Instant.now());
     }
 
@@ -164,7 +203,7 @@ public record Role(
     /// (spec §7.1).
     public Role syncedFromSdk(String newDisplayName, String newDescription, List<String> newPermissions, boolean newClientManaged) {
         return new Role(id, applicationId, name, newDisplayName, newDescription, applicationCode,
-                newPermissions == null || newPermissions.isEmpty() ? permissions : newPermissions,
+                newPermissions == null || newPermissions.isEmpty() ? permissions : confined(newPermissions),
                 source, newClientManaged, createdAt, Instant.now());
     }
 
@@ -175,7 +214,12 @@ public record Role(
                 clientManaged, createdAt, updatedAt);
     }
 
+    /// @throws UseCaseException validation `PERMISSION_OUTSIDE_APPLICATION` (confinement)
     public Role withPermissions(List<String> newPermissions) {
+        return replacePermissions(newPermissions == null ? null : confined(newPermissions));
+    }
+
+    private Role replacePermissions(List<String> newPermissions) {
         return new Role(id, applicationId, name, displayName, description, applicationCode, newPermissions, source,
                 clientManaged, createdAt, Instant.now());
     }

@@ -4,6 +4,7 @@ import io.flowcatalyst.platform.oauthclient.OAuthClient;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.portalapp.PortalApp;
 import io.flowcatalyst.platform.portalapp.PortalAppRepository;
+import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.oauthclient.operations.ActivateOAuthClientCommand;
 import io.flowcatalyst.platform.oauthclient.operations.ActivateOAuthClient;
 import io.flowcatalyst.platform.oauthclient.operations.CreateOAuthClientCommand;
@@ -84,14 +85,16 @@ public final class OAuthClientApi {
     /// (spec §6.3: a write that carries a secret with no `FLOWCATALYST_APP_KEY`
     /// configured fails 500 `SECRET`). `portalApps` resolves `portalAppId` on
     /// create/update (spec §4.5) — read-only here, this surface never writes
-    /// a portal app.
+    /// a portal app. `principals` resolves a create's `principalId`
+    /// (security-fixes S1.4: it must be an active, reachable `SERVICE` principal).
     public record State(OAuthClientRepository repo, UnitOfWork uow, Optional<Encryption> encryption,
-                        PortalAppRepository portalApps) {
+                        PortalAppRepository portalApps, PrincipalRepository principals) {
         public State {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(uow, "uow");
             Objects.requireNonNull(encryption, "encryption");
             Objects.requireNonNull(portalApps, "portalApps");
+            Objects.requireNonNull(principals, "principals");
         }
     }
 
@@ -147,7 +150,7 @@ public final class OAuthClientApi {
         // Local sink: the plaintext cannot outlive this request, and is only
         // read below, on the success path — a failed commit discloses nothing.
         var secret = new AtomicReference<String>();
-        var event = CreateOAuthClient.of(s.repo(), s.encryption(), secret::set).run(s.uow(), cmd, Auth.executionContext());
+        var event = CreateOAuthClient.of(s.repo(), s.principals(), s.encryption(), secret::set).run(s.uow(), cmd, Auth.executionContext());
         OAuthClient created = s.repo().findById(event.oauthClientId())
                 .orElseThrow(() -> HttpError.internal("REPO", "oauth client created but row not found", null));
         ctx.status(201).json(new CreateOAuthClientResponse(response(s, created), secret.get()));

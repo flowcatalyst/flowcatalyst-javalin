@@ -30,14 +30,18 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
+import static io.flowcatalyst.platform.shared.auth.Permission.ROLE_CREATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.ROLE_DELETE;
+import static io.flowcatalyst.platform.shared.auth.Permission.ROLE_UPDATE;
 import static io.flowcatalyst.platform.shared.auth.Permission.ROLE_VIEW;
 
 /// The `/bff/roles` surface (bff spec §6): the SPA's own role and
 /// permission-catalogue shapes, reusing
 /// [io.flowcatalyst.platform.role.operations] verbatim. Writes on the role
 /// itself (create/update/delete/sync-platform) and the permission catalogue
-/// are anchor-only (bff spec §6) — a stricter gate than `/api/roles`, which
-/// this class does not touch.
+/// are anchor-reach (bff spec §6) AND carry the `/api/roles` permission gate
+/// (security-fixes S1.2) — a stricter gate than `/api/roles`, which this
+/// class does not touch.
 ///
 /// | Method | Path | Status |
 /// |---|---|---|
@@ -101,22 +105,28 @@ public final class RolesBff {
         ctx.json(RoleResponse.from(roleNamed(s, ctx.pathParam("roleName"))));
     }
 
+    /// Anchor reach + the `/api/roles` write gate (security-fixes S1.2).
     private static void create(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
         var cmd = ctx.bodyAsClass(CreateRoleRequest.class).toCommand();
         var event = CreateRole.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.roleId()));
     }
 
+    /// Anchor reach + the `/api/roles/{id}` PUT gate (security-fixes S1.2).
     private static void update(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
         var cmd = ctx.bodyAsClass(UpdateRoleRequest.class).toCommand(roleNamed(s, ctx.pathParam("roleName")).id());
         UpdateRole.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
+    /// Anchor reach + `ROLE_DELETE`, the `/api/roles/{id}` DELETE gate (security-fixes S1.2).
     private static void delete(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), ROLE_DELETE);
         var cmd = new DeleteCommand(roleNamed(s, ctx.pathParam("roleName")).id());
         DeleteRole.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
@@ -134,9 +144,12 @@ public final class RolesBff {
         ctx.json(new ApplicationOptionsResponse(options));
     }
 
-    /// Anchor-only: upserts the built-in role catalogue (`seed.PlatformRoles`).
+    /// Upserts the built-in role catalogue (`seed.PlatformRoles`): anchor reach
+    /// + the role write gate (security-fixes S1.2 — it creates, updates and
+    /// removes `CODE` roles; there is no separate role-sync code to reuse).
     private static void syncPlatform(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
         var event = SyncPlatformRoles.of(s.roles(), PlatformRoles.all()).run(s.uow(), new SyncPlatformRolesCommand(), Auth.executionContext());
         ctx.json(new SyncPlatformResponse(event.created(), event.updated(), event.removed(), event.total()));
     }
@@ -153,8 +166,11 @@ public final class RolesBff {
         ctx.json(PermissionListResponse.from(catalogue(s, application)));
     }
 
+    /// Anchor reach + `ROLE_CREATE` — the counterpart of `/api/roles/permissions`
+    /// DELETE's `ROLE_DELETE` (security-fixes S1.2).
     private static void createPermission(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), ROLE_CREATE);
         var req = ctx.bodyAsClass(CreatePermissionRequest.class);
         String code = req.application() + ":" + req.context() + ":" + req.aggregate() + ":" + req.action();
         Permission p = Permission.define(code, req.description());

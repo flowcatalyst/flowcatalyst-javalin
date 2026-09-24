@@ -93,6 +93,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static io.flowcatalyst.platform.shared.auth.Permission.CLIENT_ACCESS_GRANT;
+import static io.flowcatalyst.platform.shared.auth.Permission.CLIENT_ACCESS_REVOKE;
+import static io.flowcatalyst.platform.shared.auth.Permission.CLIENT_ACCESS_VIEW;
 import static io.flowcatalyst.platform.shared.auth.Permission.USER_ASSIGN_ROLES;
 import static io.flowcatalyst.platform.shared.auth.Permission.USER_CREATE;
 import static io.flowcatalyst.platform.shared.auth.Permission.USER_DELETE;
@@ -290,8 +293,11 @@ public final class PrincipalApi {
         ctx.json(new PrincipalAvailableApplicationsResponse(out));
     }
 
+    /// Anchor reach (`requireAnchor`) and the client-access view permission
+    /// (security-fixes S1.2: the tier is reach, the permission authority).
     private static void listClientAccess(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_ACCESS_VIEW);
         ctx.json(new ClientAccessGrantListResponse(s.grants().findByPrincipal(ctx.pathParam("id")).stream()
                 .map(ClientAccessGrantResponse::from).toList()));
     }
@@ -448,7 +454,7 @@ public final class PrincipalApi {
     private static void syncUsers(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), USER_MANAGE, USER_CREATE, USER_UPDATE, USER_DELETE, USER_ASSIGN_ROLES);
         var cmd = ctx.bodyAsClass(SyncUsersRequest.class).toCommand();
-        var ev = SyncPrincipals.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
+        var ev = SyncPrincipals.of(s.repo(), s.roles(), s.clientConfigs()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(new SyncUsersResponse(ev.created(), ev.updated(), ev.deactivated(), ev.syncedEmails()));
     }
 
@@ -622,8 +628,11 @@ public final class PrincipalApi {
         ctx.json(new SetApplicationAccessResponse(resolveApplications(s, desired), added, removed, effectiveAll));
     }
 
+    /// Anchor reach + `CLIENT_ACCESS_GRANT` (security-fixes S1.2): a grant
+    /// widens the target's reach, which is authority, not a record edit.
     private static void grantClientAccess(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_ACCESS_GRANT);
         String id = ctx.pathParam("id");
         String clientId = ctx.bodyAsClass(GrantClientAccessRequest.class).clientId();
         GrantClientAccess.of(s.repo(), s.clients(), s.grants()).run(s.uow(), new GrantClientAccessCommand(id, clientId), Auth.executionContext());
@@ -631,15 +640,21 @@ public final class PrincipalApi {
                 .orElseThrow(() -> UseCaseException.internal("REPO", "grant not found after create", null))));
     }
 
+    /// Anchor reach + `CLIENT_ACCESS_REVOKE` (security-fixes S1.2).
     private static void revokeClientAccess(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_ACCESS_REVOKE);
         RevokeClientAccess.of(s.repo(), s.grants())
                 .run(s.uow(), new RevokeClientAccessCommand(ctx.pathParam("id"), ctx.pathParam("clientId")), Auth.executionContext());
         ctx.status(204);
     }
 
+    /// Anchor reach + `CLIENT_ACCESS_GRANT` (security-fixes S1.2): every mode
+    /// hands the target reach it did not have — a new home client, partner
+    /// grants, or (`"*"`) the anchor tier itself.
     private static void setClientAssociation(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), CLIENT_ACCESS_GRANT);
         String id = ctx.pathParam("id");
         SetClientAssociation.of(s.repo(), s.clients())
                 .run(s.uow(), ctx.bodyAsClass(ClientAssociationRequest.class).toCommand(id), Auth.executionContext());
@@ -703,10 +718,7 @@ public final class PrincipalApi {
     /// The application ids a client is entitled to (enabled client-configs) —
     /// the bound a non-anchor administrator is held to; empty for a clientless target.
     private static Set<String> clientApplicationIds(State s, String clientId) {
-        if (clientId == null || clientId.isEmpty()) return Set.of();
-        return s.clientConfigs().findByClient(clientId).stream()
-                .filter(ClientConfig::enabled).map(ClientConfig::applicationId)
-                .collect(Collectors.toUnmodifiableSet());
+        return Access.clientApplicationIds(s.clientConfigs(), clientId);
     }
 
     /// Every role a non-anchor names must exist, be application-scoped, and
@@ -722,21 +734,7 @@ public final class PrincipalApi {
     /// The first role in `roleNames` a non-anchor may not assign, as the
     /// error the mutation would refuse with; empty when every role passes.
     private static Optional<UseCaseError> assignableRolesProblem(State s, List<String> roleNames, Set<String> allowed) {
-        for (String name : roleNames) {
-            Optional<Role> role = s.roles().findByName(name);
-            if (role.isEmpty()) {
-                return Optional.of(new UseCaseError.Validation("UNKNOWN_ROLE", "role not found: " + name, Map.of()));
-            }
-            if (role.get().applicationId() == null) {
-                return Optional.of(new UseCaseError.Authorization("PLATFORM_ROLE_FORBIDDEN",
-                        "client administrators cannot assign platform roles", Map.of()));
-            }
-            if (!allowed.contains(role.get().applicationId())) {
-                return Optional.of(new UseCaseError.Authorization("ROLE_APP_FORBIDDEN",
-                        "role belongs to an application the client cannot access", Map.of()));
-            }
-        }
-        return Optional.empty();
+        return Access.assignableRolesProblem(s.roles(), roleNames, allowed);
     }
 
     /// The target's existing roles a non-anchor may not manage — platform,

@@ -74,6 +74,9 @@ class FunctionHostArtifactUploadIntegrationTest {
                     "platform:function:function:manage", "platform:function:function:view",
                     "platform:function:version:publish", "platform:function:alias:promote",
                     "platform:function:policy:manage", "platform:admin:application:create",
+                    // security-fixes S1.2: provisioning a service account and assigning its roles
+                    // need these at the anchor tier too (the tier is reach, never authority).
+                    "platform:admin:application:update", "platform:iam:service-account:create", "platform:iam:service-account:update",
                     "platform:iam:service-account:view")
     };
 

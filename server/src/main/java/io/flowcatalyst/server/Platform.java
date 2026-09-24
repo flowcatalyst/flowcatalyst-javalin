@@ -575,7 +575,7 @@ public final class Platform {
         var oauthClientRepo = new OAuthClientRepository(pool, applicationRepo);
         var portalAppRepo = new PortalAppRepository(pool);
         OAuthClientApi.register(routes, new OAuthClientApi.State(oauthClientRepo, uow,
-                Encryption.fromKeys(env.appKey(), env.appKeyPrevious()), portalAppRepo));
+                Encryption.fromKeys(env.appKey(), env.appKeyPrevious()), portalAppRepo, principalRepo));
 
         // portal identity + portal apps + portal auth (auth-identity spec §3.2, §3.3,
         // §5.1-§5.5, §5.7, §11.2, §11.8; portal-apps.md §3, §4.4): the admin APIs
@@ -659,7 +659,7 @@ public final class Platform {
         var triggerObjectRepo = new io.flowcatalyst.platform.function.TriggerObjectRepository(pool);
         SdkSyncApi.register(routes, new SdkSyncApi.State(applicationRepo, eventTypeRepo, roleRepo, subscriptionRepo,
                 connectionRepo, clientRepo, processRepo, dispatchPoolRepo, scheduledJobRepo, openApiSpecRepo,
-                appDocRepo, principalRepo, uow, triggerObjectRepo));
+                appDocRepo, principalRepo, uow, triggerObjectRepo, new ClientConfigRepository(pool)));
 
         // function platform API (docs/spec/function-api.md, work package B, slices B1-B3): Java-first,
         // outside the lockfile (spec §0) — every route is named in parity/surface.json instead.

@@ -55,9 +55,10 @@ import static io.flowcatalyst.platform.shared.auth.Permission.SERVICE_ACCOUNT_VI
 
 /// The `/api/service-accounts` surface (spec §3). A write handler does
 /// exactly: coarse permission → command from DTO → `Operation.run` →
-/// response; role-assignment and token-mint are gated **anchor-only** rather
-/// than by permission (spec §3: "both hand out authority rather than editing
-/// a record"). Every handler runs inside [Auth#scoped] so operations can read
+/// response; role-assignment and token-mint are gated **anchor reach AND a
+/// permission** (spec §3: "both hand out authority rather than editing a
+/// record"; the permission since security-fixes S1.2 — the tier is reach,
+/// never authority). Every handler runs inside [Auth#scoped] so operations can read
 /// [Auth#current()].
 ///
 /// | Method | Path | Status |
@@ -70,10 +71,10 @@ import static io.flowcatalyst.platform.shared.auth.Permission.SERVICE_ACCOUNT_VI
 /// | POST | `/api/service-accounts/{id}/deactivate` | 204 |
 /// | DELETE | `/api/service-accounts/{id}` | 204 |
 /// | GET | `/api/service-accounts/{id}/roles` | 200 [ServiceAccountRoleListResponse] |
-/// | PUT | `/api/service-accounts/{id}/roles` | 200 [ServiceAccountRolesAssignedResponse] (anchor-only) |
+/// | PUT | `/api/service-accounts/{id}/roles` | 200 [ServiceAccountRolesAssignedResponse] (anchor + `SERVICE_ACCOUNT_UPDATE`) |
 /// | POST | `/api/service-accounts/{id}/regenerate-token` (+`regenerate-auth-token` alias) | 200 [RegenerateAuthTokenResponse] |
 /// | POST | `/api/service-accounts/{id}/regenerate-secret` (+`regenerate-signing-secret` alias) | 200 [RegenerateSigningSecretResponse] |
-/// | POST | `/api/service-accounts/{id}/token` | 200 [ServiceAccountTokenResponse] (anchor-only) |
+/// | POST | `/api/service-accounts/{id}/token` | 200 [ServiceAccountTokenResponse] (anchor + `SERVICE_ACCOUNT_UPDATE`) |
 ///
 /// `POST /api/service-accounts/{id}/token`'s "best-effort audit row: who
 /// obtained a credential for which account" (spec §8 step 8) is written
@@ -204,10 +205,14 @@ public final class ServiceAccountApi {
         ctx.json(new ServiceAccountRoleListResponse(rolesOf(s, id).stream().map(RoleAssignmentResponse::from).toList()));
     }
 
-    /// Anchor-only (spec §3): role assignment grants authority in the
-    /// `principal` aggregate, so the gate is the tier, not a permission.
+    /// Anchor reach (spec §3) AND `SERVICE_ACCOUNT_UPDATE` (security-fixes
+    /// S1.2): role assignment grants authority in the `principal` aggregate,
+    /// and the anchor tier is reach, never authority — without the permission
+    /// an application's own anchor-reach service account could assign itself
+    /// `platform:super-admin`.
     private static void assignRoles(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), SERVICE_ACCOUNT_UPDATE);
         String id = ctx.pathParam("id");
         var body = ctx.bodyAsClass(AssignRolesRequest.class);
         var event = AssignRolesToServiceAccount.of(s.repo(), s.principals())
@@ -237,9 +242,13 @@ public final class ServiceAccountApi {
         ctx.json(new RegenerateSigningSecretResponse(id, secret.get()));
     }
 
-    /// Anchor-only and best-effort-audited (spec §3, §8; owner ruling 2026-09-06 #15).
+    /// Anchor reach + `SERVICE_ACCOUNT_UPDATE` (security-fixes S1.2: the
+    /// caller obtains a bearer that acts as the account — a credential, so a
+    /// permission, not the tier alone), best-effort-audited (spec §3, §8;
+    /// owner ruling 2026-09-06 #15).
     private static void mintToken(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), SERVICE_ACCOUNT_UPDATE);
         String id = ctx.pathParam("id");
         var result = MintServiceAccountToken.mint(s.repo(), s.principals(), s.minter(), s.flattenPermissions(), id);
         // A bearer was handed out for this account — a use of its credentials

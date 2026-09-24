@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.principal.operations;
 import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ApplicationType;
+import io.flowcatalyst.platform.application.ClientConfigRepository;
 import io.flowcatalyst.platform.client.Client;
 import io.flowcatalyst.platform.client.ClientIdentifier;
 import io.flowcatalyst.platform.client.ClientRepository;
@@ -70,7 +71,7 @@ class PrincipalOperationsTest {
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
     private static final String ACTOR = EntityType.PRINCIPAL.generate();
     private static final AuthContext ANCHOR = new AuthContext(ACTOR, Scope.ANCHOR, "anchor@x.io",
-            List.of("*"), List.of(), List.of(), true, List.of());
+            List.of("*"), List.of(), List.of(), true, List.of("platform:*:*:*"));
     private static final ExecutionContext EC = ExecutionContext.of(ACTOR);
 
     // ── Fixture ────────────────────────────────────────────────────────────
@@ -426,39 +427,48 @@ class PrincipalOperationsTest {
 
     // ── Sync ───────────────────────────────────────────────────────────────
 
+    private static final ClientConfigRepository clientConfigs = new ClientConfigRepository(DS);
+
+    private static Operation<SyncPrincipalsCommand, PrincipalEvents.PrincipalsSynced> sync() {
+        return SyncPrincipals.of(repo, roles, clientConfigs);
+    }
+
     @Test
     void syncPrincipalsUpsertsMergesRolesCarriesHashesAndStripsUnlisted() {
+        String app = "syncapp" + RUN;
         String existing = createdUser("syncold", "CLIENT", seedClient("sync"));
-        runAsAnchor(AssignRoles.of(repo, roles), new AssignRolesCommand(existing, List.of(seedRole("syncapp", "admin").name())));
+        Role admin = seedRole("syncapp", "admin");
+        Role viewer = seedRole("syncapp", "viewer");
+        runAsAnchor(AssignRoles.of(repo, roles), new AssignRolesCommand(existing, List.of(admin.name())));
         String hash = "$2y$10$migratedbcrypt";
-        var ev = runAsAnchor(SyncPrincipals.of(repo), new SyncPrincipalsCommand("syncapp", List.of(
-                new SyncPrincipalInput(email("syncold").toUpperCase(Locale.ROOT), "Old Renamed", List.of("SyncApp:Viewer"), false, hash),
-                new SyncPrincipalInput(email("syncnew"), "Brand New", List.of("syncapp:viewer"), true, null)), false));
+        var ev = runAsAnchor(sync(), new SyncPrincipalsCommand(app, List.of(
+                new SyncPrincipalInput(email("syncold").toUpperCase(Locale.ROOT), "Old Renamed", List.of(viewer.name().toUpperCase(Locale.ROOT)), false, hash),
+                new SyncPrincipalInput(email("syncnew"), "Brand New", List.of(viewer.name()), true, null)), false));
         assertThat(ev.created()).isEqualTo(1);
         assertThat(ev.updated()).isEqualTo(1);
         assertThat(ev.deactivated()).isZero();
         assertThat(ev.syncedEmails()).containsExactly(email("syncold"), email("syncnew"));
-        assertThat(ev.subject()).isEqualTo("platform.principals.syncapp");
+        assertThat(ev.subject()).isEqualTo("platform.principals." + app);
         var old = reload(existing);
         assertThat(old.name()).isEqualTo("Old Renamed");
         assertThat(old.active()).isFalse();
-        assertThat(old.roleNames()).containsExactlyInAnyOrder("syncapp" + RUN + ":admin", "syncapp:viewer");
-        assertThat(storedHash(existing)).isEqualTo(hash);
+        assertThat(old.roleNames()).containsExactlyInAnyOrder(admin.name(), viewer.name());
+        assertThat(storedHash(existing)).as("a super-admin's sync replaces an existing hash").isEqualTo(hash);
         var fresh = repo.findByEmail(email("syncnew")).orElseThrow();
         assertThat(fresh.scope()).isEqualTo(UserScope.CLIENT);
         assertThat(fresh.roles().getFirst().assignmentSource()).isEqualTo(RoleAssignment.SDK_SYNC);
         assertThat(fresh.userIdentity().hasPassword()).isFalse();
-        assertThat(DB.fetch("SELECT data::text AS data FROM msg_events WHERE type = ? AND subject = ?", PrincipalEvents.PRINCIPALS_SYNCED, "platform.principals.syncapp")
+        assertThat(DB.fetch("SELECT data::text AS data FROM msg_events WHERE type = ? AND subject = ?", PrincipalEvents.PRINCIPALS_SYNCED, "platform.principals." + app)
                 .getFirst().get("data", String.class)).doesNotContain(hash);
         assertThat(auditsFor(existing, "SyncPrincipalsCommand").getFirst().get("operation_json", String.class)).doesNotContain(hash);
 
-        var second = runAsAnchor(SyncPrincipals.of(repo), new SyncPrincipalsCommand(null, List.of(
+        var second = runAsAnchor(sync(), new SyncPrincipalsCommand(null, List.of(
                 new SyncPrincipalInput(email("syncnew"), "Brand New", List.of(), true, null)), true));
         assertThat(second.deactivated()).isGreaterThanOrEqualTo(1);
         assertThat(second.subject()).isEqualTo("platform.principals");
-        assertThat(reload(existing).roleNames()).as("SDK roles stripped, admin role kept, hash kept").containsExactly("syncapp" + RUN + ":admin");
+        assertThat(reload(existing).roleNames()).as("SDK roles stripped, admin role kept, hash kept").containsExactly(admin.name());
         assertThat(storedHash(existing)).isEqualTo(hash);
-        assertUseCaseError(() -> runAsAnchor(SyncPrincipals.of(repo), new SyncPrincipalsCommand(null, List.of(), false)), UseCaseError.Validation.class, "PRINCIPALS_REQUIRED");
+        assertUseCaseError(() -> runAsAnchor(sync(), new SyncPrincipalsCommand(null, List.of(), false)), UseCaseError.Validation.class, "PRINCIPALS_REQUIRED");
     }
 
     /// X-02(c) (ruled 2026-09-01): `removeUnlisted` strips only the SDK_SYNC
@@ -474,23 +484,25 @@ class PrincipalOperationsTest {
     void syncPrincipalsRemoveUnlistedStripsOnlyTheSyncingApplicationsSdkSyncRoles() {
         String userX = createdUser("x02cx", "CLIENT", seedClient("x02cx"));
         String userY = createdUser("x02cy", "CLIENT", seedClient("x02cy"));
-        runAsAnchor(SyncPrincipals.of(repo), new SyncPrincipalsCommand("x02cappx" + RUN, List.of(
-                new SyncPrincipalInput(email("x02cx"), "X", List.of("x02cappx" + RUN + ":viewer"), true, null)), false));
-        runAsAnchor(SyncPrincipals.of(repo), new SyncPrincipalsCommand("x02cappy" + RUN, List.of(
-                new SyncPrincipalInput(email("x02cy"), "Y", List.of("x02cappy" + RUN + ":viewer"), true, null)), false));
+        String roleX = seedRole("x02cappx", "viewer").name();
+        String roleY = seedRole("x02cappy", "viewer").name();
+        runAsAnchor(sync(), new SyncPrincipalsCommand("x02cappx" + RUN, List.of(
+                new SyncPrincipalInput(email("x02cx"), "X", List.of(roleX), true, null)), false));
+        runAsAnchor(sync(), new SyncPrincipalsCommand("x02cappy" + RUN, List.of(
+                new SyncPrincipalInput(email("x02cy"), "Y", List.of(roleY), true, null)), false));
         var yBefore = reload(userY);
-        assertThat(yBefore.roleNames()).containsExactly("x02cappy" + RUN + ":viewer");
+        assertThat(yBefore.roleNames()).containsExactly(roleY);
 
         // App X sweeps with removeUnlisted and an EMPTY payload — X is now
         // absent from its own app's payload, and so is Y (Y was never in it).
         // Under the old (unscoped) sweep this would strip Y's role too.
-        var swept = runAsAnchor(SyncPrincipals.of(repo), new SyncPrincipalsCommand("x02cappx" + RUN, List.of(
+        var swept = runAsAnchor(sync(), new SyncPrincipalsCommand("x02cappx" + RUN, List.of(
                 new SyncPrincipalInput(email("x02cz-not-present"), "Z", List.of(), true, null)), true));
         assertThat(swept.deactivated()).as("only X's own role is in this sweep's scope").isEqualTo(1);
         assertThat(reload(userX).roleNames()).as("X's role from the syncing application is stripped").isEmpty();
         var yAfter = reload(userY);
         assertThat(yAfter.roleNames()).as("a different application's role survives an unrelated app's sweep")
-                .containsExactly("x02cappy" + RUN + ":viewer");
+                .containsExactly(roleY);
         assertThat(yAfter.updatedAt()).as("Y's row must not even be touched, not just left with the same role")
                 .isEqualTo(yBefore.updatedAt());
     }
@@ -503,14 +515,127 @@ class PrincipalOperationsTest {
     void syncPrincipalsPlatformScopeRemoveUnlistedRefusesNonAnchor() {
         var nonAnchor = new AuthContext(EntityType.PRINCIPAL.generate(), Scope.CLIENT, "c@x.io", List.of("cli_x02d"),
                 List.of(), List.of(), true, List.of());
-        assertUseCaseError(() -> runAs(nonAnchor, SyncPrincipals.of(repo), new SyncPrincipalsCommand(null, List.of(
+        assertUseCaseError(() -> runAs(nonAnchor, sync(), new SyncPrincipalsCommand(null, List.of(
                         new SyncPrincipalInput(email("x02d-refused"), "D", List.of(), true, null)), true)),
                 UseCaseError.Authorization.class, "ANCHOR_REQUIRED_FOR_PLATFORM_SWEEP");
         // The same non-anchor may still sync WITHOUT removeUnlisted, or WITH
         // an application code — neither is a platform-wide sweep.
-        var ok = runAs(nonAnchor, SyncPrincipals.of(repo), new SyncPrincipalsCommand(null, List.of(
+        var ok = runAs(nonAnchor, sync(), new SyncPrincipalsCommand(null, List.of(
                 new SyncPrincipalInput(email("x02d-ok"), "D", List.of(), true, null)), false));
         assertThat(ok.created()).isEqualTo(1);
+    }
+
+    // ── Sync authority (security-fixes S1.3) ───────────────────────────────
+
+    /// A role that grants platform authority: `platform:`-named, no owning
+    /// application id — what `platform:super-admin` is.
+    private static Role seedPlatformRole(String tag) {
+        var r = Role.create("platform", tag + RUN, tag).withPermissions(List.of("platform:*:*:*"));
+        uow.inTransaction(tx -> { roles.persist(r, tx.dbTx()); return null; });
+        return r;
+    }
+
+    /// A client admin who IS `principalId`, homed on `clientId`, holding the
+    /// user permissions `platform:client-admin` holds.
+    private static AuthContext clientAdminSelf(String principalId, String clientId) {
+        return new AuthContext(principalId, Scope.CLIENT, "self@x.io", List.of(clientId), List.of(), List.of(), true,
+                List.of("platform:iam:user:create", "platform:iam:user:update", "platform:iam:user:assign-roles"));
+    }
+
+    /// Pinned: a client admin cannot sync a platform role onto itself — not
+    /// on the platform route (`PLATFORM_ROLE_FORBIDDEN`, the same rule as
+    /// `PUT /api/principals/{id}/roles`) and not through an application's
+    /// route (`ROLE_APP_FORBIDDEN`: the role is not that application's). The
+    /// observable effect: its role set is exactly what it was.
+    @Test
+    void aClientAdminCannotSyncAPlatformRoleOntoItself() {
+        String client = seedClient("s13self");
+        String self = createdUser("s13self", "CLIENT", client);
+        Role superAdmin = seedPlatformRole("s13sa");
+        var ac = clientAdminSelf(self, client);
+
+        assertUseCaseError(() -> runAs(ac, sync(), new SyncPrincipalsCommand(null, List.of(
+                        new SyncPrincipalInput(email("s13self"), "Me", List.of(superAdmin.name()), true, null)), false)),
+                UseCaseError.Authorization.class, "PLATFORM_ROLE_FORBIDDEN");
+        assertUseCaseError(() -> runAs(ac, sync(), new SyncPrincipalsCommand("s13app" + RUN, List.of(
+                        new SyncPrincipalInput(email("s13self"), "Me", List.of(superAdmin.name()), true, null)), false)),
+                UseCaseError.Authorization.class, "ROLE_APP_FORBIDDEN");
+        assertThat(reload(self).roleNames()).as("no platform role landed").isEmpty();
+    }
+
+    /// Role names must exist and, on an application's route, belong to that
+    /// application — for an anchor super-admin too: an SDK credential cannot
+    /// hand out another application's (or the platform's) roles.
+    @Test
+    void syncRefusesAnUnknownRoleAndAnotherApplicationsRole() {
+        Role other = seedRole("s13oth", "admin");
+        assertUseCaseError(() -> runAsAnchor(sync(), new SyncPrincipalsCommand("s13mine" + RUN, List.of(
+                        new SyncPrincipalInput(email("s13unknown"), "U", List.of("s13mine" + RUN + ":nope"), true, null)), false)),
+                UseCaseError.Validation.class, "UNKNOWN_ROLE");
+        assertUseCaseError(() -> runAsAnchor(sync(), new SyncPrincipalsCommand("s13mine" + RUN, List.of(
+                        new SyncPrincipalInput(email("s13other"), "O", List.of(other.name()), true, null)), false)),
+                UseCaseError.Authorization.class, "ROLE_APP_FORBIDDEN");
+        assertThat(repo.findByEmail(email("s13unknown"))).as("refused batch creates nothing").isEmpty();
+        assertThat(repo.findByEmail(email("s13other"))).isEmpty();
+    }
+
+    /// Pinned: a client admin cannot set an anchor user's password hash (the
+    /// anchor is outside a client admin's remit — `SYNC_TARGET_FORBIDDEN`,
+    /// hash unchanged); and an anchor that is not a super-admin may sync an
+    /// existing user's name but its hash is NOT applied — only a new
+    /// principal takes a hash from a non-super-admin.
+    @Test
+    void aSyncCannotTakeOverAnExistingAccountByItsPasswordHash() {
+        String client = seedClient("s13hash");
+        String anchorUser = runAsAnchor(CreateUser.of(repo), new CreateCommand(email("s13anchor"), null, "ANCHOR", null,
+                "correct-horse-battery", null)).userId();
+        String before = storedHash(anchorUser);
+        String attackerHash = "$2y$10$attackercontrolledhashvalue";
+
+        assertUseCaseError(() -> runAs(clientAdmin(client), sync(), new SyncPrincipalsCommand(null, List.of(
+                        new SyncPrincipalInput(email("s13anchor"), "Owned", List.of(), true, attackerHash)), false)),
+                UseCaseError.Authorization.class, "SYNC_TARGET_FORBIDDEN");
+        assertThat(storedHash(anchorUser)).isEqualTo(before);
+        assertThat(reload(anchorUser).name()).isNotEqualTo("Owned");
+
+        var iamAdmin = new AuthContext(EntityType.PRINCIPAL.generate(), Scope.ANCHOR, "iam@x.io", List.of(), List.of(),
+                List.of(), true, List.of("platform:iam:user:update"));
+        var ev = runAs(iamAdmin, sync(), new SyncPrincipalsCommand(null, List.of(
+                new SyncPrincipalInput(email("s13anchor"), "Renamed", List.of(), true, attackerHash),
+                new SyncPrincipalInput(email("s13fresh"), "Fresh", List.of(), true, attackerHash)), false));
+        assertThat(ev.updated()).isEqualTo(1);
+        assertThat(reload(anchorUser).name()).as("the rest of the entry applies").isEqualTo("Renamed");
+        assertThat(storedHash(anchorUser)).as("a non-super-admin never replaces an existing hash").isEqualTo(before);
+        assertThat(storedHash(repo.findByEmail(email("s13fresh")).orElseThrow().id()))
+                .as("a principal the sync creates takes the hash").isEqualTo(attackerHash);
+    }
+
+    /// Pinned: a client admin cannot deactivate a principal outside its reach
+    /// — naming it refuses the batch (`SYNC_TARGET_FORBIDDEN`, still active),
+    /// and an app-scoped `removeUnlisted` sweep skips it while still sweeping
+    /// the in-reach user (the counter that must change, `deactivated == 1`).
+    @Test
+    void aClientAdminCannotDeactivateOrSweepAPrincipalOutsideItsReach() {
+        String mine = seedClient("s13mine");
+        String theirs = seedClient("s13theirs");
+        String inReach = createdUser("s13in", "CLIENT", mine);
+        String outOfReach = createdUser("s13out", "CLIENT", theirs);
+        String app = "s13sweep" + RUN;
+        String appRole = seedRole("s13sweep", "viewer").name();
+        runAsAnchor(sync(), new SyncPrincipalsCommand(app, List.of(
+                new SyncPrincipalInput(email("s13in"), "In", List.of(appRole), true, null),
+                new SyncPrincipalInput(email("s13out"), "Out", List.of(appRole), true, null)), false));
+
+        assertUseCaseError(() -> runAs(clientAdmin(mine), sync(), new SyncPrincipalsCommand(null, List.of(
+                        new SyncPrincipalInput(email("s13out"), "Out", List.of(), false, null)), false)),
+                UseCaseError.Authorization.class, "SYNC_TARGET_FORBIDDEN");
+        assertThat(reload(outOfReach).active()).isTrue();
+
+        var swept = runAs(clientAdmin(mine), sync(), new SyncPrincipalsCommand(app, List.of(
+                new SyncPrincipalInput(email("s13sweep-new"), "N", List.of(), true, null)), true));
+        assertThat(swept.deactivated()).as("only the in-reach user is swept").isEqualTo(1);
+        assertThat(reload(inReach).roleNames()).isEmpty();
+        assertThat(reload(outOfReach).roleNames()).as("out of reach: untouched").containsExactly(appRole);
     }
 
     // ── Developer credential ───────────────────────────────────────────────

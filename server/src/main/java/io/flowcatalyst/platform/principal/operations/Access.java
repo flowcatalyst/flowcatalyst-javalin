@@ -1,13 +1,24 @@
 package io.flowcatalyst.platform.principal.operations;
 
+import io.flowcatalyst.platform.application.ClientConfig;
+import io.flowcatalyst.platform.application.ClientConfigRepository;
 import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.principal.UserScope;
+import io.flowcatalyst.platform.role.Role;
+import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.auth.Permission;
+import io.flowcatalyst.sdk.usecase.UseCaseError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /// Load-or-404 plus the per-resource authorization rules of spec §5.2 — the
 /// opening of every by-id operation's execute phase, which is why those
@@ -60,8 +71,10 @@ public final class Access {
     /// The user-administration rule used by role and application-access
     /// assignment and the developer-credential admin branch:
     /// [#blockNonClientTarget], then the out-of-scope-is-not-found rule, then
-    /// (for a non-anchor, now proven in-scope) the coarse user-write
-    /// permission. Order matters (ledger PR-3/PR-4, ruled 2026-09-01): a
+    /// the coarse user-write permission — at **every** tier, anchors included
+    /// (permissions come from roles; the anchor tier is reach, never
+    /// authority — `docs/spec/permissions-from-roles.md`,
+    /// `docs/spec/security-fixes-2026-09-24.md` S1.1). Order matters (ledger PR-3/PR-4, ruled 2026-09-01): a
     /// target outside the caller's client scope answers the SAME not-found a
     /// genuinely missing id would — never 403 — so an unauthorized caller
     /// cannot use the response to learn whether an id is real. A 403 is only
@@ -82,9 +95,7 @@ public final class Access {
         AuthContext ac = Auth.current();
         blockNonClientTarget(ac, p);
         requireInScope(ac, p, notFoundResource);
-        if (!ac.isAnchor()) {
-            Checks.requireAny(ac, Permission.USER_CREATE, Permission.USER_UPDATE, Permission.USER_DELETE);
-        }
+        Checks.requireAny(ac, Permission.USER_CREATE, Permission.USER_UPDATE, Permission.USER_DELETE);
     }
 
     /// [#requireUserAdmin(Principal, String)] with the `User_NOT_FOUND`
@@ -120,6 +131,48 @@ public final class Access {
     /// @throws UseCaseException authorization `UNAUTHENTICATED`; not-found `Principal_NOT_FOUND`
     public static void requireReadable(Principal p) {
         requireInScope(Auth.current(), p, "Principal");
+    }
+
+    /// Whether `ac` reaches `p` as its administrator — [#blockNonClientTarget]
+    /// and the in-scope rule of [#requireUserAdmin] as a boolean, without the
+    /// permission (a caller that already passed its route's coarse gate). The
+    /// principal sync's rule for which existing principals it may touch
+    /// (security-fixes S1.3).
+    static boolean administers(AuthContext ac, Principal p) {
+        if (ac == null) return false;
+        if (!ac.isAnchor() && p.scope() != UserScope.CLIENT) return false;
+        return Checks.canAccessScope(ac, p.clientId());
+    }
+
+    /// The application ids a client is entitled to (enabled client-configs) —
+    /// the bound a non-anchor administrator is held to; empty for a clientless target.
+    public static Set<String> clientApplicationIds(ClientConfigRepository configs, String clientId) {
+        if (clientId == null || clientId.isEmpty()) return Set.of();
+        return configs.findByClient(clientId).stream()
+                .filter(ClientConfig::enabled).map(ClientConfig::applicationId)
+                .collect(Collectors.toUnmodifiableSet());
+    }
+
+    /// The first role in `roleNames` a non-anchor may not assign (spec §5.3),
+    /// as the error the mutation would refuse with; empty when every role
+    /// passes. Every role must exist, be application-scoped, and belong to an
+    /// application in `allowed`.
+    public static Optional<UseCaseError> assignableRolesProblem(RoleRepository roles, List<String> roleNames, Set<String> allowed) {
+        for (String name : roleNames) {
+            Optional<Role> role = roles.findByName(name);
+            if (role.isEmpty()) {
+                return Optional.of(new UseCaseError.Validation("UNKNOWN_ROLE", "role not found: " + name, Map.of()));
+            }
+            if (role.get().applicationId() == null) {
+                return Optional.of(new UseCaseError.Authorization("PLATFORM_ROLE_FORBIDDEN",
+                        "client administrators cannot assign platform roles", Map.of()));
+            }
+            if (!allowed.contains(role.get().applicationId())) {
+                return Optional.of(new UseCaseError.Authorization("ROLE_APP_FORBIDDEN",
+                        "role belongs to an application the client cannot access", Map.of()));
+            }
+        }
+        return Optional.empty();
     }
 
     /// A principal manages its own developer credential unconditionally;

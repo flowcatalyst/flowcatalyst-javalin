@@ -139,8 +139,8 @@ class ServiceAccountApiTest {
 
     @BeforeAll
     static void start() {
-        grantedRole = Role.create("saapi" + RUN, "granter", "Granter").update(new Role.Changes(null, null, List.of(GRANTED_PERMISSION), null));
-        subscriptionViewerRole = Role.create("saapi" + RUN, "subscription-viewer", "Subscription Viewer")
+        grantedRole = Role.create("platform", "saapi" + RUN + "-granter", "Granter").update(new Role.Changes(null, null, List.of(GRANTED_PERMISSION), null));
+        subscriptionViewerRole = Role.create("platform", "saapi" + RUN + "-subscription-viewer", "Subscription Viewer")
                 .update(new Role.Changes(null, null, List.of(Permission.SUBSCRIPTION_VIEW.code()), null));
         UOW.inTransaction(tx -> {
             ROLES.persist(grantedRole, tx.dbTx());
@@ -548,6 +548,39 @@ class ServiceAccountApiTest {
         // Fix 1 (spec §9.1): the single-account read must agree with the sub-route, as equal sets.
         var accountRead = json(http.get("/api/service-accounts/" + id, VIEWER));
         assertThat(accountRead.get("roles").valueStream().map(JsonNode::asText).toList()).containsExactly(grantedRole.name());
+    }
+
+    /// Security-fixes S1.2: role assignment and token mint need
+    /// `SERVICE_ACCOUNT_UPDATE` at the anchor tier too. An anchor holding the
+    /// rest of the service-account family (view/create/delete) and the whole
+    /// user family is refused both with `PERMISSION_REQUIRED`; the account's
+    /// roles are unchanged afterwards (the observable effect); the specific
+    /// code (not the wildcard) admits both.
+    @Test
+    void assignRolesAndMintNeedServiceAccountUpdateEvenForAnAnchor() {
+        String id = create(code("s12"), "S12").get("serviceAccount").get("id").asText();
+        String[] anchorWithoutUpdate = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:iam:service-account:view,platform:iam:service-account:create,"
+                        + "platform:iam:service-account:delete,platform:iam:user:update,platform:iam:user:assign-roles"};
+
+        var assign = http.put("/api/service-accounts/" + id + "/roles", "{\"roles\":[\"" + grantedRole.name() + "\"]}", anchorWithoutUpdate);
+        assertThat(assign.statusCode()).as(assign.body()).isEqualTo(403);
+        assertThat(json(assign).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+        assertThat(json(http.get("/api/service-accounts/" + id + "/roles", VIEWER)).get("roles").size())
+                .as("no role landed").isZero();
+
+        var mint = http.post("/api/service-accounts/" + id + "/token", null, anchorWithoutUpdate);
+        assertThat(mint.statusCode()).as(mint.body()).isEqualTo(403);
+        assertThat(json(mint).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+        assertThat(mint.body()).doesNotContain("accessToken");
+
+        String[] anchorUpdater = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:iam:service-account:update"};
+        assertThat(http.put("/api/service-accounts/" + id + "/roles", "{\"roles\":[\"" + grantedRole.name() + "\"]}", anchorUpdater)
+                .statusCode()).isEqualTo(200);
+        assertThat(http.post("/api/service-accounts/" + id + "/token", null, anchorUpdater).statusCode()).isEqualTo(200);
     }
 
     // ── Regenerate token / secret: one-shot disclosure (spec §5) ────────────

@@ -2,6 +2,7 @@ package io.flowcatalyst.platform.sdksync.api;
 
 import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
+import io.flowcatalyst.platform.application.ClientConfigRepository;
 import io.flowcatalyst.platform.client.Client;
 import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
@@ -88,12 +89,13 @@ public final class SdkSyncApi {
                         ClientRepository clients, ProcessRepository processes, DispatchPoolRepository dispatchPools,
                         ScheduledJobRepository scheduledJobs, OpenApiSpecRepository specs,
                         AppDocRepository appDocs, PrincipalRepository principals, UnitOfWork uow,
-                        TriggerObjectRepository triggerObjects) {
+                        TriggerObjectRepository triggerObjects, ClientConfigRepository clientConfigs) {
 
         public State {
             Objects.requireNonNull(apps, "apps");
             Objects.requireNonNull(uow, "uow");
             Objects.requireNonNull(triggerObjects, "triggerObjects");
+            Objects.requireNonNull(clientConfigs, "clientConfigs");
         }
     }
 
@@ -202,7 +204,7 @@ public final class SdkSyncApi {
         // As for event-types: the command carries no applicationId.
         Checks.checkApplicationAccess(Auth.current(), app.id(), app.code());
         var cmd = ctx.bodyAsClass(SyncPrincipalsRequest.class).toCommand(app.code(), removeUnlisted(ctx));
-        ctx.json(SyncResultResponse.from(SyncPrincipals.of(s.principals()).run(s.uow(), cmd, Auth.executionContext())));
+        ctx.json(SyncResultResponse.from(SyncPrincipals.of(s.principals(), s.roles(), s.clientConfigs()).run(s.uow(), cmd, Auth.executionContext())));
     }
 
     private static void syncDocs(Exchange ctx, State s) {

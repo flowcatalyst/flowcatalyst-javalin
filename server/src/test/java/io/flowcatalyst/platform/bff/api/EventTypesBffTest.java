@@ -199,4 +199,22 @@ class EventTypesBffTest {
         assertThat(body.get("schemas").propertyNames()).containsExactlyInAnyOrder("created", "updated", "unchanged");
         assertThat(body.get("total").asInt()).isGreaterThan(0);
     }
+
+    /// Security-fixes S1.2: sync-platform needs `EVENT_TYPE_SYNC` at the
+    /// anchor tier too — an anchor holding every other event-type code is
+    /// refused `PERMISSION_REQUIRED`; the sync code alone (not the wildcard)
+    /// admits it.
+    @Test
+    void syncPlatformAlsoNeedsTheSyncPermission() {
+        String[] anchorWithoutSync = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(), Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:messaging:event-type:view,platform:messaging:event-type:create,"
+                        + "platform:messaging:event-type:update,platform:messaging:event-type:delete"};
+        var refused = http.post("/bff/event-types/sync-platform", null, anchorWithoutSync);
+        assertThat(refused.statusCode()).as(refused.body()).isEqualTo(403);
+        assertThat(json(refused).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+
+        String[] anchorSyncer = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(), Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:messaging:event-type:sync"};
+        assertThat(http.post("/bff/event-types/sync-platform", null, anchorSyncer).statusCode()).isEqualTo(200);
+    }
 }

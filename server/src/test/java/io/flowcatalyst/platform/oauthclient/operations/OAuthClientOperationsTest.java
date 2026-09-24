@@ -5,6 +5,13 @@ import io.flowcatalyst.platform.oauthclient.ClientType;
 import io.flowcatalyst.platform.oauthclient.OAuthClient;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.oauthclient.operations.OAuthClientEvents.OAuthClientCreated;
+import io.flowcatalyst.platform.client.Client;
+import io.flowcatalyst.platform.client.ClientIdentifier;
+import io.flowcatalyst.platform.client.ClientRepository;
+import io.flowcatalyst.platform.principal.EmailAddress;
+import io.flowcatalyst.platform.principal.Principal;
+import io.flowcatalyst.platform.principal.PrincipalRepository;
+import io.flowcatalyst.platform.principal.UserScope;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Scope;
@@ -53,6 +60,8 @@ class OAuthClientOperationsTest {
     private static final OAuthClientRepository repo = new OAuthClientRepository(DS, new ApplicationRepository(DS));
     private static final UnitOfWork uow = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
     private static final Optional<Encryption> ENCRYPTION = Optional.of(Encryption.withKey(Encryption.generateKey()));
+    private static final PrincipalRepository PRINCIPALS = new PrincipalRepository(DS);
+    private static final ClientRepository CLIENTS = new ClientRepository(DS);
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
     private static final String PRINCIPAL = EntityType.PRINCIPAL.generate();
@@ -73,7 +82,7 @@ class OAuthClientOperationsTest {
     }
 
     private static OAuthClientCreated createPublic(String tag) {
-        return runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
+        return runAsAnchor(CreateOAuthClient.of(repo, PRINCIPALS, ENCRYPTION, secretSink()::set),
                 new CreateOAuthClientCommand(null, clientName(tag), "PUBLIC", null, null, null, null, null, null, null, null, null, null, null));
     }
 
@@ -106,7 +115,7 @@ class OAuthClientOperationsTest {
     @Test
     void createWritesTheRowTheEventAndTheAuditTogether() {
         var secret = secretSink();
-        var ev = runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secret::set), new CreateOAuthClientCommand(
+        var ev = runAsAnchor(CreateOAuthClient.of(repo, PRINCIPALS, ENCRYPTION, secret::set), new CreateOAuthClientCommand(
                 null, clientName("create"), "CONFIDENTIAL", List.of("https://a.example/cb"), null,
                 List.of("authorization_code"), List.of("read"), null, null, null, null, null, null, null));
 
@@ -151,10 +160,10 @@ class OAuthClientOperationsTest {
 
     @Test
     void createRejectsAMissingNameOrInvalidClientType() {
-        assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
+        assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, PRINCIPALS, ENCRYPTION, secretSink()::set),
                         new CreateOAuthClientCommand(null, " ", "PUBLIC", null, null, null, null, null, null, null, null, null, null, null)),
                 UseCaseError.Validation.class, "CLIENT_NAME_REQUIRED");
-        assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
+        assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, PRINCIPALS, ENCRYPTION, secretSink()::set),
                         new CreateOAuthClientCommand(null, clientName("badtype"), "BOGUS", null, null, null, null, null, null, null, null, null, null, null)),
                 UseCaseError.Validation.class, "INVALID_CLIENT_TYPE");
     }
@@ -163,14 +172,14 @@ class OAuthClientOperationsTest {
     void createRejectsADuplicateClientId() {
         var first = createPublic("dupid");
         var got = reload(first.oauthClientId());
-        assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
+        assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, PRINCIPALS, ENCRYPTION, secretSink()::set),
                         new CreateOAuthClientCommand(got.clientId(), clientName("dupid2"), "PUBLIC", null, null, null, null, null, null, null, null, null, null, null)),
                 UseCaseError.Conflict.class, "CLIENT_ID_EXISTS");
     }
 
     @Test
     void createRejectsThePortalApiAccessCombination() {
-        assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
+        assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, PRINCIPALS, ENCRYPTION, secretSink()::set),
                         new CreateOAuthClientCommand(null, clientName("conflict"), "PUBLIC", null, null, null, null, null, null,
                                 null, null, "cli_portal_owner", null, true)),
                 UseCaseError.Validation.class, "PORTAL_API_ACCESS_CONFLICT");
@@ -178,16 +187,69 @@ class OAuthClientOperationsTest {
 
     @Test
     void createFailsWithSecretWhenNoEncryptionIsConfigured() {
-        assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, Optional.empty(), secretSink()::set),
+        assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, PRINCIPALS, Optional.empty(), secretSink()::set),
                         new CreateOAuthClientCommand(null, clientName("nokey"), "CONFIDENTIAL", null, null, null, null, null, null, null, null, null, null, null)),
                 UseCaseError.Internal.class, "SECRET");
+    }
+
+    // ── Create with principalId (security-fixes S1.4) ──────────────────────
+
+    private static String persistPrincipal(Principal p) {
+        uow.inTransaction(tx -> { PRINCIPALS.persist(p, tx.dbTx()); return null; });
+        return p.id();
+    }
+
+    private static CreateOAuthClientCommand withPrincipal(String tag, String principalId) {
+        return new CreateOAuthClientCommand(null, clientName(tag), "CONFIDENTIAL", null, null,
+                List.of("client_credentials"), null, null, null, principalId, null, null, null, null);
+    }
+
+    /// A `principalId` is who every `client_credentials` token of the client
+    /// acts as. Pins, each on its own create: a USER principal (the attack —
+    /// a credential for an administrator's account), an inactive service
+    /// principal, an unknown id, and a service principal outside a CLIENT
+    /// caller's reach are all refused `INVALID_SERVICE_PRINCIPAL` AND leave no
+    /// client behind; an active, reachable service principal is stored.
+    @Test
+    void createRequiresPrincipalIdToBeAnActiveReachableServicePrincipal() {
+        String user = persistPrincipal(Principal.newUser(EmailAddress.parse("s14-" + RUN + "@ops.test"), UserScope.ANCHOR)
+                .withName("Anchor Admin"));
+        String inactiveSvc = persistPrincipal(Principal.newService(EntityType.SERVICE_ACCOUNT.generate(), "svc off " + RUN).withActive(false));
+        String activeSvc = persistPrincipal(Principal.newService(EntityType.SERVICE_ACCOUNT.generate(), "svc on " + RUN));
+        var client = Client.create("S14 " + RUN, ClientIdentifier.parse("s14" + RUN));
+        var other = Client.create("S14o " + RUN, ClientIdentifier.parse("s14o" + RUN));
+        uow.inTransaction(tx -> { CLIENTS.persist(client, tx.dbTx()); CLIENTS.persist(other, tx.dbTx()); return null; });
+        String homedSvc = persistPrincipal(Principal.newService(EntityType.SERVICE_ACCOUNT.generate(), "svc homed " + RUN)
+                .withServiceReach(List.of(client.id())).principal());
+
+        for (var bad : List.of(user, inactiveSvc, EntityType.PRINCIPAL.generate())) {
+            String tag = "s14bad-" + bad.substring(bad.length() - 6);
+            assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, PRINCIPALS, ENCRYPTION, secretSink()::set),
+                    withPrincipal(tag, bad)), UseCaseError.Validation.class, "INVALID_SERVICE_PRINCIPAL");
+            assertThat(repo.findAll()).as("no client created for %s", tag)
+                    .noneMatch(c -> c.clientName().equals(clientName(tag)));
+        }
+
+        var outsider = new AuthContext(EntityType.PRINCIPAL.generate(), Scope.CLIENT, "c@x.io", List.of(other.id()),
+                List.of(), List.of(), true, List.of());
+        assertUseCaseError(() -> Auth.runAs(outsider, () -> CreateOAuthClient.of(repo, PRINCIPALS, ENCRYPTION, secretSink()::set)
+                .run(uow, withPrincipal("s14reach", homedSvc), EC)), UseCaseError.Validation.class, "INVALID_SERVICE_PRINCIPAL");
+
+        var insider = new AuthContext(EntityType.PRINCIPAL.generate(), Scope.CLIENT, "c@x.io", List.of(client.id()),
+                List.of(), List.of(), true, List.of());
+        var homed = Auth.runAs(insider, () -> CreateOAuthClient.of(repo, PRINCIPALS, ENCRYPTION, secretSink()::set)
+                .run(uow, withPrincipal("s14inreach", homedSvc), EC));
+        assertThat(reload(homed.oauthClientId()).principalId()).isEqualTo(homedSvc);
+
+        var ok = runAsAnchor(CreateOAuthClient.of(repo, PRINCIPALS, ENCRYPTION, secretSink()::set), withPrincipal("s14ok", activeSvc));
+        assertThat(reload(ok.oauthClientId()).principalId()).isEqualTo(activeSvc);
     }
 
     // ── Create with portalAppId (spec §4.5, wired through the operation layer) ──
 
     @Test
     void createLinksAnAppWhenPortalAppIdIsGiven() {
-        var ev = runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
+        var ev = runAsAnchor(CreateOAuthClient.of(repo, PRINCIPALS, ENCRYPTION, secretSink()::set),
                 new CreateOAuthClientCommand(null, clientName("applink"), "PUBLIC", null, null, null, null, null, null,
                         null, null, "cli_owner", "pta_1", null));
         var got = reload(ev.oauthClientId());
@@ -197,7 +259,7 @@ class OAuthClientOperationsTest {
 
     @Test
     void createRejectsAnAppLinkWithNoPortalClient() {
-        assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
+        assertUseCaseError(() -> runAsAnchor(CreateOAuthClient.of(repo, PRINCIPALS, ENCRYPTION, secretSink()::set),
                         new CreateOAuthClientCommand(null, clientName("orphan"), "PUBLIC", null, null, null, null, null, null,
                                 null, null, null, "pta_1", null)),
                 UseCaseError.Validation.class, "PORTAL_APP_REQUIRES_PORTAL_CLIENT");
@@ -244,7 +306,7 @@ class OAuthClientOperationsTest {
 
     @Test
     void updateLinksAnAppAndClearingPortalClientIdClearsBothAtTheCommandLevel() {
-        var portalClient = runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
+        var portalClient = runAsAnchor(CreateOAuthClient.of(repo, PRINCIPALS, ENCRYPTION, secretSink()::set),
                 new CreateOAuthClientCommand(null, clientName("updapp"), "PUBLIC", null, null, null, null, null, null,
                         null, null, "cli_owner", null, null));
 
@@ -322,7 +384,7 @@ class OAuthClientOperationsTest {
     // ── RotateSecret / RevokePreviousSecret (A-22) ──────────────────────────
 
     private static OAuthClientCreated createConfidential(String tag) {
-        return runAsAnchor(CreateOAuthClient.of(repo, ENCRYPTION, secretSink()::set),
+        return runAsAnchor(CreateOAuthClient.of(repo, PRINCIPALS, ENCRYPTION, secretSink()::set),
                 new CreateOAuthClientCommand(null, clientName(tag), "CONFIDENTIAL", null, null, null, null, null, null, null, null, null, null, null));
     }
 

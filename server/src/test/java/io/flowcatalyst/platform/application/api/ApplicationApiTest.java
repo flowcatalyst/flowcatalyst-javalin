@@ -462,6 +462,66 @@ class ApplicationApiTest {
         assertThat(put.statusCode()).as("any write permission passes the write gate").isEqualTo(204);
     }
 
+    /// Security-fixes S1.2: the tier is reach, the permission authority. An
+    /// anchor holding every application permission EXCEPT the one a route
+    /// needs is refused with `PERMISSION_REQUIRED` — and nothing happened
+    /// (no client-config enabled, no service account or login client, no
+    /// attachment); each route's specific code(s) admit it.
+    @Test
+    void anchorOnlyRoutesAlsoNeedTheirPermission() {
+        String id = create(code("s12"), "S12", "");
+        String clientId = client("s12-" + RUN);
+        String[] noAppWrite = anchorWith("platform:admin:application:view,platform:admin:application:create,"
+                + "platform:admin:application:delete,platform:iam:service-account:create,platform:auth:oauth-client:create");
+
+        var enable = http.post("/api/applications/" + id + "/clients/" + clientId + "/enable", null, noAppWrite);
+        assertThat(enable.statusCode()).as(enable.body()).isEqualTo(403);
+        assertThat(json(enable).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+        assertThat(http.get("/api/applications/" + id + "/clients/" + clientId, ANCHOR).statusCode()).as("not enabled").isEqualTo(404);
+
+        var provisionSa = http.post("/api/applications/" + id + "/provision-service-account", null, noAppWrite);
+        assertThat(provisionSa.statusCode()).as(provisionSa.body()).isEqualTo(403);
+        var provisionLogin = http.post("/api/applications/" + id + "/provision-login-client",
+                "{\"redirectUris\":[\"https://s12.example/cb\"]}", noAppWrite);
+        assertThat(provisionLogin.statusCode()).as(provisionLogin.body()).isEqualTo(403);
+        var attach = http.post("/api/applications/" + id + "/service-account",
+                "{\"serviceAccountId\":\"x\",\"serviceAccountCode\":\"x\"}", noAppWrite);
+        assertThat(attach.statusCode()).as(attach.body()).isEqualTo(403);
+        var app = json(http.get("/api/applications/" + id, ANCHOR));
+        assertThat(app.path("serviceAccountId").isMissingNode() || app.path("serviceAccountId").isNull())
+                .as("no service account provisioned or attached").isTrue();
+        assertThat(app.get("hasLoginClient").asBoolean()).as("no login client").isFalse();
+
+        // A service account needs SERVICE_ACCOUNT_CREATE on top of APPLICATION_UPDATE.
+        var saWithoutSaCreate = http.post("/api/applications/" + id + "/provision-service-account", null,
+                anchorWith("platform:admin:application:update"));
+        assertThat(saWithoutSaCreate.statusCode()).isEqualTo(403);
+        // ...and a login client needs OAUTH_CLIENT_CREATE on top of APPLICATION_UPDATE.
+        var loginWithoutOAuthCreate = http.post("/api/applications/" + id + "/provision-login-client",
+                "{\"redirectUris\":[\"https://s12.example/cb\"]}", anchorWith("platform:admin:application:update"));
+        assertThat(loginWithoutOAuthCreate.statusCode()).isEqualTo(403);
+        assertThat(json(http.get("/api/applications/" + id, ANCHOR)).get("hasLoginClient").asBoolean()).isFalse();
+
+        assertThat(http.post("/api/applications/" + id + "/clients/" + clientId + "/enable", null,
+                anchorWith("platform:admin:application:enable-client")).statusCode()).isEqualTo(204);
+        var disableRefused = http.post("/api/applications/" + id + "/clients/" + clientId + "/disable", null,
+                anchorWith("platform:admin:application:enable-client"));
+        assertThat(disableRefused.statusCode()).as("enable-client does not grant disable").isEqualTo(403);
+        assertThat(http.post("/api/applications/" + id + "/clients/" + clientId + "/disable", null,
+                anchorWith("platform:admin:application:disable-client")).statusCode()).isEqualTo(204);
+        assertThat(http.post("/api/applications/" + id + "/provision-service-account", null,
+                anchorWith("platform:admin:application:update,platform:iam:service-account:create")).statusCode()).isEqualTo(201);
+        assertThat(http.post("/api/applications/" + id + "/provision-login-client", "{\"redirectUris\":[\"https://s12.example/cb\"]}",
+                anchorWith("platform:admin:application:update,platform:auth:oauth-client:create")).statusCode()).isEqualTo(201);
+    }
+
+    private static String[] anchorWith(String permissions) {
+        return new String[] {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, permissions};
+    }
+
     @Test
     void validationConflictAndMalformedJsonAreEnvelopes() {
         var bad = http.post("/api/applications", "{\"code\":\"1bad\",\"name\":\"X\"}", ANCHOR);

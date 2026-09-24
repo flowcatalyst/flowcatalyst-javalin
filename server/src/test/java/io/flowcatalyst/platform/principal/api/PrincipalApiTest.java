@@ -444,6 +444,132 @@ class PrincipalApiTest {
         assertThat(body.has("removed")).isTrue();
     }
 
+    // ── Security-fixes S1.1–S1.3: anchor is reach, never authority ──────────
+
+    /// An anchor holding everything a user administrator might have EXCEPT a
+    /// user-write code.
+    private static String[] anchorWith(String permissions) {
+        return new String[] {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, permissions};
+    }
+
+    private static String seedRole(String app, String name, String... permissions) {
+        var r = io.flowcatalyst.platform.role.Role.create(app, name, name).withPermissions(List.of(permissions));
+        UOW.inTransaction(tx -> {
+            new RoleRepository(TestPg.dataSource()).persist(r, tx.dbTx());
+            return null;
+        });
+        return r.name();
+    }
+
+    private static List<String> rolesOf(String principalId) {
+        return REPO.findById(principalId).orElseThrow().roleNames();
+    }
+
+    /// S1.1 (`Access.requireUserAdmin` no longer skips the permission for an
+    /// anchor): every route that gates through it — roles PUT/POST/DELETE,
+    /// application-access, send-password-reset, developer-credential set and
+    /// revoke — refuses an anchor without a user-write code with
+    /// `PERMISSION_REQUIRED`, and the target's roles are unchanged; the
+    /// specific `USER_UPDATE` code (not the wildcard) admits it.
+    @Test
+    void anAnchorWithoutAUserWritePermissionIsRefusedEveryUserAdminRoute() {
+        String role = seedRole("s11app" + RUN, "r");
+        String target = createUser("s11", clientA);
+        assertThat(http.post("/api/principals/" + target + "/roles", "{\"role\":\"" + role + "\"}", anchor()).statusCode()).isEqualTo(200);
+        var noWrite = anchorWith("platform:iam:user:view,platform:iam:user:assign-roles,platform:iam:client-access:grant,"
+                + "platform:iam:client-access:revoke,platform:iam:client-access:view,platform:iam:role:view");
+
+        var calls = List.of(
+                http.put("/api/principals/" + target + "/roles", "{\"roles\":[]}", noWrite),
+                http.post("/api/principals/" + target + "/roles", "{\"role\":\"" + role + "\"}", noWrite),
+                http.delete("/api/principals/" + target + "/roles/" + role, noWrite),
+                http.put("/api/principals/" + target + "/application-access", "{\"applicationIds\":[]}", noWrite),
+                http.post("/api/principals/" + target + "/send-password-reset", "", noWrite),
+                http.post("/api/principals/" + target + "/developer-credential", "", noWrite),
+                http.delete("/api/principals/" + target + "/developer-credential", noWrite));
+        for (var r : calls) {
+            assertThat(r.statusCode()).as(r.uri() + " " + r.body()).isEqualTo(403);
+            assertThat(json(r).get("error").asText()).as(r.uri().toString()).isEqualTo("PERMISSION_REQUIRED");
+        }
+        assertThat(rolesOf(target)).as("neither the PUT nor the DELETE took effect").containsExactly(role);
+
+        var put = http.put("/api/principals/" + target + "/roles", "{\"roles\":[]}", anchorWith("platform:iam:user:update"));
+        assertThat(put.statusCode()).as(put.body()).isEqualTo(200);
+        assertThat(rolesOf(target)).isEmpty();
+    }
+
+    /// S1.2: the client-access routes and client association need their
+    /// client-access permission at the anchor tier too. The observable
+    /// effect: no grant row, the target's scope unchanged.
+    @Test
+    void clientAccessRoutesNeedTheirPermissionEvenForAnAnchor() {
+        var partner = http.post("/api/principals",
+                "{\"email\":\"s12p" + RUN + "@example.test\",\"scope\":\"PARTNER\",\"clientId\":\"" + clientA + "\"}", anchor());
+        assertThat(partner.statusCode()).as(partner.body()).isEqualTo(201);
+        String id = json(partner).get("id").asText();
+        var noAccessPerms = anchorWith("platform:iam:user:view,platform:iam:user:create,platform:iam:user:update,"
+                + "platform:iam:user:delete,platform:iam:user:assign-roles");
+        var grants = new ClientAccessGrantRepository(TestPg.dataSource());
+
+        var list = http.get("/api/principals/" + id + "/client-access", noAccessPerms);
+        assertThat(list.statusCode()).isEqualTo(403);
+        assertThat(json(list).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+        var grant = http.post("/api/principals/" + id + "/client-access", "{\"clientId\":\"" + clientB + "\"}", noAccessPerms);
+        assertThat(grant.statusCode()).as(grant.body()).isEqualTo(403);
+        assertThat(grants.findByPrincipalAndClient(id, clientB)).as("no grant row").isEmpty();
+        var assoc = http.put("/api/principals/" + id + "/client-association", "{\"clientId\":\"*\"}", noAccessPerms);
+        assertThat(assoc.statusCode()).as(assoc.body()).isEqualTo(403);
+        assertThat(REPO.findById(id).orElseThrow().scope().name()).as("not promoted to anchor").isEqualTo("PARTNER");
+
+        assertThat(http.post("/api/principals/" + id + "/client-access", "{\"clientId\":\"" + clientB + "\"}",
+                anchorWith("platform:iam:client-access:grant")).statusCode()).isEqualTo(200);
+        assertThat(http.get("/api/principals/" + id + "/client-access", anchorWith("platform:iam:client-access:view")).statusCode())
+                .isEqualTo(200);
+        var revoke = http.delete("/api/principals/" + id + "/client-access/" + clientB, noAccessPerms);
+        assertThat(revoke.statusCode()).isEqualTo(403);
+        assertThat(grants.findByPrincipalAndClient(id, clientB)).as("revoke refused: grant still there").isPresent();
+        assertThat(http.delete("/api/principals/" + id + "/client-access/" + clientB,
+                anchorWith("platform:iam:client-access:revoke")).statusCode()).isEqualTo(204);
+        assertThat(grants.findByPrincipalAndClient(id, clientB)).isEmpty();
+    }
+
+    /// S1.3 end to end through `POST /api/principals/sync`: a client admin of
+    /// client A cannot sync a platform role onto itself, cannot set an anchor
+    /// user's password hash, and cannot deactivate a principal in client B.
+    @Test
+    void aClientAdminsPrincipalSyncStaysInsideItsAuthority() {
+        String superAdmin = seedRole("platform", "s13sa" + RUN, "platform:*:*:*");
+        String self = createUser("s13self", clientA);
+        String outOfReach = createUser("s13out", clientB);
+        var anchorUser = http.post("/api/principals",
+                "{\"email\":\"s13anchor" + RUN + "@example.test\",\"scope\":\"ANCHOR\",\"password\":\"correct-horse-battery\"}", anchor());
+        assertThat(anchorUser.statusCode()).as(anchorUser.body()).isEqualTo(201);
+        String anchorId = json(anchorUser).get("id").asText();
+        String hashBefore = REPO.findById(anchorId).orElseThrow().userIdentity().passwordHash();
+        var clientAdmin = self(self, "platform:iam:user:view,platform:iam:user:create,platform:iam:user:update,"
+                + "platform:iam:user:delete,platform:iam:user:assign-roles");
+
+        var escalate = http.post("/api/principals/sync", "{\"principals\":[{\"email\":\"s13self" + RUN + "@example.test\","
+                + "\"name\":\"Me\",\"roles\":[\"" + superAdmin + "\"]}]}", clientAdmin);
+        assertThat(escalate.statusCode()).as(escalate.body()).isEqualTo(403);
+        assertThat(json(escalate).get("error").asText()).isEqualTo("PLATFORM_ROLE_FORBIDDEN");
+        assertThat(rolesOf(self)).doesNotContain(superAdmin);
+
+        var takeover = http.post("/api/principals/sync", "{\"principals\":[{\"email\":\"s13anchor" + RUN + "@example.test\","
+                + "\"name\":\"Owned\",\"passwordHash\":\"$2y$10$attackercontrolledhashvalue\"}]}", clientAdmin);
+        assertThat(takeover.statusCode()).as(takeover.body()).isEqualTo(403);
+        assertThat(json(takeover).get("error").asText()).isEqualTo("SYNC_TARGET_FORBIDDEN");
+        assertThat(REPO.findById(anchorId).orElseThrow().userIdentity().passwordHash()).isEqualTo(hashBefore);
+
+        var deactivate = http.post("/api/principals/sync", "{\"principals\":[{\"email\":\"s13out" + RUN + "@example.test\","
+                + "\"name\":\"Out\",\"active\":false}]}", clientAdmin);
+        assertThat(deactivate.statusCode()).as(deactivate.body()).isEqualTo(403);
+        assertThat(REPO.findById(outOfReach).orElseThrow().active()).isTrue();
+    }
+
     // ── Validation ─────────────────────────────────────────────────────────
 
     @Test

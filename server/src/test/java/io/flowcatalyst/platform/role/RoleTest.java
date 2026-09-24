@@ -80,12 +80,56 @@ class RoleTest {
 
     @Test
     void hasPermissionHonoursSegmentWildcards() {
-        var role = Role.create("p", "r", "R").withPermissions(List.of("platform:iam:role:view", "p:*:thing:*"));
+        // A platform role: since security-fixes S1.5 a role only holds its own
+        // application's codes, so the platform code sits on a platform role.
+        var role = Role.create("platform", "r", "R").withPermissions(List.of("platform:iam:role:view", "platform:*:thing:*"));
         assertThat(role.hasPermission("platform:iam:role:view")).isTrue();
         assertThat(role.hasPermission("platform:iam:role:create")).isFalse();
-        assertThat(role.hasPermission("p:any:thing:read")).isTrue();
-        assertThat(role.hasPermission("p:any:other:read")).isFalse();
-        assertThat(role.hasPermission("p:any:thing")).as("segment counts must match").isFalse();
+        assertThat(role.hasPermission("platform:any:thing:read")).isTrue();
+        assertThat(role.hasPermission("platform:any:other:read")).isFalse();
+        assertThat(role.hasPermission("platform:any:thing")).as("segment counts must match").isFalse();
+    }
+
+    // ── Confinement (security-fixes S1.5) ──────────────────────────────────
+
+    /// Every transition that sets permissions refuses a code outside the
+    /// role's application — the attack being an application role carrying the
+    /// platform super-admin wildcard, or an all-applications `*:*:*:*` —
+    /// while the platform wildcard on a platform role is fine.
+    @Test
+    void everyPermissionSettingTransitionConfinesCodesToTheRolesApplication() {
+        var app = Role.create("myapp", "admin", "Admin");
+        for (String foreign : List.of("platform:*:*:*", "*:*:*:*", "other:x:y:z", "myappx:a:b:c")) {
+            assertUseCaseError(() -> app.withPermissions(List.of("myapp:a:b:c", foreign)),
+                    UseCaseError.Validation.class, "PERMISSION_OUTSIDE_APPLICATION");
+            assertUseCaseError(() -> app.update(new Role.Changes(null, null, List.of(foreign), null)),
+                    UseCaseError.Validation.class, "PERMISSION_OUTSIDE_APPLICATION");
+            assertUseCaseError(() -> app.grant(foreign),
+                    UseCaseError.Validation.class, "PERMISSION_OUTSIDE_APPLICATION");
+            assertUseCaseError(() -> app.withSource(RoleSource.SDK).syncedFromSdk("A", null, List.of(foreign), false),
+                    UseCaseError.Validation.class, "PERMISSION_OUTSIDE_APPLICATION");
+            assertUseCaseError(() -> app.syncedFromCatalogue("A", null, List.of(foreign)),
+                    UseCaseError.Validation.class, "PERMISSION_OUTSIDE_APPLICATION");
+        }
+        assertThat(app.withPermissions(List.of("myapp:*:*:*")).permissions()).containsExactly("myapp:*:*:*");
+        assertThat(Role.create("platform", "super-admin", "SA").withPermissions(List.of("platform:*:*:*")).permissions())
+                .containsExactly("platform:*:*:*");
+    }
+
+    /// A legacy row already holding a stray code loads unchecked, and the
+    /// stray code can still be revoked; with no `applicationCode` the name's
+    /// first segment is the owning application.
+    @Test
+    void aLegacyStrayCodeLoadsAndCanBeRevoked() {
+        var base = Role.create("myapp", "legacy", "L");
+        var legacy = new Role(base.id(), null, "myapp:legacy", "L", null, null, List.of("myapp:a:b:c", "platform:*:*:*"),
+                RoleSource.DATABASE, false, base.createdAt(), base.updatedAt());
+        assertThat(legacy.owningApplicationCode()).isEqualTo("myapp");
+        assertThat(legacy.revoke("platform:*:*:*").permissions()).containsExactly("myapp:a:b:c");
+        assertThat(legacy.grant("myapp:d:e:f").permissions()).as("grant checks only the code it adds")
+                .contains("myapp:d:e:f");
+        assertUseCaseError(() -> legacy.grant("platform:iam:user:create"),
+                UseCaseError.Validation.class, "PERMISSION_OUTSIDE_APPLICATION");
     }
 
     // ── Admin update / delete and the source invariant ─────────────────────

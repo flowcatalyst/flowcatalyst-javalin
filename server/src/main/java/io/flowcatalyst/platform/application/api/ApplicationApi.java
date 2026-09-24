@@ -181,8 +181,11 @@ public final class ApplicationApi {
         ctx.status(204);
     }
 
+    /// Anchor reach + `APPLICATION_UPDATE` (security-fixes S1.2): the attached
+    /// account becomes the application's own identity.
     private static void attachServiceAccount(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), APPLICATION_UPDATE);
         var cmd = ctx.bodyAsClass(AttachServiceAccountRequest.class).toCommand(ctx.pathParam("id"));
         AttachServiceAccount.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
@@ -191,8 +194,14 @@ public final class ApplicationApi {
     /// Anchor-only (spec §10): creates + attaches a dedicated service account,
     /// its `SERVICE` principal and a `CONFIDENTIAL` OAuth client atomically.
     /// The response secret is the plaintext client secret, shown exactly once.
+    /// Gate (security-fixes S1.2): anchor reach, `SERVICE_ACCOUNT_CREATE` (it
+    /// creates a service account and issues its credential — the
+    /// `/api/service-accounts` create permission) and `APPLICATION_UPDATE`
+    /// (it rewrites the application's service-account link).
     private static void provisionServiceAccount(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), SERVICE_ACCOUNT_CREATE);
+        Checks.require(Auth.current(), APPLICATION_UPDATE);
         var result = ProvisionServiceAccount.of(s.repo(), s.serviceAccounts(), s.principals(), s.oauthClients(), s.encryption())
                 .run(s.uow(), new ProvisionServiceAccountCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(201).json(new ApplicationProvisionServiceAccountResponse("Service account provisioned",
@@ -202,9 +211,14 @@ public final class ApplicationApi {
 
     /// Anchor-only (spec §10): a thin handler over `CreateOAuthClient`, not a
     /// new operation. `PUBLIC` (default) has no secret and PKCE required;
-    /// `CONFIDENTIAL` returns a plaintext secret once.
+    /// `CONFIDENTIAL` returns a plaintext secret once. Gate (security-fixes
+    /// S1.2): anchor reach, `OAUTH_CLIENT_CREATE` (the `/api/oauth-clients`
+    /// create permission — this IS an OAuth client create) and
+    /// `APPLICATION_UPDATE`.
     private static void provisionLoginClient(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), OAUTH_CLIENT_CREATE);
+        Checks.require(Auth.current(), APPLICATION_UPDATE);
         var body = ctx.bodyAsClass(ProvisionLoginClientRequest.class);
         if (body.redirectUris() == null || body.redirectUris().isEmpty()) {
             throw UseCaseException.validation("REDIRECT_URIS_REQUIRED", "At least one redirect URI is required");
@@ -216,7 +230,7 @@ public final class ApplicationApi {
         var cmd = new io.flowcatalyst.platform.oauthclient.operations.CreateOAuthClientCommand(null, app.name() + " Login", clientType,
                 body.redirectUris(), null, List.of("authorization_code", "refresh_token"),
                 List.of("openid", "profile", "email"), body.allowedOrigins(), List.of(app.id()), null, null, null, null, null);
-        OAuthClientCreated event = CreateOAuthClient.of(s.oauthClients(), s.encryption(), secret::set)
+        OAuthClientCreated event = CreateOAuthClient.of(s.oauthClients(), s.principals(), s.encryption(), secret::set)
                 .run(s.uow(), cmd, Auth.executionContext());
 
         ctx.status(201).json(new ApplicationProvisionLoginClientResponse("Login client provisioned",
@@ -237,15 +251,20 @@ public final class ApplicationApi {
         ctx.json(ClientConfigResponse.from(clientConfig(s, ctx.pathParam("id"), ctx.pathParam("clientId"))));
     }
 
+    /// Anchor reach + `APPLICATION_ENABLE_CLIENT` (security-fixes S1.2): an
+    /// enabled application's roles become assignable by that client's admins.
     private static void enableForClient(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), APPLICATION_ENABLE_CLIENT);
         var cmd = new EnableForClientCommand(ctx.pathParam("id"), ctx.pathParam("clientId"));
         EnableApplicationForClient.of(s.repo(), s.configs()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
+    /// Anchor reach + `APPLICATION_DISABLE_CLIENT` (security-fixes S1.2).
     private static void disableForClient(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
+        Checks.require(Auth.current(), APPLICATION_DISABLE_CLIENT);
         var cmd = new DisableForClientCommand(ctx.pathParam("id"), ctx.pathParam("clientId"));
         DisableApplicationForClient.of(s.configs()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);

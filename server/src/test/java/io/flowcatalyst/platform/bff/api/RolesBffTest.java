@@ -79,7 +79,7 @@ class RolesBffTest {
     void createReturnsTheIdEnvelopeAndTheRoleIsThenReadable() {
         String name = roleName("create");
         var r = http.post("/bff/roles", "{\"applicationCode\":\"rbffapp" + RUN + "\",\"roleName\":\"" + name
-                + "\",\"displayName\":\"Display " + name + "\",\"permissions\":[\"platform:iam:role:view\"],\"clientManaged\":false}", ANCHOR);
+                + "\",\"displayName\":\"Display " + name + "\",\"permissions\":[\"rbffapp" + RUN + ":iam:role:view\"],\"clientManaged\":false}", ANCHOR);
         assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
         assertThat(json(r).propertyNames()).containsExactly("id");
         String id = json(r).get("id").asText();
@@ -145,6 +145,71 @@ class RolesBffTest {
         assertThat(http.post("/bff/roles/sync-platform", null, WRITER).statusCode()).isEqualTo(403);
         assertThat(http.post("/bff/roles/permissions",
                 "{\"application\":\"x\",\"context\":\"y\",\"aggregate\":\"z\",\"action\":\"w\"}", WRITER).statusCode()).isEqualTo(403);
+    }
+
+    /// Security-fixes S1.2: the anchor tier is reach, never authority. An
+    /// anchor holding every permission EXCEPT the role-write family (it has
+    /// `role:view` and the whole user family) is refused every write with
+    /// `PERMISSION_REQUIRED`, and the role it tried to change is unchanged;
+    /// the same anchor with the specific codes (not the wildcard) succeeds.
+    @Test
+    void writesNeedTheRolePermissionEvenForAnAnchor() {
+        String[] anchorWithoutRoleWrite = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:iam:role:view,platform:iam:user:create,platform:iam:user:update,"
+                        + "platform:iam:user:delete,platform:iam:user:assign-roles,platform:admin:application:update"};
+        String name = roleName("s12");
+        String fullName = "rbffapp" + RUN + ":" + name;
+        http.post("/bff/roles", "{\"applicationCode\":\"rbffapp" + RUN + "\",\"roleName\":\"" + name + "\",\"displayName\":\"Before\"}", ANCHOR);
+
+        var create = http.post("/bff/roles", "{\"applicationCode\":\"rbffapp" + RUN + "\",\"roleName\":\"" + name
+                + "-new\",\"displayName\":\"Y\"}", anchorWithoutRoleWrite);
+        assertThat(create.statusCode()).as(create.body()).isEqualTo(403);
+        assertThat(json(create).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+        assertThat(http.get("/bff/roles/" + fullName + "-new", ANCHOR).statusCode()).as("nothing created").isEqualTo(404);
+
+        var update = http.put("/bff/roles/" + fullName, "{\"displayName\":\"After\"}", anchorWithoutRoleWrite);
+        assertThat(update.statusCode()).isEqualTo(403);
+        assertThat(json(http.get("/bff/roles/" + fullName, ANCHOR)).get("displayName").asText()).isEqualTo("Before");
+        assertThat(http.delete("/bff/roles/" + fullName, anchorWithoutRoleWrite).statusCode()).isEqualTo(403);
+        assertThat(http.get("/bff/roles/" + fullName, ANCHOR).statusCode()).as("not deleted").isEqualTo(200);
+        assertThat(http.post("/bff/roles/sync-platform", null, anchorWithoutRoleWrite).statusCode()).isEqualTo(403);
+        assertThat(http.post("/bff/roles/permissions",
+                "{\"application\":\"rbffapp" + RUN + "\",\"context\":\"s12\",\"aggregate\":\"z\",\"action\":\"w\"}",
+                anchorWithoutRoleWrite).statusCode()).isEqualTo(403);
+        assertThat(http.get("/bff/roles/permissions/rbffapp" + RUN + ":s12:z:w", ANCHOR).statusCode())
+                .as("no catalogue entry created").isEqualTo(404);
+
+        String[] anchorRoleWriter = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:iam:role:view,platform:iam:role:create,platform:iam:role:update,platform:iam:role:delete"};
+        assertThat(http.put("/bff/roles/" + fullName, "{\"displayName\":\"After\"}", anchorRoleWriter).statusCode()).isEqualTo(204);
+        assertThat(http.post("/bff/roles/sync-platform", null, anchorRoleWriter).statusCode()).isEqualTo(200);
+        assertThat(http.post("/bff/roles/permissions",
+                "{\"application\":\"rbffapp" + RUN + "\",\"context\":\"s12\",\"aggregate\":\"z\",\"action\":\"w\"}",
+                anchorRoleWriter).statusCode()).isEqualTo(201);
+        assertThat(http.delete("/bff/roles/" + fullName, anchorRoleWriter).statusCode()).isEqualTo(204);
+    }
+
+    /// Security-fixes S1.5 through the BFF: an application role may not be
+    /// created or updated with a `platform:` permission (the super-admin
+    /// wildcard) — 400 `PERMISSION_OUTSIDE_APPLICATION`, nothing stored.
+    @Test
+    void anApplicationRoleCannotCarryAPlatformPermission() {
+        String name = roleName("s15");
+        String fullName = "rbffapp" + RUN + ":" + name;
+        var create = http.post("/bff/roles", "{\"applicationCode\":\"rbffapp" + RUN + "\",\"roleName\":\"" + name
+                + "\",\"displayName\":\"D\",\"permissions\":[\"platform:*:*:*\"]}", ANCHOR);
+        assertThat(create.statusCode()).as(create.body()).isEqualTo(400);
+        assertThat(json(create).get("error").asText()).isEqualTo("PERMISSION_OUTSIDE_APPLICATION");
+        assertThat(http.get("/bff/roles/" + fullName, ANCHOR).statusCode()).isEqualTo(404);
+
+        http.post("/bff/roles", "{\"applicationCode\":\"rbffapp" + RUN + "\",\"roleName\":\"" + name
+                + "\",\"displayName\":\"D\",\"permissions\":[\"rbffapp" + RUN + ":a:b:c\"]}", ANCHOR);
+        var update = http.put("/bff/roles/" + fullName, "{\"permissions\":[\"platform:iam:user:create\"]}", ANCHOR);
+        assertThat(update.statusCode()).as(update.body()).isEqualTo(400);
+        assertThat(json(http.get("/bff/roles/" + fullName, ANCHOR)).get("permissions").valueStream()
+                .map(JsonNode::asText).toList()).containsExactly("rbffapp" + RUN + ":a:b:c");
     }
 
     @Test
