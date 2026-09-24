@@ -67,6 +67,26 @@ serialised into the outbox payload. A masked-fields list may be passed by the ca
 5. TS and PHP: every vector passes (mutant in each: drop one suffix).
 6. The vector copies are byte-identical to the canonical file.
 
+## Temporary: redact existing rows from the dashboard (owner, 2026-09-24; to be removed later)
+
+- `POST /bff/audit-logs/redact-existing` — same shape and gate as `/bff/roles/sync-platform`
+  (anchor-only), plus the audit-log read permission. Walks `aud_logs` in id order, in batches of
+  500, applies the same `AuditRedaction` to each row's `operation_json` with that operation's
+  masked fields (`SetPropertyCommand`: `value` unless `valueType` is `PLAIN` — one
+  implementation shared with the command's own `AuditMasked`, e.g. a static helper on the
+  command), and **updates only rows whose JSON changed**. Answers `{scanned, redacted}`.
+  Idempotent: a second run redacts 0. Writes one audit row of its own
+  (`operation = "RedactExistingAuditLogs"`, `operation_json = {scanned, redacted}`).
+- SPA: a fourth card in the dashboard's "Platform Sync" section — "Audit logs", description
+  "Redact passwords and secrets from existing audit rows" — with a **Redact** button (not part of
+  Sync All), a confirmation before it runs, and a toast with the counts. Marked in code as
+  temporary (a comment naming this spec).
+- Tests: rows seeded with a webhook secret and a SECRET config value are redacted, a PLAIN value
+  and an unrelated row are untouched (the unrelated row's `operation_json` is byte-identical), the
+  counts are right, the second run answers `redacted: 0` (mutant: update every row → the
+  byte-identical assertion fails); a non-anchor caller is refused. SPA: the button calls the
+  route and shows the counts.
+
 ## Out of scope here (owner decision pending)
 
 Rows already written — rotation of the exposed credentials and a one-off `jsonb` cleanup of
