@@ -15,6 +15,8 @@ import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.portalapp.PortalAppRepository;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
+import io.flowcatalyst.platform.shared.Failures;
+import io.flowcatalyst.platform.shared.LogThrottle;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import org.slf4j.Logger;
@@ -74,6 +76,7 @@ public record OAuthState(
         long refreshTtlSeconds) {
 
     private static final Logger LOG = LoggerFactory.getLogger(OAuthState.class);
+    private static final LogThrottle UNVERIFIABLE_LOG = new LogThrottle(java.time.Duration.ofSeconds(10));
 
     public OAuthState {
         Objects.requireNonNull(oauthClients, "oauthClients");
@@ -106,14 +109,29 @@ public record OAuthState(
     /// if so whether the stored ref should be rewritten to the hashed form
     /// (`docs/spec/encryption.md` §3 transparent migration). `NoMatch` with
     /// no encryption service configured.
+    ///
+    /// An [Encryption.SecretVerification.Unverifiable] outcome (and a
+    /// verification that threw) is still a refusal, but it is logged at ERROR
+    /// (throttled): after an app-key rotation or misconfiguration every client
+    /// is refused here, and without this line it reads exactly like callers
+    /// sending wrong secrets.
     public Encryption.SecretVerification verifySecret(String ref, String providedPlaintext) {
-        return encryption.map(enc -> {
+        Encryption.SecretVerification outcome = encryption.map(enc -> {
             try {
                 return enc.verifySecret(ref, providedPlaintext);
             } catch (RuntimeException e) {
-                return (Encryption.SecretVerification) new Encryption.SecretVerification.NoMatch();
+                return (Encryption.SecretVerification) new Encryption.SecretVerification.Unverifiable(
+                        "verification threw: " + Failures.describe(e));
             }
         }).orElseGet(Encryption.SecretVerification.NoMatch::new);
+        if (outcome instanceof Encryption.SecretVerification.Unverifiable(String reason)) {
+            UNVERIFIABLE_LOG.admit().ifPresent(suppressed -> LOG.atError()
+                    .setMessage("a stored client secret could not be verified; the caller is refused")
+                    .addKeyValue("reason", reason)
+                    .addKeyValue("suppressed_since_last", suppressed)
+                    .log());
+        }
+        return outcome;
     }
 
     /// Best-effort attempt row; a logging miss never fails the auth flow.

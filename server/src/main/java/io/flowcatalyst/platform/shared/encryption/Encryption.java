@@ -274,6 +274,14 @@ public final class Encryption {
 
         record NoMatch() implements SecretVerification {
         }
+
+        /// The stored ref could not be checked at all — malformed, an external
+        /// reference this path cannot resolve, or a decryption failure (the app
+        /// key rotated or misconfigured). Still a refusal (fail closed), but not
+        /// the caller's wrong secret: after a key problem EVERY caller lands
+        /// here, which is the operator's to see, not the caller's to be told.
+        record Unverifiable(String reason) implements SecretVerification {
+        }
     }
 
     /// Verifies `providedPlaintext` against a stored secret ref of either
@@ -281,14 +289,16 @@ public final class Encryption {
     /// by keyed MAC (current key, then previous — same order as [#decrypt]),
     /// no decryption involved; any other shape keeps today's decrypt-and-compare.
     /// Constant-time either way ([MessageDigest#isEqual]). Never throws for
-    /// bad data — a malformed or unmatched ref is [SecretVerification.NoMatch].
+    /// bad data — an unmatched ref is [SecretVerification.NoMatch]; a ref that
+    /// cannot be checked (malformed, external, undecryptable) is
+    /// [SecretVerification.Unverifiable].
     public SecretVerification verifySecret(String stored, String providedPlaintext) {
         Objects.requireNonNull(providedPlaintext, "providedPlaintext");
         SecretRef ref;
         try {
             ref = SecretRef.parse(stored);
         } catch (IllegalArgumentException _) {
-            return new SecretVerification.NoMatch();
+            return new SecretVerification.Unverifiable("the stored secret ref is malformed");
         }
         if (ref instanceof SecretRef.Hashed(var mac)) {
             return verifyHashed(mac, providedPlaintext);
@@ -298,7 +308,10 @@ public final class Encryption {
                     pt.getBytes(StandardCharsets.UTF_8), providedPlaintext.getBytes(StandardCharsets.UTF_8))
                     ? new SecretVerification.Matched(true) // any successful legacy-shape match migrates
                     : new SecretVerification.NoMatch();
-            case Decryption.External _, Decryption.Failed _ -> new SecretVerification.NoMatch();
+            case Decryption.External _ ->
+                    new SecretVerification.Unverifiable("the stored secret is an external reference");
+            case Decryption.Failed(var reason) ->
+                    new SecretVerification.Unverifiable("the stored secret could not be decrypted: " + reason);
         };
     }
 

@@ -283,11 +283,14 @@ class EncryptionTest {
 
     @Test
     void verifySecretOnAnEmptyOrMalformedRefNeverMatches() {
-        assertThat(GO.verifySecret("", "anything")).isEqualTo(new NoMatch());
-        assertThat(GO.verifySecret("hashed:v1:not base64!", "anything")).isEqualTo(new NoMatch());
+        // Never a match — and a ref that cannot be checked says so, rather than reading
+        // as the caller's wrong secret (mutant: collapse Unverifiable into NoMatch).
+        assertThat(GO.verifySecret("", "anything")).isInstanceOf(Encryption.SecretVerification.Unverifiable.class);
+        assertThat(GO.verifySecret("hashed:v1:not base64!", "anything"))
+                .isInstanceOf(Encryption.SecretVerification.Unverifiable.class);
         // 16 bytes: not a HmacSHA256-length MAC — malformed, not a match.
         assertThat(GO.verifySecret("hashed:v1:" + Base64.getEncoder().encodeToString(new byte[16]), "anything"))
-                .isEqualTo(new NoMatch());
+                .isInstanceOf(Encryption.SecretVerification.Unverifiable.class);
     }
 
     @Test
