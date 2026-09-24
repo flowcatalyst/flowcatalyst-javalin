@@ -437,13 +437,14 @@ public final class PrincipalApi {
         try {
             userId = CreateUser.of(s.repo()).run(s.uow(), new CreateCommand(email, name, UserScope.CLIENT.name(), clientId, null, null), ec).userId();
         } catch (UseCaseException e) {
-            return BulkImportResult.error(row, email, e.error().message());
+            return BulkImportResult.error(row, email, importFailure(row, email, "create", e));
         }
         if (!roles.isEmpty()) {
             try {
                 AssignRoles.of(s.repo(), s.roles()).run(s.uow(), new AssignRolesCommand(userId, roles), ec);
             } catch (UseCaseException e) {
-                return new BulkImportResult(row, email, "created", "created, but roles not applied: " + e.error().message());
+                return new BulkImportResult(row, email, "created",
+                        "created, but roles not applied: " + importFailure(row, email, "assign roles", e));
             }
         }
         s.repo().findById(userId).ifPresent(p -> notifyNewUser(s, p, null, true, false, null));
@@ -1192,6 +1193,25 @@ public final class PrincipalApi {
         public String toString() {
             return "SetDeveloperCredentialResponse[id=" + id + ", clientSecret=" + (clientSecret == null ? "null" : "***") + "]";
         }
+    }
+
+    /// A row's failure text. An expected refusal (validation, conflict, …) is
+    /// the caller's to read, verbatim. An internal failure (the store down) is
+    /// the operator's: logged with its cause — otherwise N rows would say
+    /// "repository persist failed" under a 200 and nothing would reach the log —
+    /// and the row names only its code.
+    private static String importFailure(int row, String email, String step, UseCaseException e) {
+        if (e.error() instanceof io.flowcatalyst.sdk.usecase.UseCaseError.Internal internal) {
+            LOG.atError().setMessage("bulk import row failed internally")
+                    .addKeyValue("row", row)
+                    .addKeyValue("email_domain", EmailAddress.domainOf(email))
+                    .addKeyValue("step", step)
+                    .addKeyValue("code", internal.code())
+                    .setCause(e)
+                    .log();
+            return "server error (" + internal.code() + ") — see the server log";
+        }
+        return e.error().message();
     }
 
     public record BulkImportResult(int row, String email, String status, String message) {
