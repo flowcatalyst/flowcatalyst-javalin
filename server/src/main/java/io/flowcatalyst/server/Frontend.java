@@ -97,7 +97,9 @@ public final class Frontend {
     void serve(Exchange ctx) throws IOException {
         String path = ctx.path();
         String rel = path.startsWith("/") ? path.substring(1) : path;
-        if (rel.isEmpty() || rel.contains("..")) {
+        // index.html asked for by name is the shell too: it must carry the shell's
+        // no-cache header, or a browser keeps a stale SPA after a deploy.
+        if (rel.isEmpty() || rel.contains("..") || rel.equals("index.html")) {
             serveIndex(ctx);
             return;
         }

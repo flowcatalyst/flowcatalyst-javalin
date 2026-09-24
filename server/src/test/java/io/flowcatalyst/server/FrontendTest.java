@@ -62,6 +62,10 @@ class FrontendTest {
         var t = get("/assets/../index.html");
         assertThat(t.statusCode()).isEqualTo(200);
         assertThat(t.headers().firstValue("Cache-Control")).contains("no-cache, no-store, must-revalidate");
+        // The shell by name is still the shell: never cacheable (mutant: serve it as a plain file).
+        var byName = get("/index.html");
+        assertThat(byName.statusCode()).isEqualTo(200);
+        assertThat(byName.headers().firstValue("Cache-Control")).contains("no-cache, no-store, must-revalidate");
     }
 
     @Test
