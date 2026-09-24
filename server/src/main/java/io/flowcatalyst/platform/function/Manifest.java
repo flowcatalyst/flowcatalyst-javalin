@@ -79,18 +79,34 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
     private static final Pattern JVM_ENTRYPOINT = Pattern.compile("^[A-Za-z_$][\\w$]*(\\.[A-Za-z_$][\\w$]*)*$");
     private static final Pattern WASM_ENTRYPOINT = Pattern.compile("^[A-Za-z_]\\w*$");
 
-    private static final Set<String> TOP_KEYS = Set.of(
+    // Package-private (not `private`): `function-manifest-authoring.md` M1.5's drift test
+    // (same package) walks these as "the parser's key set" for its object, level by level,
+    // against `function-manifest.schema.json`'s own `properties`/`required`.
+    static final Set<String> TOP_KEYS = Set.of(
             "runtime", "entrypoint", "pool", "warm", "limits", "endpoints", "subscriptions", "schedules", "public",
             "config", "secrets", "db", "httpAllow");
-    private static final Set<String> LIMITS_KEYS = Set.of("maxDurationMs", "maxConcurrency", "wasmMemoryMb");
-    private static final Set<String> ENDPOINT_KEYS =
+    static final Set<String> LIMITS_KEYS = Set.of("maxDurationMs", "maxConcurrency", "wasmMemoryMb");
+    static final Set<String> ENDPOINT_KEYS =
             Set.of("path", "auth", "methods", "cors", "maxBodyBytes", "timeoutMs");
-    private static final Set<String> SUBSCRIPTION_KEYS =
+    static final Set<String> SUBSCRIPTION_KEYS =
             Set.of("eventType", "path", "mode", "maxRetries", "timeoutSeconds", "dataOnly");
-    private static final Set<String> SCHEDULE_KEYS = Set.of("cron", "timezone", "path", "payload");
-    private static final Set<String> PUBLIC_ROUTE_KEYS = Set.of("hostname", "pathPrefix", "aliasPrefixes");
-    private static final Set<String> CORS_KEYS = Set.of("origins", "methods", "headers", "allowCredentials");
-    private static final Set<String> DB_KEYS = Set.of("name", "secretRef", "poolSize");
+    static final Set<String> SCHEDULE_KEYS = Set.of("cron", "timezone", "path", "payload");
+    static final Set<String> PUBLIC_ROUTE_KEYS = Set.of("hostname", "pathPrefix", "aliasPrefixes");
+    static final Set<String> CORS_KEYS = Set.of("origins", "methods", "headers", "allowCredentials");
+    static final Set<String> DB_KEYS = Set.of("name", "secretRef", "poolSize");
+
+    /// [#TOP_KEYS] plus the optional `$schema` escape hatch (spec
+    /// `function-manifest-authoring.md` M1.2): an editor validates `manifest.json` against the
+    /// published JSON Schema by pointing `$schema` at it. The parser accepts the key, type-checks
+    /// it below, and otherwise ignores it — it is never a real manifest field, so [#TOP_KEYS]
+    /// itself (what the schema drift test walks) stays exactly the parser's field set.
+    private static final Set<String> TOP_KEYS_WITH_SCHEMA_ESCAPE;
+
+    static {
+        var withSchema = new HashSet<>(TOP_KEYS);
+        withSchema.add("$schema");
+        TOP_KEYS_WITH_SCHEMA_ESCAPE = Set.copyOf(withSchema);
+    }
 
     public Manifest {
         Objects.requireNonNull(runtime, "runtime");
@@ -243,7 +259,8 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
         if (root == null || !root.isObject()) {
             throw UseCaseException.validation("MANIFEST_REQUIRED", "manifest is required and must be an object");
         }
-        rejectUnknown(root, TOP_KEYS, "");
+        rejectUnknown(root, TOP_KEYS_WITH_SCHEMA_ESCAPE, "");
+        requireSchemaFieldIsStringIfPresent(root);
 
         Runtime runtime = parseRuntimeField(root, functionRuntime);
         String entrypoint = parseEntrypointField(root, runtime);
@@ -261,6 +278,17 @@ public record Manifest(Runtime runtime, String entrypoint, DnsLabel pool, boolea
 
         return new Manifest(runtime, entrypoint, pool, warm, limits, endpoints, subscriptions, schedules,
                 publicRoutes, config, secrets, db, httpAllow);
+    }
+
+    /// `$schema` (spec `function-manifest-authoring.md` M1.2): an optional top-level string,
+    /// present only so an editor can point at the published JSON Schema; any other JSON type is
+    /// `MANIFEST_INVALID`. [#toJson] never writes it back.
+    private static void requireSchemaFieldIsStringIfPresent(JsonNode root) {
+        JsonNode schemaNode = root.path("$schema");
+        if (schemaNode.isMissingNode() || schemaNode.isNull()) return;
+        if (!schemaNode.isString()) {
+            throw UseCaseException.validation("MANIFEST_INVALID", "$schema must be a string");
+        }
     }
 
     private static Runtime parseRuntimeField(JsonNode root, Runtime functionRuntime) {

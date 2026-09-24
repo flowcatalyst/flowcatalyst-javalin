@@ -161,7 +161,7 @@ with a warning line). Help text and `function-developer-surface.md` §2's table 
 [--manifest-only]`. Local only — never contacts the platform.
 
 - Writes a starter project derived from `examples/function-hello`: `pom.xml` depending on
-  `flowcatalyst-function-api` at **fcdev's own version**, one handler class in `--package`
+  `flowcatalyst-function-api` at the **reactor version fcdev was built beside** (stamped into `fcdev-build.properties`; fcdev's release semver is a different number). The artifact is not published to any repository yet: the next steps say so and name `mvn -pl function-api install` (backlog owner question), one handler class in `--package`
   (default `com.example.fn`), `manifest.json` with `"$schema"` set to
   `<platform-url>/api/schemas/function-manifest.json` (the `fn` global `--platform-url`, its
   default when absent), `runtime`, `entrypoint` matching the generated class, and one `platform`

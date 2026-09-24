@@ -51,7 +51,11 @@ class LockfileCoverageTest {
     /// is named here rather than hand-edited into the lockfile
     /// (CONVENTIONS §7: never edit the lockfile by hand).
     private static final List<String> OUTSIDE_LOCKFILE_EXACT_ROUTES = List.of(
-            "POST /api/dispatch-jobs", "POST /api/oauth-clients/{id}/revoke-previous-secret");
+            "POST /api/dispatch-jobs", "POST /api/oauth-clients/{id}/revoke-previous-secret",
+            // function-manifest-authoring.md M1.3: the manifest's own JSON Schema document,
+            // like /api/openapi-functions.json above it is served verbatim and unauthenticated —
+            // it is a document, not a lockfile-shaped operation.
+            "GET /api/schemas/function-manifest.json");
 
     /// The function surface is excluded from the lockfile above by PREFIX, so
     /// nothing there would notice a new function route. Its own document is

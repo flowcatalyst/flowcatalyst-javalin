@@ -150,6 +150,7 @@ import io.flowcatalyst.platform.shared.auth.SigningKeys;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.platform.shared.openapi.FunctionManifestSchemaRoutes;
 import io.flowcatalyst.platform.shared.openapi.FunctionOpenApiRoutes;
 import io.flowcatalyst.platform.shared.openapi.Lockfile;
 import io.flowcatalyst.platform.shared.openapi.SchemaValidation;
@@ -714,6 +715,10 @@ public final class Platform {
         // function-openapi.md §2: functions.openapi.json's own bytes, unauthenticated,
         // beside SpecRoutes for the same reason — tooling fetches it without a token.
         new FunctionOpenApiRoutes(Lockfile.load(Json.MAPPER, "openapi/functions.openapi.json")).register(routes);
+        // function-manifest-authoring.md M1.3: the manifest's own JSON Schema, unauthenticated,
+        // beside FunctionOpenApiRoutes for the same reason — an editor fetches it with no token.
+        new FunctionManifestSchemaRoutes(Lockfile.load(Json.MAPPER, "schemas/function-manifest.schema.json"))
+                .register(routes);
 
         // ── SPA's own BFF routes + /api/me (docs/spec/bff.md) ─────────────
         // Cookie- or bearer-authenticated, same Authenticator as /api (both

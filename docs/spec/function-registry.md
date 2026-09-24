@@ -246,6 +246,15 @@ of §4.1 with `Json.MAPPER`; `readStored(parseStrict(x).toJson())` round-trips t
 
 ### 4.3 Rules (each is one validation code; the first failure wins)
 
+`$schema` (`function-manifest-authoring.md` M1.2): an optional top-level string, accepted so an
+editor can point `manifest.json` at the published JSON Schema (`GET
+/api/schemas/function-manifest.json`) and validate as the author types. `parseStrict` allows it,
+type-checks it (any non-string value is `MANIFEST_INVALID`, not `MANIFEST_UNKNOWN_FIELD`), and
+otherwise ignores its content; `toJson` never writes it back, so a stored/promoted version never
+carries it; `readStored` tolerates it like any other unknown top-level key. It is never a real
+manifest field — the schema document's own `properties` includes it as a special case, but
+`Manifest`'s own key set (what a drift test walks) does not.
+
 | Code | Rule |
 |---|---|
 | `MANIFEST_REQUIRED` | the node is null / not an object |

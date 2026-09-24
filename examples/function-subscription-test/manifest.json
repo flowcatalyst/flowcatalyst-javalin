@@ -1,4 +1,5 @@
 {
+  "$schema": "../../server/src/main/resources/schemas/function-manifest.schema.json",
   "runtime": "jvm",
   "entrypoint": "io.flowcatalyst.example.subscriptiontest.SubscriptionTestFunction",
   "pool": "default",

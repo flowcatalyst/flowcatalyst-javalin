@@ -1802,3 +1802,12 @@ routes are gone; an invite sign-in writes a `USER_LOGIN` SUCCESS row.
   (removing endpoints is breaking; on 0.x that is a minor: TS 0.11.27 → 0.12.0, Laravel 0.10.26 →
   0.11.0) and runs `scripts/release.sh`. The CI staleness check promised by `docs/sdk-release-plan.md` §2.2 is now the `sdks`
   job in `ci.yml` (first run on GitHub unobserved — watch it after the push).
+
+## `flowcatalyst-function-api` is not published anywhere (2026-09-24, owner question)
+
+`fcdev fn init` generates a standalone Maven project depending on `flowcatalyst-function-api`
+(`provided`) at the reactor version, but nothing is published to a Maven repository
+(`docs/sdk-release-plan.md` §4.2: the Java SDK is bump-and-tag only), so an author outside a
+platform checkout cannot build it; `fn init` says so and prints `mvn -pl function-api install`.
+Owner question: publish `function-api` (GitHub Packages, the plan's rejected §2.4 option, or
+Maven Central), or ship its jar with fcdev (`fn init` writes it and the pom references it)?
