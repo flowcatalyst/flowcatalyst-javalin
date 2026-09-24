@@ -3,9 +3,26 @@
 This file guides Claude Code during the migration of our complex message routing, OIDC identity server, and distributed task scheduling platform from Go to idiomatic Java.
 
 ## Multi-Agent Execution Policy
-- **Subagent Routing**: The master orchestrator (Opus 5 or Fable 5) MUST offload all high-volume file generation, Java boilerplate creation, and structural refactoring to the `sonnet-5` subagent.
-- **Orchestrator Role**: Opus 5 acts purely as the strategic gatekeeper. It analyzes the architectural intent of the Go code, writes strict specifications, and comprehensively reviews all Java code produced by the subagents before it is finalized.
-- **Token Efficiency**: Subagents must be kept at `medium` or `low` effort. If a subagent encounters a compilation or logic error, the master orchestrator should step in to debug rather than letting the subagent cycle through infinite reasoning loops.
+- **Routing by kind of work, not by size** (owner, 2026-09-24). The orchestrator is the parent
+  model (Opus or Fable).
+  - **The parent model does the work itself, or delegates it to an agent on the parent model,**
+    for: security-sensitive code (auth, secrets, redaction, signatures, permissions); concurrency
+    and transactional code (locks, permits, deadlines, reconcilers, plan/apply); new abstractions
+    and seams other code will build on; and long, complicated work whose items are interrelated
+    enough that a local change can break a distant invariant.
+  - **`sonnet` subagents** do well-specified volume work: ports and mechanical refactors, Java
+    boilerplate, fixtures and test volume, UI that follows an existing pattern, doc sweeps.
+  - When unsure, it is the parent model's.
+- **Briefs forbid out-of-scope changes.** Every subagent brief says: change nothing outside the
+  files and behaviour named; anything you would have fixed or improved elsewhere, report instead
+  of changing. (A Sonnet coder once "fixed" a deliberate NUL separator into a space and would have
+  caused false duplicate errors.)
+- **Orchestrator Role**: the parent model writes strict specifications, and reviews every line a
+  subagent produces before it is merged: reads the code, re-runs the load-bearing mutants itself,
+  and runs the full suite.
+- **Token Efficiency**: Sonnet subagents are kept at `medium` or `low` effort. If a subagent
+  encounters a compilation or logic error, the orchestrator steps in to debug rather than letting
+  the subagent cycle through reasoning loops.
 
 
 ## Testing Policy: assert that it WORKS, not that it EXISTS
