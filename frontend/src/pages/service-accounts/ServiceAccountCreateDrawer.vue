@@ -126,7 +126,12 @@ function generateCode() {
 
 async function createServiceAccount() {
 	if (!isValid.value) {
-		toast.error("Error", "Code and name are required");
+		toast.error(
+			"Error",
+			restrictToApplication.value && !selectedApplicationId.value
+				? "Pick the application to restrict this account to"
+				: "Code and name are required",
+		);
 		return;
 	}
 
@@ -227,6 +232,41 @@ function closeDialogAndNavigate() {
               v-model="description"
               placeholder="Optional description..."
               rows="3"
+            />
+          </template>
+        </FcFormField>
+
+        <FcFormField
+          label="Application Scope"
+          span
+          help="Off by default: this account is usable across every application. Turn on to confine it to one application."
+        >
+          <template #default="{ id: fieldId }">
+            <div class="toggle-row">
+              <ToggleSwitch :inputId="fieldId" v-model="restrictToApplication" />
+              <span class="toggle-label">
+                {{ restrictToApplication ? "Restricted to one application" : "All applications" }}
+              </span>
+            </div>
+          </template>
+        </FcFormField>
+
+        <FcFormField
+          v-if="restrictToApplication"
+          label="Application"
+          required
+          span
+          help="The service account is confined to this application."
+        >
+          <template #default="{ id: fieldId }">
+            <Select
+              :id="fieldId"
+              v-model="selectedApplicationId"
+              :options="applicationOptions"
+              optionLabel="label"
+              optionValue="value"
+              placeholder="Select an application..."
+              filter
             />
           </template>
         </FcFormField>
@@ -390,6 +430,17 @@ function closeDialogAndNavigate() {
 </template>
 
 <style scoped>
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toggle-label {
+  font-size: 14px;
+  color: #475569;
+}
+
 .help-text {
   display: block;
   font-size: 12px;
