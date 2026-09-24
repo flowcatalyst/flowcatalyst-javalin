@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 
 import java.math.BigInteger;
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -142,11 +143,24 @@ public final class JwksKeySource {
             HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
             fetchCount.incrementAndGet();
             if (response.statusCode() != 200) {
-                return; // leave the previous cache in place — a JWKS outage must not lock every caller out
+                // Leave the previous cache in place — a JWKS outage must not lock every caller out.
+                // Logged (at most once per floor interval, see above): after a key rotation this is
+                // the operator's only trace of why bearer calls answer 401.
+                LOG.atWarn().setMessage("could not fetch the platform's JWKS: unexpected status; keeping the cached keys")
+                        .addKeyValue("jwksUrl", jwksFetchUrl)
+                        .addKeyValue("status", response.statusCode())
+                        .log();
+                return;
             }
             keysByKid = parse(response.body());
-        } catch (Exception e) {
-            // Network/parse failure: leave the previous cache in place.
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (IOException | RuntimeException e) {
+            // Network or parse failure: leave the previous cache in place.
+            LOG.atWarn().setMessage("could not fetch the platform's JWKS; keeping the cached keys")
+                    .addKeyValue("jwksUrl", jwksFetchUrl)
+                    .setCause(e)
+                    .log();
         }
     }
 
@@ -187,10 +201,14 @@ public final class JwksKeySource {
                     : defaultJwksUrl;
             discoveredIssuer = issuer;
             return true;
-        } catch (Exception e) {
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        } catch (IOException | RuntimeException e) {
             LOG.atWarn().setMessage("could not discover the platform's issuer via /.well-known/openid-configuration; "
                             + "bearer auth will reject platform tokens until this succeeds")
                     .addKeyValue("platformUrl", platformUrl)
+                    .setCause(e)
                     .log();
             return false;
         }
