@@ -613,13 +613,29 @@ public final class Reconciler {
             }
             case Refused(io.flowcatalyst.fnhost.load.Reason reason, String detail) -> {
                 String loadReason = "LOAD:" + reason.name();
-                failures.put(key, loadReason);
+                String previous = failures.put(key, loadReason);
                 observer.loadError(loadReason);
                 if (reason == io.flowcatalyst.fnhost.load.Reason.OUT_OF_METASPACE) {
                     logMetaspaceRefusalSafely(entry.address(), entry.version(), detail);
+                } else if (!loadReason.equals(previous)) {
+                    logRefusal(key, reason, detail);
                 }
             }
         }
+    }
+
+    /// The loader's own words for why a version cannot load ("does not
+    /// compile: …", the unreadable-jar IOException, the class that is not
+    /// instantiable) — the heartbeat and metrics only carry the reason's name.
+    /// Logged when a version's refusal is new or changes, not on every
+    /// reconcile cycle that finds it still refused.
+    private static void logRefusal(Key key, io.flowcatalyst.fnhost.load.Reason reason, String detail) {
+        LOG.atWarn().setMessage("a function version was refused at load")
+                .addKeyValue("address", key.address().render())
+                .addKeyValue("version", key.version())
+                .addKeyValue("reason", reason.name())
+                .addKeyValue("detail", detail)
+                .log();
     }
 
     private void logRegistryFullFailure(Key key, Throwable cause) {
@@ -813,10 +829,12 @@ public final class Reconciler {
                 }
                 case Refused(io.flowcatalyst.fnhost.load.Reason reason, String detail) -> {
                     String loadReason = "LOAD:" + reason.name();
-                    failures.put(key, loadReason);
+                    String previous = failures.put(key, loadReason);
                     observer.loadError(loadReason);
                     if (reason == io.flowcatalyst.fnhost.load.Reason.OUT_OF_METASPACE) {
                         logMetaspaceRefusalSafely(route.address(), route.version(), detail);
+                    } else if (!loadReason.equals(previous)) {
+                        logRefusal(key, reason, detail);
                     }
                     yield current;
                 }

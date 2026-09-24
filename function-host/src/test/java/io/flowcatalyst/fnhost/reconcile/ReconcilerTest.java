@@ -459,6 +459,38 @@ class ReconcilerTest {
         assertThat(v2.state()).isInstanceOf(HeartbeatReport.LoadState.Failed.class);
     }
 
+    /// The loader's detail ("which class", "what did not compile") reaches the
+    /// log — the heartbeat carries only the reason's name — once per new
+    /// refusal, not once per reconcile cycle. Mutants: never log it; log every cycle.
+    @Test
+    void aRefusalsDetailIsLoggedOnceNotEveryCycle(@TempDir Path dir) {
+        FakeControlPlane fake = new FakeControlPlane();
+        FunctionRegistry registry = new FunctionRegistry(50);
+        Reconciler r = offReconciler(fake, dir, registry);
+        Path jar = TestFixtures.functionJar(dir, "refuse-detail", "ref-d");
+        Manifest badEntrypoint = Manifest.readStored(Json.MAPPER.readTree(
+                "{\"runtime\":\"jvm\",\"entrypoint\":\"nope.NoSuchDetailClass\",\"pool\":\"" + POOL.value() + "\",\"warm\":true}"));
+        DesiredDocument.Entry entry = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v1", 1,
+                DesiredDocument.Role.LIVE, DesiredDocument.Mode.WARM, TestFixtures.digestOf(jar),
+                TestFixtures.fileRef(jar), null, null, badEntrypoint, null, null, null, Map.of(), Map.of(), List.of(), List.of());
+        fake.desiredStateReturns((pool, etag) -> new ControlPlane.Fetched.Changed("etag-d",
+                new DesiredDocument(List.of(entry), List.of(), List.of())));
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(Reconciler.class);
+        var appender = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            r.reconcileOnce(Instant.now());
+            r.reconcileOnce(Instant.now());
+        } finally {
+            logger.detachAppender(appender);
+        }
+        var refusals = appender.list.stream()
+                .filter(e -> e.getFormattedMessage().contains("refused at load")).toList();
+        assertThat(refusals).as("once, not per cycle").hasSize(1);
+        assertThat(String.valueOf(refusals.getFirst().getKeyValuePairs())).contains("nope.NoSuchDetailClass");
+    }
+
     // ── R4: signer equality is exact ─────────────────────────────────────
 
     @Test
