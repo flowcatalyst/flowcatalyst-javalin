@@ -1907,6 +1907,31 @@ What is left needs a ruling or was judged not worth changing:
 12. **Versioned call to a not-yet-prepared candidate** answers 404 `VERSION_NOT_AVAILABLE` like a
     refused one; a 503 + Retry-After would tell a caller to wait.
 
+13. **Seed roles lost provisioning** (S1) — provisioning a service account, its roles and its
+    token now need `SERVICE_ACCOUNT_CREATE`/`UPDATE`, which no seed role but super-admin holds.
+    Give them to `platform:admin` / `iam-admin`?
+14. **No ceiling on role assignment** (S1) — anyone with a user-write permission may assign any
+    role, `platform:super-admin` included (and `SERVICE_ACCOUNT_UPDATE` may grant an SA super-admin
+    and mint for it). Only assign authority you hold? And should `USER_ASSIGN_ROLES`, not the
+    user-write any-of, gate role routes?
+15. **Cross-application role permissions refused** (S1.5) — a role may hold only its own
+    application's permissions; an existing SDK role that grants another application's permissions
+    will fail its next sync. Check live roles before deploying.
+16. **`/bff/event-types/sync-platform` takes `applicationCode` from the body** and syncs the
+    platform definitions into it with `removeUnlisted` — anyone with `EVENT_TYPE_SYNC` (in practice
+    super-admins) can wipe an application's event types. Restrict to `platform`?
+17. **S3 owner notes** — fan-out jobs to a subscription with no account/connection are still signed
+    via the event type's application prefix (a client admin can ingest an event of another app's
+    type and receive it signed); the single-client default for an absent `clientId` on ingest;
+    `/sign` now 403 when the signer is out of reach; duplicate-id 409 vs a per-item result; the
+    duplicate check covers only the write table. Specs `subscription.md` / `connection.md` still say
+    "not validated" for the account reference.
+18. **Spec docs stale after S1** — `principal.md` §3 ("anchors pass every permission gate"), bff
+    §6, application §10, service-account §3 describe the old gates; `auth-core.md` §7.4 describes
+    non-transactional rotation. A doc sweep.
+19. **Go**: the service-principal-id-as-account-id defect exists in Go's connection sync too (no
+    hand-off written — Go is being retired).
+
 **Reviewed and deliberately left**
 - `MarkVersionReady`'s `VERSION_NOT_PUBLISHED` conflict caught in the heartbeat: one named constant,
   one documented catch, inside the envelope's own contract; a sealed result would mean redesigning

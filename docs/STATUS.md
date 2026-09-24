@@ -6,6 +6,44 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## Overnight quality + security sweep (2026-09-24/25)
+
+Owner asked for a quality pass overnight: security, duplication, Result-vs-exception use, error
+context. Four read-only reviews (auth surface; functions + delivery; Result/exceptions;
+duplication/builders) → fixes, each with a test that fails on the old code (mutant run by the
+orchestrator, or by the agent and spot-checked). Spec `docs/spec/security-fixes-2026-09-24.md`
+(S0–S3); owner questions and deliberate deferrals in `docs/backlog.md` §"Overnight review".
+
+- **W3 (JavaScript functions) and W4 (Wasm `fc_db_*`) landed**; JS `handler()` now logs an uncaught
+  exception and answers a fixed reason (it put the message in the body).
+- **S0 (orchestrator):** `Exchange.path()` is the normalised path (dot-segments bypassed router
+  basic auth, the profile-only allowlist and per-IP limits); function host refuses identity tokens
+  and reads `clients`/`applications` claims as ids (every non-anchor versioned call 404'd, and
+  `Caller.clientId()` was wrong for real tokens); audit-log API redacts on read; fcdev upgrade
+  follows GitHub's 302 (upgrade + first-use host fetch never worked), requires the checksum,
+  writes secret files 0600 atomically; native fcdev's child host gets `--enable-preview` (it
+  crashed) — native boot verified; `/index.html` by name is no-cache.
+- **S1 (authority gates):** anchor is reach, never authority — every role/credential-issuing
+  `requireAnchor` gate also needs a permission (table in the S1 commit); principal sync stays in
+  reach, roles must exist and belong to the app, `passwordHash` on an existing principal only for a
+  super-admin; OAuth client `principalId` must be an active reachable SERVICE principal; a role
+  holds only its own application's permissions. `AuthorityGatesEndToEndTest` runs the attacks.
+- **S2 (sessions/tokens):** credential source on `AuthContext`; `/auth/client/*`, factor
+  management, change-password cookie-only; `/oauth/authorize` needs a session-kind token for an
+  active principal; `client_credentials` only for SERVICE principals; atomic refresh rotation with a
+  10 s replay leeway (siblings in the family; reuse after it revokes the family); one safe-redirect
+  rule; reset / 2FA-email mail rate-limited.
+- **S3 (delivery):** `SigningReach` — a subscription/connection/ingested job may use a service
+  account only if the caller could (no "owning application" exemption — review fix); non-anchors
+  cannot write platform-scoped events/jobs; duplicate job ids 409; scheduler reads ≤500 B under one
+  deadline. Plus: a stored service-PRINCIPAL id (what app sync writes into connections) now resolves
+  to its account for the signer and the reach check — sync-written connections had delivered unsigned.
+- **Errors/Result:** delivery failures name exception + cause chain; router bugs leave a throttled
+  stack trace; unique violation at persist → 409; unverifiable stored secrets are their own outcome,
+  logged; OIDC exchange failures carry the IdP's reason; change-password no longer calls a broken
+  factor a wrong code; value parsers return `Result`; fcdev `fn` outcomes sealed; JWKS / reconciler
+  refusal / Wasm DB-unavailable failures logged; principal sync no longer strips other apps' SDK roles.
+
 ## Wasm functions run in the host (W1+W2); W3 + W4 in progress (2026-09-24, night)
 
 `3b44ecc7` (`docs/spec/function-wasm-runtime.md`): `runtime: wasm` loads through the same
