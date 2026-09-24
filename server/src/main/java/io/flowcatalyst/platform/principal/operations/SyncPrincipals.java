@@ -28,8 +28,9 @@ import java.util.Set;
 
 /// Upserts user principals declared by an application SDK (or the
 /// platform-level user sync) in one transaction (spec §2, §7): matched by
-/// normalised email; an existing principal keeps its non-`SDK_SYNC` roles
-/// and has its `SDK_SYNC` set replaced, name and active updated; a new
+/// normalised email; an existing principal keeps its non-`SDK_SYNC` roles and
+/// other applications' `SDK_SYNC` roles, and has THIS sync's application's
+/// `SDK_SYNC` set replaced (X-02(c), as the sweep), name and active updated; a new
 /// principal is a CLIENT-scoped USER with the `SDK_SYNC` roles.
 /// `removeUnlisted` never deletes — it strips, from every USER absent from
 /// the payload, only the `SDK_SYNC` roles belonging to **this sync's
@@ -116,7 +117,7 @@ public final class SyncPrincipals {
                         requireSyncableRoles(roles, clientConfigs, ac, cmd, roleNames, existing);
 
                         if (existing != null) {
-                            Principal p = existing.syncSourcedRoles(RoleAssignment.SDK_SYNC, roleNames).principal()
+                            Principal p = existing.syncSourcedRoles(RoleAssignment.SDK_SYNC, cmd.applicationCode(), roleNames).principal()
                                     .withName(in.name())
                                     .withActive(in.active());
                             if (in.hasPasswordHash() && mayReplaceHashes) p = p.withPasswordHash(in.passwordHash());

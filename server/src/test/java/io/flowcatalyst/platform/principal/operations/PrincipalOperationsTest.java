@@ -507,6 +507,29 @@ class PrincipalOperationsTest {
                 .isEqualTo(yBefore.updatedAt());
     }
 
+    /// The same X-02(c) rule for a NAMED principal: application Y syncing a user
+    /// replaces only Y's SDK_SYNC roles — application X's, from X's own sync,
+    /// survive. Before, Y's sync replaced the whole SDK_SYNC set and stripped X's.
+    /// Mutant: the unscoped `syncSourcedRoles(source, names)`.
+    @Test
+    void anApplicationsSyncOfANamedUserKeepsAnotherApplicationsSdkRoles() {
+        String user = createdUser("x02cn", "CLIENT", seedClient("x02cn"));
+        String roleX = seedRole("x02cnappx", "viewer").name();
+        String roleY = seedRole("x02cnappy", "editor").name();
+        runAsAnchor(sync(), new SyncPrincipalsCommand("x02cnappx" + RUN, List.of(
+                new SyncPrincipalInput(email("x02cn"), "N", List.of(roleX), true, null)), false));
+        runAsAnchor(sync(), new SyncPrincipalsCommand("x02cnappy" + RUN, List.of(
+                new SyncPrincipalInput(email("x02cn"), "N", List.of(roleY), true, null)), false));
+
+        assertThat(reload(user).roleNames()).as("each application's sync owns only its own roles")
+                .containsExactlyInAnyOrder(roleX, roleY);
+
+        // Y re-syncs the user with no roles: Y's is gone, X's is still there.
+        runAsAnchor(sync(), new SyncPrincipalsCommand("x02cnappy" + RUN, List.of(
+                new SyncPrincipalInput(email("x02cn"), "N", List.of(), true, null)), false));
+        assertThat(reload(user).roleNames()).containsExactly(roleX);
+    }
+
     /// X-02(d): a `removeUnlisted` sweep with no `applicationCode` (the
     /// platform-level route) is a platform-wide sweep of every application's
     /// SDK_SYNC roles, so it is refused for a non-anchor even though the

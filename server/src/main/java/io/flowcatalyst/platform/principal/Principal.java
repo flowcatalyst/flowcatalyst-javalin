@@ -248,11 +248,22 @@ public record Principal(
     /// (tagged `source`, stamped now); every other assignment is kept, and a
     /// name already kept is not duplicated. Reports the resulting names.
     public RolesChanged syncSourcedRoles(String source, List<String> names) {
+        return syncSourcedRoles(source, null, names);
+    }
+
+    /// [#syncSourcedRoles(String, List)] narrowed to one application's sync —
+    /// the same X-02(c) rule the `removeUnlisted` sweep follows
+    /// ([#stripSourcedRoles(String, String)]): only THIS application's
+    /// `source`-tagged assignments are replaced; another application's survive.
+    /// Without it, application A syncing a user stripped application B's SDK
+    /// roles from that user. A blank or `null` `applicationCode` (the
+    /// platform-level sync) replaces every `source`-tagged assignment.
+    public RolesChanged syncSourcedRoles(String source, String applicationCode, List<String> names) {
         Instant now = Instant.now();
         var kept = new ArrayList<RoleAssignment>(roles.size() + names.size());
         var keptNames = new LinkedHashSet<String>();
         for (RoleAssignment ra : roles) {
-            if (ra.hasSource(source)) continue;
+            if (ra.hasSource(source) && belongsToApplicationSync(ra, applicationCode)) continue;
             kept.add(ra);
             keptNames.add(ra.role());
         }
