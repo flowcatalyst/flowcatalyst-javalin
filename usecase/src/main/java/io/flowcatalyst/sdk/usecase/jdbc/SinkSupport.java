@@ -1,5 +1,9 @@
 package io.flowcatalyst.sdk.usecase.jdbc;
 
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import io.flowcatalyst.sdk.usecase.AuditMasked;
+import io.flowcatalyst.sdk.usecase.AuditRedaction;
 import io.flowcatalyst.sdk.usecase.DomainEvent;
 import io.flowcatalyst.sdk.usecase.EventConventions;
 
@@ -7,6 +11,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /// Helpers shared by [Sink] implementations so the platform sink and the
 /// outbox sink agree on the details that end up in rows.
@@ -55,6 +60,17 @@ public final class SinkSupport {
         return List.of(
                 contextEntry("principalId", orEmpty(event.metadata().principalId())),
                 contextEntry("aggregateType", EventConventions.extractAggregateType(event.subject())));
+    }
+
+    /// The command document to write to `operation_json` (`docs/spec/audit-redaction.md`):
+    /// serialised, then redacted by the one shared rule — the name rule
+    /// plus, when `command` implements [AuditMasked], its declared top-level
+    /// fields. Shared by [io.flowcatalyst.sdk.usecase.outbox.OutboxSink] and
+    /// the platform's own sink so both agree on what an audit row may store.
+    public static JsonNode redactedCommandJson(ObjectMapper mapper, Object command) {
+        JsonNode tree = mapper.valueToTree(command);
+        Set<String> masked = command instanceof AuditMasked am ? am.auditMaskedFields() : Set.of();
+        return AuditRedaction.redact(tree, masked);
     }
 
     private static Map<String, String> contextEntry(String key, String value) {

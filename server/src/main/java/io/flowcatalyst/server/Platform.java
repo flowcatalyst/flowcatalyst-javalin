@@ -57,6 +57,7 @@ import io.flowcatalyst.platform.auth.token.ClaimLabels;
 import io.flowcatalyst.platform.auth.login.BackoffPolicy;
 import io.flowcatalyst.platform.auth.login.BackoffCheck;
 import io.flowcatalyst.platform.bff.DashboardRepository;
+import io.flowcatalyst.platform.bff.api.AuditLogsBff;
 import io.flowcatalyst.platform.bff.api.DashboardBff;
 import io.flowcatalyst.platform.bff.api.DebugBff;
 import io.flowcatalyst.platform.bff.api.DeveloperBff;
@@ -750,6 +751,7 @@ public final class Platform {
                 lockfile::json));
         EventTypesBff.register(bff, new EventTypesBff.State(eventTypeRepo, uow));
         RolesBff.register(bff, new RolesBff.State(roleRepo, permissionRepo, applicationRepo, uow));
+        AuditLogsBff.register(bff, new AuditLogsBff.State(new AuditLogRepository(pool), uow));
         ScheduledJobsBff.register(bff, new ScheduledJobsBff.State(scheduledJobRepo,
                 new ScheduledJobInstanceRepository(pool), clientRepo, applicationRepo));
         MeApi.register(routes, new MeApi.State(principalRepo, applicationRepo, clientRepo, new ClientConfigRepository(pool)));

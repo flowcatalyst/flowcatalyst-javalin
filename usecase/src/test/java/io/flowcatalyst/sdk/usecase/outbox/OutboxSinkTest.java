@@ -28,6 +28,8 @@ class OutboxSinkTest {
 
     record PlaceOrder(String orderId) {}
 
+    record RegisterWebhook(String orderId, String token) {}
+
     @Test
     void writesTheCrossSdkPayloadShape() throws Exception {
         var ds = new JdbcDataSource();
@@ -86,6 +88,48 @@ class OutboxSinkTest {
             assertThat(json.get("context_data").get(1).get("value").asText()).isEqualTo("Order");
             // keys are sorted, as Go's map marshalling does
             assertThat(payload).startsWith("{\"causation_id\"");
+        }
+    }
+
+    /// docs/spec/audit-redaction.md test 3: `writeAudit` stores a redacted
+    /// `operation_json` — the command's secret field never reaches the row.
+    /// Mutant: remove the `SinkSupport.redactedCommandJson` call in
+    /// `OutboxSink#auditPayload` (revert to `mapper.valueToTree(command)`)
+    /// -> this fails, because the stored payload would then contain the
+    /// literal secret string.
+    @Test
+    void redactsSecretFieldsInAuditPayload() throws Exception {
+        var ds = new JdbcDataSource();
+        ds.setURL("jdbc:h2:mem:" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1");
+        try (Connection c = ds.getConnection(); Statement s = c.createStatement()) {
+            s.execute("""
+                    CREATE TABLE outbox_messages (
+                      id VARCHAR(26) PRIMARY KEY, type VARCHAR(30), message_group VARCHAR(200), payload CLOB,
+                      status SMALLINT, retry_count SMALLINT, created_at TIMESTAMP, updated_at TIMESTAMP,
+                      client_id VARCHAR(17), payload_size INT)""");
+        }
+        var mapper = new ObjectMapper();
+        var sink = new OutboxSink(new OutboxSink.Config(null, null, true), mapper);
+
+        var ec = ExecutionContext.withCorrelation("prn_1", "corr-1");
+        var event = new OrderPlaced(EventMetadata.of(ec, "shop:sales:order:placed", "shop:sales", "sales.order.ord_2"), "ord_2", 1);
+        var command = new RegisterWebhook("ord_2", "super-secret-token-value");
+
+        try (Connection c = ds.getConnection()) {
+            c.setAutoCommit(false);
+            var tx = DbTx.wrapForBootstrap(c);
+            sink.writeAudit(tx, event, command);
+            c.commit();
+        }
+
+        try (Connection c = ds.getConnection(); Statement s = c.createStatement();
+             ResultSet rs = s.executeQuery("SELECT payload FROM outbox_messages WHERE type = 'AUDIT_LOG'")) {
+            assertThat(rs.next()).isTrue();
+            String payload = rs.getString("payload");
+            assertThat(payload).as("the plaintext token never reaches the row").doesNotContain("super-secret-token-value");
+            JsonNode operationJson = mapper.readTree(payload).get("operation_json");
+            assertThat(operationJson.get("token").asString()).isEqualTo("***");
+            assertThat(operationJson.get("orderId").asString()).as("non-secret fields are untouched").isEqualTo("ord_2");
         }
     }
 }

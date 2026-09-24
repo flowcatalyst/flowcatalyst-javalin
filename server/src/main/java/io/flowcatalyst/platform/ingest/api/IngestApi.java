@@ -21,6 +21,7 @@ import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.auth.Permission;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
+import io.flowcatalyst.sdk.usecase.AuditRedaction;
 import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Routes;
 
@@ -31,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 
 /// The SDK ingest routes (`docs/spec/sdk-ingest.md`): infrastructure batch
@@ -272,8 +274,14 @@ public final class IngestApi {
                 results.add(new BatchResultItem("", "BAD_REQUEST", "principalId is required"));
                 continue;
             }
+            // docs/spec/audit-redaction.md backstop: redact the SDK-supplied operationData
+            // before it ever reaches AuditLogRepository, so SDK versions predating the
+            // source-side redaction (and apps writing their own outbox rows) never leak a
+            // secret into an ingested aud_logs row. Only the name rule applies here — there
+            // is no live command to ask for declared masked fields.
+            var redactedOperationData = AuditRedaction.redact(item.operationData(), Set.of());
             var log = AuditLogIngestMapper.toLog(item.entityType(), item.entityId(), item.operation(),
-                    item.operationData(), item.principalId().strip(), item.performedAt(), applicationId, clientId);
+                    redactedOperationData, item.principalId().strip(), item.performedAt(), applicationId, clientId);
             logs.add(log);
             results.add(new BatchResultItem(log.id(), "SUCCESS", null));
         }

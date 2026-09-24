@@ -84,7 +84,10 @@ public final class PlatformSink implements Sink {
 
     @Override
     public void writeAudit(DbTx tx, DomainEvent event, Object command) throws SQLException {
-        String commandJson = toJson(command);
+        // docs/spec/audit-redaction.md: the command document is redacted before it is
+        // written anywhere — the name rule plus, for a command implementing AuditMasked,
+        // its declared masked fields (SinkSupport is shared with OutboxSink).
+        String commandJson = toJson(SinkSupport.redactedCommandJson(mapper, command));
         try (PreparedStatement ps = tx.connection().prepareStatement(INSERT_AUDIT)) {
             ps.setString(1, EntityType.AUDIT_LOG.generate());
             ps.setString(2, EventConventions.extractAggregateType(event.subject()));

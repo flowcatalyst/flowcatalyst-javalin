@@ -338,6 +338,47 @@ class ServiceAccountApiTest {
         assertThat(json(r).get("error").asText()).isEqualTo("INVALID_AUTH_TYPE");
     }
 
+    /// docs/spec/audit-redaction.md test 2: `webhookCredentials` submitted on
+    /// create is accepted for wire parity (`CreateCommand`'s doc comment —
+    /// this create path always mints its own credentials, the submitted
+    /// ones are discarded), but the audit row for this write still records
+    /// the WHOLE submitted `CreateCommand`, including `webhookCredentials`
+    /// (`PlatformSink#writeAudit`). Before redaction, the submitted secrets
+    /// landed in `aud_logs.operation_json` in the clear. Mutant: remove the
+    /// `SinkSupport.redactedCommandJson` call in `PlatformSink#writeAudit`
+    /// -> this fails, because the row would then contain the literal secret
+    /// strings asserted absent below.
+    @Test
+    void webhookCredentialsSubmittedOnCreateNeverAppearInTheAuditRow() throws Exception {
+        String submittedToken = "audit-leak-token-" + RUN;
+        String submittedSigningSecret = "audit-leak-signing-secret-" + RUN;
+        var r = http.post("/api/service-accounts",
+                "{\"code\":\"" + code("auditredact") + "\",\"name\":\"Audit Redact\","
+                        + "\"webhookCredentials\":{\"authType\":\"BEARER_TOKEN\",\"token\":\"" + submittedToken + "\","
+                        + "\"signingSecret\":\"" + submittedSigningSecret + "\"}}",
+                anchor());
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        String id = json(r).get("serviceAccount").get("id").asText();
+
+        try (var c = TestPg.dataSource().getConnection();
+             var ps = c.prepareStatement(
+                     "SELECT operation_json::text FROM aud_logs WHERE operation = 'CreateCommand' AND entity_id = ?")) {
+            ps.setString(1, id);
+            try (var rs = ps.executeQuery()) {
+                assertThat(rs.next()).as("a CreateCommand audit row was written for this account").isTrue();
+                String operationJson = rs.getString(1);
+                assertThat(operationJson)
+                        .as("the submitted webhook token/signing secret never land in the audit row")
+                        .doesNotContain(submittedToken)
+                        .doesNotContain(submittedSigningSecret);
+                var parsed = Json.MAPPER.readTree(operationJson);
+                assertThat(parsed.get("code").asString()).as("non-secret fields are untouched").isEqualTo(code("auditredact"));
+                assertThat(parsed.get("webhookCredentials").get("token").asString()).isEqualTo("***");
+                assertThat(parsed.get("webhookCredentials").get("signingSecret").asString()).isEqualTo("***");
+            }
+        }
+    }
+
     @Test
     void createRejectsADuplicateCode() {
         create(code("dup"), "First");

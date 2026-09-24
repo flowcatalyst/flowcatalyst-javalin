@@ -2,7 +2,7 @@
  * API client for Audit Log operations.
  */
 
-import { apiFetch } from "./client";
+import { apiFetch, bffFetch } from "./client";
 import type {
 	AuditLogApplicationIdsResponse,
 	AuditLogClientIdsResponse,
@@ -106,4 +106,23 @@ export async function fetchDistinctApplicationIds(): Promise<AuditLogApplication
  */
 export async function fetchDistinctClientIds(): Promise<AuditLogClientIdsResponse> {
 	return apiFetch<AuditLogClientIdsResponse>("/audit-logs/client-ids");
+}
+
+/**
+ * TEMPORARY (docs/spec/audit-redaction.md, "Temporary: redact existing rows
+ * from the dashboard"; to be removed once the sweep is no longer needed):
+ * redacts passwords/secrets already stored in `aud_logs.operation_json` for
+ * rows written before the source-side redaction landed. Anchor-only, BFF
+ * route (unlike the rest of this file, which reads `/api/audit-logs`).
+ */
+export interface RedactExistingAuditLogsResponse {
+	scanned: number;
+	redacted: number;
+}
+
+/** See {@link RedactExistingAuditLogsResponse}. */
+export async function redactExistingAuditLogs(): Promise<RedactExistingAuditLogsResponse> {
+	return bffFetch<RedactExistingAuditLogsResponse>("/audit-logs/redact-existing", {
+		method: "POST",
+	});
 }

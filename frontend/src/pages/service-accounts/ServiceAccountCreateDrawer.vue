@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { toast } from "@/utils/errorBus";
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import {
 	serviceAccountsApi,
 	type CreateServiceAccountResponse,
 } from "@/api/service-accounts";
 import type { PrincipalScope } from "@/api/users";
 import { clientsApi, type Client } from "@/api/clients";
+import { applicationsApi, type Application } from "@/api/applications";
 import EntityDrawer from "@/components/drawer/EntityDrawer.vue";
 import { useDrawerRoute } from "@/composables/useDrawerRoute";
 
@@ -20,6 +21,12 @@ const description = ref("");
 const scope = ref<PrincipalScope>("ANCHOR");
 const selectedClientIds = ref<string[]>([]);
 const clients = ref<Client[]>([]);
+// Application scope: off by default — an unscoped account (no applicationId,
+// "all applications"), matching CreateCommand's own default. Toggling this on
+// requires picking one application to confine the account to.
+const restrictToApplication = ref(false);
+const selectedApplicationId = ref<string | null>(null);
+const applications = ref<Application[]>([]);
 const saving = ref(false);
 
 // Once the account exists the drawer must never block navigation — the
@@ -54,7 +61,11 @@ const createdCredentials = ref<{
 const createdServiceAccountId = ref<string | null>(null);
 
 const isValid = computed(() => {
-	return code.value.trim() && name.value.trim();
+	return (
+		!!code.value.trim() &&
+		!!name.value.trim() &&
+		(!restrictToApplication.value || !!selectedApplicationId.value)
+	);
 });
 
 const clientOptions = computed(() => {
@@ -64,8 +75,15 @@ const clientOptions = computed(() => {
 	}));
 });
 
+const applicationOptions = computed(() => {
+	return applications.value.map((a) => ({
+		label: `${a.name} (${a.code})`,
+		value: a.id,
+	}));
+});
+
 onMounted(async () => {
-	await loadClients();
+	await Promise.all([loadClients(), loadApplications()]);
 });
 
 async function loadClients() {
@@ -76,6 +94,23 @@ async function loadClients() {
 		console.error("Failed to fetch clients:", error);
 	}
 }
+
+async function loadApplications() {
+	try {
+		const response = await applicationsApi.list({ activeOnly: true });
+		applications.value = response.applications;
+	} catch (error) {
+		console.error("Failed to fetch applications:", error);
+	}
+}
+
+// Turning the toggle off drops any picked application immediately — a
+// stray selection must never survive to a later toggle-on, and it keeps
+// "off" and "no application linked" the same state at every point in time,
+// not just at submit.
+watch(restrictToApplication, (restricted) => {
+	if (!restricted) selectedApplicationId.value = null;
+});
 
 function generateCode() {
 	// Generate a code from the name (lowercase, replace spaces with dashes, remove special chars)
@@ -106,6 +141,10 @@ async function createServiceAccount() {
 				clientIds:
 					selectedClientIds.value.length > 0
 						? selectedClientIds.value
+						: undefined,
+				applicationId:
+					restrictToApplication.value && selectedApplicationId.value
+						? selectedApplicationId.value
 						: undefined,
 			});
 

@@ -805,6 +805,34 @@ class IngestApiTest {
         assertThat(rows.get(1).getPerformedAt().toInstant()).isBetween(before, after);
     }
 
+    /// docs/spec/audit-redaction.md test 4 (the ingest backstop): an
+    /// SDK-posted audit item's `operationData` is redacted before it is
+    /// stored — SDK versions predating the source-side redaction, or apps
+    /// writing their own outbox rows, are still covered by the name rule.
+    /// Mutant: remove the `AuditRedaction.redact(item.operationData(), ...)`
+    /// call in `IngestApi#batchIngestAuditLogs` -> this fails, since the
+    /// stored `operation_json` would then contain the literal secret.
+    @Test
+    void auditIngestBackstopRedactsOperationDataBeforeStoring() {
+        String et = uniqueType("redactbackstop");
+        var r = http.post("/api/audit-logs/batch", """
+                {"items":[
+                   {"entityType":"%s","entityId":"e1","operation":"CREATE","principalId":"prn_TESTACTOR0000001",
+                    "operationData":{"password":"hunter2","name":"kept"}}
+                ]}
+                """.formatted(et), AUDIT_CALLER);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        assertThat(json(r).get("results").get(0).get("status").asText()).isEqualTo("SUCCESS");
+
+        var rows = DB.db.selectFrom(AUD_LOGS).where(AUD_LOGS.ENTITY_TYPE.eq(et)).fetch();
+        assertThat(rows).hasSize(1);
+        String operationJson = rows.get(0).getOperationJson().data();
+        assertThat(operationJson).as("the plaintext password never reaches the row").doesNotContain("hunter2");
+        var parsed = Json.MAPPER.readTree(operationJson);
+        assertThat(parsed.get("password").asString()).isEqualTo("***");
+        assertThat(parsed.get("name").asString()).as("non-secret fields are untouched").isEqualTo("kept");
+    }
+
     @Test
     void anAuditItemWithoutPrincipalIdIsRefusedInItsSlotAndTheRestLands() {
         // Owner ruling 2026-09-06 #10b: never attributed to the caller.

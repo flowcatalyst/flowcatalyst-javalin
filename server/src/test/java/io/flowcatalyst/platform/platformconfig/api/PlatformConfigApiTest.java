@@ -261,6 +261,49 @@ class PlatformConfigApiTest {
         assertThat(json(http.get(property("smtp", "password"), MANAGER)).get("value").asText()).isEqualTo("hunter2");
     }
 
+    /// docs/spec/audit-redaction.md test 2: a `SECRET` config value never
+    /// appears in the audit row (`SetPropertyCommand` implements
+    /// `AuditMasked`; `value` is masked unless `valueType` is exactly
+    /// `PLAIN`), while a `PLAIN` value is still recorded — the point of the
+    /// rule is to hide secrets, not to blind the audit trail generally.
+    /// Mutant: `SetPropertyCommand#auditMaskedFields` always returns
+    /// `Set.of()` (never masks) -> the SECRET assertion fails; mutant: it
+    /// always returns `Set.of("value")` (masks PLAIN too) -> the PLAIN
+    /// assertion fails.
+    @Test
+    void secretConfigValueNeverAppearsInTheAuditRowButPlainValueDoes() throws Exception {
+        var set = http.put(property("audit", "apikey"), "{\"value\":\"sk_live_topsecret\",\"valueType\":\"SECRET\"}", MANAGER);
+        assertThat(set.statusCode()).as(set.body()).isEqualTo(200);
+        var plain = http.put(property("audit", "plainprop"), "{\"value\":\"visible-value\",\"valueType\":\"PLAIN\"}", MANAGER);
+        assertThat(plain.statusCode()).as(plain.body()).isEqualTo(200);
+
+        boolean sawSecret = false;
+        boolean sawPlain = false;
+        try (var c = TestPg.dataSource().getConnection();
+             var ps = c.prepareStatement(
+                     "SELECT operation_json::text FROM aud_logs WHERE operation = 'SetPropertyCommand' "
+                             + "AND operation_json->>'applicationCode' = ?")) {
+            ps.setString(1, APP);
+            try (var rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    var parsed = Json.MAPPER.readTree(rs.getString(1));
+                    String prop = parsed.get("property").asString();
+                    if ("apikey".equals(prop)) {
+                        sawSecret = true;
+                        assertThat(rs.getString(1)).as("the secret value never lands in the audit row").doesNotContain("sk_live_topsecret");
+                        assertThat(parsed.get("value").asString()).isEqualTo("***");
+                    }
+                    if ("plainprop".equals(prop)) {
+                        sawPlain = true;
+                        assertThat(parsed.get("value").asString()).as("a PLAIN value is still recorded").isEqualTo("visible-value");
+                    }
+                }
+            }
+        }
+        assertThat(sawSecret).as("a SetPropertyCommand row for the SECRET property was written").isTrue();
+        assertThat(sawPlain).as("a SetPropertyCommand row for the PLAIN property was written").isTrue();
+    }
+
     /// Spec test 5: the three access-grant routes are withdrawn; they answer
     /// 404 like any other unknown route — never the old `ANCHOR_REQUIRED`.
     @Test

@@ -22,13 +22,18 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.BiFunction;
 
 import static io.flowcatalyst.db.generated.Tables.AUD_LOGS;
 import static io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS;
 
 /// `aud_logs` via jOOQ — reads only (spec §9): the rows are written by the
-/// unit-of-work sink, never here. Every read joins `iam_principals` for the
-/// acting principal's name. Pure CRUD — no domain decisions live here.
+/// unit-of-work sink, never here — plus [#redactExisting], a **temporary**
+/// in-place update of already-stored rows (`docs/spec/audit-redaction.md`
+/// "Temporary: redact existing rows"), to be removed once every row
+/// written before the source-side redaction landed has been swept. Every
+/// read joins `iam_principals` for the acting principal's name. Otherwise
+/// pure CRUD — no domain decisions live here.
 public final class AuditLogRepository {
 
     private static final AudLogs T = AUD_LOGS;
@@ -96,6 +101,61 @@ public final class AuditLogRepository {
             var queries = logs.stream().map(l -> insertQuery(txDsl, l)).toList();
             txDsl.batch(queries).execute();
         });
+    }
+
+    /// Batch size for [#redactExisting] (spec "Temporary: redact existing rows").
+    static final int REDACT_BATCH_SIZE = 500;
+
+    /// **Temporary** (`docs/spec/audit-redaction.md` "Temporary: redact
+    /// existing rows from the dashboard"): walks every row in `id` order
+    /// (TSIDs are lexically monotonic), in batches of [#REDACT_BATCH_SIZE],
+    /// applies `redactor` — given the row's `operation` and its current
+    /// `operation_json` — and updates only rows whose JSON actually changed
+    /// (`JsonNode#equals` is deep value equality, not reference equality),
+    /// so a second run redacts nothing. Each changed row is its own
+    /// `UPDATE`; the caller decides what counts as "scanned" vs "redacted".
+    /// A superset of the rows the redaction rule can change, filtered in SQL so the sweep reads a
+    /// handful of rows instead of the whole table (a request walking every row of a large
+    /// production `aud_logs` outlives the load balancer's idle timeout). Every key the rule
+    /// matches — after dropping `_` and `-` — contains one of these words, and `SetPropertyCommand`
+    /// rows are candidates for their declared mask; the exact rule is still applied per row.
+    private static final Condition MAY_HOLD_A_SECRET = T.OPERATION.eq("SetPropertyCommand")
+            .or(DSL.condition("{0}::text ~* {1}", T.OPERATION_JSON,
+                    DSL.inline("password|secret|passphrase|token|api[_-]?key|private[_-]?key|authorization|cookie")));
+
+    public RedactionResult redactExisting(BiFunction<String, JsonNode, JsonNode> redactor) {
+        int scanned = 0;
+        int redacted = 0;
+        String afterId = null;
+        while (true) {
+            Condition where = afterId == null ? DSL.noCondition() : T.ID.gt(afterId);
+            var batch = dsl.select(T.ID, T.OPERATION, T.OPERATION_JSON).from(T)
+                    .where(where.and(MAY_HOLD_A_SECRET))
+                    .orderBy(T.ID.asc())
+                    .limit(REDACT_BATCH_SIZE)
+                    .fetch();
+            if (batch.isEmpty()) break;
+            for (var row : batch) {
+                scanned++;
+                String id = row.get(T.ID);
+                afterId = id;
+                JsonNode original = fromJsonb(row.get(T.OPERATION_JSON));
+                JsonNode next = redactor.apply(row.get(T.OPERATION), original);
+                if (!Objects.equals(next, original)) {
+                    dsl.update(T)
+                            .set(T.OPERATION_JSON, next == null ? null : JSONB.jsonb(next.toString()))
+                            .where(T.ID.eq(id))
+                            .execute();
+                    redacted++;
+                }
+            }
+            if (batch.size() < REDACT_BATCH_SIZE) break;
+        }
+        return new RedactionResult(scanned, redacted);
+    }
+
+    /// `{scanned, redacted}` — [#redactExisting]'s result.
+    public record RedactionResult(int scanned, int redacted) {
     }
 
     private static org.jooq.Insert<AudLogsRecord> insertQuery(DSLContext txDsl, AuditLog l) {
