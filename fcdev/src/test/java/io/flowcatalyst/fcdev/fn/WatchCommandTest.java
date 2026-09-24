@@ -11,6 +11,8 @@ import java.nio.file.Path;
 import java.nio.file.StandardWatchEventKinds;
 import java.nio.file.WatchService;
 import java.time.Duration;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -143,6 +145,64 @@ class WatchCommandTest {
             assertThat(latch.await(30, TimeUnit.SECONDS)).as("watch loop must reach maxCycles despite the initial cycle failing").isTrue();
         }
         assertThat(cycleCount(out.toString())).as("both cycles must have run, and both failed").isEqualTo(2);
+    }
+
+    /// `deployCycle` shares [Publisher]/[Promoter]'s `VERSION_DIGEST_EXISTS`/`ALIAS_UNCHANGED`
+    /// recovery with `fn deploy` (`DeployCommandTest`'s own two tests) — but until now that
+    /// recovery inside [WatchCommand#deployCycle] itself had NO test of its own: every other
+    /// test in this file hits `SkipCycle` (no jar matched) before ever reaching the platform.
+    /// This drives one real cycle through [FakePlatform] where the publish comes back
+    /// `VERSION_DIGEST_EXISTS` (recoverable via `details.version`) and the promote that
+    /// follows comes back `ALIAS_UNCHANGED` (the recovered version is already live) — the
+    /// cycle must still print success ("v1 already live"), never the platform's raw error.
+    /// Mutant: dropping either new switch arm — letting `VERSION_DIGEST_EXISTS` or
+    /// `ALIAS_UNCHANGED` propagate as an ordinary [FnClientException] — makes the cycle print
+    /// the platform's `code: message` line instead.
+    @Test
+    void deployCycleRecoversFromDigestExistsThenTreatsAliasUnchangedAsAlreadyLive() throws Exception {
+        try (var platform = FakePlatform.start()) {
+            Files.writeString(dir.resolve("manifest.json"), """
+                    {"runtime":"jvm","entrypoint":"x.Fn","pool":"default","warm":false,"endpoints":[]}
+                    """);
+            Path jar = dir.resolve("fn.jar");
+            Files.writeString(jar, "watch-bytes");
+            String digest = Publisher.sha256(jar);
+
+            platform.on("GET", "/api/functions/a.s.n", ex -> FakePlatform.writeJson(ex, 200, Map.of("id", "fnc_1")));
+            platform.on("PUT", "/api/functions/a.s.n/artifacts/" + digest, ex ->
+                    FakePlatform.writeJson(ex, 200, Map.of("artifactRef", "platform://fnc_1/x", "digest", digest, "bytes", 11)));
+            platform.on("POST", "/api/functions/a.s.n/versions", ex ->
+                    FakePlatform.writeError(ex, 409, "VERSION_DIGEST_EXISTS",
+                            "digest is already published as version 1 for this function", Map.of("version", 1)));
+            platform.on("GET", "/api/functions/a.s.n/status", ex -> FakePlatform.writeJson(ex, 200, Map.of(
+                    "address", "a.s.n", "status", "ACTIVE",
+                    "versions", java.util.List.of(Map.of("version", 1, "state", "READY")),
+                    "hosts", java.util.List.of(), "wiring", java.util.List.of())));
+            platform.on("PUT", "/api/functions/a.s.n/aliases/live", ex ->
+                    FakePlatform.writeError(ex, 409, "ALIAS_UNCHANGED", "alias already points at this version"));
+
+            var env = new HashMap<String, String>();
+            env.put("FLOWCATALYST_PLATFORM_URL", platform.baseUrl());
+            env.put("FLOWCATALYST_CLIENT_ID", "id");
+            env.put("FLOWCATALYST_CLIENT_SECRET", "secret");
+            env.put("XDG_DATA_HOME", dir.resolve("state").toString());
+
+            var out = new StringWriter();
+            var err = new StringWriter();
+            picocli.CommandLine cl = FnCliTestSupport.commandLine(env, out, err);
+            var watchCli = cl.getSubcommands().get("fn").getSubcommands().get("watch");
+            var watch = (WatchCommand) watchCli.getCommand();
+            watch.maxCycles = 1;
+
+            int exit = cl.execute("fn", "watch", dir.toString(), "a.s.n");
+
+            assertThat(exit).as(err.toString()).isZero();
+            assertThat(out.toString())
+                    .as("mutant: let VERSION_DIGEST_EXISTS or ALIAS_UNCHANGED propagate instead of recovering")
+                    .contains("v1 already live")
+                    .doesNotContain("VERSION_DIGEST_EXISTS")
+                    .doesNotContain("ALIAS_UNCHANGED");
+        }
     }
 
     @Test

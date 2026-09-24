@@ -74,40 +74,32 @@ public final class DeployCommand implements Callable<Integer> {
             String addr = addressOpts.resolve(address);
             var opts = new Publisher.Options(jar, manifestFile, artifactRef, bundleFile, client, noCreate);
 
-            int version;
-            try {
-                version = Publisher.publish(spec, root, addr, opts).version();
-            } catch (FnClientException e) {
-                Object existing = "VERSION_DIGEST_EXISTS".equals(e.code()) ? e.details().get("version") : null;
-                if (!(existing instanceof Number n)) {
-                    throw e;
-                }
-                version = n.intValue();
-            }
+            int version = switch (Publisher.publishVersion(spec, root, addr, opts)) {
+                case Publisher.PublishOutcome.Published(Publisher.Outcome outcome) -> outcome.version();
+                case Publisher.PublishOutcome.DigestExists(int existingVersion) -> existingVersion;
+            };
 
             FnClient platform = root.client();
             FunctionApi.PromoteResponse promoted;
-            try {
-                promoted = Promoter.promote(spec, root, platform, addr, version, wait, clockMillis, sleepMillis);
-            } catch (FnClientException e) {
-                // The recovered version (VERSION_DIGEST_EXISTS above, or a fresh
-                // publish that happens to already be live) may ALREADY be the
-                // live alias — deploying the identical jar a second time in a row
-                // is exactly this: promote #1 already made it live, so promote #2
-                // has nothing to do. The platform's ALIAS_UNCHANGED conflict is
-                // right for an explicit `fn promote` (the user asked for a change
-                // that didn't happen); `fn deploy`'s automatic recovery wants
-                // "the desired state is already reached", not an error — spec §2's
-                // "second call promotes the existing version, no error" is
-                // unreachable otherwise once the first deploy already promoted it.
-                if (!"ALIAS_UNCHANGED".equals(e.code())) {
-                    throw e;
+            // The recovered version (DigestExists above, or a fresh publish that
+            // happens to already be live) may ALREADY be the live alias —
+            // deploying the identical jar a second time in a row is exactly this:
+            // promote #1 already made it live, so promote #2 has nothing to do.
+            // The platform's ALIAS_UNCHANGED conflict is right for an explicit
+            // `fn promote` (the user asked for a change that didn't happen);
+            // `fn deploy`'s automatic recovery wants "the desired state is
+            // already reached", not an error — spec §2's "second call promotes
+            // the existing version, no error" is unreachable otherwise once the
+            // first deploy already promoted it.
+            switch (Promoter.promoteOrUnchanged(spec, root, platform, addr, version, wait, clockMillis, sleepMillis)) {
+                case null -> {
+                    return 1;
                 }
-                printAlreadyLive(root, addr, version);
-                return 0;
-            }
-            if (promoted == null) {
-                return 1;
+                case Promoter.PromoteOutcome.Unchanged ignored -> {
+                    printAlreadyLive(root, addr, version);
+                    return 0;
+                }
+                case Promoter.PromoteOutcome.Moved(FunctionApi.PromoteResponse response) -> promoted = response;
             }
             print(root, addr, promoted);
             return 0;

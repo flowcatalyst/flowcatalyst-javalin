@@ -41,6 +41,41 @@ final class Publisher {
     record Outcome(String address, int version, String digest) {
     }
 
+    /// The outcome of publishing a version (spec §5.1's `POST …/versions`):
+    /// `Published` for the ordinary 201, `DigestExists` for the platform's
+    /// `VERSION_DIGEST_EXISTS` 409 — the same jar republished is an expected
+    /// answer, not a transport failure. Bare `fn publish` still treats a
+    /// republish as a failure ([#publish] throws for it, unchanged, since
+    /// `PublishCommand` wants exactly that); [#publishVersion] is the
+    /// non-throwing view `fn deploy`/`fn watch` switch on instead of catching
+    /// [FnClientException] and comparing `code()` (`DeployCommand`/
+    /// `WatchCommand`'s own doc: "promotes the EXISTING version … rather than
+    /// failing").
+    sealed interface PublishOutcome {
+        record Published(Outcome outcome) implements PublishOutcome {
+        }
+
+        record DigestExists(int existingVersion) implements PublishOutcome {
+        }
+    }
+
+    /// [#publish], but `VERSION_DIGEST_EXISTS` comes back as
+    /// [PublishOutcome.DigestExists] instead of a thrown [FnClientException]
+    /// — every other failure (network, a different conflict, an upload
+    /// rejection) still throws unchanged.
+    static PublishOutcome publishVersion(CommandSpec spec, FnCommand root, String address, Options opts)
+            throws IOException {
+        try {
+            return new PublishOutcome.Published(publish(spec, root, address, opts));
+        } catch (FnClientException e) {
+            Object existing = "VERSION_DIGEST_EXISTS".equals(e.code()) ? e.details().get("version") : null;
+            if (existing instanceof Number n) {
+                return new PublishOutcome.DigestExists(n.intValue());
+            }
+            throw e;
+        }
+    }
+
     static Outcome publish(CommandSpec spec, FnCommand root, String address, Options opts) throws IOException {
         Path jarPath = Path.of(opts.jar());
         String digest = sha256(jarPath);
@@ -83,6 +118,34 @@ final class Publisher {
         return parsed.artifactRef();
     }
 
+    /// Whether `address` already exists on the platform — [#ensureFunctionExists]'s
+    /// own `GET /api/functions/{address}` lookup. A 404 is this lookup's
+    /// routine negative answer, never a transport failure; every other
+    /// non-2xx status is still thrown as [FnClientException] straight out of
+    /// [#lookupFunction] (only "does this address exist yet" is an expected
+    /// outcome here). `NotFound` carries the platform's own 404
+    /// [FnClientException] so [#ensureFunctionExists] can rethrow it verbatim
+    /// under `--no-create`, never rebuilding its message.
+    sealed interface Lookup {
+        record Found() implements Lookup {
+        }
+
+        record NotFound(FnClientException notFoundError) implements Lookup {
+        }
+    }
+
+    private static Lookup lookupFunction(FnClient platform, String address) {
+        try {
+            platform.get("/api/functions/" + address);
+            return new Lookup.Found();
+        } catch (FnClientException e) {
+            if (e.status() == 404) {
+                return new Lookup.NotFound(e);
+            }
+            throw e;
+        }
+    }
+
     /// Shared by `fn publish`/`fn deploy` and, for the create-on-set behaviour
     /// (`function-backlog-2026-09-22.md` Unit F), `fn config set`/`fn secret
     /// set`: a GET for `address`, and — on a 404 only — creates the function
@@ -101,21 +164,23 @@ final class Publisher {
     ///                     message [FnCommand#runSafely] prints on exit 1
     static void ensureFunctionExists(FnClient platform, String address, JsonNode manifest, String client,
                                       boolean noCreate) throws IOException {
-        try {
-            platform.get("/api/functions/" + address);
-        } catch (FnClientException e) {
-            if (e.status() != 404 || noCreate) {
-                throw e;
+        switch (lookupFunction(platform, address)) {
+            case Lookup.Found ignored -> {
             }
-            if (manifest == null) {
-                throw new IOException("function " + address + " does not exist and no manifest.json was found to "
-                        + "create it from — pass --manifest, or run fn publish first");
+            case Lookup.NotFound(FnClientException notFoundError) -> {
+                if (noCreate) {
+                    throw notFoundError;
+                }
+                if (manifest == null) {
+                    throw new IOException("function " + address + " does not exist and no manifest.json was found to "
+                            + "create it from — pass --manifest, or run fn publish first");
+                }
+                String[] parts = address.split("\\.", -1);
+                String runtime = manifest.path("runtime").asString(null);
+                String ownerClientId = client == null || client.isBlank() ? null : client;
+                var create = new FunctionApi.CreateFunctionRequest(parts[0], parts[1], parts[2], runtime, null, ownerClientId);
+                platform.post("/api/functions", Json.MAPPER.valueToTree(create));
             }
-            String[] parts = address.split("\\.", -1);
-            String runtime = manifest.path("runtime").asString(null);
-            String ownerClientId = client == null || client.isBlank() ? null : client;
-            var create = new FunctionApi.CreateFunctionRequest(parts[0], parts[1], parts[2], runtime, null, ownerClientId);
-            platform.post("/api/functions", Json.MAPPER.valueToTree(create));
         }
     }
 

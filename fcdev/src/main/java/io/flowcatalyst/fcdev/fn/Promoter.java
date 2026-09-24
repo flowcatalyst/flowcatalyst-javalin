@@ -27,6 +27,43 @@ final class Promoter {
     private Promoter() {
     }
 
+    /// The outcome of promoting `live` to a version (spec §5.2's `PUT
+    /// …/aliases/live`): `Moved` for the ordinary 200, `Unchanged` for the
+    /// platform's `ALIAS_UNCHANGED` 409 — the desired version already IS
+    /// `live`'s target, an expected answer (not a transport failure) once a
+    /// caller recovers a version it did not itself just publish (`fn
+    /// deploy`/`fn watch`'s own recovery: "the desired state is already
+    /// reached, not an error"). `fn promote` itself still wants
+    /// `ALIAS_UNCHANGED` to fail — [#promote] throws for it, unchanged, since
+    /// `PromoteCommand` wants exactly that.
+    sealed interface PromoteOutcome {
+        record Moved(FunctionApi.PromoteResponse response) implements PromoteOutcome {
+        }
+
+        record Unchanged() implements PromoteOutcome {
+        }
+    }
+
+    /// [#promote] (the `live`-only overload), but `ALIAS_UNCHANGED` comes
+    /// back as [PromoteOutcome.Unchanged] instead of a thrown
+    /// [FnClientException] — every other failure still throws unchanged.
+    /// `null` on a timeout, same convention as [#promote] — the timeout
+    /// message is already printed.
+    static PromoteOutcome promoteOrUnchanged(CommandSpec spec, FnCommand root, FnClient platform, String address,
+                                              int version, Duration wait, LongSupplier clockMillis,
+                                              LongConsumer sleepMillis) {
+        FunctionApi.PromoteResponse response;
+        try {
+            response = promote(spec, root, platform, address, version, wait, clockMillis, sleepMillis);
+        } catch (FnClientException e) {
+            if ("ALIAS_UNCHANGED".equals(e.code())) {
+                return new PromoteOutcome.Unchanged();
+            }
+            throw e;
+        }
+        return response == null ? null : new PromoteOutcome.Moved(response);
+    }
+
     /// @return the promote response on success, or `null` on a timeout — the
     ///         timeout message was already printed to `spec`'s err writer,
     ///         so the caller just needs to exit 1

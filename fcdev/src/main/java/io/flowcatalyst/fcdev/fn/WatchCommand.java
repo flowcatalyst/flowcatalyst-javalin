@@ -172,34 +172,26 @@ public final class WatchCommand implements Callable<Integer> {
             Path manifestFile = resolveManifest(dir);
             var opts = new Publisher.Options(jar.toString(), manifestFile.toString(), null, null, client, noCreate);
 
-            int version;
-            try {
-                version = Publisher.publish(spec, root, address, opts).version();
-            } catch (FnClientException e) {
-                Object existing = "VERSION_DIGEST_EXISTS".equals(e.code()) ? e.details().get("version") : null;
-                if (!(existing instanceof Number n)) {
-                    throw e;
-                }
-                version = n.intValue();
-            }
+            int version = switch (Publisher.publishVersion(spec, root, address, opts)) {
+                case Publisher.PublishOutcome.Published(Publisher.Outcome outcome) -> outcome.version();
+                case Publisher.PublishOutcome.DigestExists(int existingVersion) -> existingVersion;
+            };
 
             FunctionApi.PromoteResponse promoted;
-            try {
-                promoted = Promoter.promote(spec, root, root.client(), address, version, wait, clockMillis, sleepMillis);
-            } catch (FnClientException e) {
-                // Same reasoning as DeployCommand: the recovered version can
-                // already be live (an unchanged file saved again) — that is
-                // success, not a cycle failure.
-                if (!"ALIAS_UNCHANGED".equals(e.code())) {
-                    throw e;
+            // Same reasoning as DeployCommand: the recovered version can
+            // already be live (an unchanged file saved again) — that is
+            // success, not a cycle failure.
+            switch (Promoter.promoteOrUnchanged(spec, root, root.client(), address, version, wait, clockMillis, sleepMillis)) {
+                case null -> {
+                    out.printf("v%d: timed out waiting for READY%n", version);
+                    return;
                 }
-                double already = (clockMillis.getAsLong() - start) / 1000.0;
-                out.printf("v%d already live (%.1f s)%n", version, already);
-                return;
-            }
-            if (promoted == null) {
-                out.printf("v%d: timed out waiting for READY%n", version);
-                return;
+                case Promoter.PromoteOutcome.Unchanged ignored -> {
+                    double already = (clockMillis.getAsLong() - start) / 1000.0;
+                    out.printf("v%d already live (%.1f s)%n", version, already);
+                    return;
+                }
+                case Promoter.PromoteOutcome.Moved(FunctionApi.PromoteResponse response) -> promoted = response;
             }
             double seconds = (clockMillis.getAsLong() - start) / 1000.0;
             out.printf("v%d live in %.1f s%n", promoted.version(), seconds);
