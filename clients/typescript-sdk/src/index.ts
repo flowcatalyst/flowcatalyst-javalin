@@ -189,6 +189,7 @@ export type {
 export { CreateEventDto } from "./outbox/index.js";
 export { CreateDispatchJobDto, type DispatchMode } from "./outbox/index.js";
 export { CreateAuditLogDto } from "./outbox/index.js";
+export { redactAuditData } from "./outbox/index.js";
 export { generateTsid, isValidTsid } from "./outbox/index.js";
 export { PgOutboxDriver } from "./outbox/index.js";
 export type {

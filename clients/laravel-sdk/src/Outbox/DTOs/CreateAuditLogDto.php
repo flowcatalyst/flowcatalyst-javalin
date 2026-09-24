@@ -4,13 +4,22 @@ declare(strict_types=1);
 
 namespace FlowCatalyst\Outbox\DTOs;
 
+use FlowCatalyst\Outbox\AuditRedaction;
+
 /**
  * DTO for creating an audit log entry in the outbox.
+ *
+ * `operationData` is redacted (see {@see AuditRedaction}) before it is
+ * serialised into the outbox payload, so passwords, tokens and other
+ * secret-shaped fields never reach `aud_logs`. Pass `$maskedFields` to
+ * `withOperationData()` for fields the name rule alone would not catch.
  */
 class CreateAuditLogDto
 {
     /**
      * @param array<string, mixed>|null $operationData Operation payload data
+     * @param list<string> $maskedFields Top-level field names to mask in
+     *   $operationData in addition to the name rule
      * @param array<string, string> $metadata Additional metadata
      * @param array<string, string> $headers Optional headers
      */
@@ -19,6 +28,7 @@ class CreateAuditLogDto
         public readonly string $entityId,
         public readonly string $operation,
         public readonly ?array $operationData = null,
+        public readonly array $maskedFields = [],
         public readonly ?string $principalId = null,
         public readonly ?\DateTimeInterface $performedAt = null,
         public readonly ?string $source = null,
@@ -46,14 +56,19 @@ class CreateAuditLogDto
 
     /**
      * Add operation data.
+     *
+     * @param list<string> $maskedFields Top-level field names to mask in
+     *   addition to the name rule (see {@see AuditRedaction}), e.g. a
+     *   config value whose secrecy depends on a sibling field.
      */
-    public function withOperationData(array $operationData): self
+    public function withOperationData(array $operationData, array $maskedFields = []): self
     {
         return new self(
             entityType: $this->entityType,
             entityId: $this->entityId,
             operation: $this->operation,
             operationData: $operationData,
+            maskedFields: $maskedFields,
             principalId: $this->principalId,
             performedAt: $this->performedAt,
             source: $this->source,
@@ -75,6 +90,7 @@ class CreateAuditLogDto
             entityId: $this->entityId,
             operation: $this->operation,
             operationData: $this->operationData,
+            maskedFields: $this->maskedFields,
             principalId: $principalId,
             performedAt: $this->performedAt,
             source: $this->source,
@@ -96,6 +112,7 @@ class CreateAuditLogDto
             entityId: $this->entityId,
             operation: $this->operation,
             operationData: $this->operationData,
+            maskedFields: $this->maskedFields,
             principalId: $this->principalId,
             performedAt: $performedAt,
             source: $this->source,
@@ -117,6 +134,7 @@ class CreateAuditLogDto
             entityId: $this->entityId,
             operation: $this->operation,
             operationData: $this->operationData,
+            maskedFields: $this->maskedFields,
             principalId: $this->principalId,
             performedAt: $this->performedAt,
             source: $source,
@@ -138,6 +156,7 @@ class CreateAuditLogDto
             entityId: $this->entityId,
             operation: $this->operation,
             operationData: $this->operationData,
+            maskedFields: $this->maskedFields,
             principalId: $this->principalId,
             performedAt: $this->performedAt,
             source: $this->source,
@@ -160,6 +179,7 @@ class CreateAuditLogDto
             entityId: $this->entityId,
             operation: $this->operation,
             operationData: $this->operationData,
+            maskedFields: $this->maskedFields,
             principalId: $this->principalId,
             performedAt: $this->performedAt,
             source: $this->source,
@@ -182,6 +202,7 @@ class CreateAuditLogDto
             entityId: $this->entityId,
             operation: $this->operation,
             operationData: $this->operationData,
+            maskedFields: $this->maskedFields,
             principalId: $this->principalId,
             performedAt: $this->performedAt,
             source: $this->source,
@@ -203,6 +224,7 @@ class CreateAuditLogDto
             entityId: $this->entityId,
             operation: $this->operation,
             operationData: $this->operationData,
+            maskedFields: $this->maskedFields,
             principalId: $this->principalId,
             performedAt: $this->performedAt,
             source: $this->source,
@@ -224,6 +246,7 @@ class CreateAuditLogDto
             entityId: $this->entityId,
             operation: $this->operation,
             operationData: $this->operationData,
+            maskedFields: $this->maskedFields,
             principalId: $this->principalId,
             performedAt: $this->performedAt,
             source: $this->source,
@@ -244,7 +267,9 @@ class CreateAuditLogDto
             'entityType' => $this->entityType,
             'entityId' => $this->entityId,
             'operation' => $this->operation,
-            'operationData' => $this->operationData !== null ? json_encode($this->operationData) : null,
+            'operationData' => $this->operationData !== null
+                ? json_encode(AuditRedaction::redact($this->operationData, $this->maskedFields))
+                : null,
             'principalId' => $this->principalId,
             'performedAt' => ($this->performedAt ?? new \DateTimeImmutable())->format('c'),
             'source' => $this->source,

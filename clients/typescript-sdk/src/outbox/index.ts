@@ -12,6 +12,7 @@ export {
 	type DispatchMode,
 } from "./create-dispatch-job-dto.js";
 export { CreateAuditLogDto } from "./create-audit-log-dto.js";
+export { redactAuditData } from "./audit-redaction.js";
 export { assertQualifiedCode } from "./qualified-code.js";
 export { generate as generateTsid, isValid as isValidTsid } from "./tsid.js";
 export { PgOutboxDriver } from "./drivers/pg-outbox-driver.js";
