@@ -5,6 +5,7 @@ import io.flowcatalyst.sdk.usecase.HasId;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 
 import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.List;
 
 /// A unit of work bound to one externally orchestrated transaction opened by
@@ -46,7 +47,7 @@ public final class TxScopedUnitOfWork {
         try {
             repository.persist(aggregate, tx);
         } catch (Exception e) {
-            throw UseCaseException.internal("PERSIST", "repository persist failed", e);
+            throw writeFailure("PERSIST", "repository persist failed", aggregate, e);
         }
         writeEvent(event, "could not write domain event");
         writeAudit(event, command, "could not write audit log");
@@ -58,7 +59,7 @@ public final class TxScopedUnitOfWork {
         try {
             repository.delete(aggregate, tx);
         } catch (Exception e) {
-            throw UseCaseException.internal("DELETE", "repository delete failed", e);
+            throw writeFailure("DELETE", "repository delete failed", aggregate, e);
         }
         writeEvent(event, "could not write domain event");
         writeAudit(event, command, "could not write audit log");
@@ -77,7 +78,7 @@ public final class TxScopedUnitOfWork {
             try {
                 repository.persist(aggregates.get(i), tx);
             } catch (Exception e) {
-                throw UseCaseException.internal("PERSIST_BATCH", "persist failed at index " + i, e);
+                throw writeFailure("PERSIST_BATCH", "persist failed at index " + i, aggregates.get(i), e);
             }
         }
         writeEvent(event, "could not write domain event");
@@ -92,7 +93,7 @@ public final class TxScopedUnitOfWork {
             try {
                 repository.persist(save.aggregate(), tx);
             } catch (Exception e) {
-                throw UseCaseException.internal("PERSIST_BATCH", "sync save failed at index " + i, e);
+                throw writeFailure("PERSIST_BATCH", "sync save failed at index " + i, save.aggregate(), e);
             }
             writeEvent(save.event(), "per-row save event write failed at index " + i);
             writeAudit(save.event(), command, "per-row save audit write failed at index " + i);
@@ -102,7 +103,7 @@ public final class TxScopedUnitOfWork {
             try {
                 repository.delete(delete.aggregate(), tx);
             } catch (Exception e) {
-                throw UseCaseException.internal("DELETE_BATCH", "sync delete failed at index " + i, e);
+                throw writeFailure("DELETE_BATCH", "sync delete failed at index " + i, delete.aggregate(), e);
             }
             writeEvent(delete.event(), "per-row delete event write failed at index " + i);
             writeAudit(delete.event(), command, "per-row delete audit write failed at index " + i);
@@ -112,11 +113,38 @@ public final class TxScopedUnitOfWork {
         return rollup;
     }
 
+    /// SQLSTATE `23505`, unique_violation (PostgreSQL and H2 alike).
+    private static final String UNIQUE_VIOLATION = "23505";
+
+    /// A repository write that failed. A unique violation anywhere in the
+    /// cause chain is a conflict, not an internal error: the operation's
+    /// validate phase checked for the duplicate, and a concurrent writer got
+    /// there between that check and this persist — the caller should be told
+    /// 409, as if the check had seen it. Anything else stays internal, and
+    /// names which aggregate failed.
+    private static UseCaseException writeFailure(String code, String what, HasId aggregate, Exception e) {
+        String subject = aggregate.getClass().getSimpleName() + " " + aggregate.id();
+        if (hasSqlState(e, UNIQUE_VIOLATION)) {
+            return UseCaseException.conflict("DUPLICATE_KEY",
+                    subject + " conflicts with an existing row on a unique key");
+        }
+        return UseCaseException.internal(code, what + " for " + subject, e);
+    }
+
+    private static boolean hasSqlState(Throwable t, String state) {
+        for (Throwable c = t; c != null; c = c.getCause() == c ? null : c.getCause()) {
+            if (c instanceof SQLException sql && state.equals(sql.getSQLState())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void writeEvent(DomainEvent event, String failureMessage) {
         try {
             sink.writeEvent(tx, event);
         } catch (Exception e) {
-            throw UseCaseException.internal("EVENT_WRITE", failureMessage, e);
+            throw UseCaseException.internal("EVENT_WRITE", failureMessage + " (" + event.getClass().getSimpleName() + ")", e);
         }
     }
 
@@ -124,7 +152,7 @@ public final class TxScopedUnitOfWork {
         try {
             sink.writeAudit(tx, event, command);
         } catch (Exception e) {
-            throw UseCaseException.internal("AUDIT_WRITE", failureMessage, e);
+            throw UseCaseException.internal("AUDIT_WRITE", failureMessage + " (" + event.getClass().getSimpleName() + ")", e);
         }
     }
 }

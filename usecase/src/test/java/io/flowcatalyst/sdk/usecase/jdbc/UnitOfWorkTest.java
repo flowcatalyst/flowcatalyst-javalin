@@ -142,6 +142,37 @@ class UnitOfWorkTest {
         assertThat(count("events")).isZero();
     }
 
+    /// A concurrent writer got the unique key between validate and persist: the
+    /// database's unique violation is a 409, not a 500. Anything else stays
+    /// internal and names the aggregate. Mutant: every failure is internal.
+    @Test
+    void aUniqueViolationAtPersistIsAConflictAndOtherFailuresNameTheAggregate() throws SQLException {
+        Persist<Thing> insertOnly = new Persist<>() {
+            @Override public void persist(Thing t, DbTx tx) throws SQLException {
+                try (PreparedStatement ps = tx.connection().prepareStatement("INSERT INTO things (id, name) VALUES (?, ?)")) {
+                    ps.setString(1, t.id()); ps.setString(2, t.name()); ps.executeUpdate();
+                }
+            }
+            @Override public void delete(Thing t, DbTx tx) {
+            }
+        };
+        uow.commit(new Thing("t1", "one"), insertOnly, saved("t1"), new ThingCommand("one"));
+
+        assertThatThrownBy(() -> uow.commit(new Thing("t1", "again"), insertOnly, saved("t1"), new ThingCommand("again")))
+                .isInstanceOfSatisfying(UseCaseException.class, e -> {
+                    assertThat(e.code()).isEqualTo("DUPLICATE_KEY");
+                    assertThat(e.error()).isInstanceOf(io.flowcatalyst.sdk.usecase.UseCaseError.Conflict.class);
+                    assertThat(e.getMessage()).contains("Thing t1");
+                });
+
+        repo.fail = true;
+        assertThatThrownBy(() -> uow.commit(new Thing("t2", "two"), repo, saved("t2"), new ThingCommand("two")))
+                .isInstanceOfSatisfying(UseCaseException.class, e -> {
+                    assertThat(e.code()).isEqualTo("PERSIST");
+                    assertThat(e.getMessage()).contains("Thing t2");
+                });
+    }
+
     @Test
     void commitDeleteRemovesTheRowAndRecordsTheEvent() throws SQLException {
         uow.commit(new Thing("t1", "one"), repo, saved("t1"), new ThingCommand("one"));
