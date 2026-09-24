@@ -401,8 +401,8 @@ Read this before you design around anything the API *looks* like it should let y
 ## 8a. Wasm functions
 
 A function may also be a WebAssembly module (`runtime: wasm`), run by the host on Endive (pure
-Java) through the Extism ABI — write it with an Extism PDK (Rust today; JavaScript arrives in W3,
-and the admin UI's create drawer keeps `wasm` disabled until W5). Everything above about endpoints,
+Java) through the Extism ABI — write it with an Extism PDK (Rust, or JavaScript — §8b below; the
+admin UI's create drawer keeps `wasm` disabled until W5). Everything above about endpoints,
 auth modes, subscriptions, schedules, publishing and promoting is the same; what differs is below.
 Spec: `docs/spec/function-wasm-runtime.md`.
 
@@ -477,6 +477,66 @@ call failed is thrown away, so a failure never leaks state into the next call �
 call's globals and memory do persist into later calls on the same instance, so don't rely on either
 fresh or shared state between calls. The module is compiled once per version when it loads (≈0.2 s
 and ≈4–6 MB of metaspace — counted by the same metaspace guard as JVM functions).
+
+## 8b. JavaScript functions
+
+JavaScript runs **through Wasm** (`runtime: wasm`, same as §8a) — QuickJS via the Extism JS PDK,
+compiled ahead of time by `extism-js`. There is no separate "JS runtime"; the host sees an ordinary
+Wasm module and treats it exactly as §8a describes (the same invocation JSON, the same host
+functions, the same limits). Spec: `docs/spec/function-js-guest.md`.
+
+**Scaffold.** `fcdev fn init --lang js <dir>` writes a starter project: `package.json` (depending
+on `@flowcatalyst/function` via `file:lib/flowcatalyst-function` — the library ships with the
+scaffold, the same reasoning as the JVM function API; it is not on npm), `tsconfig.json`,
+`src/index.ts`, `manifest.json` (`runtime: wasm`, `entrypoint: handle`) and a README with the build
+steps. `examples/function-hello-js` is the worked example, the JS twin of `examples/function-hello`.
+
+**Toolchain.** Node 18+ / npm; [`extism-js`](https://github.com/extism/js-pdk) 1.6.x on `PATH`; and
+[Binaryen](https://github.com/WebAssembly/binaryen)'s `wasm-opt` and `wasm-merge` on `PATH`
+(`brew install binaryen`). `fcdev` never drives npm — `fn build` is not a thing for JS; the
+scaffold's own `npm run build` is the build:
+
+```bash
+npm install
+npm run build   # esbuild src/index.ts --bundle --format=cjs --target=es2020 --outfile=dist/index.js
+                 # extism-js dist/index.js -i node_modules/@flowcatalyst/function/interface.d.ts -o dist/function.wasm
+fcdev fn publish dist/function.wasm --manifest manifest.json
+```
+
+**Writing the handler** — `@flowcatalyst/function` mirrors `function-api`'s shapes under the same
+names: `FunctionRequest` (with `body()`/`text()`/`json<T>()` helpers over the wire's base64 body),
+`Caller` (`{kind:"platform"|"anonymous"|"principal"}` — a `PrincipalCaller` has the same
+`hasPermission`/`hasAnyPermission`/`hasAllPermissions`/`hasRole`/`isAnchor`/`canAccessClient`/
+`canAccessApplication`/`clientId` helpers as Java's `Caller.Principal`, tested against the same
+wildcard-match cases), `FunctionResult` built through `Result.ok()/.json()/.text()/.status()/
+.fail()/.retry(seconds)`, and a `Context` (`config`, `secrets`, `http`, `events`, `logger`, `now()`)
+your handler reads through:
+
+```ts
+import { handler, Result } from "@flowcatalyst/function";
+
+export const handle = handler((req, ctx) => {
+	if (req.path === "/healthz") {
+		return Result.json(200, { status: "ok" });
+	}
+	const greeting = ctx.config.get("GREETING") ?? "Hello";
+	return Result.json(200, { message: `${greeting}, ${req.pathParams.name ?? "world"}!` });
+});
+```
+
+`ctx.http.request(...)` calls through Extism's own `Http.request` (§8a's allowlist and deadline
+apply identically); a host outside `manifest.httpAllow`, or an unreachable one, throws `HttpDenied`
+rather than handing back a reply you have to remember to check the status of. `handler(...)` turns
+any uncaught exception into `Result.fail(message)` — a clean `500`, never a trapped instance (§8a:
+a bug in your own code must never take down every future call on that instance).
+
+**What works, what doesn't.** QuickJS is an interpreter inside the Wasm sandbox: no Node built-ins
+(no `fs`, `path`, `net`, `child_process`; `Buffer` is polyfilled), no event loop (no `setTimeout` —
+`async`/`await` works only over values Extism's own synchronous calls already resolved), and an npm
+package works only once bundled into your single output file by `esbuild` — packages depending on
+Node built-ins or the DOM will not bundle cleanly. Steady-state call overhead is on the order of
+**~0.3 ms** — fine behind an HTTP endpoint for glue code, webhook handlers and thin API calls; not
+for heavy compute, which belongs in a Rust guest (§8a) or a JVM function instead.
 
 ## 9. Building, shrinking and testing (the pipeline)
 
@@ -702,6 +762,12 @@ merged) covers most of the same ground with a browser instead:
   `function-host/src/main/java/io/flowcatalyst/fnhost/load/{JvmFunctionLoader,Reason}.java`;
   `docs/spec/jvm-memory.md` §4; `docs/function-runner-report.md` ("Metaspace at 50%" section, the
   measured 4.4 MB/function and ≈34 MB baseline numbers); `docs/spec/function-artifacts.md` §4
+- §8a — `docs/spec/function-wasm-runtime.md` §3–§4;
+  `function-host/src/main/java/io/flowcatalyst/fnhost/wasm/{WasmAbi,HostFunctions,WasmFunction}.java`
+- §8b — `docs/spec/function-js-guest.md`; `clients/function-js/` (read directly — `types.ts`,
+  `context.ts`, `handler.ts`); `examples/function-hello-js/`; `fcdev/src/main/java/io/flowcatalyst/fcdev/fn/InitCommand.java`
+  (`--lang`); `function-host/src/test/java/io/flowcatalyst/fnhost/http/WasmFunctionHelloJsTest.java`
+  (the committed module through the real listener)
 - §9 — `docs/function-runner-plan.md` §8 ("Shrinking"); `docs/spec/function-developer-surface.md` §3;
   `examples/function-hello/pom.xml`
 - §10 — `docs/spec/function-developer-surface.md` §4, row E9

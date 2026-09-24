@@ -1,0 +1,16 @@
+{
+	"_comment": "One real request the Java host actually sends, copied from WasmFunctionListenerTest's test 1 (`aWasmVersionLoadsAndAnHttpCallReachesTheGuestWithEveryRequestFieldIntact`) — WasmAbi.encode's shape for a POST /echo/42?y=hello+world&y=again with an anonymous caller.",
+	"address": "fnc_a",
+	"version": 1,
+	"invocationId": "inv-1",
+	"method": "POST",
+	"path": "/echo/42",
+	"originalHost": "127.0.0.1:8080",
+	"originalPath": "/functions/fnc_a/echo/42",
+	"pathParams": { "id": "42" },
+	"query": { "y": ["hello world", "again"] },
+	"headers": { "X-Test-Custom": ["hi"] },
+	"bodyBase64": "aMOpbGxvIGJvZHk=",
+	"remoteAddress": "127.0.0.1",
+	"caller": { "kind": "anonymous" }
+}

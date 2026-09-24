@@ -9,7 +9,9 @@ import picocli.CommandLine.Parameters;
 import picocli.CommandLine.Spec;
 import tools.jackson.databind.JsonNode;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -20,6 +22,8 @@ import java.util.Map;
 import java.util.TreeSet;
 import java.util.concurrent.Callable;
 import java.util.stream.Collectors;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 /// `fn init <dir>` (`docs/spec/function-manifest-authoring.md` M3):
 /// scaffolds a starter function project derived from `examples/function-hello`.
@@ -37,6 +41,11 @@ public final class InitCommand implements Callable<Integer> {
     /// what a freshly-started local fcdev answers at when nothing else names a URL.
     static final String LOCAL_REPO = "lib/m2";
     static final String FUNCTION_API_JAR_RESOURCE = "/fn-init/flowcatalyst-function-api.jar";
+    /// `--lang js` (`docs/spec/function-js-guest.md` §3): `@flowcatalyst/function`'s
+    /// source, zipped the same way as [#FUNCTION_API_JAR_RESOURCE], extracted into
+    /// [#JS_LIBRARY_DIR].
+    static final String FUNCTION_JS_ZIP_RESOURCE = "/fn-init/flowcatalyst-function-js.zip";
+    static final String JS_LIBRARY_DIR = "lib/flowcatalyst-function";
     private static final String DEFAULT_PLATFORM_URL = "http://localhost:8080";
     private static final String DEFAULT_PACKAGE = "com.example.fn";
     private static final String HANDLER_CLASS_NAME = "Handler";
@@ -49,8 +58,14 @@ public final class InitCommand implements Callable<Integer> {
 
     @Option(names = "--runtime", paramLabel = "<runtime>", defaultValue = "jvm",
             description = "jvm or wasm (default: ${DEFAULT-VALUE}). wasm has no project template — "
-                    + "writes manifest.json only, same as --manifest-only")
+                    + "writes manifest.json only, same as --manifest-only, UNLESS --lang js names one")
     String runtime;
+
+    @Option(names = "--lang", paramLabel = "<lang>", defaultValue = "java",
+            description = "java or js (default: ${DEFAULT-VALUE}). js scaffolds a JavaScript "
+                    + "project (runtime: wasm) — package.json, tsconfig.json, src/index.ts and "
+                    + "the @flowcatalyst/function library, ready for `npm install && npm run build`")
+    String lang;
 
     @Option(names = "--package", paramLabel = "<java.package>",
             description = "the generated handler's package (default: " + DEFAULT_PACKAGE + ")")
@@ -72,11 +87,35 @@ public final class InitCommand implements Callable<Integer> {
         PrintWriter out = spec.commandLine().getOut();
         PrintWriter err = spec.commandLine().getErr();
 
-        String runtimeValue = (runtime == null || runtime.isBlank()) ? "jvm" : runtime.toLowerCase(Locale.ROOT);
-        if (!runtimeValue.equals("jvm") && !runtimeValue.equals("wasm")) {
-            err.println("--runtime must be jvm or wasm");
+        String langValue = (lang == null || lang.isBlank()) ? "java" : lang.toLowerCase(Locale.ROOT);
+        if (!langValue.equals("java") && !langValue.equals("js")) {
+            err.println("--lang must be java or js");
             return 1;
         }
+
+        String runtimeValue;
+        if (langValue.equals("js")) {
+            // A JS function declares runtime: wasm — build concern, not an author choice
+            // (docs/spec/function-js-guest.md §3's plan ruling D4). --runtime defaults to
+            // "jvm" (its own @Option default), so only an EXPLICIT, conflicting --runtime is
+            // refused — --lang js alone, or --lang js --runtime wasm, both proceed.
+            boolean runtimeExplicit = spec.commandLine().getParseResult().hasMatchedOption("--runtime");
+            if (runtimeExplicit && !"wasm".equalsIgnoreCase(runtime)) {
+                err.println("--lang js scaffolds a wasm function — omit --runtime or pass --runtime wasm");
+                return 1;
+            }
+            runtimeValue = "wasm";
+        } else {
+            runtimeValue = (runtime == null || runtime.isBlank()) ? "jvm" : runtime.toLowerCase(Locale.ROOT);
+            if (!runtimeValue.equals("jvm") && !runtimeValue.equals("wasm")) {
+                err.println("--runtime must be jvm or wasm");
+                return 1;
+            }
+        }
+        // --lang java (the default) keeps today's behaviour exactly: --runtime wasm without
+        // --lang writes manifest.json only, same as --manifest-only. This flag is never
+        // consulted below when langValue is "js" — that branch always writes its own project
+        // template — so it needs no js exception of its own.
         boolean manifestOnlyEffective = manifestOnly || runtimeValue.equals("wasm");
 
         Path targetDir = Path.of(dir);
@@ -88,7 +127,15 @@ public final class InitCommand implements Callable<Integer> {
         Map<Path, byte[]> files = new LinkedHashMap<>();
         files.put(targetDir.resolve("manifest.json"),
                 manifestJson(runtimeValue, entrypoint, platformUrl).getBytes(StandardCharsets.UTF_8));
-        if (!manifestOnlyEffective) {
+        if (langValue.equals("js")) {
+            files.put(targetDir.resolve("package.json"), packageJsonJs(artifactId).getBytes(StandardCharsets.UTF_8));
+            files.put(targetDir.resolve("tsconfig.json"), TSCONFIG_JS.getBytes(StandardCharsets.UTF_8));
+            files.put(targetDir.resolve("src/index.ts"), indexTs(artifactId).getBytes(StandardCharsets.UTF_8));
+            files.put(targetDir.resolve("README.md"), README_JS.getBytes(StandardCharsets.UTF_8));
+            // @flowcatalyst/function ships with the scaffold, the same reasoning as the JVM
+            // function API below: the package is not on npm.
+            files.putAll(functionJsLibraryFiles(targetDir));
+        } else if (!manifestOnlyEffective) {
             files.put(targetDir.resolve("pom.xml"),
                     pomXml(packageName, artifactId, Version.current()).getBytes(StandardCharsets.UTF_8));
             Path handlerPath = targetDir.resolve("src/main/java")
@@ -129,7 +176,7 @@ public final class InitCommand implements Callable<Integer> {
             return 1;
         }
 
-        printNextSteps(out, manifestOnlyEffective, artifactId);
+        printNextSteps(out, langValue, manifestOnlyEffective, artifactId);
         return 0;
     }
 
@@ -291,7 +338,17 @@ public final class InitCommand implements Callable<Integer> {
                 """.formatted(packageName, className, className);
     }
 
-    private static void printNextSteps(PrintWriter out, boolean manifestOnlyEffective, String artifactId) {
+    private static void printNextSteps(PrintWriter out, String langValue, boolean manifestOnlyEffective,
+                                        String artifactId) {
+        if (langValue.equals("js")) {
+            out.println("wrote package.json, tsconfig.json, manifest.json, src/index.ts, README.md, and "
+                    + "@flowcatalyst/function under " + JS_LIBRARY_DIR);
+            out.println("next steps (needs extism-js, wasm-opt and wasm-merge on PATH — docs/functions.md):");
+            out.println("  npm install");
+            out.println("  npm run build");
+            out.println("  fcdev fn publish dist/function.wasm --manifest manifest.json");
+            return;
+        }
         if (manifestOnlyEffective) {
             out.println("wrote manifest.json");
             return;
@@ -301,5 +358,122 @@ public final class InitCommand implements Callable<Integer> {
         out.println("next steps:");
         out.println("  mvn package");
         out.println("  fcdev fn publish target/" + artifactId + ".jar --manifest manifest.json");
+    }
+
+    // ── --lang js (docs/spec/function-js-guest.md §3) ──────────────────────────────────────────
+
+    private static final String TSCONFIG_JS = """
+            {
+              "compilerOptions": {
+                "target": "ES2020",
+                "module": "ES2020",
+                "moduleResolution": "Bundler",
+                "lib": [],
+                "types": ["@extism/js-pdk"],
+                "strict": true,
+                "skipLibCheck": true,
+                "noEmit": true
+              },
+              "include": ["src/**/*"]
+            }
+            """;
+
+    private static final String README_JS = """
+            # A FlowCatalyst JavaScript function
+
+            Generated by `fcdev fn init --lang js` (`docs/spec/function-js-guest.md` §3). JavaScript
+            functions run **through Wasm** (QuickJS via the Extism JS PDK); `manifest.json` declares
+            `"runtime": "wasm"`.
+
+            ## Toolchain
+
+            - Node 18+ / npm
+            - [`extism-js`](https://github.com/extism/js-pdk) 1.6.x on `PATH`
+            - [Binaryen](https://github.com/WebAssembly/binaryen)'s `wasm-opt` and `wasm-merge` on
+              `PATH` (`brew install binaryen`)
+
+            ## Build
+
+            ```bash
+            npm install
+            npm run build
+            ```
+
+            This bundles `src/index.ts` to CJS with `esbuild` (`dist/index.js`), then compiles it to
+            a Wasm module with `extism-js` against `@flowcatalyst/function`'s shipped interface file
+            (`dist/function.wasm`).
+
+            ## Publish
+
+            ```bash
+            fcdev fn publish dist/function.wasm --manifest manifest.json
+            ```
+
+            See `docs/functions.md` "JavaScript functions" for what works and what does not (no Node
+            built-ins; bundle npm packages; QuickJS is an interpreter — fine for glue and webhooks,
+            not heavy compute).
+            """;
+
+    private static String packageJsonJs(String artifactId) {
+        return """
+                {
+                  "name": "%s",
+                  "version": "0.1.0",
+                  "private": true,
+                  "type": "module",
+                  "scripts": {
+                    "build": "npm run bundle && npm run compile",
+                    "bundle": "esbuild src/index.ts --bundle --format=cjs --target=es2020 --outfile=dist/index.js",
+                    "compile": "extism-js dist/index.js -i node_modules/@flowcatalyst/function/interface.d.ts -o dist/function.wasm"
+                  },
+                  "dependencies": {
+                    "@flowcatalyst/function": "file:%s"
+                  },
+                  "devDependencies": {
+                    "@extism/js-pdk": "^1.1.1",
+                    "esbuild": "^0.24.0",
+                    "typescript": "^5.7.0"
+                  }
+                }
+                """.formatted(artifactId, JS_LIBRARY_DIR);
+    }
+
+    private static String indexTs(String artifactId) {
+        return """
+                import { handler, Result } from "@flowcatalyst/function";
+
+                // Generated by `fcdev fn init --lang js` — replace this with your own logic.
+                // Declared in manifest.json as a `platform`-authenticated endpoint at `/hello`.
+                export const handle = handler((_req, _ctx) => {
+                    return Result.json(200, { message: "hello from %s" });
+                });
+                """.formatted(artifactId);
+    }
+
+    /// `@flowcatalyst/function`'s source, zipped by `fcdev/pom.xml`'s `fn-init-function-js`
+    /// execution (the same technique as [#functionApiJar]) and extracted here into
+    /// [#JS_LIBRARY_DIR] — fcdev ships the library with the scaffold (owner, 2026-09-24: the
+    /// package is not on npm), matching the JVM function API's own local-repository treatment.
+    private static Map<Path, byte[]> functionJsLibraryFiles(Path targetDir) {
+        Map<Path, byte[]> out = new LinkedHashMap<>();
+        try (InputStream in = InitCommand.class.getResourceAsStream(FUNCTION_JS_ZIP_RESOURCE)) {
+            if (in == null) {
+                throw new IllegalStateException("fcdev was built without " + FUNCTION_JS_ZIP_RESOURCE);
+            }
+            try (ZipInputStream zip = new ZipInputStream(in)) {
+                ZipEntry entry;
+                while ((entry = zip.getNextEntry()) != null) {
+                    if (entry.isDirectory()) {
+                        continue;
+                    }
+                    ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+                    zip.transferTo(buffer);
+                    out.put(targetDir.resolve(JS_LIBRARY_DIR).resolve(entry.getName()), buffer.toByteArray());
+                }
+            }
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+        return out;
     }
 }

@@ -1,0 +1,12 @@
+{
+	"_comment": "The exact case table function-api's CallerTest (Java) uses for Caller.Principal#hasPermission, so the JS and Java implementations of the wildcard-match rule are pinned against the same cases and can never quietly drift apart.",
+	"hasPermission": [
+		{ "held": "a:b:c:d", "required": "a:b:c:d", "expected": true },
+		{ "held": "a:*:c:d", "required": "a:b:c:d", "expected": true },
+		{ "held": "a:b:*:d", "required": "a:b:c:d", "expected": true },
+		{ "held": "*:*:*:*", "required": "a:b:c:d", "expected": true },
+		{ "held": "a:b:c:d", "required": "a:b:c:e", "expected": false },
+		{ "held": "a:b:c", "required": "a:b:c:d", "expected": false },
+		{ "held": "a:b:c:d:e", "required": "a:b:c:d", "expected": false }
+	]
+}

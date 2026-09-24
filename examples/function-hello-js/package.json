@@ -1,0 +1,21 @@
+{
+	"name": "function-hello-js",
+	"version": "0.1.0",
+	"private": true,
+	"description": "The JavaScript twin of examples/function-hello (docs/spec/function-js-guest.md §2)",
+	"type": "module",
+	"scripts": {
+		"build": "npm run bundle && npm run compile",
+		"bundle": "esbuild src/index.ts --bundle --format=cjs --target=es2020 --outfile=dist/index.js",
+		"compile": "extism-js dist/index.js -i node_modules/@flowcatalyst/function/interface.d.ts -o dist/function.wasm",
+		"lint": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@flowcatalyst/function": "file:../../clients/function-js"
+	},
+	"devDependencies": {
+		"@extism/js-pdk": "^1.1.1",
+		"esbuild": "^0.24.0",
+		"typescript": "^5.7.0"
+	}
+}

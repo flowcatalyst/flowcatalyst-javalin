@@ -114,6 +114,8 @@ class InitCommandTest {
 
     /// `--runtime wasm` writes manifest.json only — there is no Wasm project template
     /// (mutant: write a pom.xml/handler anyway, this fails on the missing/unexpected file).
+    /// Pins that `--lang js` below does NOT change this — the default `--lang java`'s
+    /// `--runtime wasm` behaviour is untouched.
     @Test
     void wasmRuntimeWritesManifestOnly(@TempDir Path projectDir) throws IOException {
         Path dir = projectDir.resolve("myfn");
@@ -122,6 +124,133 @@ class InitCommandTest {
         try (var files = Files.list(dir)) {
             assertThat(files.map(p -> p.getFileName().toString())).containsExactly("manifest.json");
         }
+    }
+
+    // ── --lang js (docs/spec/function-js-guest.md §3) ───────────────────────────────────────────
+
+    /// The default stays `java` — a plain `fn init` (no `--lang`) never writes any of the JS
+    /// scaffold's files.
+    @Test
+    void defaultLangIsJavaNotJs(@TempDir Path projectDir) throws IOException {
+        Path dir = projectDir.resolve("myfn");
+        var r = FnCliTestSupport.run(env(), "fn", "init", dir.toString());
+        assertThat(r.exit()).as(r.err()).isZero();
+        assertThat(Files.exists(dir.resolve("package.json"))).as("mutant: default to js").isFalse();
+        assertThat(Files.exists(dir.resolve("pom.xml"))).isTrue();
+    }
+
+    /// The full JS scaffold: `package.json` depends on `@flowcatalyst/function` via
+    /// `file:lib/flowcatalyst-function` (never a public npm registry — the package is not
+    /// published there), the manifest declares `runtime: wasm`, and the library itself is
+    /// present under `lib/flowcatalyst-function`.
+    @Test
+    void langJsWritesTheScaffoldWithTheLibraryDependencyAndWasmManifest(@TempDir Path projectDir)
+            throws IOException {
+        Path dir = projectDir.resolve("myfn");
+        var r = FnCliTestSupport.run(env(), "fn", "init", dir.toString(), "--lang", "js");
+        assertThat(r.exit()).as(r.err()).isZero();
+
+        assertThat(Files.exists(dir.resolve("pom.xml"))).as("no Java scaffold alongside it").isFalse();
+        assertThat(Files.isRegularFile(dir.resolve("package.json"))).isTrue();
+        assertThat(Files.isRegularFile(dir.resolve("tsconfig.json"))).isTrue();
+        assertThat(Files.isRegularFile(dir.resolve("src/index.ts"))).isTrue();
+        assertThat(Files.isRegularFile(dir.resolve("README.md"))).isTrue();
+
+        String packageJson = Files.readString(dir.resolve("package.json"));
+        assertThat(packageJson)
+                .as("mutant: point at npm instead of the shipped local copy")
+                .contains("\"@flowcatalyst/function\": \"file:lib/flowcatalyst-function\"");
+
+        JsonNode manifest = readManifest(dir);
+        assertThat(manifest.path("runtime").asString()).isEqualTo("wasm");
+        assertThat(manifest.path("entrypoint").asString()).isEqualTo("handle");
+        FunctionLimits defaults = FunctionLimits.defaults();
+        assertThat(Manifest.parseStrict(manifest, Runtime.WASM, defaults, ClientCeilings.of(defaults)).runtime())
+                .isEqualTo(Runtime.WASM);
+
+        assertThat(Files.isRegularFile(dir.resolve("lib/flowcatalyst-function/package.json")))
+                .as("mutant: the library never gets extracted").isTrue();
+        assertThat(Files.isRegularFile(dir.resolve("lib/flowcatalyst-function/interface.d.ts"))).isTrue();
+        assertThat(Files.isRegularFile(dir.resolve("lib/flowcatalyst-function/src/index.ts"))).isTrue();
+        assertThat(Files.isRegularFile(dir.resolve("lib/flowcatalyst-function/src/handler.ts"))).isTrue();
+    }
+
+    /// The shipped library is the REAL `clients/function-js` source, byte for byte — not some
+    /// separately hand-maintained copy that could silently drift from it.
+    @Test
+    void langJsLibraryMatchesTheRealSourceByteForByte(@TempDir Path projectDir) throws IOException {
+        Path dir = projectDir.resolve("myfn");
+        var r = FnCliTestSupport.run(env(), "fn", "init", dir.toString(), "--lang", "js");
+        assertThat(r.exit()).as(r.err()).isZero();
+
+        Path realSource = Path.of("..", "clients", "function-js", "src", "handler.ts");
+        org.junit.jupiter.api.Assumptions.assumeTrue(Files.isRegularFile(realSource),
+                "clients/function-js not checked out beside fcdev");
+        assertThat(Files.readString(dir.resolve("lib/flowcatalyst-function/src/handler.ts")))
+                .isEqualTo(Files.readString(realSource));
+    }
+
+    /// `runtime: wasm` is not optional for `--lang js` (D4: JavaScript is a build concern, the
+    /// host sees a module) — an explicit, CONFLICTING `--runtime jvm` is refused rather than
+    /// silently overridden or silently accepted as a broken combination.
+    @Test
+    void langJsRefusesAnExplicitConflictingRuntime(@TempDir Path projectDir) throws IOException {
+        Path dir = projectDir.resolve("myfn");
+        var r = FnCliTestSupport.run(env(), "fn", "init", dir.toString(), "--lang", "js", "--runtime", "jvm");
+        assertThat(r.exit()).isEqualTo(1);
+        assertThat(r.err()).contains("--lang js");
+        assertThat(Files.exists(dir)).as("nothing written on refusal").isFalse();
+    }
+
+    /// `--lang js --runtime wasm` (the only non-conflicting explicit combination) behaves
+    /// exactly like `--lang js` alone.
+    @Test
+    void langJsAcceptsAnExplicitNonConflictingRuntime(@TempDir Path projectDir) throws IOException {
+        Path dir = projectDir.resolve("myfn");
+        var r = FnCliTestSupport.run(env(), "fn", "init", dir.toString(), "--lang", "js", "--runtime", "wasm");
+        assertThat(r.exit()).as(r.err()).isZero();
+        assertThat(Files.isRegularFile(dir.resolve("package.json"))).isTrue();
+    }
+
+    @Test
+    void unknownLangIsRefused(@TempDir Path projectDir) {
+        Path dir = projectDir.resolve("myfn");
+        var r = FnCliTestSupport.run(env(), "fn", "init", dir.toString(), "--lang", "python");
+        assertThat(r.exit()).isEqualTo(1);
+        assertThat(r.err()).contains("--lang");
+        assertThat(Files.exists(dir)).isFalse();
+    }
+
+    /// The whole point, JS's own version of [#aFreshScaffoldBuildsWithPlainMavenPackage]: a
+    /// freshly scaffolded JS project actually bundles and compiles to a real Wasm module with
+    /// nothing but what `fn init` wrote. Skipped when the toolchain
+    /// (`docs/spec/function-js-guest.md` §0: `extism-js`, `wasm-opt`, `wasm-merge`, `npm`) is not
+    /// on `PATH` — CI has none of it.
+    @Test
+    void aFreshJsScaffoldBuildsToARealWasmModule(@TempDir Path projectDir) throws Exception {
+        Path dir = projectDir.resolve("myfn");
+        var r = FnCliTestSupport.run(env(), "fn", "init", dir.toString(), "--lang", "js", "--name", "myfn");
+        assertThat(r.exit()).as(r.err()).isZero();
+
+        java.util.function.Predicate<String> onPath = bin -> java.util.Arrays.stream(
+                        System.getenv().getOrDefault("PATH", "").split(java.io.File.pathSeparator))
+                .anyMatch(p -> Files.isExecutable(Path.of(p, bin)));
+        org.junit.jupiter.api.Assumptions.assumeTrue(onPath.test("npm") && onPath.test("extism-js")
+                        && onPath.test("wasm-opt") && onPath.test("wasm-merge"),
+                "npm/extism-js/wasm-opt/wasm-merge not all on PATH");
+
+        Path log = projectDir.resolve("npm.log");
+        Process install = new ProcessBuilder("npm", "install").directory(dir.toFile())
+                .redirectErrorStream(true).redirectOutput(log.toFile()).start();
+        assertThat(install.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)).as("npm install finished").isTrue();
+        assertThat(install.exitValue()).as(Files.readString(log)).isZero();
+
+        Process build = new ProcessBuilder("npm", "run", "build").directory(dir.toFile())
+                .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.appendTo(log.toFile())).start();
+        assertThat(build.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)).as("npm run build finished").isTrue();
+        assertThat(build.exitValue()).as(Files.readString(log)).isZero();
+
+        assertThat(dir.resolve("dist/function.wasm")).exists();
     }
 
     // ── the generated handler compiles, and its class name equals the manifest's entrypoint ────

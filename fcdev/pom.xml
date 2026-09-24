@@ -235,6 +235,39 @@
               </target>
             </configuration>
           </execution>
+          <!--
+            `fn init`'s js language option ships `@flowcatalyst/function` (`docs/spec/function-js-guest.md`
+            §3) the same way: its own source (no build step — the package's "main" points
+            straight at src/index.ts, an author's esbuild bundles it directly, `docs/functions.md`)
+            zipped here (same technique as fn-init-function-api above, so InitCommand extracts
+            it the same way) so fcdev carries it as a resource and writes it into the generated
+            project's own lib/flowcatalyst-function. node_modules/dist/test are excluded — none
+            of them are needed to bundle the library into a guest.
+          -->
+          <execution>
+            <id>fn-init-function-js</id>
+            <phase>process-resources</phase>
+            <goals>
+              <goal>run</goal>
+            </goals>
+            <configuration>
+              <target>
+                <fail message="clients/function-js is missing at ${project.basedir}/../clients/function-js">
+                  <condition>
+                    <not><available file="${project.basedir}/../clients/function-js/package.json"/></not>
+                  </condition>
+                </fail>
+                <zip destfile="${project.build.outputDirectory}/fn-init/flowcatalyst-function-js.zip">
+                  <fileset dir="${project.basedir}/../clients/function-js">
+                    <include name="package.json"/>
+                    <include name="interface.d.ts"/>
+                    <include name="README.md"/>
+                    <include name="src/**"/>
+                  </fileset>
+                </zip>
+              </target>
+            </configuration>
+          </execution>
         </executions>
       </plugin>
       <!--
