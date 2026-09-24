@@ -380,6 +380,59 @@ class OAuthProviderTest {
         assertThat(location(r)).startsWith(REDIRECT + "?code=");
     }
 
+    /// S2.2: whichever header carries it, the authorize session must be a
+    /// session token. An API or identity access token for the same user —
+    /// what an OAuth client holds after the user delegated to it — is no
+    /// sign-in: the browser is sent to log in and no code is minted.
+    @Test
+    void anAccessTokenAsBearerIsNoSessionAtAuthorize() {
+        var p = PRINCIPALS.findById(userId).orElseThrow();
+        String api = ISSUER_UNDER_TEST.accessToken(p, new TokenIssuer.Authority(List.of(), List.of(), List.of(), false, List.of()), "oac_x");
+        String identity = ISSUER_UNDER_TEST.identityAccessToken(p, "oac_x");
+        for (String token : List.of(api, identity)) {
+            var r = authorize(Map.of("response_type", "code", "client_id", web.clientId(), "redirect_uri", REDIRECT, "state", "s",
+                    "code_challenge", CHALLENGE_PKCE), "Authorization", "Bearer " + token);
+            assertThat(location(r)).as("mutant: any verified token is a session").startsWith("/auth/login?oauth=true");
+            var none = authorize(Map.of("response_type", "code", "client_id", web.clientId(), "redirect_uri", REDIRECT, "state", "s",
+                    "code_challenge", CHALLENGE_PKCE, "prompt", "none"), "Authorization", "Bearer " + token);
+            assertThat(query(location(none)).get("error")).isEqualTo("login_required");
+        }
+    }
+
+    /// S2.2: a deactivated principal's still-unexpired session mints no code
+    /// (the cookie is identity only and cannot be revoked), and a code minted
+    /// before the deactivation is refused at redemption.
+    @Test
+    void aDeactivatedPrincipalGetsNoCodeAndCannotRedeemOne() {
+        String pid = principal("USER", "deact-" + RUN + "@example.com", null, null);
+        try {
+            var params = new LinkedHashMap<String, String>();
+            params.put("response_type", "code");
+            params.put("client_id", web.clientId());
+            params.put("redirect_uri", REDIRECT);
+            params.put("state", "st-" + UUID.randomUUID());
+            params.put("scope", "openid");
+            params.put("code_challenge", CHALLENGE_PKCE);
+            String[] cookie = {"Cookie", "fc_session=" + ISSUER_UNDER_TEST.sessionToken(pid, "deact-" + RUN + "@example.com")};
+            String code = query(location(authorize(params, cookie))).get("code");
+            assertThat(code).as("active: the control").isNotNull();
+
+            DB.update(IAM_PRINCIPALS).set(IAM_PRINCIPALS.ACTIVE, false).where(IAM_PRINCIPALS.ID.eq(pid)).execute();
+
+            var again = authorize(params, cookie);
+            assertThat(location(again)).as("mutant: no active check at authorize").startsWith("/auth/login?oauth=true");
+
+            var redeem = token(Map.of("grant_type", "authorization_code", "code", code, "redirect_uri", REDIRECT,
+                    "client_id", web.clientId(), "code_verifier", VERIFIER_PKCE));
+            assertThat(redeem.statusCode()).as("mutant: no active check at redemption — " + redeem.body()).isEqualTo(400);
+            assertThat(json(redeem).get("error").asString()).isEqualTo("invalid_grant");
+            assertThat(json(redeem).has("access_token")).isFalse();
+        } finally {
+            DB.deleteFrom(IAM_AUTHORIZATION_CODES).where(IAM_AUTHORIZATION_CODES.PRINCIPAL_ID.eq(pid)).execute();
+            DB.deleteFrom(IAM_PRINCIPALS).where(IAM_PRINCIPALS.ID.eq(pid)).execute();
+        }
+    }
+
     @Test
     void maxAgeZeroForcesAFreshLoginEvenWithASession() {
         var r = authorize(Map.of("response_type", "code", "client_id", web.clientId(), "redirect_uri", REDIRECT, "state", "s",
@@ -817,6 +870,37 @@ class OAuthProviderTest {
         var notGranted = token(Map.of("grant_type", "client_credentials"), basic(api.clientId(), SECRET));
         assertThat(notGranted.statusCode()).isEqualTo(401);
         assertThat(json(notGranted).get("error").asString()).isEqualTo("unauthorized_client");
+    }
+
+    /// S2.3: client_credentials mints only for an active SERVICE principal. A
+    /// client linked to a USER — however it came to be — would hand that
+    /// user's full authority to whoever holds the client secret.
+    @Test
+    void aClientLinkedToAUserPrincipalMintsNothing() {
+        String userPid = principal("USER", "linked-" + RUN + "@example.com", null, null);
+        var userBound = OAuthClient.create("userbound-" + RUN, "UserBound " + RUN, ClientType.CONFIDENTIAL)
+                .withSecretRef(ENC.encryptSecretRef(SECRET))
+                .withGrantTypes(List.of("client_credentials"))
+                .withPrincipalId(userPid);
+        UOW.inTransaction(tx -> {
+            CLIENTS.persist(userBound, tx.dbTx());
+            return null;
+        });
+        try {
+            int before = attempts(userBound.clientId(), "FAILURE");
+            var r = token(Map.of("grant_type", "client_credentials"), basic(userBound.clientId(), SECRET));
+            assertThat(r.statusCode()).as("mutant: any principal type mints — " + r.body()).isEqualTo(400);
+            assertThat(json(r).get("error").asString()).isEqualTo("unauthorized_client");
+            assertThat(json(r).has("access_token")).isFalse();
+            assertThat(attempts(userBound.clientId(), "FAILURE")).as("the refusal is recorded").isEqualTo(before + 1);
+        } finally {
+            UOW.inTransaction(tx -> {
+                CLIENTS.delete(userBound, tx.dbTx());
+                return null;
+            });
+            DB.deleteFrom(IAM_LOGIN_ATTEMPTS).where(IAM_LOGIN_ATTEMPTS.IDENTIFIER.eq(userBound.clientId())).execute();
+            DB.deleteFrom(IAM_PRINCIPALS).where(IAM_PRINCIPALS.ID.eq(userPid)).execute();
+        }
     }
 
     /// Owner ruling 2026-09-06 #11 (RFC 6749 §5.2): a confidential client with no

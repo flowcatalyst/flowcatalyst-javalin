@@ -16,6 +16,7 @@ import io.flowcatalyst.platform.principal.PrincipalType;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
+import io.flowcatalyst.sdk.result.Result;
 import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
@@ -199,6 +200,16 @@ public final class OAuthTokenApi {
             OAuthError.unauthorizedClient(400, "Client is not configured for this grant").write(ctx);
             return;
         }
+        // Defence in depth behind the create/update rule (S1.4): a client names
+        // the service account it authenticates as, never a user — a USER
+        // principal here would mint that user's full authority to whoever
+        // holds the client secret (`docs/spec/security-fixes-2026-09-24.md` S2.3).
+        if (p.get().type() != PrincipalType.SERVICE) {
+            recordAttempt(ctx, s, AttemptType.SERVICE_ACCOUNT_TOKEN, AttemptOutcome.FAILURE, req.clientId(), null,
+                    "Client not properly configured (linked principal is not a service account)");
+            OAuthError.unauthorizedClient(400, "Client is not configured for this grant").write(ctx);
+            return;
+        }
         if (!p.get().active()) {
             OAuthError.invalidClient("Service account is not active").write(ctx);
             return;
@@ -320,6 +331,12 @@ public final class OAuthTokenApi {
             return;
         }
         Principal p = found.get();
+        // Re-checked at redemption: the code outlives the authorize request by
+        // up to its TTL, and a deactivation in between must stop the mint (S2.2).
+        if (!p.active()) {
+            OAuthError.invalidGrant("Account is not active").write(ctx);
+            return;
+        }
         String scope = code.scope() == null ? "" : code.scope();
 
         String accessToken = InteractiveMint.accessToken(s, p, client, scope);
@@ -394,27 +411,22 @@ public final class OAuthTokenApi {
             OAuthError.invalidRequest("Missing refresh_token parameter").write(ctx);
             return;
         }
-        RefreshRotation.Result result;
-        try {
-            result = s.rotation().rotate(req.refreshToken(), stored -> {
-                // A token issued to a client may only be refreshed by that client.
-                if (stored.oauthClientId() != null) {
-                    String requesting = authenticated == null ? "" : authenticated.clientId();
-                    if (!requesting.equals(stored.oauthClientId())) {
-                        return "Token was not issued to this client";
-                    }
+        RefreshRotation.Rotated rotated;
+        switch (s.rotation().rotate(req.refreshToken(), authenticated == null ? null : authenticated.clientId())) {
+            case Result.Ok<RefreshRotation.Rotated, RefreshRotation.Rejection>(var r) -> rotated = r;
+            case Result.Err<RefreshRotation.Rotated, RefreshRotation.Rejection>(var why) -> {
+                switch (why) {
+                    case RefreshRotation.Rejection.Refused _ ->
+                            OAuthError.invalidGrant("Token was not issued to this client").write(ctx);
+                    case RefreshRotation.Rejection.Unknown _ ->
+                            OAuthError.invalidGrant("Invalid or expired refresh token").write(ctx);
+                    case RefreshRotation.Rejection.ReuseDetected _ ->
+                            OAuthError.invalidGrant("Invalid or expired refresh token").write(ctx);
                 }
-                return null;
-            });
-        } catch (RefreshRotation.NotAuthorized e) {
-            OAuthError.invalidGrant("Token was not issued to this client").write(ctx);
-            return;
+                return;
+            }
         }
-        if (result.stored().isEmpty()) {
-            OAuthError.invalidGrant("Invalid or expired refresh token").write(ctx);
-            return;
-        }
-        RefreshToken stored = result.stored().get();
+        RefreshToken stored = rotated.stored();
         Optional<Principal> found = s.principals().findById(stored.principalId());
         if (found.isEmpty()) {
             OAuthError.invalidGrant("Principal not found").write(ctx);
@@ -444,7 +456,7 @@ public final class OAuthTokenApi {
                         .log();
             }
         }
-        writeToken(ctx, s, accessToken, result.newRaw().orElse(null), idToken, scope.isEmpty() ? null : scope);
+        writeToken(ctx, s, accessToken, rotated.newRaw(), idToken, scope.isEmpty() ? null : scope);
     }
 
     // ── helpers ────────────────────────────────────────────────────────────

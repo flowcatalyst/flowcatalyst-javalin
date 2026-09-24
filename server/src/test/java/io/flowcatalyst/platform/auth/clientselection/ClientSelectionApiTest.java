@@ -10,8 +10,11 @@ import io.flowcatalyst.platform.principal.ClientAccessGrantRepository;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
+import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
+import io.flowcatalyst.platform.shared.auth.ClaimsResolver;
 import io.flowcatalyst.platform.shared.auth.JwtVerifier;
+import io.flowcatalyst.platform.shared.auth.Scope;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
@@ -34,6 +37,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 import static io.flowcatalyst.db.generated.Tables.APP_APPLICATIONS;
@@ -67,6 +71,7 @@ class ClientSelectionApiTest {
     private static String active2;
     private static String inactive;
     private static TestHttp http;
+    private static ClientSelectionApi.State state;
 
     @BeforeAll
     static void start() {
@@ -84,7 +89,7 @@ class ClientSelectionApiTest {
                 .set(IAM_ROLES.CREATED_AT, NOW).set(IAM_ROLES.UPDATED_AT, NOW).execute();
         DB.insertInto(IAM_ROLE_PERMISSIONS).set(IAM_ROLE_PERMISSIONS.ROLE_ID, roleId).set(IAM_ROLE_PERMISSIONS.PERMISSION, "cs:read").execute();
         var resolver = new DbClaimsResolver(PRINCIPALS, new RoleRepository(DS));
-        var state = new ClientSelectionApi.State(PRINCIPALS, new ClientRepository(DS), new ClientAccessGrantRepository(DS), TOKEN_ISSUER,
+        state = new ClientSelectionApi.State(PRINCIPALS, new ClientRepository(DS), new ClientAccessGrantRepository(DS), TOKEN_ISSUER,
                 resolver, ClaimLabels.of(new ClientRepository(DS), new ApplicationRepository(DS)));
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
@@ -159,6 +164,46 @@ class ClientSelectionApiTest {
         assertThat(cur.get("client").get("id").asString()).isEqualTo(active1);
         assertThat(cur.get("noClientContext").asBoolean()).isFalse();
         assertThat(http.get("/auth/client/current").statusCode()).as("no session").isEqualTo(403);
+    }
+
+    /// S2.1: the switch mints the principal's FULL authority, so only the
+    /// cookie session — which already holds exactly that — may ask. A bearer
+    /// narrowed to nothing (no clients, no roles, no scope) for an anchor user
+    /// is refused on all three routes, and no token comes back.
+    @Test
+    void aNarrowedBearerCannotSwitchIntoFullAuthority() {
+        String pid = user("ANCHOR", null);
+        String narrowed = "Bearer " + TOKEN_ISSUER.accessToken(PRINCIPALS.findById(pid).orElseThrow(),
+                new TokenIssuer.Authority(List.of(), List.of(), List.of(), false, List.of()), "oac_narrow");
+        var sw = http.post("/auth/client/switch", Json.write(Map.of("clientId", active1)), "Authorization", narrowed);
+        assertThat(sw.statusCode()).as("mutant: any AuthContext accepted — " + sw.body()).isEqualTo(403);
+        assertThat(json(sw).has("token")).isFalse();
+        assertThat(json(sw).get("error").asString()).isEqualTo("UNAUTHENTICATED");
+        assertThat(http.get("/auth/client/accessible", "Authorization", narrowed).statusCode()).isEqualTo(403);
+        assertThat(http.get("/auth/client/current", "Authorization", narrowed).statusCode()).isEqualTo(403);
+        assertThat(http.post("/auth/client/switch", Json.write(Map.of("clientId", active1)), "Cookie", session(pid)).statusCode())
+                .as("the same principal through its cookie").isEqualTo(200);
+    }
+
+    /// S2.1: the principal must be active at the route itself, not only in
+    /// whichever resolver built the session — pinned with a resolver that
+    /// vouches for anyone, so only the route's own check stands between a
+    /// deactivated user and a full-authority token.
+    @Test
+    void aDeactivatedPrincipalCannotSwitchEvenWhenTheResolverVouches() {
+        String pid = user("ANCHOR", null);
+        DB.update(IAM_PRINCIPALS).set(IAM_PRINCIPALS.ACTIVE, false).where(IAM_PRINCIPALS.ID.eq(pid)).execute();
+        ClaimsResolver vouchesForAnyone = id -> Optional.of(new AuthContext(id, Scope.ANCHOR, null, List.of(), List.of(), List.of(),
+                true, List.of()));
+        try (var lax = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            routes.before("/auth/client/*", new Authenticator(VERIFIER, vouchesForAnyone, Authenticator.Config.of(false)));
+            ClientSelectionApi.register(routes, state);
+        })) {
+            var sw = lax.post("/auth/client/switch", Json.write(Map.of("clientId", active1)), "Cookie", session(pid));
+            assertThat(sw.statusCode()).as("mutant: no active check — " + sw.body()).isEqualTo(403);
+            assertThat(json(sw).has("token")).isFalse();
+        }
     }
 
     private static String session(String pid) {

@@ -13,6 +13,21 @@ class AuthContextTest {
         return new AuthContext("p1", scope, "p@x.io", clients, List.of(), List.of(), true, List.of());
     }
 
+    /// S2.1/S2.4: a context nobody labelled is never a session — the one
+    /// value that opens the self-service sign-in routes comes only from the
+    /// authenticator's cookie path ([Authenticator]).
+    @Test
+    void anUnlabelledContextIsNeverASessionCookie() {
+        assertThat(ctx(Scope.ANCHOR, List.of()).credential()).isEqualTo(AuthContext.Credential.IN_PROCESS);
+        assertThat(ctx(Scope.ANCHOR, List.of()).viaSessionCookie()).isFalse();
+        var full = new AuthContext("p1", PrincipalType.USER, Scope.ANCHOR, null, null, List.of(), List.of(), List.of(), true,
+                List.of(), null);
+        assertThat(full.viaSessionCookie()).as("mutant: the 11-argument constructor defaults to a session").isFalse();
+        var session = full.withCredential(AuthContext.Credential.SESSION_COOKIE);
+        assertThat(session.viaSessionCookie()).isTrue();
+        assertThat(session.withPrincipalType(PrincipalType.USER).viaSessionCookie()).as("the stamp survives a copy").isTrue();
+    }
+
     @Test
     void anchorSeesEverything() {
         assertThat(ctx(Scope.ANCHOR, List.of("*")).visibility()).isSameAs(Visibility.Everything.INSTANCE);

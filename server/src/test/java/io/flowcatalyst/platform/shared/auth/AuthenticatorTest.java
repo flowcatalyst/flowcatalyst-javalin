@@ -64,6 +64,11 @@ class AuthenticatorTest {
                 var ac = Auth.from(ctx);
                 ctx.result(ac == null ? "anon" : String.valueOf(ac.principalType()));
             });
+            // S2.1/S2.4: which transport the context was actually read from.
+            routes.get("/api/credential", ctx -> {
+                var ac = Auth.from(ctx);
+                ctx.result(ac == null ? "anon" : ac.credential() + "," + ac.viaSessionCookie());
+            });
         });
     }
 
@@ -248,6 +253,22 @@ class AuthenticatorTest {
         var known = mint(keys, Map.of("sub", "prn_cookie"));
         var r = strict.get("/api/whoami", "Authorization", "Basic abc", "Cookie", "__Host-fc_session=" + known);
         assertThat(r.body()).isEqualTo("anon");
+    }
+
+    // ── Credential source (docs/spec/security-fixes-2026-09-24.md S2.1, S2.4) ──
+
+    /// The seam the self-service sign-in routes gate on: only the cookie path
+    /// yields SESSION_COOKIE — the resolver above builds a context that says
+    /// nothing, so the stamp must be the authenticator's own — and a bearer or
+    /// the dev headers never do.
+    @Test
+    void theContextNamesTheCredentialItWasReadFrom() throws Exception {
+        var cookie = mint(keys, Map.of("sub", "prn_cookie"));
+        assertThat(strict.get("/api/credential", "Cookie", "__Host-fc_session=" + cookie).body())
+                .as("mutant: the cookie path leaves the resolver's IN_PROCESS").isEqualTo("SESSION_COOKIE,true");
+        assertThat(strict.get("/api/credential", "Authorization", "Bearer " + mint(keys, Map.of())).body())
+                .as("mutant: a bearer labelled a session").isEqualTo("BEARER_TOKEN,false");
+        assertThat(permissive.get("/api/credential", "X-FC-Test-Principal", "prn_test").body()).isEqualTo("TEST_HEADERS,false");
     }
 
     // ── Principal type (docs/spec/portal-apps.md §6, Part A J6) ─────────────

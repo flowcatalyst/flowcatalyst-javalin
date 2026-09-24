@@ -355,7 +355,10 @@ class OidcBridgeTest {
         var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
         assertThat(location(r)).isEqualTo("/oauth/authorize?response_type=code&client_id=spa&redirect_uri=https%3A%2F%2Fspa.example%2Fcb&scope=openid&state=st&code_challenge=ch");
 
-        for (String bad : List.of("https://evil.example", "//evil.example", "/\\evil.example", "")) {
+        // S2.6: `/<TAB>/evil.example` is what `?return_url=/%09/evil.example` decodes to — a browser
+        // strips the tab and leaves for `//evil.example`; the literal `%09` form is refused too.
+        for (String bad : List.of("https://evil.example", "//evil.example", "/\\evil.example", "",
+                "/\t/evil.example", "/%09/evil.example")) {
             Map<String, String> q2 = begin("domain=" + oidcDomain + "&return_url=" + URLEncoder.encode(bad, StandardCharsets.UTF_8));
             idTokenFor(q2, email);
             var r2 = http.get("/auth/oidc/callback?state=" + q2.get("state") + "&code=c");

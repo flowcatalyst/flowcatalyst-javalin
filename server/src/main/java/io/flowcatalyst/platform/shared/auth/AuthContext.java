@@ -28,6 +28,8 @@ import java.util.Objects;
 /// @param allApplications access to every application, present and future
 /// @param permissions     flattened permission codes (4-segment, `*` wildcards allowed)
 /// @param tokenUse        the `token_use` claim (`api` / `identity` / `null`)
+/// @param credential      how the request proved who it is ([Credential]); only the
+///                        [Authenticator] ever sets [Credential#SESSION_COOKIE]
 public record AuthContext(
         String principalId,
         PrincipalType principalType,
@@ -39,21 +41,59 @@ public record AuthContext(
         List<String> applications,
         boolean allApplications,
         List<String> permissions,
-        String tokenUse) {
+        String tokenUse,
+        Credential credential) {
+
+    /// Where the context's authority came from. Routes that manage the
+    /// principal's own sign-in (factors, client switching, the OAuth
+    /// authorize session) accept only [#SESSION_COOKIE]: an API bearer —
+    /// however narrowly scoped — or a context built in process is not the
+    /// signed-in user standing at the browser
+    /// (`docs/spec/security-fixes-2026-09-24.md` S2.1, S2.4).
+    ///
+    /// Every constructor except the canonical one yields [#IN_PROCESS], so
+    /// the one value that opens those routes can only come from the
+    /// authenticator's cookie path — a context nobody labelled fails closed.
+    public enum Credential {
+        /// The session cookie, re-resolved from the store by the authenticator.
+        SESSION_COOKIE,
+        /// An `Authorization: Bearer` access token.
+        BEARER_TOKEN,
+        /// The dev-only `X-FC-Test-*` headers.
+        TEST_HEADERS,
+        /// Built in process (a use case run off the HTTP path, a test fixture).
+        IN_PROCESS
+    }
 
     public AuthContext {
         Objects.requireNonNull(principalId, "principalId");
+        Objects.requireNonNull(credential, "credential");
         clients = clients == null ? List.of() : List.copyOf(clients);
         roles = roles == null ? List.of() : List.copyOf(roles);
         applications = applications == null ? List.of() : List.copyOf(applications);
         permissions = permissions == null ? List.of() : List.copyOf(permissions);
     }
 
+    /// Everything but the [#credential], which is [Credential#IN_PROCESS].
+    public AuthContext(String principalId, PrincipalType principalType, Scope scope, String email, String name,
+                       List<String> clients, List<String> roles, List<String> applications, boolean allApplications,
+                       List<String> permissions, String tokenUse) {
+        this(principalId, principalType, scope, email, name, clients, roles, applications, allApplications, permissions,
+                tokenUse, Credential.IN_PROCESS);
+    }
+
     /// Identity + authority only — for contexts that did not come off a token
-    /// (session resolution, test headers): no principal type, name or token use.
+    /// (session resolution, test headers): no principal type, name or token
+    /// use; [Credential#IN_PROCESS] until the authenticator says otherwise.
     public AuthContext(String principalId, Scope scope, String email, List<String> clients, List<String> roles,
                        List<String> applications, boolean allApplications, List<String> permissions) {
         this(principalId, null, scope, email, null, clients, roles, applications, allApplications, permissions, null);
+    }
+
+    /// Authenticated by the session cookie — the only credential the
+    /// self-service sign-in routes accept (see [Credential]).
+    public boolean viaSessionCookie() {
+        return credential == Credential.SESSION_COOKIE;
     }
 
     /// Anchor scope.
@@ -93,7 +133,13 @@ public record AuthContext(
     /// session-cookie resolution regardless of which [ClaimsResolver] built
     /// it (`docs/spec/portal-apps.md` §6, Part A J6).
     public AuthContext withPrincipalType(PrincipalType type) {
-        return new AuthContext(principalId, type, scope, email, name, clients, roles, applications, allApplications, permissions, tokenUse);
+        return new AuthContext(principalId, type, scope, email, name, clients, roles, applications, allApplications, permissions, tokenUse, credential);
+    }
+
+    /// A copy with [#credential] overridden — the [Authenticator] labels the
+    /// context with the transport it actually read.
+    public AuthContext withCredential(Credential source) {
+        return new AuthContext(principalId, principalType, scope, email, name, clients, roles, applications, allApplications, permissions, tokenUse, source);
     }
 
     /// Whether a held permission satisfies `permission` (wildcard-aware, see [Permission#matches]).

@@ -12,6 +12,7 @@ import io.flowcatalyst.platform.auth.mfa.MfaToken;
 import io.flowcatalyst.platform.auth.mfa.TrustedDevice;
 import io.flowcatalyst.platform.auth.mfa.TrustedDeviceCookie;
 import io.flowcatalyst.platform.auth.mfa.TwoFactorNotifier;
+import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
 import io.flowcatalyst.platform.emaildomainmapping.MfaMethod;
 import io.flowcatalyst.platform.loginattempt.AttemptOutcome;
 import io.flowcatalyst.platform.loginattempt.AttemptType;
@@ -62,9 +63,16 @@ public final class TwoFactorApi {
     /// @param login  the session surface's own state, shared rather than duplicated:
     ///               its `principals`, `attempts`, `backoff` and `clock` back this class too
     /// @param policy the domain's 2FA policy (§6.1)
+    /// @param rateLimit the distributed limiter store `/auth/2fa/challenge/email` throttles
+    ///                  mail through (S2.7) — the one `/auth/password-reset/request` uses;
+    ///                  never null (a disabled deployment passes the no-op store)
+    /// @param limits    its policies — the password-reset IP and e-mail budgets
     public record State(LoginApi.State login, Mfa mfa, DomainPolicy.Evaluator policy, MfaToken tokens,
-                        TrustedDeviceCookie deviceCookie, AuditLogRepository auditLog, TwoFactorNotifier notifier) {
+                        TrustedDeviceCookie deviceCookie, AuditLogRepository auditLog, TwoFactorNotifier notifier,
+                        RateLimit.Store rateLimit, RateLimit.Policies limits) {
         public State {
+            Objects.requireNonNull(rateLimit, "rateLimit");
+            Objects.requireNonNull(limits, "limits");
             Objects.requireNonNull(login, "login");
             Objects.requireNonNull(mfa, "mfa");
             Objects.requireNonNull(policy, "policy");
@@ -240,6 +248,16 @@ public final class TwoFactorApi {
             HttpError.writeLoginSurface(ctx, 400, "NO_EMAIL", "account has no email");
             return;
         }
+        // Per-IP and per-address budgets (S2.7), the password-reset limiter
+        // under its own key prefix. Over budget, nothing is sent and the answer
+        // is the same as a send — a mail bomb learns nothing.
+        if (!withinChallengeBudget(s, ClientIp.of(ctx), email)) {
+            LOG.atWarn().setMessage("2FA email challenge rate limited; no code sent")
+                    .addKeyValue("principal", p.id())
+                    .log();
+            ctx.json(Map.of("message", CHALLENGE_SENT));
+            return;
+        }
         try {
             s.mfa().sendLoginEmailPin(p.id(), email);
         } catch (RuntimeException e) {
@@ -250,8 +268,26 @@ public final class TwoFactorApi {
             HttpError.writeLoginSurface(ctx, 502, "EMAIL_SEND_FAILED", "could not send code");
             return;
         }
-        ctx.json(Map.of("message", "A verification code has been sent to your email."));
+        ctx.json(Map.of("message", CHALLENGE_SENT));
     }
+
+    static final String CHALLENGE_SENT = "A verification code has been sent to your email.";
+
+    /// Key prefix inside the password-reset buckets, so a challenge never
+    /// spends the reset budget of the same address or IP.
+    static final String CHALLENGE_KEY_PREFIX = "2fa-email:";
+
+    /// The IP budget first, then the address's: an IP already over its budget
+    /// does not also spend the address's.
+    private static boolean withinChallengeBudget(State s, String ip, String email) {
+        if (ip != null && !ip.isBlank() && RateLimit.enforce(s.rateLimit(), RateLimit.Bucket.PASSWORD_RESET_IP,
+                CHALLENGE_KEY_PREFIX + ip, s.limits().passwordResetIp()) != null) {
+            return false;
+        }
+        return RateLimit.enforce(s.rateLimit(), RateLimit.Bucket.PASSWORD_RESET_EMAIL,
+                CHALLENGE_KEY_PREFIX + email.trim().toLowerCase(Locale.ROOT), s.limits().passwordResetEmail()) == null;
+    }
+
 
     // ── enrolment (token-gated) ──────────────────────────────────────────
 
@@ -704,10 +740,13 @@ public final class TwoFactorApi {
     }
 
     /// Loads the session's active principal; any failure writes 401 and
-    /// returns empty — like `LoginApi#me`.
+    /// returns empty — like `LoginApi#me`. The **session cookie** only: these
+    /// routes manage how the principal signs in, which an API bearer (a
+    /// service credential, a token delegated to an OAuth client) must not
+    /// (`docs/spec/security-fixes-2026-09-24.md` S2.4).
     private static Optional<Principal> principalFromSession(Exchange ctx, State s) {
         Optional<AuthContext> ac = Auth.currentOptional();
-        if (ac.isEmpty() || ac.get().principalId().isBlank()) {
+        if (ac.isEmpty() || ac.get().principalId().isBlank() || !ac.get().viaSessionCookie()) {
             unauthorized(ctx, s, "Not authenticated");
             return Optional.empty();
         }

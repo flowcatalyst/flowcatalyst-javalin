@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Function;
 
 import static io.flowcatalyst.db.generated.Tables.OAUTH_OIDC_PAYLOADS;
 
@@ -62,6 +63,19 @@ public final class GrantStore {
     GrantStore(Connection connection, Clock clock) {
         this.dsl = DSL.using(connection, SQLDialect.POSTGRES);
         this.clock = clock;
+    }
+
+    private GrantStore(DSLContext dsl, Clock clock) {
+        this.dsl = dsl;
+        this.clock = clock;
+    }
+
+    /// Runs `body` against this store bound to one transaction: every call on
+    /// the store it is handed commits together or not at all. A runtime
+    /// exception from `body` rolls back and propagates.
+    public <T> T inTransaction(Function<GrantStore, T> body) {
+        Objects.requireNonNull(body, "body");
+        return dsl.transactionResult(cfg -> body.apply(new GrantStore(cfg.dsl(), clock)));
     }
 
     // ── authorization codes ───────────────────────────────────────────────
@@ -205,6 +219,29 @@ public final class GrantStore {
                 .and(OAUTH_OIDC_PAYLOADS.CONSUMED_AT.isNull())
                 .fetchOne();
         return Optional.ofNullable(row).map(GrantStore::toRefreshToken).filter(t -> !t.revoked());
+    }
+
+    /// Atomically consumes a still-valid refresh token — revoked, `revokedAt`
+    /// and `consumed_at` set by one `UPDATE … WHERE consumed_at IS NULL …
+    /// RETURNING` — and returns the consumed row; empty when it is
+    /// missing, expired, revoked or already consumed. Of two concurrent
+    /// consumers exactly one gets the row: the other's `UPDATE` waits on the
+    /// row lock and, re-checking its predicate against the committed row,
+    /// matches nothing.
+    public Optional<RefreshToken> consumeValidByHash(String tokenHash) {
+        Instant now = clock.instant();
+        Record row = dsl.update(OAUTH_OIDC_PAYLOADS)
+                .set(OAUTH_OIDC_PAYLOADS.PAYLOAD, revokedPayload(now))
+                .set(OAUTH_OIDC_PAYLOADS.CONSUMED_AT, utc(now))
+                .where(OAUTH_OIDC_PAYLOADS.TYPE.eq(TYPE_REFRESH_TOKEN))
+                .and(payloadText("tokenHash").eq(tokenHash))
+                .and(OAUTH_OIDC_PAYLOADS.CONSUMED_AT.isNull())
+                .and(OAUTH_OIDC_PAYLOADS.EXPIRES_AT.gt(DSL.currentOffsetDateTime()))
+                .and(notRevoked())
+                .returning(OAUTH_OIDC_PAYLOADS.ID, OAUTH_OIDC_PAYLOADS.PAYLOAD, OAUTH_OIDC_PAYLOADS.EXPIRES_AT,
+                        OAUTH_OIDC_PAYLOADS.CREATED_AT)
+                .fetchOne();
+        return Optional.ofNullable(row).map(GrantStore::toRefreshToken);
     }
 
     /// Records the hash of the token that replaced this one.

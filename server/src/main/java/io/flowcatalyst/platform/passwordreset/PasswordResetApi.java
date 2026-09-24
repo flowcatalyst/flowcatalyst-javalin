@@ -6,6 +6,7 @@ import io.flowcatalyst.platform.auth.login.SessionCookie;
 import io.flowcatalyst.platform.auth.mfa.DomainPolicy;
 import io.flowcatalyst.platform.auth.mfa.Mfa;
 import io.flowcatalyst.platform.auth.mfa.MfaToken;
+import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
 import io.flowcatalyst.platform.auth.token.TokenIssuer;
 import io.flowcatalyst.platform.emaildomainmapping.MfaMethod;
 import io.flowcatalyst.platform.loginattempt.AttemptOutcome;
@@ -20,6 +21,7 @@ import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.principal.PrincipalType;
 import io.flowcatalyst.platform.principal.operations.ResetPassword;
 import io.flowcatalyst.platform.principal.operations.ResetPasswordCommand;
+import io.flowcatalyst.platform.shared.RelativeRedirect;
 import io.flowcatalyst.platform.shared.auth.PasswordHash;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
@@ -63,12 +65,17 @@ public final class PasswordResetApi {
     /// @param attempts config-permissions.md §B: the trail an invite-confirm session mint is recorded to,
     ///                 the same store the password login writes through — never null (recording is
     ///                 best-effort at the call site, not by being absent here)
+    /// @param rateLimit the distributed limiter store `request` throttles through (S2.7) — never
+    ///                  null (a disabled deployment passes the no-op store)
+    /// @param limits    its policies — the password-reset IP and e-mail budgets
     public record State(ResetLinks links, ResetTokenRepository tokens, PrincipalRepository principals, UnitOfWork uow,
                         Mfa mfa, MfaToken mfaTokens, DomainPolicy.Evaluator policy, GrantStore grants,
                         Notifications notices, PortalPasswords portal, ApprovalQueue approvals,
                         boolean requireStrongFactorForReset, Clock clock, TokenIssuer issuer, SessionCookie cookie,
-                        LoginAttemptRepository attempts) {
+                        LoginAttemptRepository attempts, RateLimit.Store rateLimit, RateLimit.Policies limits) {
         public State {
+            Objects.requireNonNull(rateLimit, "rateLimit");
+            Objects.requireNonNull(limits, "limits");
             Objects.requireNonNull(links, "links");
             Objects.requireNonNull(tokens, "tokens");
             Objects.requireNonNull(principals, "principals");
@@ -111,7 +118,15 @@ public final class PasswordResetApi {
         String email = body.path("email").asString("").trim().toLowerCase(Locale.ROOT);
         String redirectUri = resetReturnUrl(body.path("redirectUri").asString(null));
         try {
-            tryIssueToken(s, email, redirectUri);
+            // Per-IP and per-address budgets (S2.7). Over budget, nothing is
+            // issued and the answer below is the same — existence stays hidden.
+            if (withinResetBudget(s, ClientIp.of(ctx), email)) {
+                tryIssueToken(s, email, redirectUri);
+            } else {
+                LOG.atWarn().setMessage("password reset request rate limited; nothing issued")
+                        .addKeyValue("domain", domainOf(email))
+                        .log();
+            }
         } catch (RuntimeException e) {
             LOG.atWarn().setMessage("password reset request suppressed error")
                     .addKeyValue("domain", domainOf(email))
@@ -119,6 +134,17 @@ public final class PasswordResetApi {
                     .log();
         }
         ctx.status(200).json(Map.of("message", "If an account exists, a reset email has been sent."));
+    }
+
+    /// The IP budget first, then the address's (a blank address spends none):
+    /// an IP already over its budget does not also spend the address's.
+    static boolean withinResetBudget(State s, String ip, String email) {
+        if (ip != null && !ip.isBlank() && RateLimit.enforce(s.rateLimit(), RateLimit.Bucket.PASSWORD_RESET_IP, ip,
+                s.limits().passwordResetIp()) != null) {
+            return false;
+        }
+        return email.isEmpty() || RateLimit.enforce(s.rateLimit(), RateLimit.Bucket.PASSWORD_RESET_EMAIL, email,
+                s.limits().passwordResetEmail()) == null;
     }
 
     /// §8.2: nothing for a blank, unknown or ineligible address; a user
@@ -265,11 +291,6 @@ public final class PasswordResetApi {
         s.links().sendInviteRedirect(found.get(), safeRelativeRedirect(redirectUri));
     }
 
-    /// §3 step 4: kept only when it starts with exactly one `/`, not `//`,
-    /// not `/\`; anything else (absolute URL, scheme, bare host, empty,
-    /// `null`) is dropped silently — the same rule `OidcBridgeApi#landing`
-    /// applies to `returnUrl`, restated here rather than shared across
-    /// packages for one two-line predicate.
     /// The stricter rule for a self-service reset's post-reset redirect: only
     /// the same-origin OAuth authorize round-trip. A reset is requested by
     /// anyone who knows an e-mail address, so its redirect must not be a
@@ -284,11 +305,12 @@ public final class PasswordResetApi {
         return safe;
     }
 
+    /// §3 step 4: kept only when [RelativeRedirect#isSafe] — the one rule
+    /// `OidcBridgeApi#landing` applies to `returnUrl` too; anything else
+    /// (absolute URL, scheme, authority, backslash, control or whitespace
+    /// character, `null`) is dropped silently.
     static String safeRelativeRedirect(String uri) {
-        if (uri != null && uri.startsWith("/") && !uri.startsWith("//") && !uri.startsWith("/\\")) {
-            return uri;
-        }
-        return null;
+        return RelativeRedirect.isSafe(uri) ? uri : null;
     }
 
     // ── validate ───────────────────────────────────────────────────────────

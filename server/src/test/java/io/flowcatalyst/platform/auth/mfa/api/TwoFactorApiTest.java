@@ -30,6 +30,8 @@ import io.flowcatalyst.platform.mail.OutboxMailService;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
+import io.flowcatalyst.platform.auth.ratelimit.PostgresRateLimitStore;
+import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
 import io.flowcatalyst.platform.shared.auth.JwtVerifier;
 import io.flowcatalyst.platform.shared.auth.PasswordHash;
@@ -39,6 +41,7 @@ import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
 import io.flowcatalyst.testpg.TestPg;
+import io.flowcatalyst.server.EnvReader;
 import org.jooq.DSLContext;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
@@ -108,6 +111,7 @@ class TwoFactorApiTest {
     private static final DbClaimsResolver RESOLVER = new DbClaimsResolver(PRINCIPALS, new RoleRepository(DS));
     private static final TokenIssuer TOKEN_ISSUER = new TokenIssuer(KEYS, TokenIssuer.Config.of(ISSUER));
     private static final DomainPolicy.Evaluator POLICY = new DomainPolicy.Evaluator(MAPPINGS);
+    private static final RateLimit.Policies NO_LIMITS = RateLimit.Policies.fromEnv(new EnvReader(Map.of()));
 
     private static final List<String> NOTICES = new ArrayList<>();
     private static final TwoFactorNotifier NOTIFIER = new TwoFactorNotifier() {
@@ -169,7 +173,7 @@ class TwoFactorApiTest {
             HttpError.install(routes);
             routes.before(authenticator());
             LoginApi.register(routes, loginState);
-            TwoFactorApi.register(routes, new TwoFactorApi.State(loginState, MFA, POLICY, TOKENS, DEVICE_COOKIE, AUDIT, NOTIFIER));
+            TwoFactorApi.register(routes, new TwoFactorApi.State(loginState, MFA, POLICY, TOKENS, DEVICE_COOKIE, AUDIT, NOTIFIER, new RateLimit.NoopStore(), NO_LIMITS));
         });
     }
 
@@ -363,7 +367,7 @@ class TwoFactorApiTest {
                 new LoginMfaGate(MFA, POLICY, TOKENS, DEVICE_COOKIE), new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS), DS, Clock.systemUTC());
         try (var closed = TestHttp.routes(routes -> {
             HttpError.install(routes);
-            TwoFactorApi.register(routes, new TwoFactorApi.State(brokenLogin, MFA, POLICY, TOKENS, DEVICE_COOKIE, AUDIT, NOTIFIER));
+            TwoFactorApi.register(routes, new TwoFactorApi.State(brokenLogin, MFA, POLICY, TOKENS, DEVICE_COOKIE, AUDIT, NOTIFIER, new RateLimit.NoopStore(), NO_LIMITS));
         })) {
             long before = io.flowcatalyst.platform.auth.login.AuthAlarms.backoffStoreErrors();
             var r = closed.post("/auth/2fa/verify",
@@ -509,6 +513,86 @@ class TwoFactorApiTest {
         assertThat(MFA.confirmed(pid)).containsExactly(MfaMethod.EMAIL_PIN);
     }
 
+    // ── S2.4: factor management is the session cookie's alone ─────────────
+
+    /// An API bearer for the very same principal — the credential a service,
+    /// or any OAuth client the user delegated to, would hold — manages no
+    /// factor: enrolment, removal and recovery-code regeneration all read as
+    /// unauthenticated, and nothing changes. The cookie still works (the
+    /// control), so the refusal is the credential, not the principal.
+    @Test
+    void anApiBearerManagesNoFactor() {
+        String email = "bearer-" + RUN + "@" + LOOSE;
+        String pid = principal(email);
+        enrolTotpDirect(pid);
+        String bearer = "Bearer " + TOKEN_ISSUER.accessToken(PRINCIPALS.findById(pid).orElseThrow(),
+                new TokenIssuer.Authority(List.of(), List.of(), List.of(), false, List.of()), null);
+
+        var begin = http.post("/auth/2fa/methods/totp/begin", null, "Authorization", bearer);
+        assertThat(begin.statusCode()).as("mutant: any AuthContext accepted — " + begin.body()).isEqualTo(401);
+        var remove = http.delete("/auth/2fa/methods/TOTP", "Authorization", bearer);
+        assertThat(remove.statusCode()).as(remove.body()).isEqualTo(401);
+        assertThat(MFA.confirmed(pid)).as("the TOTP factor survives").containsExactly(MfaMethod.TOTP);
+        var regen = http.post("/auth/2fa/recovery-codes/regenerate", null, "Authorization", bearer);
+        assertThat(regen.statusCode()).as(regen.body()).isEqualTo(401);
+        assertThat(auditCount(pid, "2FA_RECOVERY_REGENERATED")).isZero();
+
+        var viaCookie = http.post("/auth/2fa/recovery-codes/regenerate", null, "Cookie", sessionCookieFor(pid, email));
+        assertThat(viaCookie.statusCode()).as(viaCookie.body()).isEqualTo(200);
+    }
+
+    // ── S2.7: the email challenge is budgeted ──────────────────────────────
+
+    /// Per address and per IP, through the distributed limiter the password
+    /// reset uses. Over budget no code is mailed and the answer is the same as
+    /// a send. Mails are counted per recipient.
+    @Test
+    void theEmailChallengeIsBudgetedPerAddressAndPerIpWithAnIndistinguishableAnswer() {
+        var limits = RateLimit.Policies.fromEnv(new EnvReader(Map.of(
+                "FC_RL_PASSWORD_RESET_EMAIL_PER_HOUR", "2", "FC_RL_PASSWORD_RESET_IP_PER_HOUR", "3")));
+        var backoff = new BackoffCheck(ATTEMPTS, BackoffPolicy.DEFAULT);
+        var loginState = new LoginApi.State(PRINCIPALS, MAPPINGS, IDPS, ATTEMPTS, backoff, TOKEN_ISSUER, RESOLVER,
+                new LoginMfaGate(MFA, POLICY, TOKENS, DEVICE_COOKIE), new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS),
+                DS, Clock.systemUTC());
+        String ipBase = "10." + (1 + Math.floorMod(RUN.hashCode(), 200)) + "." + (1 + Math.floorMod(UUID.randomUUID().hashCode(), 200));
+        try (TestHttp limited = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            TwoFactorApi.register(routes, new TwoFactorApi.State(loginState, MFA, POLICY, TOKENS, DEVICE_COOKIE, AUDIT, NOTIFIER,
+                    new PostgresRateLimitStore(DS), limits));
+        })) {
+            // Per address: three challenges from three IPs; the address's budget is 2.
+            String email = "budget-" + RUN + "@" + LOOSE;
+            String pid = principal(email);
+            MAIL_SENT.clear();
+            var answers = new ArrayList<String>();
+            for (int i = 0; i < 3; i++) {
+                var r = limited.post("/auth/2fa/challenge/email",
+                        Json.writeLine(Map.of("mfaToken", TOKENS.mint(pid, MfaToken.Purpose.PENDING))),
+                        "Content-Type", "application/json", "X-Forwarded-For", ipBase + "." + (10 + i));
+                answers.add(r.statusCode() + " " + r.body());
+            }
+            assertThat(MAIL_SENT.stream().filter(m -> m.startsWith(email + "|")).count())
+                    .as("mutant: the per-address budget not enforced").isEqualTo(2);
+            assertThat(answers).as("the limited answer is byte-identical to a send").containsOnly(answers.getFirst());
+
+            // Per IP: three other principals spend the IP's budget of 3; a fourth from that IP gets no mail.
+            String ip = ipBase + ".99";
+            for (int i = 0; i < 3; i++) {
+                String other = principal("budget-ip-" + i + "-" + RUN + "@" + LOOSE);
+                limited.post("/auth/2fa/challenge/email", Json.writeLine(Map.of("mfaToken", TOKENS.mint(other, MfaToken.Purpose.PENDING))),
+                        "Content-Type", "application/json", "X-Forwarded-For", ip);
+            }
+            String victim = "budget-ip-victim-" + RUN + "@" + LOOSE;
+            String victimId = principal(victim);
+            MAIL_SENT.clear();
+            var over = limited.post("/auth/2fa/challenge/email",
+                    Json.writeLine(Map.of("mfaToken", TOKENS.mint(victimId, MfaToken.Purpose.PENDING))),
+                    "Content-Type", "application/json", "X-Forwarded-For", ip);
+            assertThat(MAIL_SENT).as("mutant: the per-IP budget not enforced").isEmpty();
+            assertThat(over.statusCode() + " " + over.body()).isEqualTo(answers.getFirst());
+        }
+    }
+
     // ── mail-outbox spec §4 row 6: the request path never touches SMTP ─────
 
     /// `TwoFactorApi.challengeEmail` calls `Mfa.sendLoginEmailPin` — a DB
@@ -540,7 +624,7 @@ class TwoFactorApiTest {
             HttpError.install(routes);
             routes.before(authenticator());
             TwoFactorApi.register(routes,
-                    new TwoFactorApi.State(loginState, mfa, POLICY, TOKENS, DEVICE_COOKIE, AUDIT, NOTIFIER));
+                    new TwoFactorApi.State(loginState, mfa, POLICY, TOKENS, DEVICE_COOKIE, AUDIT, NOTIFIER, new RateLimit.NoopStore(), NO_LIMITS));
         })) {
             long start = System.nanoTime();
             var r = isolated.post("/auth/2fa/challenge/email", Json.writeLine(Map.of("mfaToken", mfaToken)),

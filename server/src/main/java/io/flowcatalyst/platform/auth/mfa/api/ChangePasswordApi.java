@@ -265,9 +265,12 @@ public final class ChangePasswordApi {
 
     // ── shared helpers ───────────────────────────────────────────────────
 
+    /// The session's active principal — the **session cookie** only: changing
+    /// the password is factor management, which an API bearer must not do
+    /// (`docs/spec/security-fixes-2026-09-24.md` S2.4). Any failure writes 401.
     private static Optional<Principal> principalFromSession(Exchange ctx, State s) {
         Optional<AuthContext> ac = Auth.currentOptional();
-        if (ac.isEmpty() || ac.get().principalId().isBlank()) {
+        if (ac.isEmpty() || ac.get().principalId().isBlank() || !ac.get().viaSessionCookie()) {
             unauthorized(ctx, s);
             return Optional.empty();
         }

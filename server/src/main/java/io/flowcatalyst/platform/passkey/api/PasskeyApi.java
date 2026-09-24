@@ -322,9 +322,15 @@ public final class PasskeyApi {
 
     // ── helpers ────────────────────────────────────────────────────────────
 
+    /// The signed-in user behind the **session cookie**. Registering or
+    /// removing a passkey changes how the principal signs in, so an API bearer
+    /// — a service credential, or a token delegated to some OAuth client — is
+    /// not enough (`docs/spec/security-fixes-2026-09-24.md` S2.4); the cookie
+    /// path already resolves only an active principal.
     private static AuthContext requireSession() {
         Optional<AuthContext> ac = Auth.currentOptional();
-        if (ac.isEmpty() || ac.get().principalId() == null || ac.get().principalId().isBlank()) {
+        if (ac.isEmpty() || ac.get().principalId() == null || ac.get().principalId().isBlank()
+                || !ac.get().viaSessionCookie()) {
             throw UseCaseException.authorization("UNAUTHENTICATED", "authentication required");
         }
         return ac.get();

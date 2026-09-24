@@ -268,6 +268,32 @@ class PasskeyApiTest {
         assertThat(http.post("/auth/webauthn/authenticate/begin", "{\"email\":\"\"}").statusCode()).isEqualTo(400);
     }
 
+    /// S2.4: a passkey is a way to sign in, so only the signed-in user at the
+    /// browser — the session cookie — may add or remove one. An API bearer for
+    /// the same principal does neither, and the passkey it tried to remove
+    /// survives.
+    @Test
+    void anApiBearerRegistersAndRemovesNoPasskey() throws Exception {
+        String email = "bearer-pk-" + RUN + "@example.com";
+        String pid = user(email);
+        String bearer = "Bearer " + TOKEN_ISSUER.accessToken(PRINCIPALS.findById(pid).orElseThrow(),
+                new TokenIssuer.Authority(List.of(), List.of(), List.of(), false, List.of()), null);
+
+        var begin = http.post("/auth/webauthn/register/begin", "{}", "Authorization", bearer);
+        assertThat(begin.statusCode()).as("mutant: any AuthContext accepted — " + begin.body()).isEqualTo(403);
+        assertThat(json(begin).get("error").asString()).isEqualTo("UNAUTHENTICATED");
+
+        var auth = new SoftAuthenticator();
+        JsonNode b = json(http.post("/auth/webauthn/register/begin", "{}", "Cookie", session(pid, email)));
+        assertThat(http.post("/auth/webauthn/register/complete", Json.write(Map.of("stateId", b.get("stateId").asString(), "name", "K",
+                "credential", auth.register(b.get("options"), ORIGIN))), "Cookie", session(pid, email)).statusCode()).isEqualTo(200);
+        String credentialId = CREDS.findByPrincipal(pid).getFirst().id();
+
+        var remove = http.delete("/auth/webauthn/credentials/" + credentialId, "Authorization", bearer);
+        assertThat(remove.statusCode()).as(remove.body()).isEqualTo(403);
+        assertThat(CREDS.findByPrincipal(pid)).as("the passkey survives the bearer").hasSize(1);
+    }
+
     @Test
     void aLegacyRowIsSkippedInTheListAndNeverOffered() {
         String email = "legacy-" + RUN + "@example.com";

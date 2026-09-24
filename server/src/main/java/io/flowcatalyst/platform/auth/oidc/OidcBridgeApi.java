@@ -32,6 +32,7 @@ import io.flowcatalyst.platform.principal.operations.RecordOidcLogin;
 import io.flowcatalyst.platform.principal.operations.SyncIdpRoles;
 import io.flowcatalyst.platform.principal.operations.SyncIdpRolesCommand;
 import io.flowcatalyst.platform.role.RoleRepository;
+import io.flowcatalyst.platform.shared.RelativeRedirect;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
@@ -588,8 +589,8 @@ public final class OidcBridgeApi {
         return new ArrayList<>(out);
     }
 
-    /// §4.6: a chained `/oauth/authorize`, else a safe relative `return_url`,
-    /// else the dashboard.
+    /// §4.6: a chained `/oauth/authorize`, else a safe relative `return_url`
+    /// ([RelativeRedirect]), else the dashboard.
     static String landing(LoginState state) {
         LoginState.OAuthChain o = state.oauth();
         if (o != null && o.present()) {
@@ -603,7 +604,7 @@ public final class OidcBridgeApi {
             return b.toString();
         }
         String r = state.returnUrl();
-        if (r != null && r.startsWith("/") && !r.startsWith("//") && !r.startsWith("/\\")) {
+        if (RelativeRedirect.isSafe(r)) {
             return r;
         }
         return DEFAULT_LANDING;

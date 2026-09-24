@@ -334,6 +334,24 @@ class ChangePasswordApiTest {
         assertThat(json(r).get("message").asString()).isEqualTo("Not authenticated");
     }
 
+    /// S2.4: changing the password is factor management — an API bearer for
+    /// the same principal (knowing the current password, even) changes
+    /// nothing; the stored hash is the observable effect.
+    @Test
+    void anApiBearerChangesNoPassword() {
+        String email = "bearer-" + RUN + "@example.com";
+        String pid = principal(email, PasswordHash.hash(PASSWORD));
+        String bearer = "Bearer " + TOKEN_ISSUER.accessToken(PRINCIPALS.findById(pid).orElseThrow(),
+                new TokenIssuer.Authority(List.of(), List.of(), List.of(), false, List.of()), null);
+        var r = http.post("/auth/change-password",
+                Json.writeLine(Map.of("currentPassword", PASSWORD, "newPassword", "a whole new passphrase 49")),
+                "Content-Type", "application/json", "Authorization", bearer);
+        assertThat(r.statusCode()).as("mutant: any AuthContext accepted — " + r.body()).isEqualTo(401);
+        String stored = DB.select(IAM_PRINCIPALS.PASSWORD_HASH).from(IAM_PRINCIPALS)
+                .where(IAM_PRINCIPALS.ID.eq(pid)).fetchOne(IAM_PRINCIPALS.PASSWORD_HASH);
+        assertThat(PasswordHash.matches(PASSWORD, stored)).as("the password is unchanged").isTrue();
+    }
+
     // ── fixtures ─────────────────────────────────────────────────────────
 
     private static HttpResponse<String> changePassword(String pid, String email, String current, String next, String code) {

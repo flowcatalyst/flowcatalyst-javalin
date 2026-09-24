@@ -31,6 +31,14 @@ import java.util.Optional;
 /// same one `/auth/refresh` would mint; the check is that the user may
 /// reach the client at all, and that it is active. All three run inside
 /// the authenticator.
+///
+/// **Session cookie only, active principal only**
+/// (`docs/spec/security-fixes-2026-09-24.md` S2.1). The switch mints the
+/// principal's full authority, which is exactly what the cookie session
+/// already holds — it is re-resolved from the store on every request — so
+/// the minted token never widens the caller. A bearer, however narrowly
+/// an OAuth client or `scope` confined it, would be widened to that full
+/// authority, so a bearer is refused here like no credential at all.
 public final class ClientSelectionApi {
 
     public record State(PrincipalRepository principals, ClientRepository clients, ClientAccessGrantRepository grants,
@@ -132,12 +140,20 @@ public final class ClientSelectionApi {
         return new ArrayList<>(ids);
     }
 
+    /// The signed-in principal behind the session cookie. No context, a
+    /// context from any other credential, or a principal that is no longer
+    /// active all read as unauthenticated.
     private static Principal load(State s) {
         Optional<AuthContext> ac = Auth.currentOptional();
-        if (ac.isEmpty() || ac.get().principalId() == null || ac.get().principalId().isBlank()) {
+        if (ac.isEmpty() || ac.get().principalId() == null || ac.get().principalId().isBlank()
+                || !ac.get().viaSessionCookie()) {
             throw UseCaseException.authorization("UNAUTHENTICATED", "authentication required");
         }
         String id = ac.get().principalId();
-        return s.principals().findById(id).orElseThrow(() -> UseCaseException.resourceNotFound("Principal", id));
+        Principal p = s.principals().findById(id).orElseThrow(() -> UseCaseException.resourceNotFound("Principal", id));
+        if (!p.active()) {
+            throw UseCaseException.authorization("UNAUTHENTICATED", "authentication required");
+        }
+        return p;
     }
 }

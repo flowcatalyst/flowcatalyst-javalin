@@ -209,9 +209,11 @@ public final class Authenticator implements Handler {
         // Session-cookie authentication always carries PrincipalType.USER
         // (`docs/spec/portal-apps.md` §6, Part A J6) — stamped here, not left
         // to whichever ClaimsResolver produced the context, so the invariant
-        // holds for every implementation (including test stubs).
+        // holds for every implementation (including test stubs). The
+        // credential is stamped the same way: this is the only place a
+        // context becomes SESSION_COOKIE.
         return resolver.resolveSession(claims.subject())
-                .map(ac -> ac.withPrincipalType(PrincipalType.USER))
+                .map(ac -> ac.withPrincipalType(PrincipalType.USER).withCredential(AuthContext.Credential.SESSION_COOKIE))
                 .<Outcome>map(Authenticated::new)
                 .orElseGet(Anonymous::new);
     }
@@ -246,7 +248,8 @@ public final class Authenticator implements Handler {
                 // grants it, so a token carrying only one of them still works.
                 claims.allApplications() || applications.wildcard(),
                 perms,
-                claims.tokenUse()));
+                claims.tokenUse(),
+                AuthContext.Credential.BEARER_TOKEN));
     }
 
     /// The dev-only context from the `X-FC-Test-*` headers — only reachable
@@ -272,7 +275,8 @@ public final class Authenticator implements Handler {
                 apps,
                 allApps,
                 splitCsv(header(ctx, TEST_PERMISSIONS)),
-                null);
+                null,
+                AuthContext.Credential.TEST_HEADERS);
     }
 
     private static String header(Exchange ctx, String name) {

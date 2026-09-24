@@ -51,4 +51,15 @@ public record TokenClaims(
         applications = applications == null ? List.of() : List.copyOf(applications);
         permissions = permissions == null ? List.of() : List.copyOf(permissions);
     }
+
+    /// The session-cookie kind: no `token_use`, no `type`, no `jti`. Every
+    /// access token the platform mints (API or identity, Java or Go) carries
+    /// all three; a session token carries none — the session has no
+    /// `token_use` value of its own, so its kind is read from what it lacks.
+    /// Used where a session token may arrive outside its cookie
+    /// (`/oauth/authorize`'s Bearer fallback, ruling C-Q25) so an access
+    /// token is never mistaken for a sign-in.
+    public boolean isSessionToken() {
+        return tokenUse == null && principalType == null && jti == null;
+    }
 }

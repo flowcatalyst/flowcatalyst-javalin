@@ -6,6 +6,7 @@ import io.flowcatalyst.platform.auth.token.TokenIssuer;
 import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.sdk.result.Result;
 import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
@@ -43,18 +44,23 @@ public final class AuthRefreshApi {
             HttpError.write(ctx, 400, "INVALID_JSON", "Invalid JSON body", Map.of());
             return;
         }
-        RefreshRotation.Result result;
-        try {
-            result = s.rotation().rotate(raw, stored -> stored.oauthClientId() != null ? "Token was not issued to this client" : null);
-        } catch (RefreshRotation.NotAuthorized e) {
-            unauthenticated(ctx, "Token was not issued to this client");
-            return;
+        RefreshToken stored;
+        String newRaw;
+        // No OAuth client here: only a token issued outside any client rotates.
+        switch (s.rotation().rotate(raw, null)) {
+            case Result.Ok<RefreshRotation.Rotated, RefreshRotation.Rejection>(var r) -> {
+                stored = r.stored();
+                newRaw = r.newRaw();
+            }
+            case Result.Err<RefreshRotation.Rotated, RefreshRotation.Rejection>(var why) -> {
+                switch (why) {
+                    case RefreshRotation.Rejection.Refused _ -> unauthenticated(ctx, "Token was not issued to this client");
+                    case RefreshRotation.Rejection.Unknown _ -> unauthenticated(ctx, "Invalid or expired refresh token");
+                    case RefreshRotation.Rejection.ReuseDetected _ -> unauthenticated(ctx, "Invalid or expired refresh token");
+                }
+                return;
+            }
         }
-        if (result.stored().isEmpty()) {
-            unauthenticated(ctx, "Invalid or expired refresh token");
-            return;
-        }
-        RefreshToken stored = result.stored().get();
         Optional<Principal> found = s.principals().findById(stored.principalId());
         if (found.isEmpty()) {
             unauthenticated(ctx, "Invalid or expired refresh token");
@@ -70,7 +76,7 @@ public final class AuthRefreshApi {
         out.put("accessToken", accessToken);
         out.put("tokenType", "Bearer");
         out.put("expiresIn", s.issuer().config().accessTtlSeconds());
-        result.newRaw().ifPresent(r -> out.put("refreshToken", r));
+        out.put("refreshToken", newRaw);
         ctx.status(200).header("Cache-Control", "no-store").json(out);
     }
 

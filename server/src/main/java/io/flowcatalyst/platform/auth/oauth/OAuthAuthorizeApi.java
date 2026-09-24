@@ -5,6 +5,8 @@ import io.flowcatalyst.platform.auth.grant.GrantStore;
 import io.flowcatalyst.platform.auth.login.SessionCookie;
 import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
 import io.flowcatalyst.platform.oauthclient.OAuthClient;
+import io.flowcatalyst.platform.principal.Principal;
+import io.flowcatalyst.platform.shared.auth.TokenClaims;
 import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
@@ -26,7 +28,8 @@ import java.util.regex.Pattern;
 /// `error&error_description&state`. The per-client 429 is the RFC shape
 /// (ruling C-Q27); a `state` over 116 characters is `invalid_request`
 /// before any write (ruling C-Q22); the session cookie wins over a Bearer
-/// (ruling C-Q25); `auth_time` is the session's issue time (ruling C-Q1).
+/// (ruling C-Q25), and either must carry a session token for an active
+/// principal (S2.2); `auth_time` is the session's issue time (ruling C-Q1).
 public final class OAuthAuthorizeApi {
 
     private static final Logger LOG = LoggerFactory.getLogger(OAuthAuthorizeApi.class);
@@ -134,13 +137,18 @@ public final class OAuthAuthorizeApi {
             }
         }
 
-        // The session: cookie first, then Bearer.
-        String sessionToken = ctx.cookie(sessionCookie.name());
-        if (sessionToken == null || sessionToken.isEmpty()) {
-            sessionToken = AccessTokenReader.bearer(ctx.header("Authorization"));
+        Optional<TokenClaims> session;
+        try {
+            session = session(ctx, s, sessionCookie);
+        } catch (RuntimeException e) {
+            LOG.atError().setMessage("session principal lookup failed")
+                    .addKeyValue("oauth_client_id", clientId)
+                    .setCause(e)
+                    .log();
+            errorRedirect(ctx, redirectUri, "server_error", "Internal error", state);
+            return;
         }
-        Optional<AccessTokenReader.Read> session = s.tokens().read(sessionToken);
-        Instant issuedAt = session.map(r -> r.claims().issuedAt()).orElse(null);
+        Instant issuedAt = session.map(TokenClaims::issuedAt).orElse(null);
         boolean sessionOk = session.isPresent();
         boolean stale = sessionOk && maxAgeExceeded(maxAge, issuedAt, s.clock().instant());
 
@@ -158,7 +166,7 @@ public final class OAuthAuthorizeApi {
 
         if (!forceLogin && sessionOk && !stale) {
             Instant now = s.clock().instant();
-            var code = AuthorizationCode.issue(clientId, session.get().claims().subject(), redirectUri, now)
+            var code = AuthorizationCode.issue(clientId, session.get().subject(), redirectUri, now)
                     .withScope(blankToNull(scope)).withNonce(blankToNull(nonce)).withState(state)
                     .withAuthTime(issuedAt);
             if (!codeChallenge.isEmpty()) {
@@ -215,6 +223,30 @@ public final class OAuthAuthorizeApi {
     }
 
     // ── helpers ────────────────────────────────────────────────────────────
+
+    /// The signed-in user: the session cookie first, then a Bearer (ruling
+    /// C-Q25 keeps both orders) — but whichever carried it, the token must be
+    /// the **session kind** ([TokenClaims#isSessionToken]) and its principal
+    /// must exist and be active (`docs/spec/security-fixes-2026-09-24.md`
+    /// S2.2). An API or identity access token is never a sign-in: it may be
+    /// narrowed, delegated to an OAuth client, or belong to a service account,
+    /// and a code minted from it would hand a relying party a user session
+    /// nobody signed in to. Anything else is simply "no session" — the caller
+    /// is sent to log in, exactly as with no credential.
+    private static Optional<TokenClaims> session(Exchange ctx, OAuthState s, SessionCookie sessionCookie) {
+        String sessionToken = ctx.cookie(sessionCookie.name());
+        if (sessionToken == null || sessionToken.isEmpty()) {
+            sessionToken = AccessTokenReader.bearer(ctx.header("Authorization"));
+        }
+        Optional<TokenClaims> claims = s.tokens().read(sessionToken)
+                .map(AccessTokenReader.Read::claims)
+                .filter(TokenClaims::isSessionToken);
+        if (claims.isEmpty()) {
+            return Optional.empty();
+        }
+        boolean active = s.principals().findById(claims.get().subject()).map(Principal::active).orElse(false);
+        return active ? claims : Optional.empty();
+    }
 
     /// An absent or invalid `max_age`, or an unknown issue time, never forces
     /// a re-login; `max_age=0` always does.

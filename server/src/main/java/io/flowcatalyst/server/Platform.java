@@ -304,8 +304,12 @@ public final class Platform {
         // is built here — earlier than the OAuth provider below — so
         // change-password can revoke every refresh token on a password change.
         var grantStore = new GrantStore(pool);
+        // The mail-sending public routes' limiter (S2.7): the 2FA email
+        // challenge and the password-reset request share its store and policies.
+        var mailRateLimit = RateLimitStores.build(env.reader(), pool);
+        var mailRateLimitPolicies = RateLimit.Policies.fromEnv(env.reader());
         TwoFactorApi.register(routes, new TwoFactorApi.State(loginState, mfa, new DomainPolicy.Evaluator(loginMappingRepo),
-                mfaTokens, trustedDeviceCookie, new AuditLogRepository(pool), notices));
+                mfaTokens, trustedDeviceCookie, new AuditLogRepository(pool), notices, mailRateLimit, mailRateLimitPolicies));
         ChangePasswordApi.register(routes, new ChangePasswordApi.State(loginState, mfa, trustedDeviceCookie, grantStore,
                 notices));
         // Password reset (auth-identity §8): the link minter/mailer serves the public
@@ -345,7 +349,8 @@ public final class Platform {
         PasswordResetApi.register(routes, new PasswordResetApi.State(resetLinks, resetTokenRepo, loginPrincipalRepo, uow, mfa,
                 mfaTokens, new DomainPolicy.Evaluator(loginMappingRepo), grantStore, notices, portalPasswords,
                 resetApprovalQueue, false, Clock.systemUTC(), tokenIssuer,
-                new SessionCookie(cookiesSecure, (int) env.sessionTtlSeconds()), loginAttemptRepo));
+                new SessionCookie(cookiesSecure, (int) env.sessionTtlSeconds()), loginAttemptRepo,
+                mailRateLimit, mailRateLimitPolicies));
         // /oauth/authorize and /auth/refresh are registered with the provider below, after the OAuth-client store.
         //   POST /api/dispatch/process (HMAC job-token auth) is registered below, alongside /api/dispatch/settled.
 

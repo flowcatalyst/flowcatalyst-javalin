@@ -10,6 +10,8 @@ import io.flowcatalyst.platform.auth.mfa.Mfa;
 import io.flowcatalyst.platform.auth.mfa.MfaRepository;
 import io.flowcatalyst.platform.auth.mfa.MfaToken;
 import io.flowcatalyst.platform.auth.mfa.Totp;
+import io.flowcatalyst.platform.auth.ratelimit.PostgresRateLimitStore;
+import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
 import io.flowcatalyst.platform.auth.token.TokenIssuer;
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomain;
 import io.flowcatalyst.platform.emaildomainmapping.EmailDomainMapping;
@@ -44,6 +46,7 @@ import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.result.Result;
+import io.flowcatalyst.server.EnvReader;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.testpg.TestPg;
 import ch.qos.logback.classic.Level;
@@ -121,6 +124,7 @@ class PasswordResetApiTest {
     private static final ResetLinks LINKS = new ResetLinks(TOKENS, SENT::add, () -> EmailTheme.defaults("Acme"), BASE, MOVABLE);
     private static final Notifications NOTICES = new Notifications(SENT::add, () -> "Acme");
     private static final MfaToken MFA_TOKENS = new MfaToken(KEYS.privateKey(), BASE);
+    private static final RateLimit.Policies NO_LIMITS = RateLimit.Policies.fromEnv(new EnvReader(Map.of()));
 
     private static String strictDomain;
     private static String mappingId;
@@ -150,7 +154,7 @@ class PasswordResetApiTest {
                 GRANTS, NOTICES, new PortalPasswords() {
                     @Override public Optional<Identity> find(String id) { return PORTAL.get().find(id); }
                     @Override public boolean setPasswordHash(String id, String hash) { return PORTAL.get().setPasswordHash(id, hash); }
-                }, approvals, requireStrongFactorForReset, MOVABLE, null, null, ATTEMPTS);
+                }, approvals, requireStrongFactorForReset, MOVABLE, null, null, ATTEMPTS, new RateLimit.NoopStore(), NO_LIMITS);
     }
 
     @AfterAll
@@ -204,6 +208,57 @@ class PasswordResetApiTest {
         user(federated, null, "OIDC");
         http.post("/auth/password-reset/request", Json.write(Map.of("email", federated)));
         assertThat(SENT).as("a federated identity is ineligible").isEmpty();
+    }
+
+    /// S2.7: the request is budgeted per address and per IP through the
+    /// distributed limiter portal reset uses; over budget nothing is issued,
+    /// and the answer cannot be told from an issued one. Mails are counted per
+    /// recipient — the observable effect a mail bomb depends on.
+    @Test
+    void requestIsBudgetedPerAddressAndPerIpWithAnIndistinguishableAnswer() {
+        var limits = RateLimit.Policies.fromEnv(new EnvReader(Map.of(
+                "FC_RL_PASSWORD_RESET_EMAIL_PER_HOUR", "2", "FC_RL_PASSWORD_RESET_IP_PER_HOUR", "3")));
+        String ipBase = "10." + (1 + Math.floorMod(RUN.hashCode(), 200)) + "." + (1 + Math.floorMod(UUID.randomUUID().hashCode(), 200));
+        try (var h = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            PasswordResetApi.register(routes, limitedState(new PostgresRateLimitStore(DS), limits));
+        })) {
+            // Per address: three requests from three different IPs; the third is over the address's budget of 2.
+            String email = "budget-" + RUN + "@example.com";
+            user(email, PasswordHash.hash(OLD_PASSWORD), null);
+            SENT.clear();
+            var answers = new ArrayList<String>();
+            for (int i = 0; i < 3; i++) {
+                var r = h.post("/auth/password-reset/request", Json.write(Map.of("email", email)),
+                        "X-Forwarded-For", ipBase + "." + (10 + i));
+                answers.add(r.statusCode() + " " + r.body());
+            }
+            assertThat(SENT.stream().filter(m -> m.to().equals(email)).count())
+                    .as("mutant: the per-address budget not enforced").isEqualTo(2);
+            assertThat(answers).as("the limited answer is byte-identical to an issued one").containsOnly(answers.getFirst());
+
+            // Per IP: three unknown addresses spend the IP's budget of 3; a real user from that IP then gets nothing.
+            String ip = ipBase + ".99";
+            for (int i = 0; i < 3; i++) {
+                h.post("/auth/password-reset/request", Json.write(Map.of("email", "nobody-" + i + "-" + RUN + "@example.com")),
+                        "X-Forwarded-For", ip);
+            }
+            String victim = "budget-ip-" + RUN + "@example.com";
+            user(victim, PasswordHash.hash(OLD_PASSWORD), null);
+            SENT.clear();
+            var limited = h.post("/auth/password-reset/request", Json.write(Map.of("email", victim)), "X-Forwarded-For", ip);
+            assertThat(SENT).as("mutant: the per-IP budget not enforced").isEmpty();
+            assertThat(limited.statusCode() + " " + limited.body()).isEqualTo(answers.getFirst());
+            // The same address from a fresh IP is still within its own budget: the IP budget did not spend it.
+            h.post("/auth/password-reset/request", Json.write(Map.of("email", victim)), "X-Forwarded-For", ipBase + ".98");
+            assertThat(SENT).as("an IP over budget does not also spend the address's budget").hasSize(1);
+        }
+    }
+
+    private static PasswordResetApi.State limitedState(RateLimit.Store store, RateLimit.Policies limits) {
+        return new PasswordResetApi.State(LINKS, TOKENS, PRINCIPALS, UOW, MFA, MFA_TOKENS, new DomainPolicy.Evaluator(MAPPINGS),
+                GRANTS, NOTICES, PortalPasswords.notWired(), ApprovalQueue.none(), false, MOVABLE, null, null, ATTEMPTS,
+                store, limits);
     }
 
     /// Each ineligible case carries its own context; an eligible principal
@@ -571,7 +626,7 @@ class PasswordResetApiTest {
                 GRANTS, NOTICES, new PortalPasswords() {
                     @Override public Optional<Identity> find(String id) { return PORTAL.get().find(id); }
                     @Override public boolean setPasswordHash(String id, String hash) { return PORTAL.get().setPasswordHash(id, hash); }
-                }, ApprovalQueue.none(), false, MOVABLE, issuer, cookie, ATTEMPTS);
+                }, ApprovalQueue.none(), false, MOVABLE, issuer, cookie, ATTEMPTS, new RateLimit.NoopStore(), NO_LIMITS);
     }
 
     /// Pins the whole §4 wire: the cookie's own attributes, its `Max-Age`
@@ -774,6 +829,9 @@ class PasswordResetApiTest {
         assertThat(PasswordResetApi.safeRelativeRedirect("evil.example")).isNull();
         assertThat(PasswordResetApi.safeRelativeRedirect("")).isNull();
         assertThat(PasswordResetApi.safeRelativeRedirect(null)).isNull();
+        // S2.6: a browser strips the tab and reads `//evil.com` — refused raw and percent-encoded.
+        assertThat(PasswordResetApi.safeRelativeRedirect("/%09/evil.com")).as("mutant: the prefix-only check").isNull();
+        assertThat(PasswordResetApi.safeRelativeRedirect("/\t/evil.com")).isNull();
     }
 
     // ── helpers ────────────────────────────────────────────────────────────
