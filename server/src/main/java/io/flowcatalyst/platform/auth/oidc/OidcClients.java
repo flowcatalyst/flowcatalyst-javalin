@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.auth.oidc;
 
+import io.flowcatalyst.platform.shared.Failures;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.jwk.source.JWKSourceBuilder;
 import com.nimbusds.jose.proc.SecurityContext;
@@ -206,7 +207,7 @@ public final class OidcClients {
             r = http.send(HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(15)).GET().build(),
                     HttpResponse.BodyHandlers.ofString());
         } catch (IOException | IllegalArgumentException e) {
-            throw new ResolutionException("OIDC discovery failed for " + url + ": " + e.getMessage(), e);
+            throw new ResolutionException("OIDC discovery failed for " + url + ": " + Failures.describe(e), e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new ResolutionException("OIDC discovery interrupted", e);

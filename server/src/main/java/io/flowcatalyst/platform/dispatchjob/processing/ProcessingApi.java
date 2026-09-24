@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.dispatchjob.processing;
 
+import io.flowcatalyst.platform.shared.Failures;
 import io.flowcatalyst.platform.dispatchjob.DispatchJob;
 import io.flowcatalyst.platform.dispatchjob.jfr.DispatchProcessedEvent;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
@@ -270,7 +271,7 @@ public final class ProcessingApi {
                     .addKeyValue("job_id", job.id())
                     .setCause(e)
                     .log();
-            return DeliveryCredentials.Resolved.bare("credential lookup failed: " + e.getMessage());
+            return DeliveryCredentials.Resolved.bare("credential lookup failed: " + Failures.describe(e));
         }
         // Never unsigned silently (hand-off 2026-09-22): a resolver that
         // actually explained why it is bare (a non-empty reason — every real

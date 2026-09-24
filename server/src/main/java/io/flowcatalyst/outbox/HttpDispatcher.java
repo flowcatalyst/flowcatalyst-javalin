@@ -100,7 +100,7 @@ public final class HttpDispatcher {
         try {
             token = tokenSource != null ? tokenSource.token() : staticAuthToken;
         } catch (Exception e) {
-            return sameFailureForAll(items.size(), OutboxStatus.GATEWAY_ERROR, "auth: " + e.getMessage());
+            return sameFailureForAll(items.size(), OutboxStatus.GATEWAY_ERROR, "auth: " + Failures.describe(e));
         }
         HttpRequest request = buildRequest(type, body, token);
         HttpResponse<String> response;
