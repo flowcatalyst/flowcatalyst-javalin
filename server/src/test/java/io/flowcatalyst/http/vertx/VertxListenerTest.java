@@ -53,6 +53,39 @@ class VertxListenerTest {
         routes.exception(Exception.class, (e, ctx) -> ctx.status(500).json(Map.of("error", "INTERNAL", "message", String.valueOf(e.getMessage()))));
     }
 
+    /// A path-based gate must judge the path the router dispatches. Sent over a raw
+    /// socket so no client normalises the dot segments first.
+    @Test
+    void aGateSeesTheNormalisedPathSoDotSegmentsCannotSmuggleAPastIt() throws Exception {
+        try (var l = VertxListener.start(VertxListener.Options.local(0), routes -> {
+            mapHttpExceptions(routes);
+            routes.before(ctx -> {
+                if (!ctx.path().startsWith("/public/")) {
+                    throw new HttpException(403, "forbidden");
+                }
+            });
+            routes.get("/public/ok", ctx -> ctx.result("public"));
+            routes.get("/api/secret", ctx -> ctx.result("SECRET"));
+        })) {
+            for (String smuggled : List.of("/public/../api/secret", "/public/%2e%2e/api/secret", "/public/./../api/secret")) {
+                String answer = rawGet(l.port(), smuggled);
+                assertThat(answer).as(smuggled).startsWith("HTTP/1.1 403").doesNotContain("SECRET");
+            }
+            assertThat(rawGet(l.port(), "/public/ok")).startsWith("HTTP/1.1 200");
+        }
+    }
+
+    private static String rawGet(int port, String path) throws Exception {
+        try (var socket = new java.net.Socket("127.0.0.1", port)) {
+            socket.setSoTimeout(10_000);
+            var out = socket.getOutputStream();
+            out.write(("GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+                    .getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            out.flush();
+            return new String(socket.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+    }
+
     @Test
     void theChainRunsOnOneVirtualThreadAndTheResponseIsWrittenOnTheEventLoop() throws Exception {
         var writer = new AtomicReference<String>();

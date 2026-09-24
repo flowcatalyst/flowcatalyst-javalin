@@ -135,9 +135,16 @@ final class VertxExchange implements Exchange {
         }
     }
 
+    /// The path the router matched: vertx-web routes on the RFC 3986
+    /// normalised path (dot segments removed, unreserved escapes decoded), so a
+    /// gate reading the raw path would see `/auth/../api/principals` while the
+    /// router dispatches `/api/principals` — every path-based filter (router
+    /// basic auth's public paths, the profile-only allowlist, schema
+    /// validation, per-IP limits, scoped before-filters) must judge the same
+    /// path the handler runs for.
     @Override
     public String path() {
-        return rc.request().path();
+        return rc.normalizedPath();
     }
 
     @Override

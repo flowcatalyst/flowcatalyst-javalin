@@ -385,7 +385,7 @@ public final class VertxListener implements AutoCloseable {
                 ? new VertxExchange(rc, group, bodyStream)
                 : new VertxExchange(rc, group, requestBody, oversized);
         Thread me = Thread.currentThread();
-        var admission = new Admission(rc.request().path(), group);
+        var admission = new Admission(rc.normalizedPath(), group);
         var deadlineFired = new AtomicBoolean();
         var finished = new AtomicBoolean();
         Duration deadline = group == Group.DISPATCH ? options.dispatchDeadline() : options.deadline();
