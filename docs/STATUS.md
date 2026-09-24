@@ -6,6 +6,15 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## function-host intermittent: root cause found and fixed (2026-09-24)
+
+`9d1b4e09`: tests bound the host on `0.0.0.0:0` and dialled `127.0.0.1`; on macOS (SO_REUSEADDR) a
+wildcard port-0 bind lands on a port a `127.0.0.1` harness listener already holds ~1 in 100, and
+that listener gets the connection (404, or no bytes). Test-only (Linux refuses the bind; production
+uses fixed ports). Every test binds loopback; `LoopbackBindTest` pins it. Loop: 10/10 random-order
+runs of the three listener classes clean (was ~1 failure in 8). In build: parser reports every
+manifest problem (`docs/spec/manifest-all-errors.md`, Sonnet worktree).
+
 ## SDKs regenerated from the Java lockfile; staleness check in CI; manifest aids in build (2026-09-24)
 
 TS and Laravel SDKs regenerated from the lockfile (`797faa7b`; had been generated from Go's spec),
