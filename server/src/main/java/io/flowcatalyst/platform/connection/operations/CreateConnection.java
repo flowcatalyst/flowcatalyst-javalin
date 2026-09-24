@@ -5,6 +5,8 @@ import io.flowcatalyst.platform.connection.Connection;
 import io.flowcatalyst.platform.connection.ConnectionCode;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
 import io.flowcatalyst.platform.connection.operations.ConnectionEvents.ConnectionCreated;
+import io.flowcatalyst.platform.serviceaccount.ServiceAccount;
+import io.flowcatalyst.platform.serviceaccount.SigningReach;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
@@ -14,12 +16,21 @@ import io.flowcatalyst.sdk.usecase.op.Plan;
 /// Creates a connection (unique by normalised code within its
 /// `(applicationCode, clientId)` scope, spec `code-first-connections.md` §2)
 /// and emits [ConnectionCreated].
+///
+/// The connection's service account signs every delivery of every
+/// subscription that uses it, so it must exist and be one the caller may
+/// sign with ([SigningReach#mayUse], `docs/spec/security-fixes-2026-09-24.md`
+/// S3.1 — superseding the spec's "not validated"). No owning application
+/// counts here: `applicationCode` is the caller's own choice in this same
+/// command, gated only by application access, so it proves nothing about
+/// whose account this is.
 public final class CreateConnection {
 
     private CreateConnection() {
     }
 
-    public static Operation<CreateCommand, ConnectionCreated> of(ConnectionRepository repo, ApplicationRepository apps) {
+    public static Operation<CreateCommand, ConnectionCreated> of(ConnectionRepository repo, ApplicationRepository apps,
+                                                                 SigningReach reach) {
         return Operation.<CreateCommand, ConnectionCreated>named("CreateConnection")
                 .validate(cmd -> {
                     ConnectionCode.parse(cmd.code());
@@ -39,6 +50,10 @@ public final class CreateConnection {
                                 .orElseThrow(() -> UseCaseException.resourceNotFound("Application", cmd.applicationCode()));
                         Checks.checkApplicationAccess(Auth.current(), app.id(), app.code());
                     }
+                    ServiceAccount account = reach.account(cmd.serviceAccountId())
+                            .orElseThrow(() -> UseCaseException.resourceNotFound("ServiceAccount", cmd.serviceAccountId()));
+                    reach.mayUse(Auth.current(), account, null)
+                            .orElseThrow(refusal -> UseCaseException.authorization("SERVICE_ACCOUNT_OUT_OF_REACH", refusal.message()));
                     ConnectionCode code = ConnectionCode.parse(cmd.code());
                     if (repo.findByCode(code.value(), cmd.applicationCode(), cmd.clientId()).isPresent()) {
                         throw UseCaseException.conflict("CODE_EXISTS",

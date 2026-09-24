@@ -1,5 +1,7 @@
 package io.flowcatalyst.platform.connection.operations;
 
+import io.flowcatalyst.platform.serviceaccount.SigningAccounts;
+import io.flowcatalyst.platform.serviceaccount.SigningReach;
 import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
@@ -71,6 +73,15 @@ class ConnectionOperationsTest {
     private static final ExecutionContext EC = ExecutionContext.of(PRINCIPAL);
     private static final String SERVICE_ACCOUNT = "sva_conntestseed1";
     private static final String DUP_CLIENT = EntityType.CLIENT.generate();
+    private static final SigningReach REACH = SigningAccounts.reach(DS);
+
+    // The connection's service account must exist and be one the caller may sign with
+    // (security-fixes-2026-09-24 S3.1): the ids these tests name are real anchor-tier accounts.
+    static {
+        for (String id : List.of("sva_x", SERVICE_ACCOUNT, "sva_conncrthappy1", "sva_conndup2", "sva_conndup3")) {
+            SigningAccounts.seed(DS, id, List.of(), null);
+        }
+    }
 
     // ── Fixture ────────────────────────────────────────────────────────────
 
@@ -87,7 +98,7 @@ class ConnectionOperationsTest {
     }
 
     private static ConnectionCreated created(String code, String name) {
-        return runAsAnchor(CreateConnection.of(repo, apps), new CreateCommand(code, name, null, SERVICE_ACCOUNT, null, null, null));
+        return runAsAnchor(CreateConnection.of(repo, apps, REACH), new CreateCommand(code, name, null, SERVICE_ACCOUNT, null, null, null));
     }
 
     /// Persists a raw application row (spec `code-first-connections.md` §3
@@ -144,7 +155,7 @@ class ConnectionOperationsTest {
     @Test
     void createWritesTheRowTheEventAndTheAuditTogether() {
         String code = code("conncrt-happy");
-        var ev = runAsAnchor(CreateConnection.of(repo, apps),
+        var ev = runAsAnchor(CreateConnection.of(repo, apps, REACH),
                 new CreateCommand("  " + code.toUpperCase(Locale.ROOT) + "  ", "  Conn Create Happy  ",
                         "outbound webhook target", "sva_conncrthappy1", "ext-conncrt-1", null, null));
 
@@ -203,20 +214,20 @@ class ConnectionOperationsTest {
     @ParameterizedTest(name = "{0} → {2}")
     @MethodSource("malformedCreateCommands")
     void createRejectsAMalformedCommand(String label, CreateCommand cmd, String expectedCode) {
-        assertUseCaseError(() -> runAsAnchor(CreateConnection.of(repo, apps), cmd), UseCaseError.Validation.class, expectedCode);
+        assertUseCaseError(() -> runAsAnchor(CreateConnection.of(repo, apps, REACH), cmd), UseCaseError.Validation.class, expectedCode);
     }
 
     @Test
     void createRejectsADuplicateCodeWithinTheSameScopeOnly() {
         String code = code("conndup");
         created(code, "First");
-        assertUseCaseError(() -> runAsAnchor(CreateConnection.of(repo, apps), new CreateCommand(code, "Second", null, "sva_conndup2", null, null, null)),
+        assertUseCaseError(() -> runAsAnchor(CreateConnection.of(repo, apps, REACH), new CreateCommand(code, "Second", null, "sva_conndup2", null, null, null)),
                 UseCaseError.Conflict.class, "CODE_EXISTS");
-        assertThatThrownBy(() -> runAsAnchor(CreateConnection.of(repo, apps), new CreateCommand(code, "Second", null, "sva_conndup2", null, null, null)))
+        assertThatThrownBy(() -> runAsAnchor(CreateConnection.of(repo, apps, REACH), new CreateCommand(code, "Second", null, "sva_conndup2", null, null, null)))
                 .hasMessageContaining("Connection with code '" + code + "' already exists");
 
         // Same code under a client is a different (code, clientId) pair — allowed (spec §6).
-        var scoped = runAsAnchor(CreateConnection.of(repo, apps),
+        var scoped = runAsAnchor(CreateConnection.of(repo, apps, REACH),
                 new CreateCommand(code, "Client copy", null, "sva_conndup3", null, DUP_CLIENT, null));
         assertThat(reload(scoped.connectionId()).clientId()).isEqualTo(DUP_CLIENT);
     }
@@ -232,25 +243,61 @@ class ConnectionOperationsTest {
                 List.of(), List.of(), true, List.of("platform:messaging:connection:create"));
         var clientEc = ExecutionContext.of(clientCtx.principalId());
 
-        assertUseCaseError(() -> Auth.runAs(clientCtx, () -> CreateConnection.of(repo, apps).run(uow,
+        assertUseCaseError(() -> Auth.runAs(clientCtx, () -> CreateConnection.of(repo, apps, REACH).run(uow,
                         new CreateCommand(code("connscope-platform"), "X", null, "sva_x", null, null, null), clientEc)),
                 UseCaseError.Authorization.class, "SCOPE_FORBIDDEN");
 
-        assertUseCaseError(() -> Auth.runAs(clientCtx, () -> CreateConnection.of(repo, apps).run(uow,
+        assertUseCaseError(() -> Auth.runAs(clientCtx, () -> CreateConnection.of(repo, apps, REACH).run(uow,
                         new CreateCommand(code("connscope-other"), "X", null, "sva_x", null, EntityType.CLIENT.generate(), null), clientEc)),
                 UseCaseError.Authorization.class, "SCOPE_FORBIDDEN");
 
-        var ev = Auth.runAs(clientCtx, () -> CreateConnection.of(repo, apps).run(uow,
-                new CreateCommand(code("connscope-own"), "Mine", null, "sva_x", null, ownClient, null), clientEc));
+        // An account linked to the caller's own client — an anchor-tier one is out of its reach.
+        String ownAccount = SigningAccounts.seed(DS, List.of(ownClient), null);
+        var ev = Auth.runAs(clientCtx, () -> CreateConnection.of(repo, apps, REACH).run(uow,
+                new CreateCommand(code("connscope-own"), "Mine", null, ownAccount, null, ownClient, null), clientEc));
         assertThat(ev.code()).isEqualTo(code("connscope-own"));
         assertThat(reload(ev.connectionId()).clientId()).isEqualTo(ownClient);
+    }
+
+    // ── Signing account (security-fixes-2026-09-24 S3.1) ─────────────────────
+
+    /// The connection's account signs every delivery through it, so it must
+    /// exist and be one the caller could sign with. Before, any id was taken.
+    @Test
+    void createRefusesAnAccountOutsideTheCallersReachOrThatDoesNotExist() {
+        String ownClient = EntityType.CLIENT.generate();
+        var clientCtx = new AuthContext(EntityType.PRINCIPAL.generate(), Scope.CLIENT, "c@x.io", List.of(ownClient),
+                List.of(), List.of(), true, List.of("platform:messaging:connection:create"));
+        var clientEc = ExecutionContext.of(clientCtx.principalId());
+        String operatorAccount = SigningAccounts.seed(DS, List.of(), null);
+
+        assertUseCaseError(() -> Auth.runAs(clientCtx, () -> CreateConnection.of(repo, apps, REACH).run(uow,
+                        new CreateCommand(code("connsign-operator"), "X", null, operatorAccount, null, ownClient, null), clientEc)),
+                UseCaseError.Authorization.class, "SERVICE_ACCOUNT_OUT_OF_REACH");
+        assertThat(repo.findByCode(code("connsign-operator"), null, ownClient)).isEmpty();
+
+        assertUseCaseError(() -> runAsAnchor(CreateConnection.of(repo, apps, REACH),
+                        new CreateCommand(code("connsign-missing"), "X", null, EntityType.SERVICE_ACCOUNT.generate(), null, null, null)),
+                UseCaseError.NotFound.class, "ServiceAccount_NOT_FOUND");
+    }
+
+    /// Naming the connection's application does not make that application's
+    /// account usable: `applicationCode` is chosen in the same command, so it
+    /// proves nothing about whose account this is.
+    @Test
+    void createRefusesAnApplicationsAccountToACallerThatIsNotThatApplication() {
+        Application app = application("connsign-app");
+        String appAccount = SigningAccounts.seed(DS, List.of(), app.id());
+        assertUseCaseError(() -> runAsAnchor(CreateConnection.of(repo, apps, REACH),
+                        new CreateCommand(code("connsign-app"), "X", null, appAccount, null, null, app.code())),
+                UseCaseError.Authorization.class, "SERVICE_ACCOUNT_OUT_OF_REACH");
     }
 
     // ── applicationCode (spec §3, C5) ────────────────────────────────────────
 
     @Test
     void createRejectsAnUnknownApplicationCode() {
-        assertUseCaseError(() -> runAsAnchor(CreateConnection.of(repo, apps),
+        assertUseCaseError(() -> runAsAnchor(CreateConnection.of(repo, apps, REACH),
                         new CreateCommand(code("connapp-unknown"), "X", null, "sva_x", null, null, "app-does-not-exist-" + RUN)),
                 UseCaseError.NotFound.class, "Application_NOT_FOUND");
     }
@@ -265,14 +312,14 @@ class ConnectionOperationsTest {
                 List.of(), List.of(EntityType.APPLICATION.generate()), false, List.of("platform:messaging:connection:create"));
         var scopedEc = ExecutionContext.of(scopedCtx.principalId());
 
-        assertUseCaseError(() -> Auth.runAs(scopedCtx, () -> CreateConnection.of(repo, apps).run(uow,
+        assertUseCaseError(() -> Auth.runAs(scopedCtx, () -> CreateConnection.of(repo, apps, REACH).run(uow,
                         new CreateCommand(code("connapp-noaccess"), "X", null, "sva_x", null, null, app.code()), scopedEc)),
                 UseCaseError.Authorization.class, "FORBIDDEN");
 
         // The same caller, granted reach to that one application, succeeds.
         var grantedCtx = new AuthContext(scopedCtx.principalId(), Scope.ANCHOR, "c@x.io", List.of("*"),
                 List.of(), List.of(app.id()), false, List.of("platform:messaging:connection:create"));
-        var ev = Auth.runAs(grantedCtx, () -> CreateConnection.of(repo, apps).run(uow,
+        var ev = Auth.runAs(grantedCtx, () -> CreateConnection.of(repo, apps, REACH).run(uow,
                 new CreateCommand(code("connapp-access"), "X", null, "sva_x", null, null, app.code()), scopedEc));
         assertThat(reload(ev.connectionId()).applicationCode()).isEqualTo(app.code());
     }
@@ -285,22 +332,22 @@ class ConnectionOperationsTest {
         Application appB = application("connapp-keyb");
         String code = code("connapp-samekey");
 
-        var first = runAsAnchor(CreateConnection.of(repo, apps),
+        var first = runAsAnchor(CreateConnection.of(repo, apps, REACH),
                 new CreateCommand(code, "A", null, "sva_x", null, null, appA.code()));
         assertThat(reload(first.connectionId()).applicationCode()).isEqualTo(appA.code());
 
         // Same code, different application — a different key, allowed.
-        var second = runAsAnchor(CreateConnection.of(repo, apps),
+        var second = runAsAnchor(CreateConnection.of(repo, apps, REACH),
                 new CreateCommand(code, "B", null, "sva_x", null, null, appB.code()));
         assertThat(reload(second.connectionId()).applicationCode()).isEqualTo(appB.code());
 
         // Same code, same application — the exact key again, refused.
-        assertUseCaseError(() -> runAsAnchor(CreateConnection.of(repo, apps),
+        assertUseCaseError(() -> runAsAnchor(CreateConnection.of(repo, apps, REACH),
                         new CreateCommand(code, "A again", null, "sva_x", null, null, appA.code())),
                 UseCaseError.Conflict.class, "CODE_EXISTS");
 
         // And the same code shared (no application) is yet another key, allowed.
-        var shared = runAsAnchor(CreateConnection.of(repo, apps),
+        var shared = runAsAnchor(CreateConnection.of(repo, apps, REACH),
                 new CreateCommand(code, "Shared", null, "sva_x", null, null, null));
         assertThat(reload(shared.connectionId()).applicationCode()).isNull();
     }
@@ -333,9 +380,9 @@ class ConnectionOperationsTest {
         String codeUnderA = code("connapp-updkey-a");
         String codeUnderB = code("connapp-updkey-b");
 
-        var underA = runAsAnchor(CreateConnection.of(repo, apps),
+        var underA = runAsAnchor(CreateConnection.of(repo, apps, REACH),
                 new CreateCommand(codeUnderA, "Under A", null, "sva_x", null, null, appA.code()));
-        runAsAnchor(CreateConnection.of(repo, apps),
+        runAsAnchor(CreateConnection.of(repo, apps, REACH),
                 new CreateCommand(codeUnderB, "Under B", null, "sva_x", null, null, appB.code()));
 
         // Unknown application on update: 404, nothing changes.
@@ -352,7 +399,7 @@ class ConnectionOperationsTest {
         // one succeeds and changes the key (own connection, own code, appB).
         // codeUnderA has a DIFFERENT code from codeUnderB, so this cannot
         // collide; it only proves the move itself is allowed when free.
-        var freeToMove = runAsAnchor(CreateConnection.of(repo, apps),
+        var freeToMove = runAsAnchor(CreateConnection.of(repo, apps, REACH),
                 new CreateCommand(code("connapp-updfree"), "Movable", null, "sva_x", null, null, appA.code()));
         runAsAnchor(UpdateConnection.of(repo, apps), new UpdateCommand(freeToMove.connectionId(), "Movable", null, null, null, appB.code()));
         assertThat(reload(freeToMove.connectionId()).applicationCode()).isEqualTo(appB.code());
@@ -361,7 +408,7 @@ class ConnectionOperationsTest {
         // (appB, null, codeUnderB) key only if the codes matched — they do not
         // here, so exercise the true collision: create a same-coded row under
         // appB first, then try to move appA's row of that code onto appB.
-        var sameCodeUnderA = runAsAnchor(CreateConnection.of(repo, apps),
+        var sameCodeUnderA = runAsAnchor(CreateConnection.of(repo, apps, REACH),
                 new CreateCommand(codeUnderB, "Collider", null, "sva_x", null, null, appA.code()));
         assertUseCaseError(() -> runAsAnchor(UpdateConnection.of(repo, apps),
                         new UpdateCommand(sameCodeUnderA.connectionId(), "Collider", null, null, null, appB.code())),
@@ -386,8 +433,8 @@ class ConnectionOperationsTest {
         String client = "clt_upd_" + RUN;
         String code = code("connapp-updclient-c");
 
-        runAsAnchor(CreateConnection.of(repo, apps), new CreateCommand(code, "Owned", null, "sva_x", null, client, app.code()));
-        var shared = runAsAnchor(CreateConnection.of(repo, apps), new CreateCommand(code, "Shared", null, "sva_x", null, client, null));
+        runAsAnchor(CreateConnection.of(repo, apps, REACH), new CreateCommand(code, "Owned", null, "sva_x", null, client, app.code()));
+        var shared = runAsAnchor(CreateConnection.of(repo, apps, REACH), new CreateCommand(code, "Shared", null, "sva_x", null, client, null));
 
         assertUseCaseError(() -> runAsAnchor(UpdateConnection.of(repo, apps),
                         new UpdateCommand(shared.connectionId(), "Shared", null, null, null, app.code())),
@@ -519,8 +566,8 @@ class ConnectionOperationsTest {
         var clientEc = ExecutionContext.of(clientCtx.principalId());
 
         var platformWide = created(code("connbyid-platform"), "Platform");
-        var own = runAsAnchor(CreateConnection.of(repo, apps), new CreateCommand(code("connbyid-own"), "Own", null, "sva_x", null, ownClient, null));
-        var other = runAsAnchor(CreateConnection.of(repo, apps), new CreateCommand(code("connbyid-other"), "Other", null, "sva_x", null, EntityType.CLIENT.generate(), null));
+        var own = runAsAnchor(CreateConnection.of(repo, apps, REACH), new CreateCommand(code("connbyid-own"), "Own", null, "sva_x", null, ownClient, null));
+        var other = runAsAnchor(CreateConnection.of(repo, apps, REACH), new CreateCommand(code("connbyid-other"), "Other", null, "sva_x", null, EntityType.CLIENT.generate(), null));
 
         assertUseCaseError(() -> Auth.runAs(clientCtx, () -> PauseConnection.of(repo).run(uow, new PauseCommand(platformWide.connectionId()), clientEc)),
                 UseCaseError.Authorization.class, "SCOPE_FORBIDDEN");
@@ -540,8 +587,8 @@ class ConnectionOperationsTest {
     @Test
     void listFiltersByStatusAndClientAndOrdersByCode() {
         String client = EntityType.CLIENT.generate();
-        var b = runAsAnchor(CreateConnection.of(repo, apps), new CreateCommand(code("connlist-b"), "B", null, "sva_x", null, client, null));
-        var a = runAsAnchor(CreateConnection.of(repo, apps), new CreateCommand(code("connlist-a"), "A", null, "sva_x", null, client, null));
+        var b = runAsAnchor(CreateConnection.of(repo, apps, REACH), new CreateCommand(code("connlist-b"), "B", null, "sva_x", null, client, null));
+        var a = runAsAnchor(CreateConnection.of(repo, apps, REACH), new CreateCommand(code("connlist-a"), "A", null, "sva_x", null, client, null));
         runAsAnchor(PauseConnection.of(repo), new PauseCommand(b.connectionId()));
 
         assertThat(repo.findWithFilters(new ListFilter(null, client))).extracting(Connection::id)

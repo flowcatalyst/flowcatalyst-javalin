@@ -1,5 +1,7 @@
 package io.flowcatalyst.platform.scheduler.jobs;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.flowcatalyst.platform.scheduledjob.InstanceStatus;
@@ -324,6 +326,114 @@ class JobDispatcherTest {
 
         assertThat(lastHeaders).doesNotContainKey("authorization").doesNotContainKey("x-flowcatalyst-signature");
         assertThat(INSTANCES.findById(instanceId).orElseThrow().status()).isEqualTo(InstanceStatus.DELIVERED);
+    }
+
+    // ── one slow target cannot hold the loop (security-fixes-2026-09-24 S3.4) ──
+    //
+    // A single loop delivers every tenant's scheduled jobs. The JDK request
+    // timeout stops applying once headers arrive, so before this a target that
+    // sent headers and then trickled its body held the loop for as long as it
+    // liked, and a huge body was buffered whole.
+
+    private static final Duration DEADLINE = Duration.ofSeconds(1);
+
+    /// A target on its own server (its handler blocks while it trickles, so
+    /// it must not share the fixture's single dispatcher thread).
+    private record SlowTarget(HttpServer server, String url, AtomicBoolean stop, AtomicLong written) implements AutoCloseable {
+        static SlowTarget start(int status, long contentLength, int chunkBytes, long pauseMillis, long maxBytes) throws IOException {
+            var stop = new AtomicBoolean();
+            var written = new AtomicLong();
+            HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            server.setExecutor(java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor());
+            server.createContext("/slow", exchange -> {
+                exchange.getRequestBody().readAllBytes();
+                exchange.sendResponseHeaders(status, contentLength);
+                byte[] chunk = new byte[chunkBytes];
+                java.util.Arrays.fill(chunk, (byte) 'x');
+                try (var out = exchange.getResponseBody()) {
+                    while (!stop.get() && written.get() < maxBytes) {
+                        out.write(chunk);
+                        out.flush();
+                        written.addAndGet(chunk.length);
+                        if (pauseMillis > 0) Thread.sleep(pauseMillis);
+                    }
+                } catch (IOException | InterruptedException e) {
+                    // the dispatcher hung up — the point of the exercise
+                }
+            });
+            server.start();
+            return new SlowTarget(server, "http://127.0.0.1:" + server.getAddress().getPort() + "/slow", stop, written);
+        }
+
+        @Override
+        public void close() {
+            stop.set(true);
+            server.stop(0);
+        }
+    }
+
+    private JobDispatcher deadlineDispatcher() {
+        return new JobDispatcher(JOBS, INSTANCES, HttpClient.newHttpClient(), DEADLINE,
+                applicationId -> Optional.empty(), () -> true, 32, Clock.systemUTC());
+    }
+
+    private static String queuedFor(String targetUrl) {
+        String jobId = persistJob(job(targetUrl, 3, null, null, false, false, null));
+        return queuedInstance(jobId, JOBS.findById(jobId).orElseThrow().code(), TriggerKind.MANUAL, null, null);
+    }
+
+    @Test
+    @DisplayName("headers then a trickling error body: the tick returns at the deadline and records a failure")
+    void aTricklingErrorBodyCannotHoldTheLoopPastTheDeadline() throws Exception {
+        // 1 byte every 100 ms for 10 s — never reaches the 500-byte snippet cap.
+        try (var target = SlowTarget.start(500, 0, 1, 100, 100)) {
+            String instanceId = queuedFor(target.url());
+
+            long started = System.nanoTime();
+            deadlineDispatcher().dispatchOnce();
+            Duration elapsed = Duration.ofNanos(System.nanoTime() - started);
+
+            assertThat(elapsed).as("the tick is bounded by the 1 s deadline, not the 10 s body")
+                    .isLessThan(Duration.ofSeconds(4));
+            var reloaded = INSTANCES.findById(instanceId).orElseThrow();
+            assertThat(reloaded.status()).isEqualTo(InstanceStatus.QUEUED);
+            assertThat(reloaded.deliveryAttempts()).isEqualTo(1);
+            assertThat(reloaded.deliveryError()).startsWith("Network/HTTP error: no complete response within");
+        }
+    }
+
+    @Test
+    @DisplayName("a 2xx whose body trickles is delivered at once: the status is the whole answer")
+    void aTricklingSuccessBodyIsNotWaitedFor() throws Exception {
+        try (var target = SlowTarget.start(200, 0, 1, 100, 100)) {
+            String instanceId = queuedFor(target.url());
+
+            long started = System.nanoTime();
+            deadlineDispatcher().dispatchOnce();
+            Duration elapsed = Duration.ofNanos(System.nanoTime() - started);
+
+            assertThat(elapsed).isLessThan(Duration.ofSeconds(4));
+            assertThat(INSTANCES.findById(instanceId).orElseThrow().status())
+                    .as("the target accepted it; its body never mattered").isEqualTo(InstanceStatus.DELIVERED);
+        }
+    }
+
+    @Test
+    @DisplayName("a huge error body is read only as far as the 500-byte snippet")
+    void aHugeErrorBodyIsNotBuffered() throws Exception {
+        long size = 256L * 1024 * 1024;
+        try (var target = SlowTarget.start(500, size, 64 * 1024, 0, size)) {
+            String instanceId = queuedFor(target.url());
+
+            deadlineDispatcher().dispatchOnce();
+            Thread.sleep(500); // let the target's writer notice the hang-up (or block on a full socket)
+
+            var reloaded = INSTANCES.findById(instanceId).orElseThrow();
+            assertThat(reloaded.deliveryError()).startsWith("HTTP 500 (expected 2xx): ")
+                    .hasSize("HTTP 500 (expected 2xx): ".length() + 500);
+            assertThat(target.written().get()).as("the dispatcher stopped reading long before the end of the body")
+                    .isLessThan(size / 4);
+        }
     }
 
     // ── credentials cache ────────────────────────────────────────────────────

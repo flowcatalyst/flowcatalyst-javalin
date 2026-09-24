@@ -1,5 +1,7 @@
 package io.flowcatalyst.platform.subscription.operations;
 
+import io.flowcatalyst.platform.connection.ConnectionRepository;
+import io.flowcatalyst.platform.serviceaccount.SigningReach;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
@@ -15,13 +17,15 @@ import io.flowcatalyst.sdk.usecase.op.Plan;
 
 /// Creates a `UI`-sourced subscription (unique by normalised code within the
 /// client scope) with the given bindings and settings, and emits
-/// [SubscriptionCreated].
+/// [SubscriptionCreated]. A named service account or connection must exist
+/// and be one the caller may sign with ([Access#requireUsableSigners]).
 public final class CreateSubscription {
 
     private CreateSubscription() {
     }
 
-    public static Operation<CreateCommand, SubscriptionCreated> of(SubscriptionRepository repo) {
+    public static Operation<CreateCommand, SubscriptionCreated> of(SubscriptionRepository repo,
+                                                                   ConnectionRepository connections, SigningReach reach) {
         return Operation.<CreateCommand, SubscriptionCreated>named("CreateSubscription")
                 .validate(cmd -> {
                     SubscriptionCode.parse(cmd.code());
@@ -45,6 +49,9 @@ public final class CreateSubscription {
                         throw UseCaseException.conflict("CODE_EXISTS",
                                 "Subscription with code '" + code + "' already exists");
                     }
+                    // Admin create never has an owning application (applicationCode is null).
+                    Access.requireUsableSigners(reach, connections, null,
+                            Access.blankToNull(cmd.serviceAccountId()), true, Access.blankToNull(cmd.connectionId()), true);
                     QueuePriority queue = QueuePriority.parse(cmd.queue());
                     Subscription s = Subscription.create(code, cmd.name().strip(), EndpointUrl.parse(cmd.endpoint()).value())
                             .withDescription(cmd.description())

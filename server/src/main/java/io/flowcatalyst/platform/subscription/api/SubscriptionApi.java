@@ -1,5 +1,7 @@
 package io.flowcatalyst.platform.subscription.api;
 
+import io.flowcatalyst.platform.connection.ConnectionRepository;
+import io.flowcatalyst.platform.serviceaccount.SigningReach;
 import io.flowcatalyst.platform.shared.apicommon.CreatedResponse;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
@@ -51,11 +53,16 @@ public final class SubscriptionApi {
     private SubscriptionApi() {
     }
 
-    /// The handlers' dependencies.
-    public record State(SubscriptionRepository repo, UnitOfWork uow) {
+    /// The handlers' dependencies. `connections` and `signing` decide whether
+    /// a create/update may name a service account or connection
+    /// (`docs/spec/security-fixes-2026-09-24.md` S3.1).
+    public record State(SubscriptionRepository repo, UnitOfWork uow, ConnectionRepository connections,
+                        SigningReach signing) {
         public State {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(uow, "uow");
+            Objects.requireNonNull(connections, "connections");
+            Objects.requireNonNull(signing, "signing");
         }
     }
 
@@ -89,14 +96,14 @@ public final class SubscriptionApi {
     private static void create(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), SUBSCRIPTION_CREATE, SUBSCRIPTION_UPDATE, SUBSCRIPTION_DELETE);
         var cmd = ctx.bodyAsClass(CreateSubscriptionRequest.class).toCommand();
-        var event = CreateSubscription.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
+        var event = CreateSubscription.of(s.repo(), s.connections(), s.signing()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.subscriptionId()));
     }
 
     private static void update(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), SUBSCRIPTION_CREATE, SUBSCRIPTION_UPDATE, SUBSCRIPTION_DELETE);
         var cmd = ctx.bodyAsClass(UpdateSubscriptionRequest.class).toCommand(ctx.pathParam("id"));
-        UpdateSubscription.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
+        UpdateSubscription.of(s.repo(), s.connections(), s.signing()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 

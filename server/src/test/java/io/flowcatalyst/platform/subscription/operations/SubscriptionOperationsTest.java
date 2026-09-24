@@ -1,5 +1,7 @@
 package io.flowcatalyst.platform.subscription.operations;
 
+import io.flowcatalyst.platform.serviceaccount.SigningAccounts;
+import io.flowcatalyst.platform.serviceaccount.SigningReach;
 import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.connection.ConnectionCode;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
@@ -77,6 +79,15 @@ class SubscriptionOperationsTest {
             new io.flowcatalyst.platform.application.ApplicationRepository(DS);
     private static final DispatchPoolRepository pools = new DispatchPoolRepository(DS);
     private static final UnitOfWork uow = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
+    private static final SigningReach REACH = SigningAccounts.reach(DS);
+
+    // A named service account must exist and be one the caller may sign with
+    // (security-fixes-2026-09-24 S3.1): the ids these tests name are real anchor-tier accounts.
+    static {
+        for (String id : List.of("sva_subsync1", "sva_subcreate1", "sva_subupd1")) {
+            SigningAccounts.seed(DS, id, List.of(), null);
+        }
+    }
 
     /// Per-JVM namespace so codes never collide with another run on the same database.
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
@@ -108,7 +119,7 @@ class SubscriptionOperationsTest {
     }
 
     private static SubscriptionCreated created(String code, String name) {
-        return runAsAnchor(CreateSubscription.of(repo), createCommand(code, name));
+        return runAsAnchor(CreateSubscription.of(repo, connections, REACH), createCommand(code, name));
     }
 
     private static Subscription reload(String id) {
@@ -152,7 +163,7 @@ class SubscriptionOperationsTest {
 
     /// A real connection for sync's `connectionId` check; the service account is not validated by connections.
     private static String seededConnection(String code) {
-        return runAsAnchor(CreateConnection.of(connections, apps), new io.flowcatalyst.platform.connection.operations.CreateCommand(
+        return runAsAnchor(CreateConnection.of(connections, apps, REACH), new io.flowcatalyst.platform.connection.operations.CreateCommand(
                 code, "Sub Sync Conn", null, "sva_subsync1", null, null, null)).connectionId();
     }
 
@@ -253,9 +264,10 @@ class SubscriptionOperationsTest {
     @Test
     void createWritesTheRowTheJunctionsTheEventAndTheAuditTogether() {
         String code = code("subcreate");
-        var ev = runAsAnchor(CreateSubscription.of(repo), new CreateCommand(
+        String connectionId = seedConnection(code("subcreate-conn"), null, null).id();
+        var ev = runAsAnchor(CreateSubscription.of(repo, connections, REACH), new CreateCommand(
                 "  " + code.toUpperCase(Locale.ROOT) + "  ", "  Sub Create  ", ENDPOINT, "delivers order events",
-                null, "con_subcreate1", "dpl_subcreate1", "sva_subcreate1",
+                null, connectionId, "dpl_subcreate1", "sva_subcreate1",
                 List.of(new EventTypeBinding(null, "subcrt:orders:order:created", "1.0", "x == 1"),
                         EventTypeBinding.of("subcrt:orders:order:*")),
                 List.of(new ConfigEntry("X-Env", "test")),
@@ -276,7 +288,7 @@ class SubscriptionOperationsTest {
         assertThat(got.description()).isEqualTo("delivers order events");
         assertThat(got.status()).as("new subscriptions start ACTIVE").isEqualTo(SubscriptionStatus.ACTIVE);
         assertThat(got.source()).as("admin create is UI-sourced").isEqualTo(SubscriptionSource.UI);
-        assertThat(got.connectionId()).isEqualTo("con_subcreate1");
+        assertThat(got.connectionId()).isEqualTo(connectionId);
         assertThat(got.dispatchPoolId()).isEqualTo("dpl_subcreate1");
         assertThat(got.dispatchPoolCode()).as("the admin surface never sets the pool code").isNull();
         assertThat(got.serviceAccountId()).isEqualTo("sva_subcreate1");
@@ -356,7 +368,7 @@ class SubscriptionOperationsTest {
     @ParameterizedTest(name = "{0} → {2}")
     @MethodSource("malformedCreateCommands")
     void createRejectsAMalformedCommand(String label, CreateCommand cmd, String expectedCode) {
-        assertUseCaseError(() -> runAsAnchor(CreateSubscription.of(repo), cmd), UseCaseError.Validation.class, expectedCode);
+        assertUseCaseError(() -> runAsAnchor(CreateSubscription.of(repo, connections, REACH), cmd), UseCaseError.Validation.class, expectedCode);
     }
 
     /// Uniqueness is per `(code, clientId)`: a second platform-wide create
@@ -365,11 +377,11 @@ class SubscriptionOperationsTest {
     void createRejectsADuplicateCodeInTheSameScopeOnly() {
         String code = code("subdup");
         created(code, "First");
-        assertUseCaseError(() -> runAsAnchor(CreateSubscription.of(repo), createCommand(code.toUpperCase(Locale.ROOT), "Second")),
+        assertUseCaseError(() -> runAsAnchor(CreateSubscription.of(repo, connections, REACH), createCommand(code.toUpperCase(Locale.ROOT), "Second")),
                 UseCaseError.Conflict.class, "CODE_EXISTS");
 
         String client = EntityType.CLIENT.generate();
-        var bound = runAsAnchor(CreateSubscription.of(repo), new CreateCommand(code, "Bound", ENDPOINT, null, client,
+        var bound = runAsAnchor(CreateSubscription.of(repo, connections, REACH), new CreateCommand(code, "Bound", ENDPOINT, null, client,
                 null, null, null, BINDINGS, null, null, null, null, null, null, null, null));
         assertThat(reload(bound.subscriptionId()).clientId()).isEqualTo(client);
         assertThat(repo.findByCode(code, null, client)).isPresent();
@@ -390,26 +402,174 @@ class SubscriptionOperationsTest {
         var clientEc = ExecutionContext.of(clientCtx.principalId());
 
         // Platform-wide (null clientId) → anchor required → denied.
-        assertUseCaseError(() -> Auth.runAs(clientCtx, () -> CreateSubscription.of(repo).run(uow,
+        assertUseCaseError(() -> Auth.runAs(clientCtx, () -> CreateSubscription.of(repo, connections, REACH).run(uow,
                         createCommand(code("subscope-platform"), "X"), clientEc)),
                 UseCaseError.Authorization.class, "SCOPE_FORBIDDEN");
 
         // Bound to a client the principal cannot access → denied.
-        assertUseCaseError(() -> Auth.runAs(clientCtx, () -> CreateSubscription.of(repo).run(uow,
+        assertUseCaseError(() -> Auth.runAs(clientCtx, () -> CreateSubscription.of(repo, connections, REACH).run(uow,
                         new CreateCommand(code("subscope-other"), "X", ENDPOINT, null, otherClient,
                                 null, null, null, BINDINGS, null, null, null, null, null, null, null, null), clientEc)),
                 UseCaseError.Authorization.class, "SCOPE_FORBIDDEN");
 
         // Unauthenticated (no bound principal) → denied before anything is written.
-        assertUseCaseError(() -> CreateSubscription.of(repo).run(uow, createCommand(code("subscope-anon"), "X"), ExecutionContext.of(null)),
+        assertUseCaseError(() -> CreateSubscription.of(repo, connections, REACH).run(uow, createCommand(code("subscope-anon"), "X"), ExecutionContext.of(null)),
                 UseCaseError.Authorization.class, "UNAUTHENTICATED");
         assertThat(repo.findByCode(code("subscope-anon"), null, null)).isEmpty();
 
         // Bound to the principal's own client → allowed.
-        var ev = Auth.runAs(clientCtx, () -> CreateSubscription.of(repo).run(uow,
+        var ev = Auth.runAs(clientCtx, () -> CreateSubscription.of(repo, connections, REACH).run(uow,
                 new CreateCommand(code("subscope-own"), "Mine", ENDPOINT, null, ownClient,
                         null, null, null, BINDINGS, null, null, null, null, null, null, null, null), clientEc));
         assertThat(ev.code()).isEqualTo(code("subscope-own"));
+    }
+
+    // ── Signing accounts (security-fixes-2026-09-24 S3.1) ────────────────────
+    //
+    // A subscription's endpoint is the caller's choice, so the account that signs
+    // its deliveries — named directly or through its connection — must be one the
+    // caller could sign with itself. Before, any id was accepted, and a
+    // client-scoped caller could have another tenant's (or the operator's)
+    // account sign deliveries to its own endpoint.
+
+    private static AuthContext clientCaller(String clientId) {
+        return new AuthContext(EntityType.PRINCIPAL.generate(), Scope.CLIENT, "c@x.io", List.of(clientId), List.of(),
+                List.of(), true, List.of("platform:messaging:subscription:create", "platform:messaging:subscription:update"));
+    }
+
+    private static CreateCommand signedCreate(String code, String clientId, String connectionId, String serviceAccountId) {
+        return new CreateCommand(code, "Signed", ENDPOINT, null, clientId, connectionId, null, serviceAccountId, BINDINGS,
+                null, null, null, null, null, null, null, null);
+    }
+
+    private static UpdateCommand signedUpdate(String id, String endpoint, String connectionId, String serviceAccountId) {
+        return new UpdateCommand(id, "Renamed", null, endpoint, connectionId, null, null, null, null, null, null, null, null,
+                null, serviceAccountId, null);
+    }
+
+    private static <C, E extends DomainEvent> E runAsCaller(AuthContext ac, Operation<C, E> op, C cmd) {
+        return Auth.runAs(ac, () -> op.run(uow, cmd, ExecutionContext.of(ac.principalId())));
+    }
+
+    @Test
+    void createRefusesAnAccountOutsideTheCallersReach() {
+        String clientA = EntityType.CLIENT.generate();
+        var caller = clientCaller(clientA);
+        String operatorAccount = SigningAccounts.seed(DS, List.of(), null);
+        String sharedAccount = SigningAccounts.seed(DS, List.of(clientA, EntityType.CLIENT.generate()), null);
+        String ownAccount = SigningAccounts.seed(DS, List.of(clientA), null);
+
+        for (String account : List.of(operatorAccount, sharedAccount)) {
+            String code = code("subsign-refused-" + account.substring(account.length() - 5).toLowerCase(Locale.ROOT));
+            assertUseCaseError(() -> runAsCaller(caller, CreateSubscription.of(repo, connections, REACH),
+                            signedCreate(code, clientA, null, account)),
+                    UseCaseError.Authorization.class, "SERVICE_ACCOUNT_OUT_OF_REACH");
+            assertThat(repo.findByCode(code, null, clientA)).as("nothing written").isEmpty();
+        }
+
+        var ev = runAsCaller(caller, CreateSubscription.of(repo, connections, REACH),
+                signedCreate(code("subsign-own"), clientA, null, ownAccount));
+        assertThat(reload(ev.subscriptionId()).serviceAccountId()).isEqualTo(ownAccount);
+    }
+
+    @Test
+    void createRefusesAConnectionOutsideTheCallersReach() {
+        String clientA = EntityType.CLIENT.generate();
+        var caller = clientCaller(clientA);
+        String platformWide = SigningAccounts.connection(DS, EntityType.CONNECTION.generate(), null,
+                SigningAccounts.seed(DS, List.of(clientA), null));
+        String ownButOperatorSigned = SigningAccounts.connection(DS, EntityType.CONNECTION.generate(), clientA,
+                SigningAccounts.seed(DS, List.of(), null));
+        String own = SigningAccounts.connection(DS, EntityType.CONNECTION.generate(), clientA,
+                SigningAccounts.seed(DS, List.of(clientA), null));
+
+        assertUseCaseError(() -> runAsCaller(caller, CreateSubscription.of(repo, connections, REACH),
+                        signedCreate(code("subsign-conn-platform"), clientA, platformWide, null)),
+                UseCaseError.Authorization.class, "CONNECTION_OUT_OF_REACH");
+        assertUseCaseError(() -> runAsCaller(caller, CreateSubscription.of(repo, connections, REACH),
+                        signedCreate(code("subsign-conn-opsigned"), clientA, ownButOperatorSigned, null)),
+                UseCaseError.Authorization.class, "SERVICE_ACCOUNT_OUT_OF_REACH");
+        assertThat(repo.findByCode(code("subsign-conn-platform"), null, clientA)).isEmpty();
+        assertThat(repo.findByCode(code("subsign-conn-opsigned"), null, clientA)).isEmpty();
+
+        var ev = runAsCaller(caller, CreateSubscription.of(repo, connections, REACH),
+                signedCreate(code("subsign-conn-own"), clientA, own, null));
+        assertThat(reload(ev.subscriptionId()).connectionId()).isEqualTo(own);
+    }
+
+    @Test
+    void createRefusesAnAccountOrConnectionThatDoesNotExist() {
+        assertUseCaseError(() -> runAsAnchor(CreateSubscription.of(repo, connections, REACH),
+                        signedCreate(code("subsign-nosa"), null, null, EntityType.SERVICE_ACCOUNT.generate())),
+                UseCaseError.NotFound.class, "ServiceAccount_NOT_FOUND");
+        assertUseCaseError(() -> runAsAnchor(CreateSubscription.of(repo, connections, REACH),
+                        signedCreate(code("subsign-noconn"), null, EntityType.CONNECTION.generate(), null)),
+                UseCaseError.NotFound.class, "Connection_NOT_FOUND");
+    }
+
+    /// The endpoint is where the credentials go: re-pointing it on a
+    /// subscription an operator configured with an account the caller cannot
+    /// reach is refused, even though the account itself is untouched.
+    /// Re-sending the current values (the SPA sends the whole form) is not.
+    @Test
+    void updateRefusesRepointingTheCredentialsOfAnAccountOutsideTheCallersReach() {
+        String clientA = EntityType.CLIENT.generate();
+        var caller = clientCaller(clientA);
+        String operatorAccount = SigningAccounts.seed(DS, List.of(), null);
+        String ownAccount = SigningAccounts.seed(DS, List.of(clientA), null);
+        String id = runAsAnchor(CreateSubscription.of(repo, connections, REACH),
+                signedCreate(code("subsign-upd"), clientA, null, operatorAccount)).subscriptionId();
+
+        runAsCaller(caller, UpdateSubscription.of(repo, connections, REACH), signedUpdate(id, ENDPOINT, "", operatorAccount));
+        assertThat(reload(id).name()).as("the unchanged form is accepted").isEqualTo("Renamed");
+
+        assertUseCaseError(() -> runAsCaller(caller, UpdateSubscription.of(repo, connections, REACH),
+                        signedUpdate(id, "https://attacker.example.test/hook", null, null)),
+                UseCaseError.Authorization.class, "SERVICE_ACCOUNT_OUT_OF_REACH");
+        assertThat(reload(id).endpoint()).isEqualTo(ENDPOINT);
+
+        String otherOperatorAccount = SigningAccounts.seed(DS, List.of(), null);
+        assertUseCaseError(() -> runAsCaller(caller, UpdateSubscription.of(repo, connections, REACH),
+                        signedUpdate(id, null, null, otherOperatorAccount)),
+                UseCaseError.Authorization.class, "SERVICE_ACCOUNT_OUT_OF_REACH");
+        assertThat(reload(id).serviceAccountId()).isEqualTo(operatorAccount);
+
+        runAsCaller(caller, UpdateSubscription.of(repo, connections, REACH),
+                signedUpdate(id, "https://mine.example.test/hook", null, ownAccount));
+        assertThat(reload(id).serviceAccountId()).isEqualTo(ownAccount);
+        assertThat(reload(id).endpoint()).isEqualTo("https://mine.example.test/hook");
+    }
+
+    /// A subscription an application's sync authored may use that
+    /// application's accounts — and no other application's.
+    @Test
+    void updateMayUseTheOwningApplicationsAccountOnly() {
+        String clientA = EntityType.CLIENT.generate();
+        var caller = clientCaller(clientA);
+        var app = io.flowcatalyst.platform.application.Application.create(
+                io.flowcatalyst.platform.application.ApplicationType.APPLICATION, "subsignapp-" + RUN, "Sign App");
+        var other = io.flowcatalyst.platform.application.Application.create(
+                io.flowcatalyst.platform.application.ApplicationType.APPLICATION, "subsignoth-" + RUN, "Other App");
+        for (var a : List.of(app, other)) {
+            try (java.sql.Connection conn = DS.getConnection()) {
+                conn.setAutoCommit(false);
+                apps.persist(a, DbTx.wrapForBootstrap(conn));
+                conn.commit();
+            } catch (SQLException e) {
+                throw new RuntimeException(e);
+            }
+        }
+        String appAccount = SigningAccounts.seed(DS, List.of(), app.id());
+        String otherAppAccount = SigningAccounts.seed(DS, List.of(), other.id());
+        var synced = seedSubscription(code("subsign-synced"), app.code(), clientA, SubscriptionSource.API);
+
+        runAsCaller(caller, UpdateSubscription.of(repo, connections, REACH), signedUpdate(synced.id(), null, null, appAccount));
+        assertThat(reload(synced.id()).serviceAccountId()).isEqualTo(appAccount);
+
+        assertUseCaseError(() -> runAsCaller(caller, UpdateSubscription.of(repo, connections, REACH),
+                        signedUpdate(synced.id(), null, null, otherAppAccount)),
+                UseCaseError.Authorization.class, "SERVICE_ACCOUNT_OUT_OF_REACH");
+        assertThat(reload(synced.id()).serviceAccountId()).isEqualTo(appAccount);
     }
 
     // ── Update ─────────────────────────────────────────────────────────────
@@ -417,9 +577,10 @@ class SubscriptionOperationsTest {
     @Test
     void updateReplacesTheGivenFieldsAndTheListsWholesale() {
         var seeded = created(code("subupd"), "Before");
+        String connectionId = seedConnection(code("subupd-conn"), null, null).id();
 
-        var ev = runAsAnchor(UpdateSubscription.of(repo), new UpdateCommand(seeded.subscriptionId(), "  After  ", "after",
-                "https://after.example.test/hook", "con_subupd1",
+        var ev = runAsAnchor(UpdateSubscription.of(repo, connections, REACH), new UpdateCommand(seeded.subscriptionId(), "  After  ", "after",
+                "https://after.example.test/hook", connectionId,
                 List.of(EventTypeBinding.of("subupd:orders:order:updated")), List.of(new ConfigEntry("k", "v")),
                 "NEXT_ON_ERROR", "default", 90, 7, 5, 7200, "dpl_subupd1", "sva_subupd1", false));
         assertThat(ev.subscriptionId()).isEqualTo(seeded.subscriptionId());
@@ -431,7 +592,7 @@ class SubscriptionOperationsTest {
         assertThat(got.name()).isEqualTo("After");
         assertThat(got.description()).isEqualTo("after");
         assertThat(got.endpoint()).isEqualTo("https://after.example.test/hook");
-        assertThat(got.connectionId()).isEqualTo("con_subupd1");
+        assertThat(got.connectionId()).isEqualTo(connectionId);
         assertThat(got.eventTypes()).as("bindings are replaced wholesale")
                 .extracting(EventTypeBinding::eventTypeCode).containsExactly("subupd:orders:order:updated");
         assertThat(got.customConfig()).containsExactly(new ConfigEntry("k", "v"));
@@ -447,7 +608,7 @@ class SubscriptionOperationsTest {
         assertThat(got.status()).as("update must not touch status").isEqualTo(SubscriptionStatus.ACTIVE);
 
         // Absent fields are unchanged; an explicit empty list empties.
-        runAsAnchor(UpdateSubscription.of(repo), new UpdateCommand(seeded.subscriptionId(), null, null, null, null,
+        runAsAnchor(UpdateSubscription.of(repo, connections, REACH), new UpdateCommand(seeded.subscriptionId(), null, null, null, null,
                 List.of(), null, null, null, null, null, null, null, null, null, null));
         var again = reload(seeded.subscriptionId());
         assertThat(again.name()).isEqualTo("After");
@@ -456,7 +617,7 @@ class SubscriptionOperationsTest {
         assertThat(again.queue()).as("a null queue field on update leaves the stored priority unchanged").isEqualTo("DEFAULT");
 
         // A present-but-blank queue is not absence: it parses to null (R1) and clears the priority.
-        runAsAnchor(UpdateSubscription.of(repo), new UpdateCommand(seeded.subscriptionId(), null, null, null, null,
+        runAsAnchor(UpdateSubscription.of(repo, connections, REACH), new UpdateCommand(seeded.subscriptionId(), null, null, null, null,
                 null, null, null, "", null, null, null, null, null, null, null));
         assertThat(reload(seeded.subscriptionId()).queue()).as("an explicit blank queue clears it").isNull();
 
@@ -480,7 +641,7 @@ class SubscriptionOperationsTest {
     @ParameterizedTest(name = "{0} → {3}")
     @MethodSource("badUpdateCommands")
     void updateRejectsABadCommand(String label, UpdateCommand cmd, Class<? extends UseCaseError> kind, String expectedCode) {
-        assertUseCaseError(() -> runAsAnchor(UpdateSubscription.of(repo), cmd), kind, expectedCode);
+        assertUseCaseError(() -> runAsAnchor(UpdateSubscription.of(repo, connections, REACH), cmd), kind, expectedCode);
     }
 
     /// A CLIENT-scoped principal cannot touch another tenant's row by guessing its id.
@@ -489,7 +650,7 @@ class SubscriptionOperationsTest {
         var seeded = created(code("subscope-byid"), "Platform Wide");
         var clientCtx = new AuthContext(EntityType.PRINCIPAL.generate(), Scope.CLIENT, "c@x.io", List.of(EntityType.CLIENT.generate()),
                 List.of(), List.of(), false, List.of("platform:messaging:subscription:update"));
-        assertUseCaseError(() -> Auth.runAs(clientCtx, () -> UpdateSubscription.of(repo).run(uow,
+        assertUseCaseError(() -> Auth.runAs(clientCtx, () -> UpdateSubscription.of(repo, connections, REACH).run(uow,
                         updateOf(seeded.subscriptionId(), "Hijack"), ExecutionContext.of(clientCtx.principalId()))),
                 UseCaseError.Authorization.class, "SCOPE_FORBIDDEN");
         assertUseCaseError(() -> Auth.runAs(clientCtx, () -> PauseSubscription.of(repo).run(uow,
@@ -536,7 +697,7 @@ class SubscriptionOperationsTest {
 
     @Test
     void deleteRemovesTheRowAndItsJunctionRows() {
-        var seeded = runAsAnchor(CreateSubscription.of(repo), new CreateCommand(code("subdel"), "Doomed", ENDPOINT, null, null,
+        var seeded = runAsAnchor(CreateSubscription.of(repo, connections, REACH), new CreateCommand(code("subdel"), "Doomed", ENDPOINT, null, null,
                 null, null, null, BINDINGS, List.of(new ConfigEntry("k", "v")), null, null, null, null, null, null, null));
 
         var ev = runAsAnchor(DeleteSubscription.of(repo), new DeleteCommand(seeded.subscriptionId()));
@@ -1061,7 +1222,7 @@ class SubscriptionOperationsTest {
     void listFiltersCombineResultsAreOrderedByCodeAndHydrated() {
         String client = EntityType.CLIENT.generate();
         var a = created(code("sublist-b"), "B");
-        var b = runAsAnchor(CreateSubscription.of(repo), new CreateCommand(code("sublist-a"), "A", ENDPOINT, null, client,
+        var b = runAsAnchor(CreateSubscription.of(repo, connections, REACH), new CreateCommand(code("sublist-a"), "A", ENDPOINT, null, client,
                 null, null, null, BINDINGS, List.of(new ConfigEntry("k", "v")), null, null, null, null, null, null, null));
         runAsAnchor(PauseSubscription.of(repo), new PauseCommand(a.subscriptionId()));
 

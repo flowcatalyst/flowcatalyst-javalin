@@ -1,5 +1,8 @@
 package io.flowcatalyst.platform.ingest.api;
 
+import io.flowcatalyst.platform.dispatchjob.processing.DeliverySigningGuard;
+import io.flowcatalyst.sdk.result.Result;
+import java.util.LinkedHashSet;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.application.Application;
@@ -62,26 +65,29 @@ public final class IngestApi {
     /// The handlers' dependencies. `clientLookup` / `applicationLookup` are
     /// injectable so a test can wrap them with a call-counting spy to pin
     /// the per-request memoisation (spec §3.1, §4.3) — [#of] wires the real
-    /// repositories.
+    /// repositories. `signing` decides whether a caller may create a
+    /// dispatch job some identity will sign (security-fixes S3.2).
     public record State(
             EventRepository eventRepo,
             DispatchJobRepository dispatchJobRepo,
             AuditLogRepository auditLogRepo,
             Function<String, Optional<Client>> clientLookup,
-            Function<String, Optional<Application>> applicationLookup) {
+            Function<String, Optional<Application>> applicationLookup,
+            DeliverySigningGuard signing) {
         public State {
             Objects.requireNonNull(eventRepo, "eventRepo");
             Objects.requireNonNull(dispatchJobRepo, "dispatchJobRepo");
             Objects.requireNonNull(auditLogRepo, "auditLogRepo");
             Objects.requireNonNull(clientLookup, "clientLookup");
             Objects.requireNonNull(applicationLookup, "applicationLookup");
+            Objects.requireNonNull(signing, "signing");
         }
 
         public static State of(EventRepository eventRepo, DispatchJobRepository dispatchJobRepo,
                                 AuditLogRepository auditLogRepo, ClientRepository clientRepo,
-                                ApplicationRepository applicationRepo) {
+                                ApplicationRepository applicationRepo, DeliverySigningGuard signing) {
             return new State(eventRepo, dispatchJobRepo, auditLogRepo,
-                    clientRepo::findByIdentifier, applicationRepo::findByCode);
+                    clientRepo::findByIdentifier, applicationRepo::findByCode, signing);
         }
     }
 
@@ -114,7 +120,7 @@ public final class IngestApi {
         if (clientId == null && !ac.isAnchor() && !ac.clients().isEmpty()) {
             clientId = ac.clients().get(0); // spec §3.2: singular-only default (§5 D3)
         }
-        requireClientAccess(ac, clientId);
+        clientId = requireWritableClient(ac, clientId);
 
         var event = EventIngestMapper.toEvent(new EventIngestMapper.RawItem(
                 null, null, req.eventType(), req.source(), req.subject(), req.data(), req.deduplicationId(),
@@ -149,10 +155,15 @@ public final class IngestApi {
             }
             String clientId = item.clientId();
             if (clientId == null && item.clientCode() != null && !item.clientCode().isBlank()) {
-                // §5 D2: an unknown code leaves the row unscoped (clientId null), not rejected.
+                // §5 D2: an unknown code leaves the row unscoped (clientId null), not rejected —
+                // for an anchor. A non-anchor may never write an unscoped row (S3.2), so for it
+                // a code naming no client is the same refusal as one naming another tenant.
                 clientId = resolveClientId(clientCodeCache, s.clientLookup(), item.clientCode()).orElse(null);
+                if (clientId == null && !ac.isAnchor()) {
+                    throw HttpError.forbidden("No access to client: " + item.clientCode());
+                }
             }
-            requireClientAccess(ac, clientId);
+            clientId = requireWritableClient(ac, clientId);
             events.add(EventIngestMapper.toEvent(new EventIngestMapper.RawItem(
                     item.id(), item.specVersion(), item.type(), item.source(), item.subject(), item.data(),
                     item.deduplicationId(), item.correlationId(), item.causationId(), item.messageGroup(),
@@ -189,14 +200,15 @@ public final class IngestApi {
         }
         if (req.payload() == null) throw HttpError.badRequest("VALIDATION", "payload is required");
         if (req.serviceAccountId() == null) throw HttpError.badRequest("VALIDATION", "serviceAccountId is required");
-        requireClientAccess(ac, req.clientId());
+        String clientId = requireWritableClient(ac, req.clientId());
 
         var job = DispatchJobIngestMapper.toJob(new DispatchJobIngestMapper.RawItem(
                 null, req.externalId(), req.kind(), req.code(), req.source(), req.subject(), req.targetUrl(),
                 req.payload(), req.payloadContentType(), req.dataOnly(), req.eventId(), req.correlationId(),
-                req.clientId(), req.subscriptionId(), req.serviceAccountId(), req.dispatchPoolId(), req.messageGroup(),
+                clientId, req.subscriptionId(), req.serviceAccountId(), req.dispatchPoolId(), req.messageGroup(),
                 req.mode(), 0, req.sequence(), req.timeoutSeconds(), req.maxRetries(), req.retryStrategy(),
                 metadataFromMap(req.metadata()), req.idempotencyKey(), req.descriptor(), req.queue()));
+        requireSignable(s.signing().perRequest(), ac, job);
         s.dispatchJobRepo().insertBatch(List.of(job));
         ctx.status(201).json(new CreatedResponse(job.id()));
     }
@@ -210,18 +222,31 @@ public final class IngestApi {
             throw HttpError.badRequest("BATCH_TOO_LARGE", "max 1000 items per batch");
         }
 
+        DeliverySigningGuard signing = s.signing().perRequest();
         List<DispatchJob> jobs = new ArrayList<>(items.size());
+        Set<String> suppliedIds = new LinkedHashSet<>();
         for (var item : items) {
+            String clientId = requireWritableClient(ac, item.clientId());
             var job = DispatchJobIngestMapper.toJob(new DispatchJobIngestMapper.RawItem(
                     item.id(), item.externalId(), item.kind(), item.code(), item.source(), item.subject(),
                     item.targetUrl(), item.payload(), item.payloadContentType(), item.dataOnly(), item.eventId(),
-                    item.correlationId(), item.clientId(), item.subscriptionId(), item.serviceAccountId(),
+                    item.correlationId(), clientId, item.subscriptionId(), item.serviceAccountId(),
                     item.dispatchPoolId(), item.messageGroup(), item.mode(), item.sequence(), null,
                     item.timeoutSeconds(), item.maxRetries(), null, item.metadata(), null, item.descriptor(), item.queue()));
-            requireClientAccess(ac, job.clientId());
+            requireSignable(signing, ac, job);
+            // S3.3: a supplied id names exactly one job — never twice in a batch, never one that exists.
+            if (item.id() != null && !item.id().isBlank() && !suppliedIds.add(job.id())) {
+                throw HttpError.conflict("DUPLICATE_ID", "dispatch job id '" + job.id() + "' appears more than once in this batch");
+            }
             jobs.add(job);
         }
-        s.dispatchJobRepo().insertBatch(jobs);
+        switch (s.dispatchJobRepo().insertNew(jobs, List.copyOf(suppliedIds))) {
+            case Result.Ok<Integer, DispatchJobRepository.InsertRefusal> ok -> {
+            }
+            case Result.Err<Integer, DispatchJobRepository.InsertRefusal>(
+                    DispatchJobRepository.InsertRefusal.IdsTaken(var taken)) ->
+                    throw HttpError.conflict("DUPLICATE_ID", "dispatch job id already exists: " + String.join(", ", taken));
+        }
         var response = new BatchResponse(jobs.stream().map(j -> new BatchResultItem(j.id(), "SUCCESS", null)).toList());
         if (jobs.isEmpty()) ctx.json(response); else ctx.status(201).json(response);
     }
@@ -295,10 +320,34 @@ public final class IngestApi {
 
     /// Whole-batch tenant guard (spec §2): a resolved `clientId` the caller
     /// cannot access is a 403 for the whole request, before anything is
-    /// written. `null` (platform-scoped) always passes.
-    private static void requireClientAccess(AuthContext ac, String clientId) {
-        if (clientId != null && !ac.canAccessClient(clientId)) {
+    /// written. Answers the client the row is written under.
+    ///
+    /// `null` (platform-scoped) passes for an anchor only
+    /// (`docs/spec/security-fixes-2026-09-24.md` S3.2): a platform-scoped
+    /// event matches platform-wide subscriptions, and a platform-scoped job
+    /// is outside every tenant's view, so a client-scoped caller writing one
+    /// acts beyond its reach. For a caller confined to exactly one client an
+    /// absent client means that client — unambiguous, and what an SDK outbox
+    /// (which never sends a `clientId` on a dispatch job) needs to keep
+    /// working under a client-scoped credential; any other non-anchor must
+    /// name one.
+    private static String requireWritableClient(AuthContext ac, String clientId) {
+        if (clientId == null) {
+            if (ac.isAnchor()) return null;
+            if (ac.clients().size() == 1) return ac.clients().getFirst();
+            throw HttpError.forbidden("clientId is required: a client-scoped caller cannot write platform-scoped rows");
+        }
+        if (!ac.canAccessClient(clientId)) {
             throw HttpError.forbidden("No access to client: " + clientId);
+        }
+        return clientId;
+    }
+
+    /// The identity that would sign `job` must be the caller's to use
+    /// ([DeliverySigningGuard]) — a whole-request 403 before anything is written.
+    private static void requireSignable(DeliverySigningGuard signing, AuthContext ac, DispatchJob job) {
+        if (signing.check(ac, job) instanceof Result.Err<DispatchJob, DeliverySigningGuard.Refusal>(var refusal)) {
+            throw HttpError.forbidden(refusal.message());
         }
     }
 

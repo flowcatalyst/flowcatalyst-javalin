@@ -1,5 +1,7 @@
 package io.flowcatalyst.platform.subscription.api;
 
+import io.flowcatalyst.platform.serviceaccount.SigningAccounts;
+import io.flowcatalyst.platform.connection.ConnectionRepository;
 import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
@@ -50,7 +52,14 @@ class SubscriptionApiTest {
     private static final String BINDINGS = "\"eventTypes\":[{\"eventTypeCode\":\"subapi:orders:order:created\"}]";
 
     private static final SubscriptionApi.State state = new SubscriptionApi.State(new SubscriptionRepository(TestPg.dataSource()),
-            new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)));
+            new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)), new ConnectionRepository(TestPg.dataSource()),
+            SigningAccounts.reach(TestPg.dataSource()));
+
+    // A named connection must exist and be within the caller's reach (security-fixes-2026-09-24
+    // S3.1): con_subapi1 is a real platform-wide connection (its account need not exist).
+    static {
+        SigningAccounts.connection(TestPg.dataSource(), "con_subapi1", null, "sva_subapimiss1");
+    }
     private static TestHttp http;
 
     @BeforeAll

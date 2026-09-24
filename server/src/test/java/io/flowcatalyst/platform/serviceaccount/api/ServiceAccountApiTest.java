@@ -1,5 +1,7 @@
 package io.flowcatalyst.platform.serviceaccount.api;
 
+import io.flowcatalyst.platform.connection.ConnectionRepository;
+import io.flowcatalyst.platform.serviceaccount.SigningAccounts;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.auth.claims.DbClaimsResolver;
 import io.flowcatalyst.platform.auth.grant.GrantStore;
@@ -182,7 +184,8 @@ class ServiceAccountApiTest {
             HttpError.install(routes);
             routes.before("/api/*", apiAuth);
             ClientApi.register(routes, new ClientApi.State(CLIENTS, APPLICATIONS, CLIENT_CONFIGS, UOW));
-            SubscriptionApi.register(routes, new SubscriptionApi.State(SUBSCRIPTIONS, UOW));
+            SubscriptionApi.register(routes, new SubscriptionApi.State(SUBSCRIPTIONS, UOW,
+                    new ConnectionRepository(TestPg.dataSource()), SigningAccounts.reach(TestPg.dataSource())));
         });
     }
 

@@ -1,5 +1,9 @@
 package io.flowcatalyst.platform.dispatchjob.api;
 
+import io.flowcatalyst.platform.serviceaccount.SigningAccounts;
+import io.flowcatalyst.platform.dispatchjob.processing.DeliverySigningGuard;
+import io.flowcatalyst.platform.subscription.SubscriptionRepository;
+import io.flowcatalyst.platform.connection.ConnectionRepository;
 import com.sun.net.httpserver.HttpServer;
 import io.flowcatalyst.db.generated.Tables;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture;
@@ -99,7 +103,9 @@ class DispatchJobApiSignTest {
                 "", "sign-sa-code");
         var state = new DispatchJobApi.SignState(new DispatchJobRepository(DispatchJobFixture.DS),
                 new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()),
-                credentials, Clock.systemUTC());
+                credentials, Clock.systemUTC(),
+                new DeliverySigningGuard(new SubscriptionRepository(DispatchJobFixture.DS)::findById,
+                        new ConnectionRepository(DispatchJobFixture.DS)::findById, SigningAccounts.reach(DispatchJobFixture.DS)));
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
             routes.before("/api/*", auth);
@@ -154,6 +160,27 @@ class DispatchJobApiSignTest {
         // other id-addressed route but this one and `{id}/raw` accepts.
         var r = http.post("/api/dispatch-jobs/" + jobId + "/sign", "", VIEWER_A);
         assertThat(r.statusCode()).as("mutant: gate dropped").isEqualTo(403);
+        assertThat(hits.get()).isZero();
+    }
+
+    /// security-fixes-2026-09-24 S3.2: the signed plan IS a signature over the
+    /// job's body, so it is refused when the identity that would sign is out
+    /// of the caller's reach — here an operator's anchor-tier account, named
+    /// by the caller's own client's subscription. Before, any visible job was
+    /// signed, which made this route a signing oracle.
+    @Test
+    void signRefusesAJobWhoseSignerIsOutOfTheCallersReach() {
+        String operatorAccount = SigningAccounts.seed(DispatchJobFixture.DS, java.util.List.of(), null);
+        String subscriptionId = SigningAccounts.subscription(DispatchJobFixture.DS, CLIENT_A, operatorAccount, null);
+        String outOfReach = seedWriteRow(Seed.of(code("sign-oor")).withClientId(CLIENT_A));
+        DispatchJobFixture.DB.update(Tables.MSG_DISPATCH_JOBS)
+                .set(Tables.MSG_DISPATCH_JOBS.SUBSCRIPTION_ID, subscriptionId)
+                .where(Tables.MSG_DISPATCH_JOBS.ID.eq(outOfReach))
+                .execute();
+
+        var r = http.post("/api/dispatch-jobs/" + outOfReach + "/sign", "", RAW_VIEWER_A);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(403);
+        assertThat(r.body()).doesNotContain("X-FlowCatalyst-Signature");
         assertThat(hits.get()).isZero();
     }
 

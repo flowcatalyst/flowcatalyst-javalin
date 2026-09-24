@@ -14,11 +14,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 
-import java.io.IOException;
+import java.io.ByteArrayOutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
@@ -28,6 +29,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Flow;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 
@@ -43,6 +50,10 @@ public final class JobDispatcher {
 
     /// Step 1's exact message (spec §3).
     static final String ORPHAN = "ScheduledJob no longer exists";
+
+    /// How much of a non-2xx response body is read — exactly what the
+    /// failure message quotes. Nothing more is ever buffered.
+    static final int ERROR_SNIPPET_BYTES = 500;
 
     private final ScheduledJobRepository jobs;
     private final ScheduledJobInstanceRepository instances;
@@ -137,14 +148,33 @@ public final class JobDispatcher {
         // token was attached.
         boolean signed = applyCredentials(builder, job, body);
 
+        // One loop delivers every tenant's jobs, so one target must never hold it
+        // (security-fixes-2026-09-24 S3.4): the request timeout stops applying once
+        // headers arrive, so the WHOLE exchange runs under `timeout`, and the body is
+        // read only as far as the failure message needs — a 2xx body not at all.
         HttpResponse<byte[]> response;
+        CompletableFuture<HttpResponse<byte[]>> pending =
+                client.sendAsync(builder.build(), JobDispatcher::boundedBody);
         try {
-            response = client.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
-        } catch (IOException e) {
-            fail(instance.id(), instance.jobCode(), "Network/HTTP error: " + Failures.describe(e), attemptsAfter,
+            response = pending.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            pending.cancel(true);
+            fail(instance.id(), instance.jobCode(), "Network/HTTP error: no complete response within " + timeout,
+                    attemptsAfter, job.deliveryMaxAttempts(), signed, 0);
+            return;
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            if (cause instanceof Error error) {
+                throw error;
+            }
+            fail(instance.id(), instance.jobCode(), "Network/HTTP error: " + Failures.describe(cause), attemptsAfter,
                     job.deliveryMaxAttempts(), signed, 0);
             return;
         } catch (InterruptedException e) {
+            pending.cancel(true);
             Thread.currentThread().interrupt();
             return;
         }
@@ -164,9 +194,76 @@ public final class JobDispatcher {
             return;
         }
         byte[] responseBody = response.body() == null ? new byte[0] : response.body();
-        String snippet = new String(responseBody, 0, Math.min(responseBody.length, 500), StandardCharsets.UTF_8);
+        String snippet = new String(responseBody, 0, Math.min(responseBody.length, ERROR_SNIPPET_BYTES), StandardCharsets.UTF_8);
         fail(instance.id(), instance.jobCode(), "HTTP " + status + " (expected 2xx): " + snippet, attemptsAfter,
                 job.deliveryMaxAttempts(), signed, status);
+    }
+
+    /// A 2xx body is never read (the status is the whole answer); any other
+    /// is read up to [#ERROR_SNIPPET_BYTES], then the exchange is abandoned.
+    private static HttpResponse.BodySubscriber<byte[]> boundedBody(HttpResponse.ResponseInfo info) {
+        boolean success = info.statusCode() >= 200 && info.statusCode() < 300;
+        return new BoundedBody(success ? 0 : ERROR_SNIPPET_BYTES);
+    }
+
+    /// Collects at most `limit` bytes of a response body, then cancels the
+    /// subscription and completes with what it has — neither a huge body nor
+    /// one that never ends can grow the heap or hold the caller past it. A
+    /// body shorter than `limit` completes when it ends.
+    static final class BoundedBody implements HttpResponse.BodySubscriber<byte[]> {
+        private final int limit;
+        private final ByteArrayOutputStream collected = new ByteArrayOutputStream();
+        private final CompletableFuture<byte[]> result = new CompletableFuture<>();
+        private Flow.Subscription subscription;
+
+        BoundedBody(int limit) {
+            this.limit = limit;
+        }
+
+        @Override
+        public CompletionStage<byte[]> getBody() {
+            return result;
+        }
+
+        @Override
+        public void onSubscribe(Flow.Subscription s) {
+            subscription = s;
+            if (limit == 0) {
+                s.cancel();
+                result.complete(new byte[0]);
+                return;
+            }
+            s.request(1);
+        }
+
+        @Override
+        public void onNext(List<ByteBuffer> buffers) {
+            if (result.isDone()) {
+                return;
+            }
+            for (ByteBuffer buffer : buffers) {
+                int take = Math.min(buffer.remaining(), limit - collected.size());
+                byte[] chunk = new byte[take];
+                buffer.get(chunk);
+                collected.write(chunk, 0, take);
+                if (collected.size() >= limit) {
+                    subscription.cancel();
+                    result.complete(collected.toByteArray());
+                    return;
+                }
+            }
+            subscription.request(1);
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+            result.completeExceptionally(throwable);
+        }
+
+        @Override
+        public void onComplete() {
+            result.complete(collected.toByteArray());
+        }
     }
 
     /// Step 7: `terminal = attemptsAfter >= deliveryMaxAttempts`. The

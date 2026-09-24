@@ -359,7 +359,13 @@ public final class Platform {
         var eventTypeRepo = new EventTypeRepository(pool);
         EventTypeApi.register(routes, new EventTypeApi.State(eventTypeRepo, uow));
         var connectionRepo = new ConnectionRepository(pool);
-        ConnectionApi.register(routes, new ConnectionApi.State(connectionRepo, new ApplicationRepository(pool), uow));
+        // Who may name a service account on a connection/subscription, or ingest a job some
+        // account will sign (docs/spec/security-fixes-2026-09-24.md S3.1/S3.2). Stateless over
+        // the pool like every repository here, so built from its own instances.
+        var signingReach = io.flowcatalyst.platform.serviceaccount.SigningReach.of(
+                new ServiceAccountRepository(pool, Encryption.fromKeys(env.appKey(), env.appKeyPrevious())),
+                new PrincipalRepository(pool), new ApplicationRepository(pool));
+        ConnectionApi.register(routes, new ConnectionApi.State(connectionRepo, new ApplicationRepository(pool), uow, signingReach));
         var dispatchPoolRepo = new DispatchPoolRepository(pool);
         DispatchPoolApi.register(routes, new DispatchPoolApi.State(dispatchPoolRepo, uow));
         // R3′ (`docs/spec/router-config-auth.md`): the router-config document moved
@@ -404,7 +410,7 @@ public final class Platform {
         var clientRepo = new ClientRepository(pool);
         ClientApi.register(routes, new ClientApi.State(clientRepo, new ApplicationRepository(pool), new ClientConfigRepository(pool), uow));
         var subscriptionRepo = new SubscriptionRepository(pool);
-        SubscriptionApi.register(routes, new SubscriptionApi.State(subscriptionRepo, uow));
+        SubscriptionApi.register(routes, new SubscriptionApi.State(subscriptionRepo, uow, connectionRepo, signingReach));
         var platformConfigRepo = new PlatformConfigRepository(pool);
         PlatformConfigApi.register(routes, new PlatformConfigApi.State(platformConfigRepo, uow));
         var processRepo = new ProcessRepository(pool);
@@ -491,6 +497,8 @@ public final class Platform {
                         OutboundCredentials.resolveById(deliveryCredentialServiceAccounts, serviceAccountId), Clock.systemUTC()),
                 OutboundCredentials.cached(applicationId ->
                         OutboundCredentials.resolve(deliveryCredentialServiceAccounts, applicationId), Clock.systemUTC()));
+        var deliverySigningGuard = new io.flowcatalyst.platform.dispatchjob.processing.DeliverySigningGuard(
+                subscriptionRepo::findById, connectionRepo::findById, signingReach);
         // ClientCodeResolver over `clientRepo` (already built above for ClientApi):
         // webhook-client-code spec R3 — the resolver caches a resolved identifier for the
         // process's life, so this shares the one repository instance rather than a second copy.
@@ -500,7 +508,8 @@ public final class Platform {
         // so the default admission group — not Group.DISPATCH, reserved for the router's
         // own callback routes below.
         DispatchJobApi.registerSign(routes, "/api/dispatch-jobs",
-                new DispatchJobApi.SignState(dispatchJobRepo, subscriberDelivery, deliveryCredentials, Clock.systemUTC()));
+                new DispatchJobApi.SignState(dispatchJobRepo, subscriberDelivery, deliveryCredentials, Clock.systemUTC(),
+                        deliverySigningGuard));
 
         if (env.appKey() != null && !env.appKey().isBlank()) {
             var dispatchAuthVerifier = HmacTokenVerifier.fromAppKey(env.appKey());
@@ -525,7 +534,7 @@ public final class Platform {
         // physical pool for one mount and BFF's for the other, so nothing here needs its
         // own pools.dispatch()-bound copy any more.
         var ingestState = IngestApi.State.of(eventRepo, dispatchJobRepo,
-                new AuditLogRepository(pool), clientRepo, applicationRepo);
+                new AuditLogRepository(pool), clientRepo, applicationRepo, deliverySigningGuard);
         IngestApi.register(routes.in(Group.DISPATCH), ingestState);
         var principalRepo = new PrincipalRepository(pool);
         // Emailers, notifier and MFA are stubs until their subsystems land (docs/spec/principal.md §10);
@@ -768,7 +777,8 @@ public final class Platform {
         // `subscriberDelivery` instances built above, unconditionally, reused here exactly as
         // for `/api/dispatch-jobs/{id}/sign`.
         DispatchJobApi.registerSign(bff, "/bff/dispatch-jobs",
-                new DispatchJobApi.SignState(dispatchJobRepo, subscriberDelivery, deliveryCredentials, Clock.systemUTC()));
+                new DispatchJobApi.SignState(dispatchJobRepo, subscriberDelivery, deliveryCredentials, Clock.systemUTC(),
+                        deliverySigningGuard));
         ProcessApi.registerAt(bff, "/bff/processes", new ProcessApi.State(processRepo, uow));
         DebugBff.register(bff, new DebugBff.State(eventRepo, dispatchJobRepo));
 

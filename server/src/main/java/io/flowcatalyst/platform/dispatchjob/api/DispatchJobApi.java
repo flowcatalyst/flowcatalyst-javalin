@@ -1,5 +1,7 @@
 package io.flowcatalyst.platform.dispatchjob.api;
 
+import io.flowcatalyst.platform.dispatchjob.processing.DeliverySigningGuard;
+import io.flowcatalyst.sdk.result.Result;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import io.flowcatalyst.platform.dispatchjob.Attempt;
 import io.flowcatalyst.platform.dispatchjob.CodeFacets;
@@ -115,13 +117,19 @@ public final class DispatchJobApi {
     /// `delivery`/`credentials` unconditionally and this route is always
     /// registered, keeping the lockfile's `sign` operation at 100% coverage
     /// regardless of whether processing itself is configured.
+    ///
+    /// `signing` refuses a preview whose signer the caller may not use
+    /// (`docs/spec/security-fixes-2026-09-24.md` S3.2): the signed plan IS a
+    /// signature over the job's body, so answering it for an identity out of
+    /// the caller's reach would make this route a signing oracle.
     public record SignState(DispatchJobRepository repo, SubscriberDelivery delivery, DeliveryCredentials credentials,
-                             Clock clock) {
+                             Clock clock, DeliverySigningGuard signing) {
         public SignState {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(delivery, "delivery");
             Objects.requireNonNull(credentials, "credentials");
             Objects.requireNonNull(clock, "clock");
+            Objects.requireNonNull(signing, "signing");
         }
     }
 
@@ -209,8 +217,12 @@ public final class DispatchJobApi {
     /// same [Access#loadOwn] 404-for-out-of-scope shape as every other
     /// id-addressed route here.
     private static void sign(Exchange ctx, SignState s) {
-        Checks.require(Auth.current(), DISPATCH_JOB_VIEW_RAW);
+        AuthContext ac = Auth.current();
+        Checks.require(ac, DISPATCH_JOB_VIEW_RAW);
         DispatchJob job = Access.loadOwn(s.repo(), ctx.pathParam("id"));
+        if (s.signing().check(ac, job) instanceof Result.Err<DispatchJob, DeliverySigningGuard.Refusal>(var refusal)) {
+            throw HttpError.forbidden(refusal.message());
+        }
         var credentials = s.credentials().resolveOrBare(job);
         var plan = s.delivery().plan(job, credentials, Instant.now(s.clock()));
         ctx.json(plan);

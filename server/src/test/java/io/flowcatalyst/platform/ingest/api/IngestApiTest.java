@@ -1,5 +1,9 @@
 package io.flowcatalyst.platform.ingest.api;
 
+import io.flowcatalyst.platform.serviceaccount.SigningAccounts;
+import io.flowcatalyst.platform.dispatchjob.processing.DeliverySigningGuard;
+import io.flowcatalyst.platform.subscription.SubscriptionRepository;
+import io.flowcatalyst.platform.connection.ConnectionRepository;
 import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
@@ -116,7 +120,9 @@ class IngestApiTest {
         var applicationRepo = new ApplicationRepository(DB.ds);
         clientLookup = new CountingLookup<>(clientRepo::findByIdentifier);
         applicationLookup = new CountingLookup<>(applicationRepo::findByCode);
-        var state = new IngestApi.State(eventRepo, dispatchJobRepo, auditLogRepo, clientLookup, applicationLookup);
+        var state = new IngestApi.State(eventRepo, dispatchJobRepo, auditLogRepo, clientLookup, applicationLookup,
+                new DeliverySigningGuard(new SubscriptionRepository(DB.ds)::findById,
+                        new ConnectionRepository(DB.ds)::findById, SigningAccounts.reach(DB.ds)));
 
         var keys = SigningKeys.generateEphemeral();
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
@@ -342,10 +348,11 @@ class IngestApiTest {
 
     @Test
     void anUnknownClientCodeLeavesTheEventUnscopedButStillSucceeds() {
+        // An anchor: a non-anchor may never write an unscoped event (security-fixes S3.2, below).
         String type = uniqueType("unknowncode");
         var r = http.post("/api/events/batch", """
                 {"items":[{"type":"%s","source":"s","data":{},"clientCode":"no-such-client-code-xyz"}]}
-                """.formatted(type), EVENTS_WRITER);
+                """.formatted(type), ANCHOR);
         assertThat(r.statusCode()).isEqualTo(201);
         assertThat(json(r).get("results").get(0).get("status").asText()).isEqualTo("SUCCESS");
         var row = DB.db.selectFrom(MSG_EVENTS).where(MSG_EVENTS.TYPE.eq(type)).fetchOne();
@@ -515,20 +522,240 @@ class IngestApiTest {
         assertThat(countJobsByCode(code)).as("ON CONFLICT (id, created_at) DO NOTHING drops the second row").isEqualTo(1);
     }
 
+    /// security-fixes S3.3: the same supplied id twice in one batch used to
+    /// write two rows (each item's `created_at` differs, so the
+    /// `(id, created_at)` conflict target never fired) and answer SUCCESS
+    /// twice. Now the whole batch is refused and nothing is written.
     @Test
-    void aRepeatedSuppliedDispatchJobIdStillReportsSuccessOnTheWire() {
+    void aSuppliedIdRepeatedWithinABatchIsRefusedAndWritesNothing() {
         String id = Tsid.generate();
         String code = uniqueType("djdupewire");
         var r = http.post("/api/dispatch-jobs/batch", """
                 {"items":[{"id":"%s","code":"%s","targetUrl":"https://target.test/hook"},
                            {"id":"%s","code":"%s","targetUrl":"https://target.test/hook"}]}
                 """.formatted(id, code, id, code), DISPATCH_WRITER);
-        assertThat(r.statusCode()).isEqualTo(201);
-        var results = json(r).get("results");
-        assertThat(results.get(0).get("status").asText()).isEqualTo("SUCCESS");
-        assertThat(results.get(1).get("status").asText()).isEqualTo("SUCCESS");
-        assertThat(results.get(0).get("id").asText()).isEqualTo(id);
-        assertThat(results.get(1).get("id").asText()).isEqualTo(id);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(409);
+        assertThat(json(r).get("error").asText()).isEqualTo("DUPLICATE_ID");
+        assertThat(DB.db.fetchCount(MSG_DISPATCH_JOBS, MSG_DISPATCH_JOBS.ID.eq(id))).isEqualTo(0);
+    }
+
+    /// security-fixes S3.3: a supplied id that already names a job is
+    /// refused. Before, it wrote a second row under the same id, after which
+    /// `DispatchJobRepository.findById` threw TooManyRows for the victim job
+    /// on every read — the job could never be processed, shown or cancelled.
+    @Test
+    void aSuppliedIdThatAlreadyNamesAJobIsRefusedAndTheVictimStaysReadable() {
+        String victimCode = uniqueType("djvictim");
+        var created = http.post("/api/dispatch-jobs/batch", """
+                {"items":[{"code":"%s","targetUrl":"https://victim.test/hook"}]}
+                """.formatted(victimCode), DISPATCH_WRITER);
+        assertThat(created.statusCode()).as(created.body()).isEqualTo(201);
+        String victimId = json(created).get("results").get(0).get("id").asText();
+        String otherCode = uniqueType("djcopy");
+
+        var r = http.post("/api/dispatch-jobs/batch", """
+                {"items":[{"code":"%s","targetUrl":"https://target.test/other"},
+                           {"id":"%s","code":"%s","targetUrl":"https://attacker.test/hook"}]}
+                """.formatted(otherCode, victimId, otherCode), DISPATCH_WRITER);
+
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(409);
+        assertThat(json(r).get("error").asText()).isEqualTo("DUPLICATE_ID");
+        assertThat(DB.db.fetchCount(MSG_DISPATCH_JOBS, MSG_DISPATCH_JOBS.ID.eq(victimId))).isEqualTo(1);
+        assertThat(countJobsByCode(otherCode)).as("the whole batch is refused, the innocent item too").isEqualTo(0);
+        assertThat(dispatchJobRepo.findById(victimId)).as("the victim job is still readable")
+                .get().extracting(DispatchJob::targetUrl).isEqualTo("https://victim.test/hook");
+    }
+
+    /// security-fixes S3.3, the race: concurrent batches supplying the same
+    /// new id serialise on its advisory lock, so exactly one writes it. Run
+    /// in rounds, each with every writer released at once by a barrier.
+    @Test
+    void concurrentBatchesSupplyingTheSameNewIdWriteItExactlyOnce() throws Exception {
+        int writers = 8;
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(writers)) {
+            for (int round = 0; round < 15; round++) {
+                String id = Tsid.generate();
+                String code = uniqueType("djrace");
+                var barrier = new java.util.concurrent.CyclicBarrier(writers);
+                var outcomes = new java.util.ArrayList<java.util.concurrent.Future<Boolean>>();
+                for (int w = 0; w < writers; w++) {
+                    outcomes.add(pool.submit(() -> {
+                        barrier.await();
+                        var result = dispatchJobRepo.insertNew(List.of(job(id, code, Instant.now())), List.of(id));
+                        return result instanceof io.flowcatalyst.sdk.result.Result.Ok<?, ?>;
+                    }));
+                }
+                int written = 0;
+                for (var outcome : outcomes) {
+                    if (outcome.get()) written++;
+                }
+                assertThat(written).as("round %d: exactly one writer wins", round).isEqualTo(1);
+                assertThat(DB.db.fetchCount(MSG_DISPATCH_JOBS, MSG_DISPATCH_JOBS.ID.eq(id)))
+                        .as("round %d: one row for the id", round).isEqualTo(1);
+            }
+        }
+    }
+
+    // ── Tenancy and signing identity (security-fixes S3.2) ───────────────
+
+    /// A caller reaching two clients has no unambiguous default: an absent
+    /// client is refused on every ingest route rather than written
+    /// platform-scoped, which is where it used to land.
+    @Test
+    void aNonAnchorCannotWritePlatformScopedEventsOrJobs() {
+        String[] partner = {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "PARTNER",
+                Authenticator.TEST_CLIENTS, CLIENT_A + "," + CLIENT_B,
+                Authenticator.TEST_PERMISSIONS, "platform:messaging:batch:events-write,platform:messaging:batch:dispatch-jobs-write"};
+        String type = uniqueType("partnerunscoped");
+        var events = http.post("/api/events/batch", """
+                {"items":[{"type":"%s","source":"s","data":{}}]}
+                """.formatted(type), partner);
+        assertThat(events.statusCode()).as(events.body()).isEqualTo(403);
+        assertThat(countEventsByType(type)).isEqualTo(0);
+
+        String code = uniqueType("partnerjob");
+        var batch = http.post("/api/dispatch-jobs/batch", """
+                {"items":[{"code":"%s","targetUrl":"https://target.test/hook"}]}
+                """.formatted(code), partner);
+        assertThat(batch.statusCode()).as(batch.body()).isEqualTo(403);
+        var single = http.post("/api/dispatch-jobs", """
+                {"code":"%s","targetUrl":"https://target.test/hook","payload":"{}","serviceAccountId":"sa1"}
+                """.formatted(code), partner);
+        assertThat(single.statusCode()).as(single.body()).isEqualTo(403);
+        assertThat(countJobsByCode(code)).isEqualTo(0);
+    }
+
+    /// A caller confined to exactly one client writes an absent client as
+    /// that client — how an SDK outbox (whose dispatch-job payload carries no
+    /// `clientId`) keeps working under a client-scoped credential.
+    @Test
+    void aSingleClientCallersAbsentClientMeansItsOwnClient() {
+        String code = uniqueType("djownclient");
+        var r = http.post("/api/dispatch-jobs/batch", """
+                {"items":[{"code":"%s","targetUrl":"https://target.test/hook"}]}
+                """.formatted(code), DISPATCH_WRITER);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        assertThat(DB.db.selectFrom(MSG_DISPATCH_JOBS).where(MSG_DISPATCH_JOBS.CODE.eq(code)).fetchOne().getClientId())
+                .isEqualTo(CLIENT_A);
+
+        String type = uniqueType("evownclient");
+        var e = http.post("/api/events/batch", """
+                {"items":[{"type":"%s","source":"s","data":{}}]}
+                """.formatted(type), EVENTS_WRITER);
+        assertThat(e.statusCode()).as(e.body()).isEqualTo(201);
+        assertThat(DB.db.selectFrom(MSG_EVENTS).where(MSG_EVENTS.TYPE.eq(type)).fetchOne().getClientId()).isEqualTo(CLIENT_A);
+    }
+
+    /// D2's "unknown code → unscoped" is an anchor's: a non-anchor naming a
+    /// code that resolves to no client is refused like any other tenant miss.
+    @Test
+    void aNonAnchorsUnknownClientCodeIsRefused() {
+        String type = uniqueType("unknowncodenonanchor");
+        var r = http.post("/api/events/batch", """
+                {"items":[{"type":"%s","source":"s","data":{},"clientCode":"no-such-client-code-xyz"}]}
+                """.formatted(type), EVENTS_WRITER);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(403);
+        assertThat(countEventsByType(type)).isEqualTo(0);
+    }
+
+    /// A job may name only a subscription of its own client: one of another
+    /// client, or a platform-wide one, is refused (their accounts would sign
+    /// the caller's payload); the caller's own client's is accepted.
+    @Test
+    void aJobMayNameOnlyASubscriptionOfItsOwnClient() {
+        String otherTenants = SigningAccounts.subscription(DB.ds, CLIENT_B, null, null);
+        String platformWide = SigningAccounts.subscription(DB.ds, null, null, null);
+        String own = SigningAccounts.subscription(DB.ds, CLIENT_A, null, null);
+        for (String subscriptionId : List.of(otherTenants, platformWide)) {
+            String code = uniqueType("djforeignsub");
+            var r = http.post("/api/dispatch-jobs/batch", """
+                    {"items":[{"code":"%s","targetUrl":"https://attacker.test/hook","subscriptionId":"%s"}]}
+                    """.formatted(code, subscriptionId), DISPATCH_WRITER);
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(403);
+            assertThat(json(r).get("message").asText()).contains(subscriptionId);
+            assertThat(countJobsByCode(code)).isEqualTo(0);
+        }
+        String code = uniqueType("djownsub");
+        var ok = http.post("/api/dispatch-jobs/batch", """
+                {"items":[{"code":"%s","targetUrl":"https://target.test/hook","subscriptionId":"%s"}]}
+                """.formatted(code, own), DISPATCH_WRITER);
+        assertThat(ok.statusCode()).as(ok.body()).isEqualTo(201);
+        assertThat(countJobsByCode(code)).isEqualTo(1);
+    }
+
+    /// The account a job's own-client subscription names must be one the
+    /// caller could use: an anchor-tier account (an operator's, reaching
+    /// every tenant) is refused to a client-scoped caller; an account linked
+    /// to the caller's client is accepted.
+    @Test
+    void aJobsSubscriptionAccountMustBeWithinTheCallersReach() {
+        String anchorAccount = SigningAccounts.seed(DB.ds, List.of(), null);
+        String ownAccount = SigningAccounts.seed(DB.ds, List.of(CLIENT_A), null);
+        String viaAnchorAccount = SigningAccounts.subscription(DB.ds, CLIENT_A, anchorAccount, null);
+        String viaOwnAccount = SigningAccounts.subscription(DB.ds, CLIENT_A, ownAccount, null);
+
+        String refusedCode = uniqueType("djanchorsa");
+        var refused = http.post("/api/dispatch-jobs", """
+                {"code":"%s","targetUrl":"https://attacker.test/hook","payload":"{}","serviceAccountId":"x","subscriptionId":"%s"}
+                """.formatted(refusedCode, viaAnchorAccount), DISPATCH_WRITER);
+        assertThat(refused.statusCode()).as(refused.body()).isEqualTo(403);
+        assertThat(countJobsByCode(refusedCode)).isEqualTo(0);
+
+        String okCode = uniqueType("djownsa");
+        var ok = http.post("/api/dispatch-jobs", """
+                {"code":"%s","targetUrl":"https://target.test/hook","payload":"{}","serviceAccountId":"x","subscriptionId":"%s"}
+                """.formatted(okCode, viaOwnAccount), DISPATCH_WRITER);
+        assertThat(ok.statusCode()).as(ok.body()).isEqualTo(201);
+        assertThat(countJobsByCode(okCode)).isEqualTo(1);
+    }
+
+    /// A direct job whose code names an application is signed by that
+    /// application's own account (the resolver's step 3). Only that
+    /// application may create one: any other caller — even an anchor, even
+    /// another application — would get the application's signature over its
+    /// own payload at its own URL.
+    @Test
+    void aCodePrefixNamingAnApplicationIsRefusedUnlessTheCallerIsThatApplication() {
+        String appAccount = SigningAccounts.seed(DB.ds, List.of(), appId);
+        String appPrincipal = SigningAccounts.servicePrincipal(DB.ds, appAccount);
+        String[] theApplication = {
+                Authenticator.TEST_PRINCIPAL, appPrincipal,
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:messaging:batch:dispatch-jobs-write"};
+        String otherAppAccount = SigningAccounts.seed(DB.ds, List.of(), Tsid.generateWithPrefix("app"));
+        String[] anotherApplication = {
+                Authenticator.TEST_PRINCIPAL, SigningAccounts.servicePrincipal(DB.ds, otherAppAccount),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:messaging:batch:dispatch-jobs-write"};
+        String[] anchorOperator = {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:messaging:batch:dispatch-jobs-write"};
+
+        for (String[] caller : List.of(DISPATCH_WRITER, anotherApplication, anchorOperator)) {
+            String code = APP_CODE + ":" + uniqueType("prefixrefused");
+            var r = http.post("/api/dispatch-jobs/batch", """
+                    {"items":[{"code":"%s","targetUrl":"https://attacker.test/hook"}]}
+                    """.formatted(code), caller);
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(403);
+            assertThat(json(r).get("message").asText()).contains(APP_CODE);
+            assertThat(countJobsByCode(code)).isEqualTo(0);
+        }
+
+        String code = APP_CODE + ":" + uniqueType("prefixown");
+        var own = http.post("/api/dispatch-jobs/batch", """
+                {"items":[{"code":"%s","targetUrl":"https://app.test/hook"}]}
+                """.formatted(code), theApplication);
+        assertThat(own.statusCode()).as(own.body()).isEqualTo(201);
+        assertThat(countJobsByCode(code)).isEqualTo(1);
+
+        String superCode = APP_CODE + ":" + uniqueType("prefixsuper");
+        var superAdmin = http.post("/api/dispatch-jobs/batch", """
+                {"items":[{"code":"%s","targetUrl":"https://app.test/hook"}]}
+                """.formatted(superCode), ANCHOR);
+        assertThat(superAdmin.statusCode()).as("a super-admin may").isEqualTo(201);
     }
 
     private static DispatchJob job(String id, String code, Instant createdAt) {

@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.connection.api;
 
+import io.flowcatalyst.platform.serviceaccount.SigningReach;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.connection.Connection;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
@@ -50,11 +51,12 @@ public final class ConnectionApi {
     }
 
     /// The handlers' dependencies.
-    public record State(ConnectionRepository repo, ApplicationRepository apps, UnitOfWork uow) {
+    public record State(ConnectionRepository repo, ApplicationRepository apps, UnitOfWork uow, SigningReach signing) {
         public State {
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(apps, "apps");
             Objects.requireNonNull(uow, "uow");
+            Objects.requireNonNull(signing, "signing");
         }
     }
 
@@ -90,7 +92,7 @@ public final class ConnectionApi {
     private static void create(Exchange ctx, State s) {
         Checks.require(Auth.current(), CONNECTION_CREATE);
         var cmd = ctx.bodyAsClass(CreateConnectionRequest.class).toCommand();
-        var event = CreateConnection.of(s.repo(), s.apps()).run(s.uow(), cmd, Auth.executionContext());
+        var event = CreateConnection.of(s.repo(), s.apps(), s.signing()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(ConnectionResponse.from(load(s, event.connectionId())));
     }
 

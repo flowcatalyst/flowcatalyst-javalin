@@ -166,45 +166,76 @@ public interface DeliveryCredentials {
                                         ApplicationLookup applications,
                                         Function<String, OutboundCredentials.ById> byServiceAccountId,
                                         Function<String, Optional<OutboundCredentials>> byApplicationId) {
-        return job -> {
-            Subscription subscription = subscriptionFor(job, subscriptions);
-
-            if (subscription != null) {
-                String subscriptionAccountId = blankToNull(subscription.serviceAccountId());
-                if (subscriptionAccountId != null) {
-                    // 1. The subscription names its own account.
-                    return named("subscription " + subscription.code(), subscriptionAccountId, byServiceAccountId);
+        return job -> switch (signerOf(job, subscriptions, connections)) {
+            case Signer.Named(var serviceAccountId, var who) -> named(who, serviceAccountId, byServiceAccountId);
+            case Signer.OfApplication(var applicationCode) -> {
+                Application application = applications.findByCode(applicationCode).orElse(null);
+                if (application == null) {
+                    yield Resolved.bare("application " + applicationCode + " does not exist");
                 }
-                String connectionId = blankToNull(subscription.connectionId());
-                if (connectionId != null) {
-                    Connection connection = connections.findById(connectionId).orElse(null);
-                    String connectionAccountId = connection == null ? null : blankToNull(connection.serviceAccountId());
-                    if (connectionAccountId != null) {
-                        // 2. Its connection names one.
-                        return named("connection " + connection.code(), connectionAccountId, byServiceAccountId);
-                    }
+                Optional<OutboundCredentials> resolved = byApplicationId.apply(application.id());
+                if (resolved.isEmpty() || resolved.get().isEmpty()) {
+                    yield Resolved.bare("application " + applicationCode + " has no active service account");
                 }
+                OutboundCredentials creds = resolved.get();
+                yield Resolved.signed(creds.token(), creds.signingSecret(), creds.signedBy());
             }
-
-            // 3. The application's oldest active account — unchanged (spec §2 step 3).
-            String applicationCode = subscription != null ? blankToNull(subscription.applicationCode()) : null;
-            if (applicationCode == null) {
-                applicationCode = leadingSegment(job.code());
-            }
-            if (applicationCode == null) {
-                return Resolved.bare("no subscription, connection or application names a service account");
-            }
-            Application application = applications.findByCode(applicationCode).orElse(null);
-            if (application == null) {
-                return Resolved.bare("application " + applicationCode + " does not exist");
-            }
-            Optional<OutboundCredentials> resolved = byApplicationId.apply(application.id());
-            if (resolved.isEmpty() || resolved.get().isEmpty()) {
-                return Resolved.bare("application " + applicationCode + " has no active service account");
-            }
-            OutboundCredentials creds = resolved.get();
-            return Resolved.signed(creds.token(), creds.signingSecret(), creds.signedBy());
+            case Signer.Nobody ignored -> Resolved.bare("no subscription, connection or application names a service account");
         };
+    }
+
+    /// Which identity the resolution order (class doc) would sign `job`
+    /// with — decided from configuration alone, before any credential is
+    /// looked up. [#resolve] is built on it, and so is
+    /// [DeliverySigningGuard], which asks whether the caller creating or
+    /// previewing a job may cause that identity's signature — one
+    /// definition of the order, so the guard cannot check a different
+    /// account than the one that will sign.
+    sealed interface Signer {
+        /// Steps 1–2: an account the subscription (or its connection) names.
+        /// `who` is `subscription <code>` / `connection <code>`, the reason
+        /// prefix [#named] reports.
+        record Named(String serviceAccountId, String who) implements Signer {
+        }
+
+        /// Step 3: application `applicationCode`'s oldest active account —
+        /// the subscription's `applicationCode`, else the job code's first
+        /// segment.
+        record OfApplication(String applicationCode) implements Signer {
+        }
+
+        /// Step 4: nothing names an account.
+        record Nobody() implements Signer {
+        }
+    }
+
+    static Signer signerOf(DispatchJob job, SubscriptionLookup subscriptions, ConnectionLookup connections) {
+        Subscription subscription = subscriptionFor(job, subscriptions);
+
+        if (subscription != null) {
+            String subscriptionAccountId = blankToNull(subscription.serviceAccountId());
+            if (subscriptionAccountId != null) {
+                // 1. The subscription names its own account.
+                return new Signer.Named(subscriptionAccountId, "subscription " + subscription.code());
+            }
+            String connectionId = blankToNull(subscription.connectionId());
+            if (connectionId != null) {
+                Connection connection = connections.findById(connectionId).orElse(null);
+                String connectionAccountId = connection == null ? null : blankToNull(connection.serviceAccountId());
+                if (connectionAccountId != null) {
+                    // 2. Its connection names one.
+                    return new Signer.Named(connectionAccountId, "connection " + connection.code());
+                }
+            }
+        }
+
+        // 3. The application's oldest active account — unchanged (spec §2 step 3).
+        String applicationCode = subscription != null ? blankToNull(subscription.applicationCode()) : null;
+        if (applicationCode != null) {
+            return new Signer.OfApplication(applicationCode);
+        }
+        applicationCode = leadingSegment(job.code());
+        return applicationCode == null ? new Signer.Nobody() : new Signer.OfApplication(applicationCode);
     }
 
     /// `job.subscriptionId()` names a subscription, or `null` — a

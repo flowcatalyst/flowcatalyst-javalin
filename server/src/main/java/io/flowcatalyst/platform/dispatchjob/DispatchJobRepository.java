@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.dispatchjob;
 
+import io.flowcatalyst.sdk.result.Result;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobAttempts;
@@ -292,19 +293,69 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
 
     // ── Writes (infra ingest — no unit of work, sdk-ingest spec §1/§4) ──────
 
-    /// One batch insert for `POST /api/dispatch-jobs`(`/batch`):
+    /// One batch insert of server-minted jobs:
     /// `ON CONFLICT (id, created_at) DO NOTHING` (spec §4.1) — the table is
     /// partitioned on `created_at`, so the conflict target names both halves
-    /// of the primary key. A repeated SDK-supplied id silently drops that
-    /// row without aborting the rest. One JDBC batch, one round trip; empty
+    /// of the primary key. That target does **not** stop a second row with
+    /// an existing `id` and a later `created_at`: a caller-supplied id goes
+    /// through [#insertNew] instead. One JDBC batch, one round trip; empty
     /// input is a no-op.
     public void insertBatch(List<DispatchJob> jobs) {
         if (jobs.isEmpty()) return;
-        var queries = jobs.stream().map(this::insertQuery).toList();
+        var queries = jobs.stream().map(j -> insertQuery(dsl, j)).toList();
         dsl.batch(queries).execute();
     }
 
-    private org.jooq.Insert<MsgDispatchJobsRecord> insertQuery(DispatchJob j) {
+    /// Why [#insertNew] wrote nothing.
+    public sealed interface InsertRefusal {
+        /// These caller-supplied ids already name a job.
+        record IdsTaken(List<String> ids) implements InsertRefusal {
+            public IdsTaken {
+                ids = List.copyOf(ids);
+            }
+        }
+    }
+
+    /// The advisory-lock class [#insertNew] serialises supplied ids under
+    /// (`pg_advisory_xact_lock(int, int)`'s first key; the second is the
+    /// id's `hashtext`).
+    static final int SUPPLIED_ID_LOCK_CLASS = 0x646A6964; // "djid"
+
+    /// `POST /api/dispatch-jobs/batch` with caller-supplied ids
+    /// (`docs/spec/security-fixes-2026-09-24.md` S3.3): refuses the whole
+    /// batch when any of `suppliedIds` already names a job, so an id can
+    /// never name two rows — [#findById] reads it with `fetchOptional`, and a
+    /// second row would make the first job unreadable for ever. The primary
+    /// key is `(id, created_at)` (the table is partitioned on `created_at`),
+    /// so the database cannot enforce this itself; instead, in one
+    /// transaction, each supplied id's advisory lock is taken (two concurrent
+    /// requests supplying the same new id serialise here — without it both
+    /// would see no row and both insert), the ids are looked up across every
+    /// partition, and only then is the batch inserted. `suppliedIds` must
+    /// already be free of duplicates within the batch (the caller refuses
+    /// those itself).
+    public Result<Integer, InsertRefusal> insertNew(List<DispatchJob> jobs, List<String> suppliedIds) {
+        if (jobs.isEmpty()) return Result.ok(0);
+        if (suppliedIds.isEmpty()) {
+            insertBatch(jobs);
+            return Result.ok(jobs.size());
+        }
+        String[] ids = suppliedIds.stream().distinct().sorted().toArray(String[]::new);
+        return dsl.transactionResult(cfg -> {
+            DSLContext tx = DSL.using(cfg);
+            // Locks in hash order: two batches sharing several ids take them in the same order.
+            tx.fetch("SELECT pg_advisory_xact_lock(?, k) FROM (SELECT DISTINCT hashtext(x) AS k FROM unnest(?::text[]) AS x) s ORDER BY k",
+                    SUPPLIED_ID_LOCK_CLASS, ids);
+            List<String> taken = tx.selectDistinct(T.ID).from(T).where(T.ID.in(ids)).orderBy(T.ID).fetch(T.ID);
+            if (!taken.isEmpty()) {
+                return Result.<Integer, InsertRefusal>err(new InsertRefusal.IdsTaken(taken));
+            }
+            tx.batch(jobs.stream().map(j -> insertQuery(tx, j)).toList()).execute();
+            return Result.<Integer, InsertRefusal>ok(jobs.size());
+        });
+    }
+
+    private static org.jooq.Insert<MsgDispatchJobsRecord> insertQuery(DSLContext dsl, DispatchJob j) {
         return dsl.insertInto(T)
                 .set(T.ID, j.id())
                 .set(T.EXTERNAL_ID, j.externalId())

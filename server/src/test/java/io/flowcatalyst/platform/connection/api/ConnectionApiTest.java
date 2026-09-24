@@ -1,5 +1,7 @@
 package io.flowcatalyst.platform.connection.api;
 
+import io.flowcatalyst.platform.serviceaccount.SigningAccounts;
+import java.util.List;
 import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
@@ -56,7 +58,16 @@ class ConnectionApiTest {
 
     private static final ApplicationRepository apps = new ApplicationRepository(TestPg.dataSource());
     private static final ConnectionApi.State state = new ConnectionApi.State(new ConnectionRepository(TestPg.dataSource()),
-            apps, new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)));
+            apps, new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)), SigningAccounts.reach(TestPg.dataSource()));
+
+    // The connection's service account must exist and be one the caller may sign with
+    // (security-fixes-2026-09-24 S3.1): sva_connapi1 is a real anchor-tier account, and
+    // the client-scoped writer gets one linked to its own client.
+    private static final String CLIENT_ACCOUNT = SigningAccounts.seed(TestPg.dataSource(), List.of(CLIENT), null);
+
+    static {
+        SigningAccounts.seed(TestPg.dataSource(), "sva_connapi1", List.of(), null);
+    }
     private static TestHttp http;
 
     @BeforeAll
@@ -266,7 +277,8 @@ class ConnectionApiTest {
         assertThat(r.statusCode()).isEqualTo(403);
         assertThat(json(r).get("error").asText()).isEqualTo("SCOPE_FORBIDDEN");
 
-        var own = http.post("/api/connections", createBody(code("connapi-scope-own"), "X", ",\"clientId\":\"" + CLIENT + "\""), CLIENT_WRITER);
+        var own = http.post("/api/connections", "{\"code\":\"" + code("connapi-scope-own") + "\",\"name\":\"X\",\"serviceAccountId\":\""
+                + CLIENT_ACCOUNT + "\",\"clientId\":\"" + CLIENT + "\"}", CLIENT_WRITER);
         assertThat(own.statusCode()).as(own.body()).isEqualTo(201);
         assertThat(json(own).get("clientId").asText()).isEqualTo(CLIENT);
 

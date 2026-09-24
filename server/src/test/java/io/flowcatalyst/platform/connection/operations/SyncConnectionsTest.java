@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.connection.operations;
 
+import io.flowcatalyst.platform.serviceaccount.SigningAccounts;
 import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ApplicationType;
@@ -155,14 +156,14 @@ class SyncConnectionsTest {
     }
 
     /// A subscription bound to `connectionId`, so [SyncConnections]'
-    /// reference check (C8) has something to find. [CreateSubscription] does
-    /// not check the connection exists (spec open question 13), so any id
-    /// works — a real, seeded connection here for realism.
+    /// reference check (C8) has something to find. [CreateSubscription]
+    /// requires the connection to exist and be within the caller's reach
+    /// (security-fixes-2026-09-24 S3.1), so it is a real, seeded one.
     private static void seedReferencingSubscription(String code, String connectionId) {
         var cmd = new CreateCommand(code, "Sub " + code, "https://example.test/hook", null, null, connectionId,
                 null, null, List.of(EventTypeBinding.of("platform:admin:connection:created")), null,
                 null, null, null, null, null, null, null);
-        Auth.runAs(ANCHOR, () -> CreateSubscription.of(subs).run(uow, cmd, EC));
+        Auth.runAs(ANCHOR, () -> CreateSubscription.of(subs, repo, SigningAccounts.reach(DS)).run(uow, cmd, EC));
     }
 
     private static void assertUseCaseError(ThrowingCallable call, Class<? extends UseCaseError> kind, String errorCode) {
