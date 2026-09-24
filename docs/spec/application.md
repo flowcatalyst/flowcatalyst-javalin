@@ -76,14 +76,14 @@ All routes require a bearer; every error is the `ErrorModel` envelope
 | `POST /api/applications/{id}/activate` | write | `ActivateCommand{id}` | 200 `ApplicationResponse` (re-read) | |
 | `POST /api/applications/{id}/deactivate` | write | `DeactivateCommand{id}` | 200 `ApplicationResponse` (re-read) | |
 | `DELETE /api/applications/{id}` | `application:delete` | `DeleteCommand{id}` | 204 | hard delete; client configs are **not** cascaded (**accident?** — orphaned `app_client_configs` rows) |
-| `POST /api/applications/{id}/service-account` | anchor | `AttachServiceAccountRequest{serviceAccountId, serviceAccountCode}` → `AttachServiceAccountCommand` | 204 | |
+| `POST /api/applications/{id}/service-account` | anchor + `APPLICATION_UPDATE` | `AttachServiceAccountRequest{serviceAccountId, serviceAccountCode}` → `AttachServiceAccountCommand` | 204 | |
 | `GET /api/applications/{id}/clients` | `application:view` | — | 200 `ClientConfigListResponse` `{items}` | ordered by `createdAt`; an unknown application id lists `[]`, not 404 (**accident?**) |
 | `GET /api/applications/{id}/clients/{clientId}` | `application:view` | — | 200 `ClientConfigResponse` | 404 `ClientConfig_NOT_FOUND`, id rendered `{appId}:{clientId}` |
-| `POST /api/applications/{id}/clients/{clientId}/enable` | anchor | `EnableForClientCommand` | 204 | |
-| `POST /api/applications/{id}/clients/{clientId}/disable` | anchor | `DisableForClientCommand` | 204 | |
+| `POST /api/applications/{id}/clients/{clientId}/enable` | anchor + `APPLICATION_ENABLE_CLIENT` | `EnableForClientCommand` | 204 | |
+| `POST /api/applications/{id}/clients/{clientId}/disable` | anchor + `APPLICATION_DISABLE_CLIENT` | `DisableForClientCommand` | 204 | |
 | `GET /api/applications/by-id/{id}/roles` | `application:view` | — | 200 `ApplicationRolesResponse` `{roles: [name]}` | role **names** (canonical `app:short`), ordered by name; unknown id → `[]` |
-| `POST /api/applications/{id}/provision-service-account` | anchor | `ProvisionServiceAccountCommand{applicationId}` | 201 `ApplicationProvisionServiceAccountResponse` | see §10 |
-| `POST /api/applications/{id}/provision-login-client` | anchor | `ProvisionLoginClientRequest` | 201 `ApplicationProvisionLoginClientResponse` | see §10 |
+| `POST /api/applications/{id}/provision-service-account` | anchor + `SERVICE_ACCOUNT_CREATE` + `APPLICATION_UPDATE` | `ProvisionServiceAccountCommand{applicationId}` | 201 `ApplicationProvisionServiceAccountResponse` | see §10 |
+| `POST /api/applications/{id}/provision-login-client` | anchor + `OAUTH_CLIENT_CREATE` + `APPLICATION_UPDATE` | `ProvisionLoginClientRequest` | 201 `ApplicationProvisionLoginClientResponse` | see §10 |
 
 `ApplicationResponse` fields, in order: `id, type, code, name, description?,
 iconUrl?, website?, logo?, logoMimeType?, defaultBaseUrl?, serviceAccountId?,

@@ -67,8 +67,9 @@ is the contract.
 
 ## 3. HTTP surface (lockfile) — 14 operations
 
-All routes require a bearer. Gates, with anchors passing every permission
-gate: **read** = `SERVICE_ACCOUNT_VIEW`; **write** = any of
+All routes require a bearer. Gates — at every tier, anchors included (permissions
+come from roles; the anchor tier is reach, never authority — owner ruling 2026-09-13,
+`permissions-from-roles.md`): **read** = `SERVICE_ACCOUNT_VIEW`; **write** = any of
 `SERVICE_ACCOUNT_{CREATE,UPDATE,DELETE}`; **delete** = `SERVICE_ACCOUNT_DELETE`
 specifically.
 

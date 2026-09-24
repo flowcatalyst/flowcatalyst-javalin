@@ -279,7 +279,7 @@ subsystem lands.
 |---|---|---|
 | `blockNonClientTarget(ac, p)` | a non-anchor may act only on `CLIENT`-scope principals → else 403 `FORBIDDEN` "Client administrators can only manage client-scope users" | everything below |
 | `requireManageable(p)` = `blockNonClientTarget` + `Checks.checkScopeAccess(ac, p.clientId)` | client-admins touch only CLIENT users of a client they can access; a clientless target needs anchor (`SCOPE_FORBIDDEN`) | `UpdateUser`, `ActivateUser`, `DeactivateUser`, `DeleteUser` (in execute); `reset-password` handler |
-| `requireUserAdmin(p)` = `Checks.requireUserAdmin(ac, p.clientId)` + `blockNonClientTarget` | anchors pass; a non-anchor must access the target's client, hold a write permission, and the target must be CLIENT-scope; clientless target → `ANCHOR_REQUIRED` | `AssignRoles`, `AssignApplicationAccess` (in execute); `send-password-reset` / `reset-2fa` handlers |
+| `requireUserAdmin(p)` = `Checks.requireUserAdmin(ac, p.clientId)` + `blockNonClientTarget` | every tier needs a write permission (`USER_CREATE`/`UPDATE`/`DELETE`; anchors included since S1.1, `docs/spec/security-fixes-2026-09-24.md`); a non-anchor must also access the target's client, and the target must be CLIENT-scope; clientless target → `ANCHOR_REQUIRED` | `AssignRoles`, `AssignApplicationAccess` (in execute); `send-password-reset` / `reset-2fa` handlers |
 | `requireSelfOrUserAdmin(p)` | the caller's own principal unconditionally, else `requireUserAdmin` | `SetDeveloperCredential`, `RevokeDeveloperCredential` |
 
 Every operation declares `Authorize.publicAccess()`: by-id writes run
