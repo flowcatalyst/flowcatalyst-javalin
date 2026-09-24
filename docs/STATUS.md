@@ -6,6 +6,15 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## SDKs regenerated from the Java lockfile; staleness check in CI; manifest aids in build (2026-09-24)
+
+TS and Laravel SDKs regenerated from the lockfile (`797faa7b`; had been generated from Go's spec),
+Laravel generator pinned (jane-openapi 7.11.2, require-dev), new CI job `sdks` fails on drift
+(`76b522d1`, first GitHub run unobserved). Not released — owner picks the bump. Spec
+`docs/spec/function-manifest-authoring.md` (`47bcc60c`): M1 JSON Schema, M2 plan/apply promote +
+`POST /api/functions/{address}/manifest/check` + `fn validate`, M3 `fn init`, M4 SPA editor; M1/M3
+and M2 in build by two Sonnet coders in worktrees.
+
 ## Platform config gated by view/manage; invite sign-in recorded; Result<T, E> (2026-09-23, night)
 
 `docs/spec/config-permissions.md` (ruling CFG-PERM-2026-09-23): config reads need
