@@ -47,7 +47,14 @@ class UpgradeCommandTest {
             exchange.getResponseBody().write(body);
             exchange.close();
         });
+        // Like GitHub: the asset's browser_download_url answers 302 to its storage host.
         github.createContext("/download/jar", exchange -> {
+            exchange.getResponseHeaders().set("Location",
+                    "http://127.0.0.1:" + github.getAddress().getPort() + "/objects/jar");
+            exchange.sendResponseHeaders(302, -1);
+            exchange.close();
+        });
+        github.createContext("/objects/jar", exchange -> {
             exchange.sendResponseHeaders(200, NEW_JAR_BYTES.length);
             exchange.getResponseBody().write(NEW_JAR_BYTES);
             exchange.close();
@@ -137,6 +144,31 @@ class UpgradeCommandTest {
     }
 
     // ── --check reports without installing ───────────────────────────────
+
+    /// fcdev's own binary needs its sidecar too (it used to warn and install
+    /// unverified). Mutant: fall back to the warning.
+    @Test
+    void aReleaseWithoutTheSidecarRefusesAndLeavesTheSelfFileUntouched() throws Exception {
+        github.removeContext("/repos/test/repo/releases");
+        github.createContext("/repos/test/repo/releases", exchange -> {
+            String base = "http://127.0.0.1:" + github.getAddress().getPort();
+            byte[] body = ("""
+                    [{"tag_name":"fcdev/v0.9.1","draft":false,"prerelease":false,"assets":[
+                       {"name":"fcdev-v0.9.1.jar","browser_download_url":"%s/download/jar"}]}]
+                    """.formatted(base)).getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        Path self = Files.createTempFile("fcdev-upgrade-test", ".jar");
+        Files.writeString(self, "OLD CONTENT");
+
+        var cmd = build(self);
+
+        assertThatThrownBy(cmd::call).isInstanceOf(IllegalStateException.class).hasMessageContaining(".sha256");
+        assertThat(Files.readString(self)).isEqualTo("OLD CONTENT");
+    }
 
     @Test
     void checkOnlyReportsAndNeverTouchesTheSelfFile() throws Exception {

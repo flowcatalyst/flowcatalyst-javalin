@@ -155,14 +155,17 @@ public final class UpgradeCommand implements Callable<Integer> {
         out.printf("downloading %s…%n", asset.name());
         byte[] archiveBytes = httpGet(assetUrl);
 
+        // Required, as for fc-fnhost.jar: every release publishes a sidecar per asset
+        // (release-fcdev.yml), so a missing one is a broken or tampered release — never
+        // install an unverified binary over the running one.
         String shaUrl = rel.assets().get(asset.name() + ".sha256");
-        if (shaUrl != null) {
-            byte[] shaBytes = httpGet(shaUrl);
-            verifySha256(archiveBytes, shaBytes);
-            out.println("sha256 verified.");
-        } else {
-            out.println("warning: no sha256 sidecar published for this asset — skipping checksum verification");
+        if (shaUrl == null) {
+            throw new IllegalStateException("release " + rel.version() + " publishes no " + asset.name()
+                    + ".sha256 — refusing to install an unverified binary");
         }
+        byte[] shaBytes = httpGet(shaUrl);
+        verifySha256(archiveBytes, shaBytes);
+        out.println("sha256 verified.");
 
         byte[] newContent = kind == LaunchKind.JAR ? archiveBytes : extractBinary(archiveBytes, asset);
 
@@ -600,7 +603,11 @@ public final class UpgradeCommand implements Callable<Integer> {
     }
 
     private static HttpClient httpClient() {
-        return HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(30)).build();
+        // NORMAL: a GitHub release asset's browser_download_url answers 302 to its storage
+        // host (the JDK default, NEVER, made every download fail); NORMAL never follows an
+        // https -> http downgrade, and the bytes are checksum-verified regardless.
+        return HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(30))
+                .followRedirects(HttpClient.Redirect.NORMAL).build();
     }
 
     // ── checksum + install ───────────────────────────────────────────────
