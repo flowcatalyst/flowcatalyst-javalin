@@ -40,6 +40,10 @@ class RefreshRotationTest {
     private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
     private static final GrantStore STORE = new GrantStore(DS, CLOCK);
     private static final RefreshRotation ROTATION = new RefreshRotation(STORE, CLOCK, RefreshToken.TTL_SECONDS);
+    /// The same store, seen from just past [RefreshRotation#REPLAY_LEEWAY]: a
+    /// second presentation now is a replay, not the client racing itself.
+    private static final RefreshRotation AFTER_LEEWAY = new RefreshRotation(STORE,
+            Clock.fixed(NOW.plus(RefreshRotation.REPLAY_LEEWAY).plusSeconds(1), ZoneOffset.UTC), RefreshToken.TTL_SECONDS);
 
     private static String principal(String suffix) {
         return "prn_rot" + RUN + suffix;
@@ -116,7 +120,7 @@ class RefreshRotationTest {
         String liveRaw = rotated(ROTATION.rotate(issued.raw(), null)).newRaw();
         assertThat(STORE.findValidByHash(RefreshToken.hash(liveRaw))).isPresent();
 
-        assertThat(ROTATION.rotate(issued.raw(), null))
+        assertThat(AFTER_LEEWAY.rotate(issued.raw(), null))
                 .as("the replay names the family and how many live tokens it caught")
                 .isEqualTo(Result.err(new RefreshRotation.Rejection.ReuseDetected("famr-" + RUN, 1)));
         assertThat(STORE.findValidByHash(RefreshToken.hash(liveRaw)))
@@ -133,7 +137,7 @@ class RefreshRotationTest {
         appender.start();
         logger.addAppender(appender);
         try {
-            ROTATION.rotate(issued.raw(), null);
+            AFTER_LEEWAY.rotate(issued.raw(), null);
         } finally {
             logger.detachAppender(appender);
         }
@@ -188,11 +192,15 @@ class RefreshRotationTest {
         Clock rendezvous = new Clock() {
             @Override public ZoneOffset getZone() { return ZoneOffset.UTC; }
             @Override public Clock withZone(java.time.ZoneId zone) { return this; }
+            private final ThreadLocal<Boolean> met = ThreadLocal.withInitial(() -> false);
             @Override public Instant instant() {
-                try {
-                    bothValidated.await(10, TimeUnit.SECONDS);
-                } catch (Exception e) {
-                    throw new IllegalStateException("the two presentations never met", e);
+                if (!met.get()) { // the first read only: after it each thread runs on alone
+                    met.set(true);
+                    try {
+                        bothValidated.await(10, TimeUnit.SECONDS);
+                    } catch (Exception e) {
+                        throw new IllegalStateException("the two presentations never met", e);
+                    }
                 }
                 return NOW;
             }
@@ -205,13 +213,69 @@ class RefreshRotationTest {
             start.countDown();
             var outcomes = List.of(a.get(30, TimeUnit.SECONDS), b.get(30, TimeUnit.SECONDS));
 
-            assertThat(outcomes).filteredOn(o -> o instanceof Result.Ok).as("mutant: no consumed_at guard").hasSize(1);
-            assertThat(outcomes).filteredOn(o -> o instanceof Result.Err)
-                    .singleElement()
-                    .isEqualTo(Result.err(new RefreshRotation.Rejection.ReuseDetected("famc-" + RUN, 1)));
+            // The consume is atomic — exactly one presentation consumes the token and
+            // records its replacement — and the loser, inside the leeway with the
+            // family intact, is the client racing itself: a sibling, not a sign-out.
+            assertThat(outcomes).as("both presentations are the session's own").allMatch(o -> o instanceof Result.Ok);
+            var replaced = STORE.findByHash(issued.token().tokenHash()).orElseThrow();
+            var winner = outcomes.stream().map(RefreshRotationTest::rotated)
+                    .filter(r -> r.replacement().tokenHash().equals(replaced.replacedBy())).toList();
+            assertThat(winner).hasSize(1);
+            assertThat(outcomes.stream().map(RefreshRotationTest::rotated).filter(r -> r.stored().revoked()))
+                    .as("mutant: no consumed_at guard — both consume a still-valid token; atomically, exactly "
+                            + "one consumes and the other arrives through the leeway")
+                    .hasSize(1);
+            for (var o : outcomes) {
+                assertThat(STORE.findValidByHash(RefreshToken.hash(rotated(o).newRaw()))).isPresent();
+                assertThat(rotated(o).replacement().tokenFamily()).isEqualTo("famc-" + RUN);
+            }
         }
         assertThat(DB.fetchCount(OAUTH_OIDC_PAYLOADS, OAUTH_OIDC_PAYLOADS.GRANT_ID.eq("famc-" + RUN)))
-                .as("one replacement row, never two").isEqualTo(2);
+                .as("the original, the winner's replacement and the loser's sibling").isEqualTo(3);
+    }
+
+    /// The leeway, sequentially: a retry right after a rotation (the response
+    /// never arrived) rotates again into a sibling and revokes nothing; the same
+    /// presentation after the leeway is reuse. Mutant: no leeway (every second
+    /// presentation revokes the family) — the first assertion fails.
+    @Test
+    void aSecondPresentationInsideTheLeewayIsASiblingAndAfterItIsReuse() {
+        var issued = RefreshToken.issue(principal("g"), NOW, RefreshToken.TTL_SECONDS);
+        STORE.insert(issued.token().withBinding("oac_g", List.of("openid"), List.of(), null).withFamily("famg-" + RUN));
+        String first = rotated(ROTATION.rotate(issued.raw(), "oac_g")).newRaw();
+
+        var retry = rotated(ROTATION.rotate(issued.raw(), "oac_g"));
+        assertThat(retry.replacement().tokenFamily()).isEqualTo("famg-" + RUN);
+        assertThat(retry.replacement().oauthClientId()).as("the sibling keeps the binding").isEqualTo("oac_g");
+        assertThat(STORE.findValidByHash(RefreshToken.hash(first))).as("nothing revoked").isPresent();
+        assertThat(ROTATION.rotate(issued.raw(), "oac_other"))
+                .as("the leeway never lets another client in")
+                .isEqualTo(Result.err(new RefreshRotation.Rejection.Refused("oac_g", "oac_other")));
+
+        assertThat(AFTER_LEEWAY.rotate(issued.raw(), "oac_g")).isInstanceOf(Result.Err.class)
+                .isEqualTo(Result.err(new RefreshRotation.Rejection.ReuseDetected("famg-" + RUN, 2)));
+        assertThat(STORE.findValidByHash(RefreshToken.hash(first))).isEmpty();
+        assertThat(STORE.findValidByHash(RefreshToken.hash(retry.newRaw()))).isEmpty();
+    }
+
+    /// A revoked family is never revived by the leeway: once reuse revoked it,
+    /// even a presentation inside the leeway is reuse. Mutant: drop the "family
+    /// intact" check.
+    @Test
+    void theLeewayNeverRevivesARevokedFamily() {
+        var issued = RefreshToken.issue(principal("v"), NOW, RefreshToken.TTL_SECONDS);
+        STORE.insert(issued.token().withFamily("famv-" + RUN));
+        var r1 = rotated(ROTATION.rotate(issued.raw(), null));
+        // r1's own token is rotated out, then replayed past the leeway: the family is revoked.
+        rotated(ROTATION.rotate(r1.newRaw(), null));
+        assertThat(AFTER_LEEWAY.rotate(r1.newRaw(), null)).isInstanceOf(Result.Err.class);
+
+        assertThat(ROTATION.rotate(issued.raw(), null))
+                .as("inside the leeway, but the family is gone")
+                .isInstanceOf(Result.Err.class);
+        assertThat(DB.fetchCount(OAUTH_OIDC_PAYLOADS, OAUTH_OIDC_PAYLOADS.GRANT_ID.eq("famv-" + RUN)
+                .and(DSL.condition("coalesce((payload ->> 'revoked')::boolean, false) = false"))))
+                .as("no live token in the revoked family").isZero();
     }
 
     private static RefreshRotation.Rotated rotated(Result<RefreshRotation.Rotated, RefreshRotation.Rejection> r) {

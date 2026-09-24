@@ -5,6 +5,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -22,8 +24,15 @@ import java.util.Optional;
 ///   - **Reuse detection** (OAuth 2.0 Security BCP §4.14.2): a presented
 ///     token that is no longer valid but was rotated out (has `replacedBy`
 ///     and a family) means the family is presumed compromised — every token
-///     in it is revoked, and the event is logged at WARN with the family. A
-///     concurrent loser is exactly this case: the same token presented twice.
+///     in it is revoked, and the event is logged at WARN with the family.
+///   - **Replay leeway** ([#REPLAY_LEEWAY]): a token rotated out moments ago
+///     is presented again by its own client far more often than by a thief —
+///     two requests of one session refreshing at once (the SDKs hold no lock),
+///     or a retry after a response that never arrived. Within the leeway, and
+///     only while the family is intact (the replacement is still valid), the
+///     presentation rotates again into a sibling in the same family instead of
+///     revoking it. After the leeway it is reuse, as above. A fixed constant,
+///     not a setting (the "reuse interval" of the common OAuth providers).
 ///   - **Binding.** A token issued to an OAuth client may be refreshed only
 ///     by that client; one issued outside any client, by anyone presenting
 ///     it. A refusal consumes nothing.
@@ -99,6 +108,10 @@ public final class RefreshRotation {
         }
     }
 
+    /// How long after a token is rotated out a second presentation of it is
+    /// still its own client racing or retrying, not a replay (see the class doc).
+    static final Duration REPLAY_LEEWAY = Duration.ofSeconds(10);
+
     private final GrantStore store;
     private final Clock clock;
     private final long refreshTtlSeconds;
@@ -124,18 +137,15 @@ public final class RefreshRotation {
         String hash = RefreshToken.hash(raw);
         Optional<RefreshToken> valid = store.findValidByHash(hash);
         if (valid.isEmpty()) {
-            return Result.err(invalid(hash));
+            return notValid(hash, requestingClientId);
         }
         RefreshToken stored = valid.get();
         if (stored.oauthClientId() != null && !stored.oauthClientId().equals(requestingClientId)) {
             return Result.err(new Rejection.Refused(stored.oauthClientId(), requestingClientId));
         }
 
-        RefreshToken.Issued issued = RefreshToken.issue(stored.principalId(), clock.instant(), refreshTtlSeconds);
-        RefreshToken replacement = issued.token()
-                .withBinding(stored.oauthClientId(), stored.scopes(), stored.accessibleClients(), stored.authTime())
-                .withExpiresAt(stored.expiresAt())
-                .withFamily(stored.tokenFamily() != null ? stored.tokenFamily() : issued.token().id());
+        RefreshToken.Issued issued = successorOf(stored);
+        RefreshToken replacement = issued.token();
         boolean rotated = store.inTransaction(tx -> {
             if (tx.consumeValidByHash(hash).isEmpty()) {
                 return false; // someone else consumed it between the read and here
@@ -146,26 +156,59 @@ public final class RefreshRotation {
         });
         if (!rotated) {
             // The winner has committed by now (our UPDATE waited on its row
-            // lock), so the token reads as replaced: a replay, handled as one.
-            return Result.err(invalid(hash));
+            // lock), so the token reads as rotated out moments ago: the leeway
+            // case, handled below like any second presentation.
+            return notValid(hash, requestingClientId);
         }
         return Result.ok(new Rotated(stored, issued.raw(), replacement));
     }
 
-    /// A presented token that is not valid: a replay of a rotated-out token
-    /// revokes its family; anything else is simply unknown.
-    private Rejection invalid(String hash) {
+    /// The replacement for `stored`: its lineage (binding, scopes, clients,
+    /// `auth_time`), its family (a legacy token roots one here) and its expiry
+    /// cap — never a fresh one.
+    private RefreshToken.Issued successorOf(RefreshToken stored) {
+        RefreshToken.Issued issued = RefreshToken.issue(stored.principalId(), clock.instant(), refreshTtlSeconds);
+        RefreshToken token = issued.token()
+                .withBinding(stored.oauthClientId(), stored.scopes(), stored.accessibleClients(), stored.authTime())
+                .withExpiresAt(stored.expiresAt())
+                .withFamily(stored.tokenFamily() != null ? stored.tokenFamily() : issued.token().id());
+        return new RefreshToken.Issued(issued.raw(), token);
+    }
+
+    /// A presented token that is not valid. Rotated out within the leeway, with
+    /// its family intact: a sibling replacement (see the class doc). Rotated out
+    /// earlier, or its family already revoked: reuse — the family is revoked.
+    /// Anything else is simply unknown.
+    private Result<Rotated, Rejection> notValid(String hash, String requestingClientId) {
         Optional<RefreshToken> prior = store.findByHash(hash)
                 .filter(t -> t.wasReplaced() && t.tokenFamily() != null);
         if (prior.isEmpty()) {
-            return new Rejection.Unknown();
+            return Result.err(new Rejection.Unknown());
         }
-        String family = prior.get().tokenFamily();
+        RefreshToken p = prior.get();
+        if (withinLeeway(p) && store.findValidByHash(p.replacedBy()).isPresent()) {
+            if (p.oauthClientId() != null && !p.oauthClientId().equals(requestingClientId)) {
+                return Result.err(new Rejection.Refused(p.oauthClientId(), requestingClientId));
+            }
+            RefreshToken.Issued sibling = successorOf(p);
+            store.insert(sibling.token());
+            return Result.ok(new Rotated(p, sibling.raw(), sibling.token()));
+        }
+        return Result.err(reuse(p));
+    }
+
+    private boolean withinLeeway(RefreshToken rotatedOut) {
+        Instant at = rotatedOut.revokedAt();
+        return at != null && !at.isBefore(clock.instant().minus(REPLAY_LEEWAY));
+    }
+
+    private Rejection reuse(RefreshToken prior) {
+        String family = prior.tokenFamily();
         int revoked = store.revokeAllInFamily(family);
         LOG.atWarn().setMessage("refresh token reuse detected; family revoked")
                 .addKeyValue("family", family)
-                .addKeyValue("token", prior.get().id())
-                .addKeyValue("principal", prior.get().principalId())
+                .addKeyValue("token", prior.id())
+                .addKeyValue("principal", prior.principalId())
                 .addKeyValue("revoked", revoked)
                 .log();
         return new Rejection.ReuseDetected(family, revoked);

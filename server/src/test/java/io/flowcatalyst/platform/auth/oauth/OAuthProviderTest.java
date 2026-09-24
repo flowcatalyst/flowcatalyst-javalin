@@ -585,12 +585,34 @@ class OAuthProviderTest {
         var access = SignedJWT.parse(j.get("access_token").asString()).getPayload().toJSONObject();
         assertThat(access.get("azp")).isEqualTo(web.clientId());
 
+        // Rotated out longer ago than RefreshRotation.REPLAY_LEEWAY (backdated rather than
+        // slept): presenting it now is a replay, not the client racing or retrying itself.
+        DB.execute("update oauth_oidc_payloads set payload = jsonb_set(payload, '{revokedAt}', to_jsonb(?::text)) "
+                + "where payload ->> 'tokenHash' = ?", Instant.now().minusSeconds(60).toString(),
+                io.flowcatalyst.platform.auth.grant.RefreshToken.hash(first));
         var replay = token(Map.of("grant_type", "refresh_token", "refresh_token", first, "client_id", web.clientId()));
         assertThat(replay.statusCode()).isEqualTo(400);
         assertThat(json(replay).get("error").asString()).isEqualTo("invalid_grant");
         // Reuse detection revoked the whole family, the fresh token included.
         var afterReplay = token(Map.of("grant_type", "refresh_token", "refresh_token", second, "client_id", web.clientId()));
         assertThat(json(afterReplay).get("error").asString()).isEqualTo("invalid_grant");
+    }
+
+    /// Inside the replay leeway a second presentation of a just-rotated token is
+    /// the client itself (two requests refreshing at once, a lost response) —
+    /// it gets a working token, and the first replacement keeps working.
+    @Test
+    void aRetryInsideTheLeewayGetsAWorkingTokenAndSignsNothingOut() throws Exception {
+        String first = exchange(web, "openid offline_access").get("refresh_token").asString();
+        var a = token(Map.of("grant_type", "refresh_token", "refresh_token", first, "client_id", web.clientId()));
+        var b = token(Map.of("grant_type", "refresh_token", "refresh_token", first, "client_id", web.clientId()));
+        assertThat(a.statusCode()).as(a.body()).isEqualTo(200);
+        assertThat(b.statusCode()).as(b.body()).isEqualTo(200);
+        for (var r : List.of(a, b)) {
+            var next = token(Map.of("grant_type", "refresh_token", "refresh_token",
+                    json(r).get("refresh_token").asString(), "client_id", web.clientId()));
+            assertThat(next.statusCode()).as("each replacement still works: " + next.body()).isEqualTo(200);
+        }
     }
 
     @Test
