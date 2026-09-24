@@ -50,6 +50,11 @@ public final class FnObservability implements AutoCloseable {
             }
         }
 
+        /// The same options bound on `newHost` (see `FnHttpServer.Options#withHost`).
+        public Options withHost(String newHost) {
+            return new Options(newHost, port, eventLoopPoolSize);
+        }
+
         public static Options of(int port) {
             return new Options("0.0.0.0", port, VertxOptions.DEFAULT_EVENT_LOOP_POOL_SIZE);
         }

@@ -111,7 +111,7 @@ final class FnHttpTestSupport {
     }
 
     static Harness start(Path dir, DesiredDocument initialDoc, int maxConcurrency, int maxLoaded) {
-        return start(dir, initialDoc, maxLoaded, FnHttpServer.Options.of(0, maxConcurrency, "http://127.0.0.1:1"));
+        return start(dir, initialDoc, maxLoaded, FnHttpServer.Options.of(0, maxConcurrency, "http://127.0.0.1:1").withHost("127.0.0.1"));
     }
 
     static Harness start(Path dir, DesiredDocument initialDoc, int maxLoaded, FnHttpServer.Options options) {

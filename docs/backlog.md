@@ -1687,7 +1687,18 @@ stays the source of truth; the UI is an editor.
 Production side (owner, IaC): a wildcard certificate and a `*.mybusinessdomain.com` rule to the
 function hosts.
 
-## function-host intermittent failures recurred under contention (2026-09-22, evening)
+## function-host intermittent failures recurred under contention (2026-09-22, evening) — ROOT CAUSE FOUND 2026-09-24
+
+**Cause:** tests bound the host on the wildcard (`0.0.0.0:0`) and dialled `127.0.0.1`. On macOS,
+with SO_REUSEADDR (Netty's and the JDK's default), a wildcard port-0 bind can land on a port a
+`127.0.0.1` listener already holds — measured 200 in 20,000 against 200 held ports (the reverse
+order never collides) — and the kernel hands `127.0.0.1:port` connections to the more specific
+listener: the harness's fake control plane / JWKS server answering **404** (h4), or one closing,
+answering **nothing** (h3's "received no bytes"). Linux refuses that bind, and production uses
+fixed ports, so it is test-only. **Fix:** every function-host test binds the host on `127.0.0.1`
+(`Options#withHost`, both listeners); `LoopbackBindTest` pins that a loopback bind refuses a held
+port and that no test binds the wildcard. The history below is kept for the record.
+
 
 During the backlog units, a `-pl fcdev -am` reactor run in a worktree (concurrent with the main
 tree's server suite) saw `FnHttpServerPublicListenerTest` fail once and `FnHttpServerTest` fail once,

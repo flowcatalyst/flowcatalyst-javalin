@@ -41,7 +41,7 @@ class FnObservabilityHealthReadyTest {
         AtomicBoolean startupComplete = new AtomicBoolean(false);
 
         try (var observability = FnObservability.start(reconciler, new PrometheusRegistry(),
-                FnObservability.Options.of(0), listenerBound::get, loopAlive::get, startupComplete::get)) {
+                FnObservability.Options.of(0).withHost("127.0.0.1"), listenerBound::get, loopAlive::get, startupComplete::get)) {
 
             // Before start-up completes: 200 no matter how unhealthy listener/loop look —
             // a slow first load must never fail a liveness probe.
@@ -81,7 +81,7 @@ class FnObservabilityHealthReadyTest {
         AtomicBoolean loopAlive = new AtomicBoolean(true);
 
         try (var observability = FnObservability.start(reconciler, new PrometheusRegistry(),
-                FnObservability.Options.of(0), listenerBound::get, loopAlive::get, () -> true)) {
+                FnObservability.Options.of(0).withHost("127.0.0.1"), listenerBound::get, loopAlive::get, () -> true)) {
 
             assertThat(get(observability.port(), "/ready").statusCode())
                     .as("everything healthy: READY").isEqualTo(200);

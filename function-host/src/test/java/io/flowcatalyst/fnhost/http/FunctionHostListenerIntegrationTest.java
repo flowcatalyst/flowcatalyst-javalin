@@ -488,7 +488,7 @@ class FunctionHostListenerIntegrationTest {
                 new FileArtifactStore(dir.resolve("cache")), new Signatures.Off(), new JvmFunctionLoader(), registry);
         try (FnHttpServer fnServer = FnHttpServer.start(reconciler,
                 FnHttpServer.Options.of(0, 512, baseUrl, io.flowcatalyst.fnhost.http.InvocationObserver.NOOP, 0,
-                        TrustedProxies.DEFAULT))) {
+                        TrustedProxies.DEFAULT).withHost("127.0.0.1"))) {
 
             reconciler.reconcileOnce(Instant.now());
             awaitCondition(() -> readVersionState(address, 1).equals("READY"), "v1 must become READY");

@@ -152,6 +152,14 @@ public final class FnHttpServer implements AutoCloseable {
                     InvocationObserver.NOOP);
         }
 
+        /// The same options bound on `newHost` — tests bind the loopback address they dial
+        /// (`127.0.0.1`): on macOS a wildcard bind can land on a port a `127.0.0.1` listener
+        /// already holds (SO_REUSEADDR), and that listener then receives the connections.
+        public Options withHost(String newHost) {
+            return new Options(newHost, port, maxConcurrency, platformUrl, clock, eventLoopPoolSize, observer,
+                    publicPort, trustedProxies);
+        }
+
         public static Options of(int port, int maxConcurrency, String platformUrl) {
             return new Options("0.0.0.0", port, maxConcurrency, platformUrl, Clock.systemUTC());
         }

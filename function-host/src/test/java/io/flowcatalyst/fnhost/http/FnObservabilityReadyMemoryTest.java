@@ -28,7 +28,7 @@ class FnObservabilityReadyMemoryTest {
             throws Exception {
         try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.document(List.of()));
              var observability = FnObservability.start(h.reconciler, new PrometheusRegistry(),
-                     FnObservability.Options.of(0))) {
+                     FnObservability.Options.of(0).withHost("127.0.0.1"))) {
 
             HttpClient client = HttpClient.newHttpClient();
             HttpResponse<String> resp = client.send(

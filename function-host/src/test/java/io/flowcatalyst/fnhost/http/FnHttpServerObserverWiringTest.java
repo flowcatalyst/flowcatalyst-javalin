@@ -84,7 +84,7 @@ class FnHttpServerObserverWiringTest {
                 "[{\"path\":\"/*\",\"auth\":\"none\"}]");
         var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jar, manifest, null, null, null);
         RecordingObserver observer = new RecordingObserver();
-        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer);
+        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer).withHost("127.0.0.1");
         try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options)) {
             assertThat(h.get("/functions/" + ADDR.render() + "/x?status=200").statusCode()).isEqualTo(200);
             assertThat(h.get("/functions/" + ADDR.render() + "/x?status=404").statusCode()).isEqualTo(404);
@@ -114,7 +114,7 @@ class FnHttpServerObserverWiringTest {
                 "[{\"path\":\"/*\",\"auth\":\"none\"}]");
         var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jar, manifest, null, null, null);
         RecordingObserver observer = new RecordingObserver();
-        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer);
+        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer).withHost("127.0.0.1");
         try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options)) {
             assertThat(h.get("/functions/" + ADDR.render() + "/x").statusCode()).isEqualTo(500);
         }
@@ -135,7 +135,7 @@ class FnHttpServerObserverWiringTest {
                 "[{\"path\":\"/*\",\"auth\":\"none\"}]"); // maxConcurrency 1
         var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jar, manifest, null, null, null);
         RecordingObserver observer = new RecordingObserver();
-        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer);
+        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer).withHost("127.0.0.1");
         try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options);
              var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             CompletableFuture<HttpResponse<byte[]>> first = CompletableFuture.supplyAsync(
@@ -176,7 +176,7 @@ class FnHttpServerObserverWiringTest {
                 "[{\"path\":\"/*\",\"auth\":\"none\",\"timeoutMs\":200}]");
         var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jar, manifest, null, null, null);
         RecordingObserver observer = new RecordingObserver();
-        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer);
+        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer).withHost("127.0.0.1");
         try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options)) {
             assertThat(h.get("/functions/" + ADDR.render() + "/x").statusCode()).isEqualTo(504);
 
@@ -204,7 +204,7 @@ class FnHttpServerObserverWiringTest {
                 "[{\"path\":\"/events/*\",\"auth\":\"webhook\"}]");
         var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jar, manifest, "secret", "app_1", "clt_1");
         RecordingObserver observer = new RecordingObserver();
-        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer);
+        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer).withHost("127.0.0.1");
         try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options)) {
             assertThat(h.post("/functions/" + ADDR.render() + "/events/x", new byte[0]).statusCode()).isEqualTo(401);
         }
@@ -224,7 +224,7 @@ class FnHttpServerObserverWiringTest {
                 "[{\"path\":\"/*\",\"auth\":\"none\"}]");
         var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jar, manifest, null, null, null);
         RecordingObserver observer = new RecordingObserver();
-        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer);
+        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer).withHost("127.0.0.1");
         try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options)) {
             assertThat(h.get("/functions/" + ADDR.render() + "/x").statusCode()).isEqualTo(503);
         }
@@ -241,7 +241,7 @@ class FnHttpServerObserverWiringTest {
                 "[{\"path\":\"/*\",\"auth\":\"none\"}]");
         var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jar, manifest, null, null, null);
         RecordingObserver observer = new RecordingObserver();
-        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer);
+        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer).withHost("127.0.0.1");
         try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options)) {
             assertThat(h.get("/functions/nope.svc.fn/x").statusCode()).isEqualTo(404);
         }
@@ -258,7 +258,7 @@ class FnHttpServerObserverWiringTest {
                 "[{\"path\":\"/*\",\"auth\":\"none\"}]");
         var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jar, manifest, null, null, null);
         RecordingObserver observer = new RecordingObserver();
-        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer);
+        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer).withHost("127.0.0.1");
         try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options)) {
             assertThat(h.server.port()).as("the server actually bound").isPositive();
             assertThat(observer.permitsReadyCallCount()).isEqualTo(1);

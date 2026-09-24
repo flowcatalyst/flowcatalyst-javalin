@@ -57,7 +57,7 @@ class FnHttpServerPublicListenerTest {
                 "[{\"path\":\"/*\",\"auth\":\"none\"}]");
         var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jar, manifest, null, null, null);
         var doc = FnHttpTestSupport.oneFunctionWithPublicRoute(entry, HOST, "/billing");
-        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer, 0, trustedProxies);
+        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer, 0, trustedProxies).withHost("127.0.0.1");
         return FnHttpTestSupport.start(dir, doc, 50, options);
     }
 
@@ -224,7 +224,7 @@ class FnHttpServerPublicListenerTest {
                 "[{\"path\":\"/api/*\",\"auth\":\"none\",\"methods\":[\"GET\",\"POST\"],\"cors\":" + corsJson + "}]");
         var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jar, manifest, null, null, null);
         var doc = FnHttpTestSupport.oneFunctionWithPublicRoute(entry, HOST, "/");
-        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer, 0, TrustedProxies.DEFAULT);
+        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer, 0, TrustedProxies.DEFAULT).withHost("127.0.0.1");
         return FnHttpTestSupport.start(dir, doc, 50, options);
     }
 
@@ -318,7 +318,7 @@ class FnHttpServerPublicListenerTest {
                 "[{\"path\":\"/api/*\",\"auth\":\"none\",\"methods\":[\"GET\",\"POST\"],\"cors\":" + cors + "}]");
         var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jar, manifest, null, null, null);
         var doc = FnHttpTestSupport.oneFunctionWithPublicRoute(entry, HOST, "/");
-        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer, 0, TrustedProxies.DEFAULT);
+        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer, 0, TrustedProxies.DEFAULT).withHost("127.0.0.1");
         try (var h = FnHttpTestSupport.start(dir, doc, 50, options)) {
             var resp = RawHttpClient.send(h.server.publicPort(), "GET", "/api/x",
                     Map.of("Host", HOST, "Origin", "https://app.acme.com"), null);
@@ -350,7 +350,7 @@ class FnHttpServerPublicListenerTest {
                 "[{\"path\":\"/api/*\",\"auth\":\"none\",\"methods\":[\"GET\"],\"cors\":" + cors + "}]");
         var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jar, manifest, null, null, null);
         var doc = FnHttpTestSupport.oneFunctionWithPublicRoute(entry, HOST, "/");
-        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer, 0, TrustedProxies.DEFAULT);
+        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer, 0, TrustedProxies.DEFAULT).withHost("127.0.0.1");
         try (var h = FnHttpTestSupport.start(dir, doc, 50, options)) {
             var resp = RawHttpClient.send(h.server.publicPort(), "GET", "/api/x",
                     Map.of("Host", HOST, "Origin", "https://evil.example.com"), null);
@@ -372,7 +372,7 @@ class FnHttpServerPublicListenerTest {
                 "[{\"path\":\"/api/*\",\"auth\":\"platform\",\"methods\":[\"GET\"],\"cors\":" + cors + "}]");
         var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jar, manifest, null, null, null);
         var doc = FnHttpTestSupport.oneFunctionWithPublicRoute(entry, HOST, "/");
-        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer, 0, TrustedProxies.DEFAULT);
+        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer, 0, TrustedProxies.DEFAULT).withHost("127.0.0.1");
         try (var h = FnHttpTestSupport.start(dir, doc, 50, options)) {
             // No Authorization header at all — a real request to this endpoint would be 401.
             var resp = RawHttpClient.send(h.server.publicPort(), "OPTIONS", "/api/x", Map.of(
@@ -404,7 +404,7 @@ class FnHttpServerPublicListenerTest {
         var registry = new io.prometheus.metrics.model.registry.PrometheusRegistry();
         var metrics = new io.flowcatalyst.fnhost.metrics.FnMetrics(registry,
                 new io.flowcatalyst.fnhost.load.FunctionRegistry(10));
-        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", metrics, 0, TrustedProxies.DEFAULT);
+        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", metrics, 0, TrustedProxies.DEFAULT).withHost("127.0.0.1");
         try (var h = FnHttpTestSupport.start(dir, doc, 50, options)) {
             var priv = h.get("/functions/" + ADDR.render() + "/x");
             assertThat(priv.statusCode()).isEqualTo(200);
@@ -461,7 +461,7 @@ class FnHttpServerPublicListenerTest {
         var routeRef = new DesiredDocument.PublicRouteRef(host, "/", ADDR, List.of("qa"));
         var doc = new DesiredDocument(List.of(liveEntry, aliasEntry), List.of(), List.of(), List.of(routeRef));
         RecordingObserver observer = new RecordingObserver();
-        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer, 0, TrustedProxies.DEFAULT);
+        var options = FnHttpServer.Options.of(0, 512, "http://127.0.0.1:1", observer, 0, TrustedProxies.DEFAULT).withHost("127.0.0.1");
         try (var h = FnHttpTestSupport.start(dir, doc, 50, options)) {
             var qa = RawHttpClient.send(h.server.publicPort(), "GET", "/x", Map.of("Host", "qa-" + host), null);
             assertThat(qa.status()).as("mutant: resolve by address only").isEqualTo(200);

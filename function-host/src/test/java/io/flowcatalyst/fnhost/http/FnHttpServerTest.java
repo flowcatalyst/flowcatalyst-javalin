@@ -434,7 +434,7 @@ class FnHttpServerTest {
                     """);
             var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jar, manifest, null, null, null);
             MutableClock clock = new MutableClock(Instant.now());
-            var options = new FnHttpServer.Options("0.0.0.0", 0, 512, jwks.issuer, clock);
+            var options = new FnHttpServer.Options("127.0.0.1", 0, 512, jwks.issuer, clock);
             try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options)) {
                 String token = jwks.mint("prn_1", "SERVICE", "CLIENT", "platform:function:function:view",
                         List.of("clt_1"), List.of(), false, Instant.now().plusSeconds(300));
@@ -506,7 +506,7 @@ class FnHttpServerTest {
                     [{"path":"/api/*","auth":"platform"}]
                     """);
             var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_claims", "v1", 1, jar, manifest, null, null, null);
-            var options = new FnHttpServer.Options("0.0.0.0", 0, 512, jwks.issuer, Clock.systemUTC());
+            var options = new FnHttpServer.Options("127.0.0.1", 0, 512, jwks.issuer, Clock.systemUTC());
             try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options)) {
                 String token = jwks.mint("prn_claims", "SERVICE", "CLIENT", "platform:function:function:view",
                         List.of("clt_1", "clt_2"), List.of("role-a", "role-b"), List.of("app_1"), false,
@@ -549,7 +549,7 @@ class FnHttpServerTest {
                     [{"path":"/api/*","auth":"platform"}]
                     """);
             var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_disc", "v1", 1, jar, manifest, null, null, null);
-            var options = new FnHttpServer.Options("0.0.0.0", 0, 512, jwks.issuer, Clock.systemUTC());
+            var options = new FnHttpServer.Options("127.0.0.1", 0, 512, jwks.issuer, Clock.systemUTC());
             try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options)) {
                 // A token whose `iss` is the DISCOVERED issuer is accepted.
                 String good = jwks.mint("prn_1", "SERVICE", "CLIENT", "x", List.of(), List.of(), false,
@@ -600,7 +600,7 @@ class FnHttpServerTest {
                         [{"path":"/api/*","auth":"platform"}]
                         """);
                 var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_foreign", "v1", 1, jar, manifest, null, null, null);
-                var options = new FnHttpServer.Options("0.0.0.0", 0, 512, jwks.issuer, Clock.systemUTC());
+                var options = new FnHttpServer.Options("127.0.0.1", 0, 512, jwks.issuer, Clock.systemUTC());
                 try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options)) {
                     String token = jwks.mint("prn_1", "SERVICE", "CLIENT", "x", List.of(), List.of(), false,
                             Instant.now().plusSeconds(60));
@@ -631,7 +631,7 @@ class FnHttpServerTest {
                     """);
             var entry = FnHttpTestSupport.liveEntry(ADDR, "fnc_down", "v1", 1, jar, manifest, null, null, null);
             MutableClock clock = new MutableClock(Instant.now());
-            var options = new FnHttpServer.Options("0.0.0.0", 0, 512, jwks.issuer, clock);
+            var options = new FnHttpServer.Options("127.0.0.1", 0, 512, jwks.issuer, clock);
             try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options)) {
                 String token = jwks.mint("prn_1", "SERVICE", "CLIENT", "x", List.of(), List.of(), false,
                         Instant.now().plusSeconds(60));
@@ -748,7 +748,7 @@ class FnHttpServerTest {
         // one id race for the same slot (this test hung one run in three until they differed).
         var entryB = FnHttpTestSupport.liveEntry(ADDR_B, "fnc_2", "v1-b", 1, jarB, manifestB, null, null, null);
 
-        var options = FnHttpServer.Options.of(0, 1, "http://127.0.0.1:1"); // host-global cap = 1
+        var options = FnHttpServer.Options.of(0, 1, "http://127.0.0.1:1").withHost("127.0.0.1"); // host-global cap = 1
         try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.document(List.of(entryA, entryB)), 50, options)) {
             var executor = Executors.newVirtualThreadPerTaskExecutor();
             CompletableFuture<HttpResponse<byte[]>> a =
@@ -935,7 +935,7 @@ class FnHttpServerTest {
                     "app_1", "clt_1");
             var candidateV2 = FnHttpTestSupport.candidateEntry(ADDR, "fnc_1", "v2", 2, jar2, manifest2,
                     "app_1", "clt_1");
-            var options = new FnHttpServer.Options("0.0.0.0", 0, 512, jwks.issuer, Clock.systemUTC());
+            var options = new FnHttpServer.Options("127.0.0.1", 0, 512, jwks.issuer, Clock.systemUTC());
             try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.document(List.of(liveV1, candidateV2)), 50, options)) {
                 String tokenNoPerm = jwks.mint("prn_v", "SERVICE", "CLIENT", "platform:function:function:view",
                         List.of("clt_1"), List.of(), false, Instant.now().plusSeconds(60));
@@ -1013,7 +1013,7 @@ class FnHttpServerTest {
             var manifest = FnHttpTestSupport.manifest("p", false, 5, 5000, "fixture.http.EchoFn",
                     "[{\"path\":\"/x\",\"auth\":\"none\"}]");
             var liveV1 = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "v1", 1, jar, manifest, null, "app_1", "clt_1");
-            var options = new FnHttpServer.Options("0.0.0.0", 0, 512, jwks.issuer, Clock.systemUTC());
+            var options = new FnHttpServer.Options("127.0.0.1", 0, 512, jwks.issuer, Clock.systemUTC());
             try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(liveV1), 50, options)) {
                 // no token: an EXISTING version and a version that has NEVER existed must answer
                 // identically — a probing, unauthenticated caller must not be able to tell them apart.
@@ -1064,7 +1064,7 @@ class FnHttpServerTest {
             var entryB = FnHttpTestSupport.liveEntry(ADDR_B, "fnc_2", "v1-b", 1, jarB, manifestB, null, "app_2", "clt_2");
 
             // Exactly ONE event-loop thread — this test means nothing with more than one (H1).
-            var options = new FnHttpServer.Options("0.0.0.0", 0, 512, jwks.issuer, Clock.systemUTC(), 1);
+            var options = new FnHttpServer.Options("127.0.0.1", 0, 512, jwks.issuer, Clock.systemUTC(), 1);
             try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.document(List.of(entryA, entryB)), 50, options);
                  var executor = Executors.newVirtualThreadPerTaskExecutor()) {
                 jwks.parkNextJwksFetch();
@@ -1119,7 +1119,7 @@ class FnHttpServerTest {
                     "[{\"path\":\"/x\",\"auth\":\"none\"}]");
             var liveV1 = FnHttpTestSupport.liveEntry(ADDR, "fnc_1", "sv1", 1, jar1, manifest1, null, "app_1", "clt_1");
             var candidateV2 = FnHttpTestSupport.candidateEntry(ADDR, "fnc_1", "sv2", 2, jar2, manifest2, "app_1", "clt_1");
-            var options = new FnHttpServer.Options("0.0.0.0", 0, 512, jwks.issuer, Clock.systemUTC());
+            var options = new FnHttpServer.Options("127.0.0.1", 0, 512, jwks.issuer, Clock.systemUTC());
             try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.document(List.of(liveV1, candidateV2)), 50, options)) {
                 String token = jwks.mint("prn_sweep", "SERVICE", "CLIENT", "platform:function:version:invoke",
                         List.of("clt_1"), List.of(), true, Instant.now().plusSeconds(60));

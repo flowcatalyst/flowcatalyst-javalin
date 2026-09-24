@@ -49,11 +49,11 @@ class FnObservabilityIndependenceTest {
 
         // ONE event loop thread for the function listener — the same seam H1/H11c use to
         // make "the event loop is not blocked" mean something.
-        var options = new FnHttpServer.Options("0.0.0.0", 0, 512, "http://127.0.0.1:1",
+        var options = new FnHttpServer.Options("127.0.0.1", 0, 512, "http://127.0.0.1:1",
                 java.time.Clock.systemUTC(), 1);
         try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry), 50, options);
              var observability = FnObservability.start(h.reconciler, new PrometheusRegistry(),
-                     FnObservability.Options.of(0));
+                     FnObservability.Options.of(0).withHost("127.0.0.1"));
              var executor = Executors.newVirtualThreadPerTaskExecutor()) {
 
             CompletableFuture<HttpResponse<byte[]>> parked = CompletableFuture.supplyAsync(
