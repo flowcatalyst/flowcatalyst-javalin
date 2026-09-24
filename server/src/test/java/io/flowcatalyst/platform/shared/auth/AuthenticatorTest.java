@@ -202,23 +202,51 @@ class AuthenticatorTest {
     @Test
     void sessionCookieIsResolvedThroughTheClaimsResolver() throws Exception {
         var known = mint(keys, Map.of("sub", "prn_cookie"));
-        var r = strict.get("/api/whoami", "Cookie", "fc_session=" + known);
+        var r = strict.get("/api/whoami", "Cookie", "__Host-fc_session=" + known);
         assertThat(r.body()).isEqualTo("prn_cookie:anchor");
 
         // valid cookie but no principal behind it → unauthenticated, not 401
         var unknown = mint(keys, Map.of("sub", "prn_gone"));
-        assertThat(strict.get("/api/whoami", "Cookie", "fc_session=" + unknown).body()).isEqualTo("anon");
+        assertThat(strict.get("/api/whoami", "Cookie", "__Host-fc_session=" + unknown).body()).isEqualTo("anon");
 
         // a stale/garbage cookie degrades to unauthenticated (the SPA re-authenticates)
-        var stale = strict.get("/api/whoami", "Cookie", "fc_session=garbage");
+        var stale = strict.get("/api/whoami", "Cookie", "__Host-fc_session=garbage");
         assertThat(stale.statusCode()).isEqualTo(200);
         assertThat(stale.body()).isEqualTo("anon");
+    }
+
+    // ── Cookie security is its own setting (docs/spec/cookie-hardening.md §3) ──
+
+    @Test
+    @DisplayName("insecure mode authenticates the plain fc_session cookie")
+    void insecureModeAuthenticatesThePlainCookieName() throws Exception {
+        var known = mint(keys, Map.of("sub", "prn_cookie"));
+        assertThat(permissive.get("/api/whoami", "Cookie", "fc_session=" + known).body()).isEqualTo("prn_cookie:anchor");
+    }
+
+    @Test
+    @DisplayName("insecure mode degrades to anon on a __Host-fc_session cookie — that is not the configured name")
+    void insecureModeRejectsTheHostPrefixedCookieName() throws Exception {
+        // Mutant: extractToken reads both names — this then authenticates instead of
+        // degrading, and the assertion below fails.
+        var known = mint(keys, Map.of("sub", "prn_cookie"));
+        assertThat(permissive.get("/api/whoami", "Cookie", "__Host-fc_session=" + known).body()).isEqualTo("anon");
+    }
+
+    @Test
+    @DisplayName("secure mode degrades to anon on a plain fc_session cookie — a subdomain could have planted it")
+    void secureModeRejectsThePlainCookieName() throws Exception {
+        // Mutant: extractToken reads both names — this then authenticates instead of
+        // degrading, and the assertion below fails. This is the defence the `__Host-`
+        // prefix exists for: without it, a compromised subdomain could plant a session.
+        var known = mint(keys, Map.of("sub", "prn_cookie"));
+        assertThat(strict.get("/api/whoami", "Cookie", "fc_session=" + known).body()).isEqualTo("anon");
     }
 
     @Test
     void nonBearerAuthorizationHeaderBlocksTheCookieFallback() throws Exception {
         var known = mint(keys, Map.of("sub", "prn_cookie"));
-        var r = strict.get("/api/whoami", "Authorization", "Basic abc", "Cookie", "fc_session=" + known);
+        var r = strict.get("/api/whoami", "Authorization", "Basic abc", "Cookie", "__Host-fc_session=" + known);
         assertThat(r.body()).isEqualTo("anon");
     }
 
@@ -231,7 +259,7 @@ class AuthenticatorTest {
         // (session contexts left null-typed) — RESOLVER above never sets a
         // principalType, so this fails unless the Authenticator itself stamps it.
         var known = mint(keys, Map.of("sub", "prn_cookie"));
-        assertThat(strict.get("/api/principal-type", "Cookie", "fc_session=" + known).body()).isEqualTo("USER");
+        assertThat(strict.get("/api/principal-type", "Cookie", "__Host-fc_session=" + known).body()).isEqualTo("USER");
     }
 
     @Test

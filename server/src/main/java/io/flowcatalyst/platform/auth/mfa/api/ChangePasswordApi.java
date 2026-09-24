@@ -2,7 +2,6 @@ package io.flowcatalyst.platform.auth.mfa.api;
 
 import io.flowcatalyst.platform.auth.grant.GrantStore;
 import io.flowcatalyst.platform.auth.login.LoginApi;
-import io.flowcatalyst.platform.auth.login.SessionCookie;
 import io.flowcatalyst.platform.auth.mfa.Mfa;
 import io.flowcatalyst.platform.auth.mfa.TrustedDeviceCookie;
 import io.flowcatalyst.platform.auth.mfa.TwoFactorNotifier;
@@ -269,19 +268,19 @@ public final class ChangePasswordApi {
     private static Optional<Principal> principalFromSession(Exchange ctx, State s) {
         Optional<AuthContext> ac = Auth.currentOptional();
         if (ac.isEmpty() || ac.get().principalId().isBlank()) {
-            unauthorized(ctx);
+            unauthorized(ctx, s);
             return Optional.empty();
         }
         Optional<Principal> p = s.login().principals().findById(ac.get().principalId());
         if (p.isEmpty() || !p.get().active()) {
-            unauthorized(ctx);
+            unauthorized(ctx, s);
             return Optional.empty();
         }
         return p;
     }
 
-    private static void unauthorized(Exchange ctx) {
-        ctx.header("WWW-Authenticate", "Cookie realm=\"" + SessionCookie.NAME + "\"");
+    private static void unauthorized(Exchange ctx, State s) {
+        ctx.header("WWW-Authenticate", "Cookie realm=\"" + s.login().cookie().name() + "\"");
         HttpError.writeLoginSurface(ctx, 401, "UNAUTHENTICATED", "Not authenticated");
     }
 

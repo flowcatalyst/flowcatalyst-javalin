@@ -6,7 +6,6 @@ import io.flowcatalyst.platform.auth.login.AuthAlarms;
 import io.flowcatalyst.platform.auth.login.BackoffCheck;
 import io.flowcatalyst.platform.auth.login.ClientIp;
 import io.flowcatalyst.platform.auth.login.LoginApi;
-import io.flowcatalyst.platform.auth.login.SessionCookie;
 import io.flowcatalyst.platform.auth.mfa.DomainPolicy;
 import io.flowcatalyst.platform.auth.mfa.Mfa;
 import io.flowcatalyst.platform.auth.mfa.MfaToken;
@@ -170,7 +169,7 @@ public final class TwoFactorApi {
         }
         if (!ok) {
             recordAttempt(s, AttemptOutcome.FAILURE, email, p.id(), ip, "Invalid 2FA code");
-            unauthorized(ctx, "Invalid or expired code");
+            unauthorized(ctx, s, "Invalid or expired code");
             return;
         }
 
@@ -693,12 +692,12 @@ public final class TwoFactorApi {
     private static Optional<Principal> principalFromToken(Exchange ctx, State s, String token, MfaToken.Purpose want) {
         Optional<MfaToken.Claims> claims = s.tokens().parse(token, want);
         if (claims.isEmpty()) {
-            unauthorized(ctx, "Invalid or expired session");
+            unauthorized(ctx, s, "Invalid or expired session");
             return Optional.empty();
         }
         Optional<Principal> p = s.login().principals().findById(claims.get().subject());
         if (p.isEmpty() || !p.get().active()) {
-            unauthorized(ctx, "Invalid or expired session");
+            unauthorized(ctx, s, "Invalid or expired session");
             return Optional.empty();
         }
         return p;
@@ -709,19 +708,19 @@ public final class TwoFactorApi {
     private static Optional<Principal> principalFromSession(Exchange ctx, State s) {
         Optional<AuthContext> ac = Auth.currentOptional();
         if (ac.isEmpty() || ac.get().principalId().isBlank()) {
-            unauthorized(ctx, "Not authenticated");
+            unauthorized(ctx, s, "Not authenticated");
             return Optional.empty();
         }
         Optional<Principal> p = s.login().principals().findById(ac.get().principalId());
         if (p.isEmpty() || !p.get().active()) {
-            unauthorized(ctx, "Not authenticated");
+            unauthorized(ctx, s, "Not authenticated");
             return Optional.empty();
         }
         return p;
     }
 
-    private static void unauthorized(Exchange ctx, String message) {
-        ctx.header("WWW-Authenticate", "Cookie realm=\"" + SessionCookie.NAME + "\"");
+    private static void unauthorized(Exchange ctx, State s, String message) {
+        ctx.header("WWW-Authenticate", "Cookie realm=\"" + s.login().cookie().name() + "\"");
         HttpError.writeLoginSurface(ctx, 401, "UNAUTHENTICATED", message);
     }
 

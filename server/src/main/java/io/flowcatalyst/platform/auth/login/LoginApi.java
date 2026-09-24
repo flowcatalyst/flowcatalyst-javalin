@@ -212,7 +212,7 @@ public final class LoginApi {
         String email = req.email() == null ? "" : req.email().trim().toLowerCase(Locale.ROOT);
         String password = req.password() == null ? "" : req.password();
         if (email.isEmpty() || password.isEmpty()) {
-            unauthorized(ctx, "Invalid credentials"); // constant shape — which field is missing is not revealed
+            unauthorized(ctx, s, "Invalid credentials"); // constant shape — which field is missing is not revealed
             return;
         }
         String ip = ClientIp.of(ctx);
@@ -257,12 +257,12 @@ public final class LoginApi {
             // time does not reveal whether this e-mail is registered.
             PasswordHash.equalizeTiming(password);
             record(s, AttemptOutcome.FAILURE, email, null, ip, "Invalid credentials");
-            unauthorized(ctx, "Invalid credentials");
+            unauthorized(ctx, s, "Invalid credentials");
             return;
         }
         if (PasswordHash.verify(password, storedHash) != PasswordHash.Verification.OK) {
             record(s, AttemptOutcome.FAILURE, email, null, ip, "Invalid credentials");
-            unauthorized(ctx, "Invalid credentials");
+            unauthorized(ctx, s, "Invalid credentials");
             return;
         }
         if (PasswordHash.needsRehash(storedHash)) {
@@ -328,13 +328,13 @@ public final class LoginApi {
     private static void me(Exchange ctx, State s) {
         Optional<AuthContext> ac = Auth.currentOptional();
         if (ac.isEmpty() || ac.get().principalId().isBlank()) {
-            unauthorized(ctx, "Not authenticated");
+            unauthorized(ctx, s, "Not authenticated");
             return;
         }
         // Re-load so name / active / roles are fresh, not what a token was stamped with.
         Optional<Principal> p = s.principals().findById(ac.get().principalId());
         if (p.isEmpty() || !p.get().active()) {
-            unauthorized(ctx, "Not authenticated");
+            unauthorized(ctx, s, "Not authenticated");
             return;
         }
         ctx.json(loginResponse(s, p.get()));
@@ -353,7 +353,7 @@ public final class LoginApi {
     private static void loginHistory(Exchange ctx, State s) {
         Optional<AuthContext> ac = Auth.currentOptional();
         if (ac.isEmpty() || ac.get().principalId().isBlank()) {
-            unauthorized(ctx, "Not authenticated");
+            unauthorized(ctx, s, "Not authenticated");
             return;
         }
         List<HistoryEntry> out = List.of();
@@ -506,8 +506,8 @@ public final class LoginApi {
         }
     }
 
-    private static void unauthorized(Exchange ctx, String message) {
-        ctx.header("WWW-Authenticate", "Cookie realm=\"" + SessionCookie.NAME + "\"");
+    private static void unauthorized(Exchange ctx, State s, String message) {
+        ctx.header("WWW-Authenticate", "Cookie realm=\"" + s.cookie().name() + "\"");
         HttpError.writeLoginSurface(ctx, 401, "UNAUTHENTICATED", message);
     }
 

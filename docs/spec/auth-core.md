@@ -410,6 +410,13 @@ HttpOnly, `Secure = !FC_AUTH_ALLOW_TEST_HEADERS` (WS:199), SameSite=Lax,
 `Expires = now+24h`, `Max-Age = 86400`. The bridge writer sets the same minus
 `Expires` (WR:230-238).
 
+**Java since 2026-09-24 (`docs/spec/cookie-hardening.md`):** when secure the name is
+`__Host-fc_session` (no `Domain`, so a subdomain cannot set or overwrite it), and the reader
+accepts **only** that name; `fc_session` only when insecure (fcdev). Logout in secure mode also
+expires a leftover `fc_session`. `Max-Age` = the session TTL (8 h deployed). The deployed
+fc-server refuses to start with `FC_AUTH_ALLOW_TEST_HEADERS=true` unless `FLOWCATALYST_DEV_MODE`
+is true. Go keeps `fc_session` — a known difference.
+
 ### 6.2 OAuth / OIDC provider `/oauth/*`, `/.well-known/*` [C]
 
 Mounting: `/oauth/authorize` public router wrapped in

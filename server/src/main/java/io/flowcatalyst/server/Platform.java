@@ -242,7 +242,12 @@ public final class Platform {
         var corsOriginRepo = new CorsOriginRepository(pools.api());
         var corsAllowlist = new CorsAllowlist(corsOriginRepo::allowedOrigins, Duration.ofMillis(env.corsCacheTtlMs()), Clock.systemUTC());
         routes.before(cors(new CorsFilter(corsAllowlist)));
-        routes.before(authenticated(buildAuthenticator()));
+        // Cookie security (`docs/spec/cookie-hardening.md` §2, §3): ONE decision, computed
+        // once here and passed both to the Authenticator (which cookie name extractToken
+        // accepts) and to every SessionCookie this method mints below, so the mint side and
+        // the enforcement side can never drift apart.
+        var cookiesSecure = !env.authAllowTestHeaders();
+        routes.before(authenticated(buildAuthenticator(cookiesSecure)));
         // The profile-only gate (docs/spec/portal-apps.md §6): immediately after the
         // authenticator, so it sees exactly the AuthContext (or lack of one) the
         // authenticator bound, and before every other before-filter/handler.
@@ -267,8 +272,8 @@ public final class Platform {
         // The second factor (auth-identity §6): TOTP secrets under the app key, e-mail
         // PINs through the mail transport, the pending /
         // enrol token derived from the session key, the trusted-device cookie secure
-        // whenever the session cookie is. The TOTP label carries the live platform name.
-        var cookiesSecure = !env.authAllowTestHeaders();
+        // whenever the session cookie is (`cookiesSecure`, computed once above). The TOTP
+        // label carries the live platform name.
         // Over pools.api() EXPLICITLY, not the routed `pool`: `mfaBranding.platformName()`
         // is read EAGERLY below (PasskeyService.Config.fromEnv), at boot, before any
         // Admission scope exists — same reasoning as corsOriginRepo above. Its own routes
@@ -592,7 +597,7 @@ public final class Platform {
                 new Governor(Governor.Config.oauthTokenClient(envReader)), signingKeys, env.jwtIssuer(), Clock.systemUTC(),
                 portalAccess, portalAppRepo, env.refreshTokenTtlSeconds());
         OAuthIpLimits.register(routes, oauthState, new Governor(Governor.Config.oauthTokenIp(envReader)));
-        OAuthAuthorizeApi.register(routes, oauthState);
+        OAuthAuthorizeApi.register(routes, oauthState, new SessionCookie(cookiesSecure, (int) env.sessionTtlSeconds()));
         OAuthTokenApi.register(routes, oauthState);
         OAuthIntrospectionApi.register(routes, oauthState);
         OAuthUserinfoApi.register(routes, oauthState);
@@ -774,15 +779,19 @@ public final class Platform {
         return new JwtVerifier(new JwtVerifier.Config(env.jwtIssuer(), JwtVerifier.RsaKeys.of(verificationKeys)));
     }
 
-    /// The bearer/cookie authenticator over [#buildVerifier()].
-    private Authenticator buildAuthenticator() {
+    /// The bearer/cookie authenticator over [#buildVerifier()]. `cookiesSecure` is the
+    /// SAME decision [#register] computed once and used to mint every `SessionCookie`
+    /// below — [SessionCookie#nameFor(boolean)] turns it into the ONE cookie name
+    /// `extractToken` will accept (`docs/spec/cookie-hardening.md` §3).
+    private Authenticator buildAuthenticator(boolean cookiesSecure) {
         var verifier = buildVerifier();
         // The store-backed resolver: a cookie session is re-resolved from the
         // principal and role stores on every request, and a bearer that
         // carries roles but no scope has its permissions flattened from them
         // (auth-core §3.5, Go provider.ResolveClaims / FlattenPermissions).
         var resolver = new DbClaimsResolver(new PrincipalRepository(pool), new RoleRepository(pool));
-        return new Authenticator(verifier, resolver, Authenticator.Config.of(env.authAllowTestHeaders()));
+        return new Authenticator(verifier, resolver,
+                Authenticator.Config.of(env.authAllowTestHeaders(), SessionCookie.nameFor(cookiesSecure)));
     }
 
     /// Go applies the Authenticator to the chi Group that holds every

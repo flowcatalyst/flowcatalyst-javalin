@@ -158,9 +158,13 @@ class ProfileOnlyGateTest {
         var resolver = new DbClaimsResolver(PRINCIPALS, new RoleRepository(DS));
         var verifier = new JwtVerifier(new JwtVerifier.Config(ISSUER, new JwtVerifier.RsaKeys(KEYS.publicKey())));
         var authenticator = new Authenticator(verifier, resolver, Authenticator.Config.PRODUCTION);
+        // Config.PRODUCTION is secure — the login route's own SessionCookie must mint
+        // under the SAME decision (`docs/spec/cookie-hardening.md` §3: "one decision,
+        // passed to both") or the Authenticator below would never recognise the cookie
+        // this route just minted.
         var loginState = new LoginApi.State(PRINCIPALS, mappings, idps, ATTEMPTS,
                 new BackoffCheck(ATTEMPTS, BackoffPolicy.DEFAULT), TOKEN_ISSUER, resolver, MfaChallenge.none(),
-                new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS), DS, Clock.systemUTC());
+                new SessionCookie(true, (int) TokenIssuer.SESSION_TTL_SECONDS), DS, Clock.systemUTC());
 
         real = TestHttp.routes(routes -> {
             HttpError.install(routes);
@@ -193,7 +197,7 @@ class ProfileOnlyGateTest {
         var login = real.post("/auth/login", Json.writeLine(Map.of("email", roleLessEmail, "password", PASSWORD)),
                 "Content-Type", "application/json");
         assertThat(login.statusCode()).as(login.body()).isEqualTo(200);
-        String cookie = login.headers().allValues("set-cookie").stream().filter(c -> c.startsWith("fc_session="))
+        String cookie = login.headers().allValues("set-cookie").stream().filter(c -> c.startsWith("__Host-fc_session="))
                 .findFirst().orElseThrow().split(";", 2)[0];
 
         var roles = real.get("/bff/roles", "Cookie", cookie);

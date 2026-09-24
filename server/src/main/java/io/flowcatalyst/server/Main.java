@@ -19,7 +19,9 @@ import java.util.List;
 /// `fc-server`: the unified production server. Single jar; every subsystem is
 /// independently togglable via `FC_*_ENABLED` so the same image can be
 /// deployed as the API tier, a worker tier, or both. `fcdev` wraps the same
-/// [Server] with embedded Postgres + dev defaults.
+/// [Server] with embedded Postgres + dev defaults — but through `StartCommand`
+/// calling `new Server(...)` directly, never through [#main], so fcdev's own
+/// always-on test headers never reach [#mustRefuseTestHeaders].
 public final class Main {
 
     private static final Logger LOG = LoggerFactory.getLogger(Main.class);
@@ -29,6 +31,20 @@ public final class Main {
     public static void main(String[] args) throws Exception {
         Logging.init();
         Env env = Env.load();
+        // `docs/spec/cookie-hardening.md` §1: FC_AUTH_ALLOW_TEST_HEADERS is an
+        // authentication bypass (X-FC-Test-Principal lets a caller act as any
+        // principal) and it also turns cookie `Secure` off — refused here, on the
+        // fc-server entry point ONLY, before anything else runs (no bind, no DB
+        // connect, no log naming the enabled subsystems). fcdev never reaches this
+        // check at all (see the class doc); a test exercising the fc-server path
+        // with test headers on must set FLOWCATALYST_DEV_MODE=true too.
+        if (mustRefuseTestHeaders(env)) {
+            LOG.error("refusing to start: FC_AUTH_ALLOW_TEST_HEADERS=true requires "
+                    + "FLOWCATALYST_DEV_MODE=true; outside dev mode this is an authentication "
+                    + "bypass and disables cookie Secure (docs/spec/cookie-hardening.md §1)");
+            System.exit(1);
+            return;
+        }
         LOG.atInfo().setMessage("starting fc-server")
                 .addKeyValue("platform", env.platformEnabled())
                 .addKeyValue("router", env.routerEnabled())
@@ -184,6 +200,15 @@ public final class Main {
         running.stop();
         dbSecretRefreshers.forEach(DbSecretRefresher::close);
         if (pools != null) pools.close();
+    }
+
+    /// `docs/spec/cookie-hardening.md` §1: `true` means [#main] must refuse to
+    /// start. Factored out from [#main] (which cannot be unit-tested directly —
+    /// the refusal calls `System.exit`, which would kill the test JVM) so the
+    /// decision itself is pinned the same way [#needsDb] / [#needsMigrateAndSeed]
+    /// are: a plain predicate over `Env`.
+    static boolean mustRefuseTestHeaders(Env env) {
+        return env.authAllowTestHeaders() && !env.routerDevMode();
     }
 
     /// Whether this instance needs a Postgres pool at all: any DB-backed

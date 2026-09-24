@@ -6,6 +6,7 @@ import io.flowcatalyst.platform.auth.claims.DbClaimsResolver;
 import io.flowcatalyst.platform.auth.grant.GrantStore;
 import io.flowcatalyst.platform.auth.grant.RefreshRotation;
 import io.flowcatalyst.platform.auth.grant.RefreshToken;
+import io.flowcatalyst.platform.auth.login.SessionCookie;
 import io.flowcatalyst.platform.auth.ratelimit.Governor;
 import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
 import io.flowcatalyst.platform.auth.token.ClaimLabels;
@@ -181,7 +182,7 @@ class OAuthProviderTest {
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
             OAuthState s = state();
-            OAuthAuthorizeApi.register(routes, s);
+            OAuthAuthorizeApi.register(routes, s, new SessionCookie(false, (int) TokenIssuer.SESSION_TTL_SECONDS));
             OAuthTokenApi.register(routes, s);
             OAuthIntrospectionApi.register(routes, s);
             OAuthUserinfoApi.register(routes, s);

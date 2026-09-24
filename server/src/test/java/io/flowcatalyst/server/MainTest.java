@@ -26,6 +26,30 @@ class MainTest {
         return Env.load(m);
     }
 
+    // ── cookie-hardening §1: FC_AUTH_ALLOW_TEST_HEADERS refused outside dev mode ──
+
+    @Test
+    void testHeadersOnWithoutDevModeMustRefuse() {
+        var e = env("FC_AUTH_ALLOW_TEST_HEADERS", "true");
+        assertThat(Main.mustRefuseTestHeaders(e))
+                .as("an authentication bypass with no dev-mode guard must refuse to start")
+                .isTrue();
+    }
+
+    @Test
+    void testHeadersOnWithDevModeIsAllowed() {
+        var e = env("FC_AUTH_ALLOW_TEST_HEADERS", "true", "FLOWCATALYST_DEV_MODE", "true");
+        assertThat(Main.mustRefuseTestHeaders(e))
+                .as("dev mode is the ONE escape hatch — fcdev sets both")
+                .isFalse();
+    }
+
+    @Test
+    void testHeadersOffNeverRefusesRegardlessOfDevMode() {
+        assertThat(Main.mustRefuseTestHeaders(env())).isFalse();
+        assertThat(Main.mustRefuseTestHeaders(env("FLOWCATALYST_DEV_MODE", "true"))).isFalse();
+    }
+
     @Test
     void platformAloneNeedsDbAndMigrateAndSeed() {
         var e = env(); // FC_PLATFORM_ENABLED defaults true

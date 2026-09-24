@@ -237,6 +237,14 @@ procedure and the `aws ssm put-parameter` commands are in that IaC doc.
 
 ---
 
+## Session cookie and test headers (2026-09-24, `docs/spec/cookie-hardening.md`)
+
+- The deployed session cookie is `__Host-fc_session` (was `fc_session`): **every user is signed
+  out once** on the first Java deploy carrying it; they sign in again. The remember-device cookie
+  (`__Host-fc_td`) is unchanged.
+- fc-server **refuses to start** when `FC_AUTH_ALLOW_TEST_HEADERS=true` and `FLOWCATALYST_DEV_MODE`
+  is not true. The IaC sets neither, so deployed tasks are unaffected.
+
 ## Secrets committed as literals in the IaC
 
 Only one was found across the three FlowCatalyst services (the HR/RFP client

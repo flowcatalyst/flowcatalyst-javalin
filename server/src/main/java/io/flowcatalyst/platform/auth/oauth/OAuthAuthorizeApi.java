@@ -40,13 +40,19 @@ public final class OAuthAuthorizeApi {
     private OAuthAuthorizeApi() {
     }
 
-    public static void register(Routes routes, OAuthState s) {
+    /// `sessionCookie` is NOT part of [OAuthState] — every other OAuth/OIDC
+    /// endpoint shares that one record and none of the rest touch the
+    /// session cookie at all; threading it through just this route keeps
+    /// `docs/spec/cookie-hardening.md` §3's "one decision" (the SAME
+    /// `cookiesSecure` `Platform` builds every `SessionCookie` from) without
+    /// widening the shared state every other handler here carries.
+    public static void register(Routes routes, OAuthState s, SessionCookie sessionCookie) {
         // Group.OIDC (admission.md §11.7 part B follow-up): authenticates the client
         // and the caller's session, then mints an authorization code.
-        routes.in(Group.OIDC).get("/oauth/authorize", ctx -> authorize(ctx, s));
+        routes.in(Group.OIDC).get("/oauth/authorize", ctx -> authorize(ctx, s, sessionCookie));
     }
 
-    static void authorize(Exchange ctx, OAuthState s) {
+    static void authorize(Exchange ctx, OAuthState s, SessionCookie sessionCookie) {
         String responseType = q(ctx, "response_type");
         String clientId = q(ctx, "client_id");
         String redirectUri = q(ctx, "redirect_uri");
@@ -129,7 +135,7 @@ public final class OAuthAuthorizeApi {
         }
 
         // The session: cookie first, then Bearer.
-        String sessionToken = ctx.cookie(SessionCookie.NAME);
+        String sessionToken = ctx.cookie(sessionCookie.name());
         if (sessionToken == null || sessionToken.isEmpty()) {
             sessionToken = AccessTokenReader.bearer(ctx.header("Authorization"));
         }

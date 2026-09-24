@@ -19,7 +19,8 @@ import java.util.Optional;
 ///    `Bearer <token>` (scheme case-insensitive) yields the token, *from
 ///    header*; any other scheme yields **no token** and the cookie is NOT
 ///    consulted (the request declared its intent). No `Authorization` →
-///    the `fc_session` cookie, *from cookie*, if present.
+///    the configured session cookie ([Config#sessionCookieName]), *from
+///    cookie*, if present.
 /// 2. **Token present** → verify with [JwtVerifier] (RS256 current + previous
 ///    keys, or HS256; `iss`, `aud`, `exp`, `nbf`, `sub`):
 ///    - *from cookie*: the claims carry identity only; the mutable authority
@@ -49,9 +50,6 @@ import java.util.Optional;
 /// on the MDC; [Auth#scoped] then exposes it as [Auth#CURRENT] to route code.
 public final class Authenticator implements Handler {
 
-    /// Cookie carrying the platform JWT for browser sessions.
-    public static final String SESSION_COOKIE = "fc_session";
-
     public static final String TEST_PRINCIPAL = "X-FC-Test-Principal";
     public static final String TEST_SCOPE = "X-FC-Test-Scope";
     public static final String TEST_CLIENTS = "X-FC-Test-Clients";
@@ -71,12 +69,46 @@ public final class Authenticator implements Handler {
 
     /// `allowTestHeaders` enables the `X-FC-Test-Principal` dev bypass (never
     /// in production); `ignoreInvalidTokens` flips the bad-bearer 401 into
-    /// "strip and proceed unauthenticated".
-    public record Config(boolean allowTestHeaders, boolean ignoreInvalidTokens) {
-        public static final Config PRODUCTION = new Config(false, false);
+    /// "strip and proceed unauthenticated"; `sessionCookieName` is the ONE
+    /// name [#extractToken] reads the session cookie under.
+    ///
+    /// Cookie security is its own setting (`docs/spec/cookie-hardening.md`
+    /// §3) — no longer implied here from `allowTestHeaders`. The composition
+    /// root derives `sessionCookieName` from the SAME `cookiesSecure`
+    /// decision that builds every `SessionCookie` it mints (`Platform`
+    /// cannot hand this record a `SessionCookie` itself: that type lives in
+    /// a feature package this one must not depend on, so the name crosses
+    /// as a plain `String`), so the mint side and the enforcement side can
+    /// never drift. In secure mode the plain `fc_session` a subdomain could
+    /// plant is never accepted.
+    /// The session cookie's names — declared here, beside the reader, because `shared.auth` must
+    /// not depend on the login package; `SessionCookie` uses these, so there is one spelling.
+    public static final String SECURE_SESSION_COOKIE = "__Host-fc_session";
+    public static final String INSECURE_SESSION_COOKIE = "fc_session";
 
+    public record Config(boolean allowTestHeaders, boolean ignoreInvalidTokens, String sessionCookieName) {
+        public Config {
+            Objects.requireNonNull(sessionCookieName, "sessionCookieName");
+        }
+
+        /// The deployed default: test headers off, the secure cookie name.
+        /// `Platform` does not use this constant directly — it derives the
+        /// name from its own `cookiesSecure` so the two stay pinned together
+        /// even if a future environment ever decoupled them; this is the
+        /// shape a test wants when it means "exactly what a real deployment
+        /// enforces".
+        public static final Config PRODUCTION = new Config(false, false, SECURE_SESSION_COOKIE);
+
+        /// Test/dev convenience: `sessionCookieName` is the plain
+        /// `fc_session` name every test's own `SessionCookie(false, ...)`
+        /// mints, independent of `allowTestHeaders` — a test asserting
+        /// cookie-name enforcement itself uses [#of(boolean, String)].
         public static Config of(boolean allowTestHeaders) {
-            return new Config(allowTestHeaders, false);
+            return new Config(allowTestHeaders, false, INSECURE_SESSION_COOKIE);
+        }
+
+        public static Config of(boolean allowTestHeaders, String sessionCookieName) {
+            return new Config(allowTestHeaders, false, sessionCookieName);
         }
     }
 
@@ -139,10 +171,14 @@ public final class Authenticator implements Handler {
         MDC.put(CorrelationId.MDC_PRINCIPAL_KEY, ac.principalId());
     }
 
-    /// The bearer (scheme case-insensitive, value trimmed) or the `fc_session`
-    /// cookie. A non-Bearer `Authorization` header yields nothing and blocks
-    /// the cookie fallback. An empty token counts as none.
-    static Optional<Extracted> extractToken(Exchange ctx) {
+    /// The bearer (scheme case-insensitive, value trimmed) or the configured
+    /// session cookie ([Config#sessionCookieName]). A non-Bearer
+    /// `Authorization` header yields nothing and blocks the cookie fallback.
+    /// An empty token counts as none. Instance-scoped (not `static`): which
+    /// cookie name counts is per-`Config`, not fixed platform-wide — in
+    /// secure mode a plain `fc_session` is a DIFFERENT cookie, not this
+    /// one's stale value, and must not be read at all.
+    private Optional<Extracted> extractToken(Exchange ctx) {
         var h = ctx.header("Authorization");
         if (h != null && !h.isEmpty()) {
             var prefix = "Bearer ";
@@ -152,7 +188,7 @@ public final class Authenticator implements Handler {
             }
             return Optional.empty();
         }
-        var cookie = ctx.cookie(SESSION_COOKIE);
+        var cookie = ctx.cookie(config.sessionCookieName());
         if (cookie != null) {
             var token = cookie.trim();
             return token.isEmpty() ? Optional.empty() : Optional.of(new Extracted(token, true));

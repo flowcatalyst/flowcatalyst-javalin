@@ -572,7 +572,8 @@ class TwoFactorApiTest {
     }
 
     private static String sessionCookieFor(String pid, String email) {
-        return SessionCookie.NAME + "=" + TOKEN_ISSUER.sessionToken(pid, email);
+        // This suite's Authenticator/LoginApi.State both run insecure (SessionCookie(false, ...) below).
+        return SessionCookie.INSECURE_NAME + "=" + TOKEN_ISSUER.sessionToken(pid, email);
     }
 
     private static Optional<String> setCookie(HttpResponse<String> r, String name) {
