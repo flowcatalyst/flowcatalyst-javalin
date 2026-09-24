@@ -14,6 +14,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 
 /// The SMTP dialogue Go's `net/smtp` runs, and nothing more: EHLO, an
 /// optional STARTTLS (when the server advertises it and the connection is
@@ -69,7 +70,7 @@ final class SmtpClient implements AutoCloseable {
         List<String> lines = expect(250, "EHLO");
         extensions.clear();
         for (int i = 1; i < lines.size(); i++) {
-            extensions.add(lines.get(i).substring(4).trim().toUpperCase());
+            extensions.add(lines.get(i).substring(4).trim().toUpperCase(Locale.ROOT)); // never the Turkish I
         }
     }
 

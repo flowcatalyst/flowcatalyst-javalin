@@ -236,12 +236,14 @@ public final class FnObservability implements AutoCloseable {
         try {
             httpServer.close().toCompletionStage().toCompletableFuture().get(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (Exception e) {
-            LOG.atWarn().setMessage("closing the observability listener did not complete cleanly").log();
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            LOG.atWarn().setMessage("closing the observability listener did not complete cleanly").setCause(e).log();
         }
         try {
             vertx.close().toCompletionStage().toCompletableFuture().get(10, TimeUnit.SECONDS);
         } catch (Exception e) {
-            LOG.atWarn().setMessage("closing Vert.x (observability) did not complete cleanly").log();
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            LOG.atWarn().setMessage("closing Vert.x (observability) did not complete cleanly").setCause(e).log();
         }
     }
 }

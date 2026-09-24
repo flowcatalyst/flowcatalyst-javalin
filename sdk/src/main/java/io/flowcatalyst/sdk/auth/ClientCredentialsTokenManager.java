@@ -5,6 +5,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import io.flowcatalyst.sdk.error.FlowCatalystException;
 import io.flowcatalyst.sdk.error.SdkError;
+import io.flowcatalyst.sdk.http.Json;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
@@ -29,7 +30,7 @@ public final class ClientCredentialsTokenManager implements TokenProvider {
     private final String clientId;
     private final String clientSecret;
     private final HttpClient http;
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = Json.newMapper(); // the SDK's one configured mapper
 
     private String cachedToken;
     private Instant expiresAt;

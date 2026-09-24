@@ -219,6 +219,7 @@ public final class FunctionVersionRepository implements Persist<FunctionVersion>
                 LOG.atError().setMessage("fn_versions row has an unreadable manifest; excluded from the warm-capacity count")
                         .addKeyValue("functionId", row.value2())
                         .addKeyValue("versionId", row.value1())
+                        .setCause(e)
                         .log();
                 continue;
             }
