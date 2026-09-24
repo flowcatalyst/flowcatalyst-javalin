@@ -41,6 +41,48 @@ parent-model review.
 | D4 | Does a JS function declare `runtime: wasm`? | Yes — JavaScript is a build concern; the host sees a module. `fn init --lang js` scaffolds it. |
 | D5 | Database access for Wasm guests (`fc.db.*`) in the first release? | No — ship W1–W3 without it; W4 adds it. |
 
+## W0 findings (2026-09-24, spike in a scratch project, not merged)
+
+**Setup.** Endive **1.1.0** (Maven `run.endive`, released 2026-09-03; `runtime`, `compiler`,
+`wasi`, `wabt`, `build-time-compiler` + Maven plugin, `annotations-processor`; the Cranelift
+"Redline" backend is published only as `-experimental`). **Endive is pure Java — no native library,
+no JNI** — so the plan's jlink/native-fcdev worry about an FFI backend does not apply. Extism's
+Java host SDK (`org.extism.sdk:chicory-sdk` 0.3.0, Oct 2025) is still on `com.dylibso.chicory`;
+**porting it to Endive is mechanical** (42 files / ~2.8k lines, BSD-3; a package rename compiled
+first time, the Extism kernel `extism-runtime.wasm` included). Its HTTP host functions need an
+`HttpConfig` (Extism's `http-json-jackson` + `http-client-javanet`, neither depends on Chicory) —
+in the product they are replaced by ours over `AllowlistHttpCaller` (W2). Guests: Rust via
+`extism-pdk` 1.4 (138 KB module); JavaScript via `extism-js` 1.6.1 (2.4 MB — QuickJS inside;
+needs binaryen's `wasm-merge`/`wasm-opt`; imports 25 `extism:host/env` functions + 12 WASI).
+
+| | Rust | JavaScript |
+|---|---|---|
+| load, compiled (wasm → JVM bytecode) | ~0.2 s | ~0.9 s |
+| first call, compiled | ~0.3 ms | ~3 ms |
+| steady call, compiled / interpreted | **~20 µs** / 160 µs | **~340 µs** / 930 µs |
+| metaspace per compiled module | ~3.8 MB | ~5.6 MB (one oversized function stays interpreted — Endive falls back per function) |
+| deadline: `Thread.interrupt()` on a guest in `while(true)` | stops at once (`WasmInterruptedException`) | stops at once |
+| memory cap (max pages below the need) | clean trap; the same instance answers the next call | clean guest `out of memory`; instance survives |
+
+**Consequences for W1/W2.**
+- **Deadlines need no abandoned-thread pool:** interrupt the invocation's thread at the deadline,
+  exactly as the JVM path does (`InvocationRunner`). The plan's biggest risk is gone.
+- **Memory cap:** `MemoryLimits(initial = the module's declared minimum, max = wasmMemoryMb)` —
+  capping the *initial* size below the module's minimum fails instantiation.
+- **Compile once per version, instantiate per concurrent call:** an Extism plugin instance is not
+  thread-safe; the compiled machine is cached per module (`CachedAotMachineFactory`), so instances
+  share compiled code and each has its own linear memory. A per-version pool sized by
+  `maxConcurrency`, created lazily.
+- **Metaspace:** compile mode costs 4–6 MB per version — `MetaspaceGuard` must count Wasm loads
+  exactly like JVM loads.
+- **Native fcdev:** runtime compilation defines classes, which GraalVM native cannot do — but the
+  native fcdev already runs functions in a child `java -jar fc-fnhost.jar`, so Wasm follows the same
+  path. `fc-server` native never hosts functions.
+- **Logging:** Endive's `SystemLogger` writes to stderr/stdout; wire an SLF4J `Logger` into the port.
+- **JS performance:** ~0.3 ms per call is fine behind HTTP; heavy compute belongs in Rust (or the JVM).
+- **Build-time compilation** (Endive's Maven plugin) could later move the 0.2–0.9 s compile to
+  publish time; not needed for W1.
+
 ## Packages
 
 **W0 — spike (parent model, time-boxed, no merge).** Answer with numbers, in a scratch module:
@@ -49,8 +91,8 @@ release, whether Extism's Java host SDK runs on it or we bind the Extism kernel 
 first-call latency in compile mode; per-call overhead vs the JVM hello function; whether an
 invocation can be **interrupted** at a deadline (if not: a dedicated pool abandoned on timeout,
 plan §6); linear-memory cap enforcement; metaspace cost of compile mode (it generates classes);
-whether each works under the jlink image and under GraalVM native (fcdev). Output: a findings
-section appended here, and the D1/D2 rulings asked for.
+whether each works under the jlink image and under GraalVM native (fcdev). Output: the findings
+section above. **Done.**
 
 **W1 — the loader seam and the Wasm loader** (one worktree, parent model).
 - A sealed `FunctionLoader` (JVM | Wasm) chosen by `manifest.runtime()`; `Reconciler` holds the
