@@ -12,8 +12,10 @@ TS and Laravel SDKs regenerated from the lockfile (`797faa7b`; had been generate
 Laravel generator pinned (jane-openapi 7.11.2, require-dev), new CI job `sdks` fails on drift
 (`76b522d1`, first GitHub run unobserved). Not released — owner picks the bump. Spec
 `docs/spec/function-manifest-authoring.md` (`47bcc60c`): M1 JSON Schema, M2 plan/apply promote +
-`POST /api/functions/{address}/manifest/check` + `fn validate`, M3 `fn init`, M4 SPA editor; M1/M3
-and M2 in build by two Sonnet coders in worktrees.
+`POST /api/functions/{address}/manifest/check` + `fn validate`, M3 `fn init`, M4 SPA editor; **M1 + M3
+landed `70c390b5`, M2 landed `943119c9`** (promote = plan then apply, one diff implementation shared
+with the check route); full reactor green from clean: server 5189 · function-host 353 · fcdev 231 ·
+SPA 47. M4 (SPA editor) in build. Owner question: how function authors get `function-api` (unpublished).
 
 ## Platform config gated by view/manage; invite sign-in recorded; Result<T, E> (2026-09-23, night)
 
