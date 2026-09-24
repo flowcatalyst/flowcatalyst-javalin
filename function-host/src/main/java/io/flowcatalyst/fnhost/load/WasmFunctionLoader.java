@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /// Loads one `runtime: wasm` artifact (`docs/spec/function-wasm-runtime.md`
 /// §2-§3): parse, check (imports, entrypoint export, memory against
@@ -75,6 +76,7 @@ public final class WasmFunctionLoader implements FunctionLoader {
 
         WasmFunction function = new WasmFunction(compiled, manifest.entrypoint(),
                 manifest.limits().maxConcurrency(), Set.copyOf(manifest.config()), Set.copyOf(manifest.secrets()),
+                manifest.db().stream().map(ref -> ref.name().value()).collect(Collectors.toUnmodifiableSet()),
                 address, version);
         return new Loaded(new LoadedFunction(function, compiled, address, version));
     }

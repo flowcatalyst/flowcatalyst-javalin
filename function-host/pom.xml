@@ -83,6 +83,15 @@
       <artifactId>vertx-codegen-json</artifactId>
       <scope>provided</scope>
     </dependency>
+    <!-- Wasm database access (docs/spec/function-wasm-db.md) sets each statement's timeout
+         in milliseconds through pgjdbc's PgStatement#setQueryTimeoutMs; that class carries
+         checker-framework annotations, which javac must resolve under -Werror. Same
+         reasoning as vertx-codegen above; pgjdbc already brings the jar at runtime. -->
+    <dependency>
+      <groupId>org.checkerframework</groupId>
+      <artifactId>checker-qual</artifactId>
+      <scope>provided</scope>
+    </dependency>
 
     <dependency>
       <groupId>org.junit.jupiter</groupId>

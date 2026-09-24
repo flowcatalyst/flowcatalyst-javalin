@@ -74,7 +74,7 @@ class WasmFunctionLoaderTest {
 
     /// A pinned table (`CONVENTIONS.md` §8): which imports a module may have.
     /// Only functions, only from the three namespaces the host provides, and in
-    /// `extism:host/user` only the host's own two names.
+    /// `extism:host/user` only the host's own names.
     @ParameterizedTest(name = "{0}: {1}::{2} ({3})")
     @CsvSource({
             // rule,                   module,                   name,           kind,   allowed
@@ -82,10 +82,15 @@ class WasmFunctionLoaderTest {
             "extism kernel,            extism:host/env,          alloc,          func,   true",
             "host function,            extism:host/user,         fc_secret_get,  func,   true",
             "host function,            extism:host/user,         fc_emit_event,  func,   true",
+            "host function (W4),       extism:host/user,         fc_db_query,    func,   true",
+            "host function (W4),       extism:host/user,         fc_db_execute,  func,   true",
+            "host function (W4),       extism:host/user,         fc_db_begin,    func,   true",
+            "host function (W4),       extism:host/user,         fc_db_commit,   func,   true",
+            "host function (W4),       extism:host/user,         fc_db_rollback, func,   true",
             "foreign namespace,        env,                      evil,           func,   false",
             "foreign namespace,        wasi_snapshot_preview2,   fd_write,       func,   false",
             "near-miss namespace,      extism:host/users,        fc_secret_get,  func,   false",
-            "unknown host function,    extism:host/user,         fc_db_query,    func,   false",
+            "unknown host function,    extism:host/user,         fc_db_drop,     func,   false",
             "non-function import,      extism:host/env,          memory,         memory, false",
             "non-function import,      wasi_snapshot_preview1,   g,              global, false",
     })

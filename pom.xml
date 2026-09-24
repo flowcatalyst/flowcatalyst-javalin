@@ -218,6 +218,15 @@
         <artifactId>postgresql</artifactId>
         <version>${postgresql.version}</version>
       </dependency>
+      <!-- The annotations pgjdbc's own classes carry (it depends on them at runtime scope):
+           a module that compiles against a pgjdbc implementation class needs them on the
+           compile classpath, or -Werror fails on "cannot find annotation method".
+           The version is pgjdbc's own. -->
+      <dependency>
+        <groupId>org.checkerframework</groupId>
+        <artifactId>checker-qual</artifactId>
+        <version>3.55.1</version>
+      </dependency>
       <dependency>
         <groupId>io.zonky.test</groupId>
         <artifactId>embedded-postgres</artifactId>

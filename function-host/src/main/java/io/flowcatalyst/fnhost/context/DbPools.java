@@ -125,6 +125,17 @@ public final class DbPools implements AutoCloseable {
         }
     }
 
+    /// Test seam: connections of the pool backing `rawDsn` that are borrowed
+    /// right now (Hikari's own active count), or `-1` if there is no such pool —
+    /// the Wasm database tests' "every connection the call borrowed is back".
+    public int activeConnectionsForTest(String rawDsn) {
+        Dsn dsn = Dsn.parse(rawDsn);
+        synchronized (lock) {
+            Entry entry = pools.get(dsn.identity());
+            return entry == null ? -1 : entry.hikari.getHikariPoolMXBean().getActiveConnections();
+        }
+    }
+
     @Override
     public void close() {
         synchronized (lock) {

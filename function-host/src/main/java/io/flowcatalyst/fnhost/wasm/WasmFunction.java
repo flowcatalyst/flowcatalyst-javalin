@@ -18,6 +18,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import run.endive.runtime.WasmInterruptedException;
 
+import javax.sql.DataSource;
+import java.time.Clock;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -37,6 +41,11 @@ import java.util.Set;
 ///   discarded and [#handle] ends with [InterruptedException] — the
 ///   interrupt is never swallowed, so the worker returns and the permit goes
 ///   back.
+/// - Database access (`docs/spec/function-wasm-db.md`): each call gets its own
+///   [DbSession] over the manifest's `db[]` pools, bound for the `fc_db_*` host
+///   functions while the guest runs and closed in the call's `finally` — every
+///   exit path — so a transaction the guest left open is rolled back and its
+///   connection returned before the call ends.
 /// - [#stop] closes the pool.
 public final class WasmFunction implements Function {
 
@@ -51,22 +60,29 @@ public final class WasmFunction implements Function {
     private final int maxConcurrency;
     private final Set<String> declaredConfig;
     private final Set<String> declaredSecrets;
+    private final Set<String> declaredDbs;
     private final FunctionAddress address;
     private final int version;
     private volatile InstancePool pool;
+    /// Set once by [#init], read by every call — the version's `db[]` pools by name.
+    private volatile Map<String, DataSource> dataSources = Map.of();
+    private volatile Clock clock = Clock.systemUTC();
 
     /// @param export          the manifest's `entrypoint` — already checked to be a
     ///                        function export of the module
     /// @param maxConcurrency  `limits.maxConcurrency` — the pool's capacity
     /// @param declaredConfig  `manifest.config`: the only keys `config_get` answers
     /// @param declaredSecrets `manifest.secrets`: the only keys `fc_secret_get` answers
+    /// @param declaredDbs     `manifest.db[].name`: the only databases `fc_db_*` reach
     public WasmFunction(CompiledWasm compiled, String export, int maxConcurrency, Set<String> declaredConfig,
-                        Set<String> declaredSecrets, FunctionAddress address, int version) {
+                        Set<String> declaredSecrets, Set<String> declaredDbs, FunctionAddress address,
+                        int version) {
         this.compiled = Objects.requireNonNull(compiled, "compiled");
         this.export = Objects.requireNonNull(export, "export");
         this.maxConcurrency = maxConcurrency;
         this.declaredConfig = Set.copyOf(declaredConfig);
         this.declaredSecrets = Set.copyOf(declaredSecrets);
+        this.declaredDbs = Set.copyOf(declaredDbs);
         this.address = Objects.requireNonNull(address, "address");
         this.version = version;
     }
@@ -76,6 +92,12 @@ public final class WasmFunction implements Function {
         Objects.requireNonNull(ctx, "ctx");
         CompiledWasm.Bindings bindings = new CompiledWasm.Bindings(ctx.logger(), ctx.config(), declaredConfig,
                 ctx.secrets(), declaredSecrets, ctx.http(), ctx.events(), ctx.clock());
+        Map<String, DataSource> dbs = new LinkedHashMap<>();
+        for (String name : declaredDbs) {
+            dbs.put(name, ctx.dataSource(name)); // the same pools a JVM function's context hands out
+        }
+        dataSources = Map.copyOf(dbs);
+        clock = ctx.clock();
         pool = new InstancePool(maxConcurrency, () -> compiled.instantiate(bindings));
     }
 
@@ -98,8 +120,9 @@ public final class WasmFunction implements Function {
         }
 
         boolean healthy = false;
+        DbSession db = new DbSession(dataSources, clock);
         try {
-            byte[] output = instance.call(export, input);
+            byte[] output = ScopedValue.where(DbSession.CURRENT, db).call(() -> instance.call(export, input));
             return switch (WasmAbi.decode(output)) {
                 case Ok<GuestReply, Malformed>(GuestReply reply) -> {
                     healthy = true;
@@ -121,6 +144,7 @@ public final class WasmFunction implements Function {
             }
             return Result.fail(FAILURE_REASON);
         } finally {
+            db.close(); // force-release: every exit path, before the instance goes back
             instance.flushOutput();
             if (healthy) {
                 current.giveBack(instance);

@@ -118,8 +118,7 @@ reads, never a trap:
 | HTTP | Extism `http_request` / `http_status_code` / `http_headers` (built in) | `http()` — `AllowlistHttpCaller` | allowlist, `https` except loopback, no redirects and the deadline cap are **enforced** here (for a JVM function they are a convention). A refusal or transport failure answers status `0` with body `{"error": "<why>"}`; response headers reach the guest (repeated values joined with `", "`) |
 | events | `extism:host/user` `fc_emit_event(json) → json` | `events()` | `OutboundEvent`'s shape (`type`, `dedupId` required; `data` any JSON value); answers `{"ok":true}` or `{"ok":false,"error":"<platform code>"}` (`DEDUP_ID_REQUIRED`, `EVENT_TYPE_NOT_OWNED`, `UNAVAILABLE`, …) |
 | time | WASI `clock_time_get` | `clock()` | WASI has no preopened directories, no environment, no arguments; `random_get` is a `SecureRandom` |
-
-Database access (`fc.db.*`) is W4.
+| database | `extism:host/user` `fc_db_query` / `fc_db_execute` / `fc_db_begin` / `fc_db_commit` / `fc_db_rollback` (JSON in, JSON out) | `dataSource(name)` — the same `DbPools` pools and caps | W4, `docs/spec/function-wasm-db.md`: only `manifest.db[]` names (else `DB_NOT_DECLARED`); positional parameters, never interpolated; connections and transactions scoped to the call (a transaction still open when it ends is rolled back); each statement's timeout is the time left before the deadline; 10 000 rows / 8 MiB of row JSON per query; errors `{"error":{code,message}}` by SQLSTATE class; SQL and parameters never logged |
 
 ## 3. Emitting events (slice D4c)
 

@@ -427,10 +427,46 @@ guest's own message goes to the host's log, not to the caller.
 importing anything outside `extism:host/env`, `extism:host/user` and `wasi_snapshot_preview1`
 (`LOAD:WASM_IMPORT_NOT_ALLOWED`): the PDK's own `log`, `config::get` and `http::request` (over the
 host's allowlisted, deadline-capped caller — here the allowlist is enforced, not a convention; a
-refused call answers status `0` with `{"error": …}`), two host functions in `extism:host/user` —
-`fc_secret_get(key) → value | ""` and `fc_emit_event(json) → {"ok": …}` — and WASI's clock, random
-and stdout/stderr (which land in your function's log at INFO/WARN). No filesystem, no environment.
-Config and secrets answer only the keys your manifest declares. `fc.db.*` is not there yet (W4).
+refused call answers status `0` with `{"error": …}`), the host functions in `extism:host/user` —
+`fc_secret_get(key) → value | ""`, `fc_emit_event(json) → {"ok": …}` and the `fc_db_*` family
+below — and WASI's clock, random and stdout/stderr (which land in your function's log at
+INFO/WARN). No filesystem, no environment. Config and secrets answer only the keys your manifest
+declares.
+
+**Database access.** Each `manifest.db[]` entry is reachable by its `name` through five host
+functions in `extism:host/user`, each taking one JSON string and returning one (spec
+`docs/spec/function-wasm-db.md`). They use the same pools, sizes and limits a JVM function gets.
+
+| Function | Input | Answer |
+|---|---|---|
+| `fc_db_query` | `{"db":"main","sql":"SELECT id, name FROM t WHERE id = ?","params":[42],"tx":"…"}` | `{"rows":[{"id":42,"name":"…"}],"truncated":false}` |
+| `fc_db_execute` | same shape | `{"updated":1}` |
+| `fc_db_begin` | `{"db":"main"}` | `{"tx":"<opaque id>"}` |
+| `fc_db_commit` / `fc_db_rollback` | `{"tx":"<id>"}` | `{"ok":true}` |
+
+- `params` are bound positionally to `?` — never pasted into the SQL — and must be strings,
+  numbers, booleans or `null`. A string is sent untyped, so the server reads it as whatever the
+  statement needs there (`'2026-09-24T10:15:30Z'` into a `timestamptz`, a UUID, JSON text into
+  `jsonb`); integers go as `int8`, other numbers as exact `numeric`.
+- Rows come back keyed by column label (alias duplicate labels apart — the last one wins):
+  integers and floats as numbers (`NaN`/`Infinity` as strings), `numeric` as a string exactly as
+  PostgreSQL prints it, `bool` as a boolean, timestamps and dates as ISO-8601 strings (`timestamptz`
+  in UTC, `…Z`), `bytea` as base64, `json`/`jsonb` parsed, `NULL` as `null`, anything else
+  (text, uuid, interval, arrays, …) as PostgreSQL's text form.
+- Without `tx`, a statement borrows a connection in autocommit and returns it before answering.
+  With `tx`, it runs in that transaction. A `tx` is valid only in the call that opened it and only
+  with the `db` it was opened on; when the call ends — normally, by error, trap or deadline — every
+  transaction still open is **rolled back** and its connection returned. Commit what you mean to keep.
+- Every statement's timeout is the time left before the invocation deadline (to the millisecond);
+  with none left it is not sent.
+- A query answers at most 10 000 rows or 8 MiB of row JSON, whichever comes first, and says
+  `"truncated":true` when it stopped early. `fc_db_execute` is for statements that return no rows —
+  one that does (a `SELECT`, `… RETURNING`) runs and then answers `DB_ERROR`; use `fc_db_query`.
+- Every failure is `{"error":{"code","message"}}`, never a trap: `DB_NOT_DECLARED`,
+  `DB_BAD_REQUEST` (input not of this shape), `DB_TX_UNKNOWN`, and from the SQLSTATE class
+  `DB_CONSTRAINT` (23), `DB_SYNTAX` (42), `DB_TIMEOUT` (57014, or no time left),
+  `DB_UNAVAILABLE` (08, other 57, 53) and `DB_ERROR` (the rest). The message is the driver's; the
+  host never logs your SQL or its parameters.
 
 **Limits.** `limits.wasmMemoryMb` (default 64) caps each instance's linear memory: a module that
 *declares* more than that as its minimum is refused at load (`LOAD:WASM_MEMORY_OVER_CAP`); an

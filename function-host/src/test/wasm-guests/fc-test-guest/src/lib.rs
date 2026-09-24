@@ -13,12 +13,17 @@ use extism_pdk::*;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-// The two FlowCatalyst host functions (spec §4) — everything else a guest may
-// reach is an Extism built-in or WASI.
+// The FlowCatalyst host functions (spec §4, and docs/spec/function-wasm-db.md for
+// fc_db_*) — everything else a guest may reach is an Extism built-in or WASI.
 #[host_fn("extism:host/user")]
 extern "ExtismHost" {
     fn fc_secret_get(key: String) -> String;
     fn fc_emit_event(event: String) -> String;
+    fn fc_db_query(input: String) -> String;
+    fn fc_db_execute(input: String) -> String;
+    fn fc_db_begin(input: String) -> String;
+    fn fc_db_commit(input: String) -> String;
+    fn fc_db_rollback(input: String) -> String;
 }
 
 // WASI, imported directly: this module targets wasm32-unknown-unknown, whose std
@@ -247,4 +252,89 @@ pub fn log(input: String) -> FnResult<String> {
     write_fd(1, &format!("guest stdout: {}\n", msg));
     write_fd(2, &format!("guest stderr: {}\n", msg));
     reply(calls, 200, json!({"logged": msg}))
+}
+
+/// Runs a script of `fc_db_*` calls (docs/spec/function-wasm-db.md) from the
+/// query parameter `script`:
+///
+/// `{"steps":[{"fn":"begin|query|execute|commit|rollback|emit","in":{…},"summary":bool}],
+///   "then":"return|spin|trap|fail"}`
+///
+/// - A string field of `in` equal to `"$tx"` is replaced by the id the latest
+///   `begin` answered.
+/// - `emit` sends `fc_emit_event` with that id as `data.tx` — a test's control
+///   plane can hold the call there while another call runs.
+/// - `summary` replaces a query answer by `{"rowCount","truncated","bytes","error"}`
+///   (for answers too large to echo).
+/// - `then` decides how the call ends AFTER the steps: normally (`return`, the
+///   default, with `{"results":[…],"tx":…}` as the body), never (`spin`), with a
+///   trap (`trap`), or with Extism's error code (`fail`).
+#[plugin_fn]
+pub fn db(input: String) -> FnResult<String> {
+    let calls = enter();
+    let req = request(&input);
+    let script: Value = query(&req, "script")
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null);
+    let mut tx: Option<String> = None;
+    let mut results: Vec<Value> = Vec::new();
+    let empty = Vec::new();
+    let steps = script.get("steps").and_then(|s| s.as_array()).unwrap_or(&empty);
+    for (n, step) in steps.iter().enumerate() {
+        let name = step.get("fn").and_then(|f| f.as_str()).unwrap_or("");
+        let mut step_in = step.get("in").cloned().unwrap_or(json!({}));
+        if let (Some(obj), Some(id)) = (step_in.as_object_mut(), tx.as_ref()) {
+            for value in obj.values_mut() {
+                if value.as_str() == Some("$tx") {
+                    *value = Value::String(id.clone());
+                }
+            }
+        }
+        let text = step_in.to_string();
+        let answer: String = unsafe {
+            match name {
+                "query" => fc_db_query(text)?,
+                "execute" => fc_db_execute(text)?,
+                "begin" => fc_db_begin(text)?,
+                "commit" => fc_db_commit(text)?,
+                "rollback" => fc_db_rollback(text)?,
+                "emit" => fc_emit_event(
+                    json!({
+                        "type": "fixture:db:tx:opened",
+                        "dedupId": format!("db-{}", n),
+                        "data": {"tx": tx.clone()},
+                    })
+                    .to_string(),
+                )?,
+                _ => json!({"error": {"code": "FIXTURE", "message": "unknown step"}}).to_string(),
+            }
+        };
+        let parsed: Value = serde_json::from_str(&answer).unwrap_or(Value::String(answer.clone()));
+        if name == "begin" {
+            if let Some(id) = parsed.get("tx").and_then(|t| t.as_str()) {
+                tx = Some(id.to_string());
+            }
+        }
+        if step.get("summary").and_then(|s| s.as_bool()) == Some(true) {
+            results.push(json!({
+                "rowCount": parsed.get("rows").and_then(|r| r.as_array()).map(|r| r.len()),
+                "truncated": parsed.get("truncated"),
+                "bytes": answer.len(),
+                "error": parsed.get("error"),
+            }));
+        } else {
+            results.push(parsed);
+        }
+    }
+    match script.get("then").and_then(|t| t.as_str()).unwrap_or("return") {
+        "spin" => {
+            let mut n: u64 = 0;
+            loop {
+                n = std::hint::black_box(n.wrapping_add(1));
+            }
+        }
+        "trap" => core::arch::wasm32::unreachable(),
+        "fail" => Err(WithReturnCode::new(Error::msg("the guest failed on purpose"), 1)),
+        _ => reply(calls, 200, json!({"results": results, "tx": tx})),
+    }
 }
