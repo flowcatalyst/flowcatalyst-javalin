@@ -66,20 +66,16 @@ public final class FcdevFunctionsFixture implements AutoCloseable {
         Path dataPath = root.resolve("flowcatalyst/embedded-pg");
         Path pidFile = root.resolve("flowcatalyst/fcdev.pid");
         Path cache = root.resolve("cache");
-        // Two REAL, ephemerally-allocated ports, probed and released (the
-        // same convention `RouterStartupOrderTest`/`FunctionHostListenerIntegrationTest`
-        // use). `--fn-port 0` cannot be used here: the platform's own
+        // Two REAL ports, probed and released. `--fn-port 0` cannot be used here: the platform's own
         // FC_FN_POOL_URL default is computed BEFORE Server#start (Env is
         // immutable once built), while the function host's REAL bound port
         // is only known AFTER FnHost#start, which runs after Server#start —
         // an inherent ordering constraint for an ephemeral fn port, not a
         // concern in production (where --fn-port is always a concrete value).
-        int fnPort;
-        int fnMetricsPort;
-        try (var p1 = new java.net.ServerSocket(0); var p2 = new java.net.ServerSocket(0)) {
-            fnPort = p1.getLocalPort();
-            fnMetricsPort = p2.getLocalPort();
-        }
+        // Below the OS's ephemeral range (TestPorts) — embedded Postgres, also on port 0,
+        // cannot be handed the same port between this probe and the bind.
+        int fnPort = TestPorts.belowEphemeralRange();
+        int fnMetricsPort = TestPorts.belowEphemeralRange();
         var vars = new java.util.LinkedHashMap<String, String>(Map.of(
                 "FC_EMBEDDED_DB_PATH", dataPath.toString(),
                 "FC_DEV_PID_FILE", pidFile.toString(),

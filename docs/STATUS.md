@@ -6,9 +6,26 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## Wasm functions run in the host (W1+W2); W3 + W4 in progress (2026-09-24, night)
+
+`3b44ecc7` (`docs/spec/function-wasm-runtime.md`): `runtime: wasm` loads through the same
+reconciler/listener as JVM functions — Endive 1.1.0 (pure-Java Wasm → bytecode) plus the Extism
+host SDK ported onto it (new module `extism-endive`, BSD-3, vendored with a NOTICE). One compiled
+module per version, an instance pool per version (instances are not thread-safe), deadline stops a
+guest via `Thread.interrupt`, `wasmMemoryMb` caps the guest AND the Extism kernel's own memory
+(`theKernelsOwnMemoryIsCappedByWasmMemoryMb`), host functions `fc_secret_get` / `fc_emit_event`,
+HTTP only through the manifest allowlist. Reactor from clean: server 5265 · function-host 409 ·
+fcdev 256 with one intermittent `FnCliEndToEndTest` "no bytes" — same macOS family as `9d1b4e09`:
+the fixture probed-and-released an ephemeral fn port that embedded Postgres (also port 0, on
+`localhost`) could then take, and the wildcard host bind succeeds beside it. Fixed test-side:
+`fcdev` fixtures take ports below the ephemeral range (`TestPorts`). Not pinned by a test — a
+1-in-N race cannot be asserted cheaply. **In progress:** W3 (JavaScript guest library,
+`function-hello-js`, `fn init --lang js`) and W4 (`fc_db_*`) in worktrees. **Owed:** native fcdev
+boot check now that fcdev links Endive (runtime class definition under native-image).
+
 ## fcdev 0.9.0: this repo owns the release stream; function host fetched on first use (2026-09-24, later still)
 
-`docs/spec/fcdev-release-0.9.md` implemented (not yet committed by this agent — see the diff):
+`docs/spec/fcdev-release-0.9.md` implemented (`28cb5e06`):
 `VERSION` → `0.9.0`, `UpgradeCommand.DEFAULT_REPO` → `flowcatalyst/flowcatalyst-javalin`,
 `scripts/release.sh dev <bump>` / `make release-fcdev`, `release-fcdev.yml`'s `meta` job now fails a
 release whose tag doesn't match `VERSION` at that ref. New: a native `fcdev start` with functions on
@@ -21,9 +38,7 @@ checked via `java -XshowSettings:properties -version`) rather than launching it 
 `UnsupportedClassVersionError`. **Owner action, two items**: disable the Go repository's own
 `release-fcdev.yml` (identical tag prefix + asset names — do not leave both enabled); a developer
 still on the Go-built binary sets `FC_DEV_UPGRADE_REPO=flowcatalyst/flowcatalyst` to keep using Go's
-releases. `docs/backlog.md` has the full note. Reactor: fcdev tests green (41 across
-`UpgradeCommandTest`/`FnHostLauncherTest`/`StartCommandFnHostFetchTest`/`DevPathsTest` alone; full
-module suite run in progress at hand-off — check it before landing).
+releases. `docs/backlog.md` has the full note.
 
 ## Audit logs never store secrets; fcdev 0.9.0; native fixes (2026-09-24, evening)
 

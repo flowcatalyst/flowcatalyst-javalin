@@ -69,7 +69,7 @@ class DevDispatchRouterConfigIntegrationTest {
         // knowable before `Server#start` binds (fcdev then synthesises no
         // URL and bootstraps no credentials — `StartOptionsTest`,
         // `DevBootstrapRouterCredentialsTest`).
-        int apiPort = freePort();
+        int apiPort = TestPorts.belowEphemeralRange();
         new CommandLine(sub, new EnvFactory(env)).parseArgs(
                 "--api-port", String.valueOf(apiPort), "--metrics-port", "0", "--embedded-db-port", "0",
                 "--router=true", "--scheduler=false", "--stream=false", "--scheduled-job=false", "--outbox=false");
@@ -138,17 +138,6 @@ class DevDispatchRouterConfigIntegrationTest {
     private static HttpResponse<String> post(String url) throws Exception {
         return HTTP.send(HttpRequest.newBuilder(URI.create(url)).POST(HttpRequest.BodyPublishers.noBody()).build(),
                 HttpResponse.BodyHandlers.ofString());
-    }
-
-    /// Same idiom as `StartIntegrationTest`'s free-port picks: released
-    /// before returning, good enough for a port that gets bound milliseconds
-    /// later.
-    private static int freePort() {
-        try (var socket = new java.net.ServerSocket(0)) {
-            return socket.getLocalPort();
-        } catch (java.io.IOException e) {
-            throw new RuntimeException(e);
-        }
     }
 
     private static void await(BooleanSupplier condition, Duration timeout) {
