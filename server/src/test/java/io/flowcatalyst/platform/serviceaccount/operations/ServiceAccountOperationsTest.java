@@ -346,6 +346,25 @@ class ServiceAccountOperationsTest {
         assertThat(principal.assignedClients()).containsExactlyInAnyOrder(c1, c2);
     }
 
+    /// Both at once (the Go platform silently dropped the client grants when an applicationId was
+    /// also given): the principal is confined to the application AND holds every client grant, and
+    /// the minted OAuth client carries the one application.
+    @Test
+    void createWithAnApplicationAndTwoClientsKeepsBothTheConfinementAndTheGrants() {
+        String c1 = seedClient("appreach1");
+        String c2 = seedClient("appreach2");
+        String appId = EntityType.APPLICATION.generate();
+        var res = createWithCredentials(code("appreach"), "AppReach", appId, List.of(c1, c2));
+
+        var principal = principals.findByServiceAccount(res.serviceAccount().id()).orElseThrow();
+        assertThat(principal.allApplications()).isFalse();
+        assertThat(principal.accessibleApplicationIds()).containsExactly(appId);
+        assertThat(principal.scope()).isEqualTo(UserScope.PARTNER);
+        assertThat(principal.assignedClients()).as("the client grants survive the application scoping")
+                .containsExactlyInAnyOrder(c1, c2);
+        assertThat(oauthClients.findById(res.oauthClientId()).orElseThrow().applicationIds()).containsExactly(appId);
+    }
+
     @Test
     void createRejectsAnUnknownClientId() {
         assertUseCaseError(() -> createWithCredentials(code("reachbad"), "ReachBad", null, List.of("clt_doesnotexist1")),
