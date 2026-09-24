@@ -389,7 +389,7 @@
                      classpath into the image heap as bytes. fcdev adds its own two
                      classpath-root resources (VERSION, fcdev-build.properties) to the
                      server's list; everything else here is the embedded server. -->
-                <buildArg>-H:IncludeResources=db/.*|frontend/.*|openapi/.*|docs/.*|router/.*|io/flowcatalyst/platform/principal/common_passwords\.txt|VERSION|fcdev-build\.properties|fn-init/.*</buildArg>
+                <buildArg>-H:IncludeResources=db/.*|frontend/.*|openapi/.*|docs/.*|router/.*|schemas/.*|function/.*|io/flowcatalyst/platform/principal/common_passwords\.txt|VERSION|fcdev-build\.properties|fn-init/.*</buildArg>
                 <!-- -Os by default (binary-size ruling for the developer binary); pass
                      -Dnative.optimization=-O2 for the server-speed build (see server/pom.xml). -->
                 <buildArg>${native.optimization}</buildArg>
