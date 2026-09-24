@@ -2,6 +2,7 @@ package io.flowcatalyst.fcdev;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.platform.shared.Failures;
 import io.flowcatalyst.sdk.result.Result;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -242,9 +243,9 @@ public final class UpgradeCommand implements Callable<Integer> {
             rel = releaseByTag(repo, tag);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return Result.err(new FetchError.Offline(String.valueOf(e.getMessage())));
+            return Result.err(new FetchError.Offline(Failures.describe(e)));
         } catch (IOException e) {
-            return Result.err(new FetchError.Offline(String.valueOf(e.getMessage())));
+            return Result.err(new FetchError.Offline(Failures.describe(e)));
         }
         if (rel == null) {
             return Result.err(new FetchError.NoRelease(repo, tag));
@@ -270,9 +271,9 @@ public final class UpgradeCommand implements Callable<Integer> {
             shaBytes = httpGet(shaUrl);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return Result.err(new FetchError.Offline(String.valueOf(e.getMessage())));
+            return Result.err(new FetchError.Offline(Failures.describe(e)));
         } catch (IOException e) {
-            return Result.err(new FetchError.Offline(String.valueOf(e.getMessage())));
+            return Result.err(new FetchError.Offline(Failures.describe(e)));
         }
 
         try {
@@ -288,7 +289,7 @@ public final class UpgradeCommand implements Callable<Integer> {
             }
             replaceFile(dest, jarBytes);
         } catch (IOException e) {
-            return Result.err(new FetchError.Offline("could not write " + dest + ": " + e.getMessage()));
+            return Result.err(new FetchError.WriteFailed(dest, Failures.describe(e)));
         }
         return Result.ok(dest);
     }
@@ -301,10 +302,15 @@ public final class UpgradeCommand implements Callable<Integer> {
     /// case is the context [StartCommand] needs to build the
     /// `FnHostLauncher.Disabled` reason without re-deriving it.
     public sealed interface FetchError {
-        /// The network request itself failed, or the fetched bytes could not
-        /// be written locally — offline, DNS, an unexpected non-2xx status,
-        /// a local disk error.
+        /// The network request itself failed — offline, DNS, TLS, an
+        /// unexpected non-2xx status. `detail` names the exception and its
+        /// causes ([Failures#describe]).
         record Offline(String detail) implements FetchError {
+        }
+
+        /// The verified jar could not be written to `dest` — a local disk
+        /// problem (permissions, full disk), not the network.
+        record WriteFailed(Path dest, String detail) implements FetchError {
         }
 
         /// No `fcdev/v<version>` release exists yet for `repo` (or that

@@ -208,7 +208,7 @@ class StartCommandFnHostFetchTest {
         assertThat(result).isInstanceOf(FnHostLauncher.ChildProcess.class);
         awaitFile(dataDir.resolve("started.txt"));
         List<String> argv = Files.readAllLines(dataDir.resolve("argv.txt"));
-        assertThat(argv).containsExactly("-jar", cached.toString());
+        assertThat(argv).containsExactly("--enable-preview", "--enable-native-access=ALL-UNNAMED", "-jar", cached.toString());
         assertThat(githubRequests.get()).as("a cached jar must skip the fetch entirely").isZero();
 
         FnHostLauncher.close(result);

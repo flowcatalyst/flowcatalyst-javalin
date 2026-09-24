@@ -310,6 +310,8 @@ public final class StartCommand implements Callable<Integer> {
             case UpgradeCommand.FetchError.NoChecksum(String assetName) ->
                     assetName + " has no .sha256 sidecar published — refusing an unverified install";
             case UpgradeCommand.FetchError.ChecksumMismatch(String detail) -> "checksum mismatch: " + detail;
+            case UpgradeCommand.FetchError.WriteFailed(java.nio.file.Path dest, String detail) ->
+                    "fetched and verified, but could not write " + dest + " (" + detail + ")";
         };
         return "function host jar not found and could not be fetched: " + why
                 + " — pass --fn-host-jar / FC_FN_HOST_JAR naming its path, run `fcdev upgrade` to fetch it, "
