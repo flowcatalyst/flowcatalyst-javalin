@@ -23,7 +23,7 @@ MVN := mvn
 NO_EMPTY := -Dsurefire.failIfNoSpecifiedTests=false
 
 .DEFAULT_GOAL := help
-.PHONY: help test test-router test-db test-one fnhost-smoke examples verify native native-server jar run stop init fresh clean toolchain frontend sdk-spec sdk-generate release-ts-sdk release-laravel-sdk release-java-sdk build-java-sdk release-fcdev
+.PHONY: help test test-router test-db test-one fnhost-smoke wasm-fixtures examples verify native native-server jar run stop init fresh clean toolchain frontend sdk-spec sdk-generate release-ts-sdk release-laravel-sdk release-java-sdk build-java-sdk release-fcdev
 
 help: ## List targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -53,6 +53,14 @@ test-db: ## Migrator, schema fingerprint and Go adoption (docs/database.md)
 fnhost-smoke: ## Package the fc-fnhost exec jar, then run it for real (P9, docs/spec/function-host-process.md §4)
 	$(MVN) -q -DskipTests -pl function-host -am package
 	$(MVN) -pl function-api,function-host -am test -Dtest='FnHostSmokeTest' $(NO_EMPTY)
+
+WASM_GUEST_DIR := function-host/src/test/wasm-guests/fc-test-guest
+WASM_FIXTURE_DIR := function-host/src/test/resources/wasm
+
+wasm-fixtures: ## Rebuild the committed Wasm test guest and its sha256 record (docs/spec/function-wasm-runtime.md §5)
+	cargo build --release --locked --target wasm32-unknown-unknown --manifest-path $(WASM_GUEST_DIR)/Cargo.toml --target-dir function-host/target/wasm-guests
+	cp function-host/target/wasm-guests/wasm32-unknown-unknown/release/fc_test_guest.wasm $(WASM_FIXTURE_DIR)/fc_test_guest.wasm
+	cd $(WASM_FIXTURE_DIR) && shasum -a 256 *.wasm > SHA256SUMS
 
 examples: ## Build, shrink and test the sample functions (examples/function-hello, examples/function-subscription-test)
 	$(MVN) -q -B -Pexamples -pl examples/function-hello,examples/function-subscription-test -am verify -Dtest='ShrunkJarTest' -Dsurefire.failIfNoSpecifiedTests=false

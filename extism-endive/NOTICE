@@ -1,0 +1,43 @@
+extism-endive — Extism's Java host SDK, ported to Endive
+========================================================
+
+This module is a vendored copy of the `core/` module of
+
+    https://github.com/extism/chicory-sdk   at commit 8bceda1 (2025-10-31)
+
+Copyright 2022-2024 Dylibso, Inc., distributed under the BSD 3-Clause licence
+(see LICENSE, the upstream text verbatim). The upstream module's own tests are
+not ported: they need fixtures this repository does not have. What we use is
+covered by function-host's tests (docs/spec/function-wasm-runtime.md §6).
+
+The package stays `org.extism.sdk.chicory` so that a future upstream release on
+Endive can replace this module wholesale.
+
+Changes from upstream (every one; each changed line is also marked
+"FlowCatalyst change" in the source):
+
+1. Runtime: every `com.dylibso.chicory.*` import rewritten to `run.endive.*`
+   (Endive 1.1.0 is the renamed continuation of Chicory). Mechanical; nothing
+   else changed by this step.
+2. Removed `JacksonJsonCodec` and `JakartaJsonCodec` (Jackson 2 / Jakarta JSON)
+   and the `JdkHttpClientAdapter` / `HttpUrlConnectionClientAdapter` client
+   adapters. Upstream they are already deprecated-for-removal stubs that throw;
+   the host supplies its own codec and adapter through `HttpConfig`
+   (org.extism.sdk:http-api).
+3. `ManifestWasm.fromModule(WasmModule)` (+ `ManifestWasmModule`, and its branch
+   in `ChicoryModule.fromWasm`): an already-parsed module. Upstream re-parses
+   the module on every `CompiledPlugin.instantiate()`, so a machine factory
+   keyed by module identity (`CachedAotMachineFactory`) compiles it again —
+   new classes, new metaspace — for every instance. With a shared module a
+   host compiles once per module and every instance shares the compiled code.
+4. `Kernel`: the Extism kernel (`extism-runtime.wasm`) is parsed once per
+   process (`Kernel.module()`), for the same reason as 3.
+5. `HostEnv.Http.headers()`: encode the adapter's response headers. Upstream
+   passed `Map.of()` to the codec, so a guest never saw a response header even
+   with `withHttpResponseHeaders(true)`.
+6. The build: compiled at the reactor's Java release; LICENSE and this NOTICE
+   are packaged under META-INF/.
+- Kernel memory cap: `Kernel` accepts a maximum page count for the kernel's own linear memory
+  (input, output and guest-allocated blocks), applied through `Manifest.Options
+  .withKernelMemoryMaxPages`; the initial size stays the kernel module's declared minimum.
+  Upstream leaves it uncapped.

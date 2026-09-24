@@ -4,8 +4,10 @@ import io.flowcatalyst.fnhost.context.ContextFactory;
 import io.flowcatalyst.fnhost.context.ContextLoadException;
 import io.flowcatalyst.fnhost.context.HostFunctionContext;
 import io.flowcatalyst.fnhost.context.SettingsFingerprint;
+import io.flowcatalyst.fnhost.load.FunctionLoader;
 import io.flowcatalyst.fnhost.load.FunctionRegistry;
 import io.flowcatalyst.fnhost.load.JvmFunctionLoader;
+import io.flowcatalyst.fnhost.load.WasmFunctionLoader;
 import io.flowcatalyst.fnhost.load.Loaded;
 import io.flowcatalyst.fnhost.load.LoadedFunction;
 import io.flowcatalyst.fnhost.load.LoadOutcome;
@@ -71,11 +73,17 @@ public final class Reconciler {
     private final ArtifactStore artifactStore;
     private final Signatures signatures;
     private final JvmFunctionLoader loader;
+
+    /// `docs/spec/function-wasm-runtime.md` §2: the loader for `runtime: wasm`
+    /// entries — [#attemptLoad] chooses between it and [#loader] by the
+    /// manifest's runtime. It holds no configuration of its own, so every
+    /// constructor makes one rather than asking the caller for it.
+    private final WasmFunctionLoader wasmLoader = new WasmFunctionLoader();
     private final FunctionRegistry registry;
     private final ContextFactory contextFactory;
 
-    /// `function-host-process.md` §3 item 1: checked before every
-    /// [JvmFunctionLoader#load] attempt (warm, lazy [#ensureLoaded], pinned)
+    /// `function-host-process.md` §3 item 1: checked before every load
+    /// attempt, JVM or Wasm (warm, lazy [#ensureLoaded], pinned)
     /// — defaults to the real MXBean-backed [MetaspaceGuard#system], overridable
     /// by the test-injection constructors below so a test can drive exact
     /// used/max readings deterministically.
@@ -496,11 +504,6 @@ public final class Reconciler {
                 continue; // still pending, or failed to prepare this cycle
             }
             Key key = new Key(entry.address(), entry.version());
-            if (entry.manifest().runtime() == Runtime.WASM) {
-                failures.put(key, "RUNTIME_UNSUPPORTED");
-                observer.loadError("RUNTIME_UNSUPPORTED");
-                continue;
-            }
             switch (entry.mode()) {
                 case WARM -> loadWarm(entry, p, key);
                 case LAZY -> loadLazy(entry, p, key);
@@ -540,17 +543,28 @@ public final class Reconciler {
 
     /// `function-host-process.md` §3 item 1: the ONE place every load
     /// attempt (warm, lazy replace, [#ensureLoaded], [#loadPinned]) funnels
-    /// through — checks [#metaspaceGuard] BEFORE ever calling
-    /// [JvmFunctionLoader#load], and refuses without attempting the load at
-    /// all when headroom is below the reserve. The ternary is deliberate:
-    /// `loader.load(...)` is never evaluated on the refusal branch, so a
-    /// refused load costs nothing (no class definition, no reflection —
-    /// exactly what "WITHOUT ATTEMPTING IT" requires).
+    /// through — checks [#metaspaceGuard] BEFORE ever calling a
+    /// [FunctionLoader], and refuses without attempting the load at all when
+    /// headroom is below the reserve. The ternary is deliberate: `load(...)`
+    /// is never evaluated on the refusal branch, so a refused load costs
+    /// nothing (no class definition, no reflection — exactly what "WITHOUT
+    /// ATTEMPTING IT" requires). The guard runs for BOTH runtimes
+    /// (`function-wasm-runtime.md` §2): Wasm compile mode defines classes too.
     private LoadOutcome attemptLoad(Prepared p, DesiredDocument.Entry entry) {
         MetaspaceGuard.Result headroom = metaspaceGuard.check();
         return headroom.hasHeadroom()
-                ? loader.load(p.artifact(), entry.manifest().entrypoint(), entry.address(), entry.version())
+                ? loaderFor(entry.manifest().runtime())
+                        .load(p.artifact(), entry.manifest(), entry.address(), entry.version())
                 : new Refused(Reason.METASPACE_HEADROOM, headroom.detail());
+    }
+
+    /// `function-wasm-runtime.md` §2: the loader for a runtime — exhaustive,
+    /// so a new [Runtime] is a compile error here.
+    private FunctionLoader loaderFor(Runtime runtime) {
+        return switch (runtime) {
+            case JVM -> loader;
+            case WASM -> wasmLoader;
+        };
     }
 
     /// D4b (`function-context.md` §2, X5): true when `entry`'s config+secrets

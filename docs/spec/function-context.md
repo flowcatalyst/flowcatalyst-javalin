@@ -103,6 +103,24 @@ masking discipline as `webhookSigningSecret`; they are in the hashed bytes, so a
 - **`events()`**: §3.
 - **`clock()`**, **`address()`**, **`version()`**: as D1.
 
+### 2.1 Wasm functions: the same context, reached through host functions (W2)
+
+A Wasm version gets the same `HostFunctionContext`; its guest reaches it only through what the module
+imports (`docs/spec/function-wasm-runtime.md` §4 — the loader refuses any other import, so
+everything not in this table is denied by never being linkable). Every failure is a value the guest
+reads, never a trap:
+
+| Guest call | Namespace / name | Backed by | Notes |
+|---|---|---|---|
+| log | Extism `log_*` (built in) | `logger()` (`fn.<address>`) | the guest's WASI stdout/stderr go there too, at INFO/WARN, line by line; the runtime's own diagnostics as well — nothing reaches the host's streams |
+| config | Extism `config_get` (built in) | `config()` | only keys `manifest.config` declares; any other ⇒ absent |
+| secret | `extism:host/user` `fc_secret_get(key) → value \| empty` | `secrets()` | only keys `manifest.secrets` declares; undeclared or unset ⇒ empty; never logged |
+| HTTP | Extism `http_request` / `http_status_code` / `http_headers` (built in) | `http()` — `AllowlistHttpCaller` | allowlist, `https` except loopback, no redirects and the deadline cap are **enforced** here (for a JVM function they are a convention). A refusal or transport failure answers status `0` with body `{"error": "<why>"}`; response headers reach the guest (repeated values joined with `", "`) |
+| events | `extism:host/user` `fc_emit_event(json) → json` | `events()` | `OutboundEvent`'s shape (`type`, `dedupId` required; `data` any JSON value); answers `{"ok":true}` or `{"ok":false,"error":"<platform code>"}` (`DEDUP_ID_REQUIRED`, `EVENT_TYPE_NOT_OWNED`, `UNAVAILABLE`, …) |
+| time | WASI `clock_time_get` | `clock()` | WASI has no preopened directories, no environment, no arguments; `random_get` is a `SecureRandom` |
+
+Database access (`fc.db.*`) is W4.
+
 ## 3. Emitting events (slice D4c)
 
 `POST /control/functions/events` (`requireAnchor` + `FUNCTION_HOST_CONTROL`; 401 without a credential):

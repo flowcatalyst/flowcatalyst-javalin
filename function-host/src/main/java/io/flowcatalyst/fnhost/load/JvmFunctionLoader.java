@@ -2,6 +2,7 @@ package io.flowcatalyst.fnhost.load;
 
 import io.flowcatalyst.function.Function;
 import io.flowcatalyst.platform.function.FunctionAddress;
+import io.flowcatalyst.platform.function.Manifest;
 
 import java.io.IOException;
 import java.lang.reflect.Constructor;
@@ -19,11 +20,17 @@ import java.util.jar.JarFile;
 /// (`docs/spec/function-host-core.md` §2.2). Scans the jar for the refusal
 /// conditions **before defining any class from it** — a refusal is routine,
 /// so it is a [LoadOutcome], never an exception.
-public final class JvmFunctionLoader {
+public final class JvmFunctionLoader implements FunctionLoader {
 
     private static final List<String> NATIVE_LIBRARY_SUFFIXES = List.of(".so", ".dll", ".dylib", ".jnilib");
     private static final String SECURITY_PROVIDER_ENTRY = "META-INF/services/java.security.Provider";
     private static final String API_PACKAGE_PATH = "io/flowcatalyst/function/";
+
+    /// [FunctionLoader]'s form: the manifest's `entrypoint` is the class name.
+    @Override
+    public LoadOutcome load(Path artifact, Manifest manifest, FunctionAddress address, int version) {
+        return load(artifact, manifest.entrypoint(), address, version);
+    }
 
     /// Scans `jar`, and — if nothing refuses it — defines a `URLClassLoader`
     /// named `fn:<address>@<version>` over it, parented by a fresh

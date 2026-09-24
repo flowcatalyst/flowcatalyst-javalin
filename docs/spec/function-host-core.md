@@ -128,6 +128,13 @@ previous one in `finally` — also when the function throws, and also around `in
 `close`, `invoke` throws `IllegalStateException`. It keeps no other reference to anything loaded by
 the function's loader, and hands none out: `LoadedFunction` is what makes the loader collectable.
 
+> **Amended by W1** (`docs/spec/function-wasm-runtime.md` §2): `LoadedFunction` holds the instance
+> plus an `AutoCloseable` *runtime resource* instead of a `URLClassLoader` — a JVM function's own
+> loader, or a Wasm version's `CompiledWasm`. The context-class-loader swap above happens only when
+> the resource **is** a `ClassLoader` (the JVM path); a Wasm call leaves the context loader alone.
+> Drain, `init`/`stop`/`close` order and in-flight counting are unchanged; `close()` closes the
+> resource where it closed the loader.
+
 ### 2.4 `FunctionRegistry`
 
 `address → LoadedFunction` for the `live` version, plus at most one *previous* version draining.

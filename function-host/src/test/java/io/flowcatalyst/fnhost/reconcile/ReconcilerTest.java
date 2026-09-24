@@ -951,12 +951,15 @@ class ReconcilerTest {
         assertThat(registry.peek(TestFixtures.ADDR_A).version()).isEqualTo(1);
     }
 
-    // ── R11: wasm ⇒ RUNTIME_UNSUPPORTED, others unaffected ───────────────
+    // ── R11 (docs/spec/function-wasm-runtime.md §2): a wasm entry goes to the Wasm
+    //    loader — a JAR declared `runtime: wasm` is refused as not-a-module, never
+    //    loaded as a JVM function — and others are unaffected. (Superseded: until W1,
+    //    R11 was "wasm ⇒ RUNTIME_UNSUPPORTED"; ReconcilerWasmTest has the loads.) ──
 
     @Test
-    void wasmRuntimeIsRefusedWithRuntimeUnsupportedWhileOtherEntriesLoadNormally(@TempDir Path dir) {
+    void wasmRuntimeGoesToTheWasmLoaderWhileOtherEntriesLoadNormally(@TempDir Path dir) {
         Path jvmJar = TestFixtures.functionJar(dir, "r11-jvm", "r11-jvm");
-        Path wasmJar = TestFixtures.functionJar(dir, "r11-wasm", "r11-wasm"); // content irrelevant — never loaded
+        Path wasmJar = TestFixtures.functionJar(dir, "r11-wasm", "r11-wasm"); // a JAR, declared wasm
         FakeControlPlane fake = new FakeControlPlane();
         FunctionRegistry registry = new FunctionRegistry(50);
         Reconciler r = offReconciler(fake, dir, registry);
@@ -972,10 +975,11 @@ class ReconcilerTest {
         r.reconcileOnce(Instant.now());
 
         assertThat(registry.peek(TestFixtures.ADDR_A)).as("the jvm entry is unaffected").isNotNull();
-        assertThat(registry.peek(TestFixtures.ADDR_B)).as("mutant: attempt to load a wasm entry").isNull();
+        assertThat(registry.peek(TestFixtures.ADDR_B))
+                .as("mutant: load a wasm entry with the JVM loader — this JAR would load").isNull();
         HeartbeatReport.LoadedEntry wasmReport = fake.heartbeats().getLast().loaded().stream()
                 .filter(e -> e.address().equals(TestFixtures.ADDR_B)).findFirst().orElseThrow();
-        assertThat(((HeartbeatReport.LoadState.Failed) wasmReport.state()).error()).isEqualTo("RUNTIME_UNSUPPORTED");
+        assertThat(((HeartbeatReport.LoadState.Failed) wasmReport.state()).error()).isEqualTo("LOAD:WASM_INVALID");
     }
 
     // ── metaspace fence (`docs/spec/function-host-process.md` §3): an

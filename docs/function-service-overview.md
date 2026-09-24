@@ -247,8 +247,6 @@ Full detail: `docs/deployments.md` §4.
 
 ## 12. What is deliberately not there
 
-- **Wasm runtime** (Chicory) — designed in the plan (§6), not built; a `wasm` manifest is refused
-  with `RUNTIME_UNSUPPORTED`.
 - **A registry write backend for artifacts** — the platform stores jars in a directory or S3;
   pushing them to ECR/OCI gains nothing while the platform is the only reader.
 - **Garbage collection of stored artifacts** for retired versions — only function delete removes

@@ -398,6 +398,50 @@ Read this before you design around anything the API *looks* like it should let y
   function — they're a property of how this platform verifies you, worth knowing before you assume
   parity with `cosign verify-blob`'s own, fuller checks.
 
+## 8a. Wasm functions
+
+A function may also be a WebAssembly module (`runtime: wasm`), run by the host on Endive (pure
+Java) through the Extism ABI — write it with an Extism PDK (Rust today; JavaScript arrives in W3,
+and the admin UI's create drawer keeps `wasm` disabled until W5). Everything above about endpoints,
+auth modes, subscriptions, schedules, publishing and promoting is the same; what differs is below.
+Spec: `docs/spec/function-wasm-runtime.md`.
+
+**The export.** `entrypoint` names a function export of the module; it is called once per
+invocation with the request as UTF-8 JSON —
+
+```json
+{"address": "app.svc.name", "version": 3, "invocationId": "…", "method": "POST", "path": "/orders/42",
+ "originalHost": "…", "originalPath": "…", "pathParams": {"id": "42"},
+ "query": {"k": ["v"]}, "headers": {"k": ["v"]}, "bodyBase64": "…", "remoteAddress": "…",
+ "caller": {"kind": "principal", "id": "…", "type": "…", "tier": "…", "clients": [], "roles": [],
+            "applications": [], "allApplications": false, "permissions": []}}
+```
+
+(`caller` is `{"kind":"platform"}` for a webhook delivery, `{"kind":"anonymous"}` for `auth: none`)
+— and returns `{"status": 200, "headers": {"k": ["v"]}, "body": "text"}` (or `"bodyBase64"`
+instead of `"body"`; both headers and body are optional). Returning Extism's error code, trapping,
+or returning anything else is a `500` with the fixed body `{"error":"the function failed"}` — your
+guest's own message goes to the host's log, not to the caller.
+
+**What the guest can reach** — only what the module imports, and the host refuses to load a module
+importing anything outside `extism:host/env`, `extism:host/user` and `wasi_snapshot_preview1`
+(`LOAD:WASM_IMPORT_NOT_ALLOWED`): the PDK's own `log`, `config::get` and `http::request` (over the
+host's allowlisted, deadline-capped caller — here the allowlist is enforced, not a convention; a
+refused call answers status `0` with `{"error": …}`), two host functions in `extism:host/user` —
+`fc_secret_get(key) → value | ""` and `fc_emit_event(json) → {"ok": …}` — and WASI's clock, random
+and stdout/stderr (which land in your function's log at INFO/WARN). No filesystem, no environment.
+Config and secrets answer only the keys your manifest declares. `fc.db.*` is not there yet (W4).
+
+**Limits.** `limits.wasmMemoryMb` (default 64) caps each instance's linear memory: a module that
+*declares* more than that as its minimum is refused at load (`LOAD:WASM_MEMORY_OVER_CAP`); an
+allocation past it at run time is a clean `500`. The endpoint's `timeoutMs` stops a running guest
+at once (`504`). Up to `limits.maxConcurrency` calls run in parallel, each on its own instance (an
+instance is never shared between concurrent calls); instances are created on demand and one whose
+call failed is thrown away, so a failure never leaks state into the next call — but a *successful*
+call's globals and memory do persist into later calls on the same instance, so don't rely on either
+fresh or shared state between calls. The module is compiled once per version when it loads (≈0.2 s
+and ≈4–6 MB of metaspace — counted by the same metaspace guard as JVM functions).
+
 ## 9. Building, shrinking and testing (the pipeline)
 
 A JVM function's jar is shaded (your dependencies bundled in, **never** `function-api` — it's

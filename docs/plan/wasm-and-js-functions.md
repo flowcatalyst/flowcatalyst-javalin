@@ -107,6 +107,13 @@ section above. **Done.**
   else a minimal committed set with their source beside them.
 - Tests: load/refuse/invoke/timeout/memory-cap/unload, each mutant-checked.
 
+*Status (2026-09-24): W1 + W2 implemented per `docs/spec/function-wasm-runtime.md`, awaiting the
+orchestrator's review. One W0 finding did not hold for the SDK as ported: `CompiledPlugin.instantiate()`
+re-parses the module and builds a fresh `CachedAotMachineFactory` per instance, so every instance
+recompiled (new classes, new metaspace); the vendored module's `ManifestWasm.fromModule` + a
+once-per-process parsed kernel (`extism-endive/NOTICE`) let the host compile once per version and
+share it across the pool.*
+
 **W2 — host functions** (same worktree as W1, after it; parent model).
 `fc.log`, `fc.config.get`, `fc.secret.get` (manifest-declared only), `fc.http.request`
 (**enforced** allowlist and deadline — the same `AllowlistHttpCaller`), `fc.events.emit`,

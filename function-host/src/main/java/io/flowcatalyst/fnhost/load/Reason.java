@@ -1,6 +1,6 @@
 package io.flowcatalyst.fnhost.load;
 
-/// Why [JvmFunctionLoader#load] refused a jar. A closed set — a refusal is
+/// Why a [FunctionLoader] refused an artifact. A closed set — a refusal is
 /// routine (it becomes a `FAILED` heartbeat entry, `docs/spec/function-host-core.md`
 /// §2.2), never a reason to invent a new case without updating every switch
 /// over it.
@@ -53,5 +53,26 @@ public enum Reason {
     /// routine load failure, distinct from [#OUT_OF_METASPACE] (which means
     /// an actual `OutOfMemoryError` was caught). The old version (if any)
     /// keeps serving; the next reconcile cycle re-checks.
-    METASPACE_HEADROOM
+    METASPACE_HEADROOM,
+
+    /// A `runtime: wasm` artifact that is not a Wasm module Endive can parse
+    /// and compile (`docs/spec/function-wasm-runtime.md` §2) — garbage bytes,
+    /// a truncated module, an unreadable file.
+    WASM_INVALID,
+
+    /// The module has no function export named by the manifest's
+    /// `entrypoint`.
+    WASM_ENTRYPOINT_NOT_EXPORTED,
+
+    /// The module imports something the host does not provide: any import
+    /// outside `extism:host/env`, `extism:host/user` and
+    /// `wasi_snapshot_preview1`, a non-function import, or an
+    /// `extism:host/user` name that is not one of the host's own functions.
+    /// The detail names the import (`module::name`). A Wasm function reaches
+    /// only what it imports, so this is the containment check.
+    WASM_IMPORT_NOT_ALLOWED,
+
+    /// The module's declared minimum linear memory exceeds the manifest's
+    /// `limits.wasmMemoryMb` — it could never be instantiated under the cap.
+    WASM_MEMORY_OVER_CAP
 }

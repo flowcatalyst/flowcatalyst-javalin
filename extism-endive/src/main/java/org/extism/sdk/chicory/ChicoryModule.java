@@ -1,0 +1,55 @@
+package org.extism.sdk.chicory;
+
+import run.endive.runtime.ByteArrayMemory;
+import run.endive.runtime.Instance;
+import run.endive.runtime.Machine;
+import run.endive.wasm.Parser;
+import run.endive.wasm.WasmModule;
+
+import java.nio.file.Path;
+import java.util.function.Function;
+
+class ChicoryModule {
+
+    static final boolean IS_NATIVE_IMAGE_AOT = Boolean.getBoolean("com.oracle.graalvm.isaot");
+
+    static WasmModule fromWasm(ManifestWasm m) {
+        if (m instanceof ManifestWasmBytes) {
+            ManifestWasmBytes mwb = (ManifestWasmBytes) m;
+            return Parser.parse(mwb.bytes);
+        } else if (m instanceof ManifestWasmPath) {
+            ManifestWasmPath mwp = (ManifestWasmPath) m;
+            return Parser.parse(Path.of(mwp.path));
+        } else if (m instanceof ManifestWasmFile) {
+            ManifestWasmFile mwf = (ManifestWasmFile) m;
+            return Parser.parse(mwf.filePath);
+        } else if (m instanceof ManifestWasmUrl) {
+            ManifestWasmUrl mwu = (ManifestWasmUrl) m;
+            return Parser.parse(mwu.getUrlAsStream());
+        } else if (m instanceof ManifestWasmModule) {
+            // FlowCatalyst change (see NOTICE): already parsed — shared, never re-parsed.
+            return ((ManifestWasmModule) m).module;
+        } else {
+            throw new IllegalArgumentException("Unknown ManifestWasm type " + m.getClass());
+        }
+    }
+
+    static Instance.Builder instanceWithOptions(Instance.Builder m, Manifest.Options opts, Function<Instance, Machine> aotMachineFactory) {
+        if (opts == null) {
+            return m;
+        }
+        // This feature is not compatible with the native-image builder.
+        if (opts.aot && !IS_NATIVE_IMAGE_AOT) {
+            m.withMachineFactory(aotMachineFactory);
+        }
+        if (opts.memoryLimits != null) {
+            m.withMemoryFactory(limits -> {
+                return new ByteArrayMemory(limits);
+            }).withMemoryLimits(opts.memoryLimits);
+        }
+        if (!opts.validationFlags.isEmpty()) {
+            throw new UnsupportedOperationException("Validation flags are not supported yet");
+        }
+        return m;
+    }
+}

@@ -35,6 +35,29 @@
       <artifactId>flowcatalyst-server</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <!-- Wasm functions (docs/spec/function-wasm-runtime.md): the vendored Extism host SDK
+         on Endive, plus Endive itself (the loader parses, validates and compiles modules
+         directly) and the Extism HTTP interfaces our adapter implements. -->
+    <dependency>
+      <groupId>io.flowcatalyst</groupId>
+      <artifactId>flowcatalyst-extism-endive</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>run.endive</groupId>
+      <artifactId>runtime</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>run.endive</groupId>
+      <artifactId>wasi</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>run.endive</groupId>
+      <artifactId>compiler</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.extism.sdk</groupId>
+      <artifactId>http-api</artifactId>
+    </dependency>
 
     <!--
       D3 (docs/spec/function-host-listener.md §2): `io.flowcatalyst.fnhost.http`
@@ -69,6 +92,12 @@
     <dependency>
       <groupId>org.assertj</groupId>
       <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <!-- WAT → wasm for the refusal fixtures, built at test time (spec §5) -->
+      <groupId>run.endive</groupId>
+      <artifactId>wabt</artifactId>
       <scope>test</scope>
     </dependency>
 

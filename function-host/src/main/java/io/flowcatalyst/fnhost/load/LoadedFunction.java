@@ -8,25 +8,30 @@ import io.flowcatalyst.platform.function.FunctionAddress;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.net.URLClassLoader;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/// One loaded version of one function: its instance, its class loader, and
-/// enough bookkeeping to unload it safely (`docs/spec/function-host-core.md`
-/// §2.3). This is the one object that keeps a reference to anything the
-/// function's loader defined — closing it is what makes the loader (and
-/// every class it defined) collectable.
+/// One loaded version of one function: its instance, the runtime resource
+/// behind it, and enough bookkeeping to unload it safely
+/// (`docs/spec/function-host-core.md` §2.3). This is the one object that
+/// keeps a reference to anything the runtime defined for this version —
+/// closing it is what makes that collectable.
+///
+/// Runtime-neutral (`docs/spec/function-wasm-runtime.md` §2): `resource` is
+/// whatever the version's [FunctionLoader] must release on unload — a JVM
+/// function's own `URLClassLoader`, a Wasm module's compiled code. When the
+/// resource IS a [ClassLoader] (the JVM path), it is set as the thread's
+/// context class loader for every call into the function; any other resource
+/// (Wasm) leaves the context loader alone.
 public final class LoadedFunction implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(LoadedFunction.class);
     private static final Duration DEFAULT_DRAIN_TIMEOUT = Duration.ofSeconds(30);
 
     private final Function function;
-    private final URLClassLoader loader;
+    private final AutoCloseable resource;
     private final FunctionAddress address;
     private final int version;
     private final AtomicInteger inFlight = new AtomicInteger();
@@ -42,10 +47,10 @@ public final class LoadedFunction implements AutoCloseable {
     /// [#init]/[#invoke] instead of relying on this field).
     private volatile FunctionContext context;
 
-    LoadedFunction(Function function, URLClassLoader loader,
+    LoadedFunction(Function function, AutoCloseable resource,
             FunctionAddress address, int version) {
         this.function = Objects.requireNonNull(function, "function");
-        this.loader = Objects.requireNonNull(loader, "loader");
+        this.resource = Objects.requireNonNull(resource, "resource");
         this.address = Objects.requireNonNull(address, "address");
         this.version = version;
     }
@@ -88,10 +93,17 @@ public final class LoadedFunction implements AutoCloseable {
         return closed;
     }
 
-    /// The function's own class loader — package-private, for the leak
-    /// test ([FunctionLeakTest]) to build a `WeakReference` against.
+    /// The function's own class loader (JVM functions; `null` for any other
+    /// runtime) — package-private, for the leak test ([FunctionLeakTest]) to
+    /// build a `WeakReference` against.
     ClassLoader loaderForTest() {
-        return loader;
+        return resource instanceof ClassLoader loader ? loader : null;
+    }
+
+    /// The instance [#invoke] calls — package-private test seam, so a Wasm
+    /// test can reach the adapter's pool without an invocation.
+    Function functionForTest() {
+        return function;
     }
 
     /// Marks one invocation as in flight — [#close()] waits for every
@@ -141,7 +153,7 @@ public final class LoadedFunction implements AutoCloseable {
     /// Waits (bounded) for every in-flight [#invoke] call to [#release()],
     /// then runs `Function#stop` (with the same context-class-loader swap;
     /// exceptions are logged, never propagated) and closes the underlying
-    /// class loader. Idempotent. After this returns, [#invoke] throws
+    /// runtime resource. Idempotent. After this returns, [#invoke] throws
     /// `IllegalStateException`.
     @Override
     public void close() {
@@ -179,10 +191,10 @@ public final class LoadedFunction implements AutoCloseable {
         }
 
         try {
-            loader.close();
-        } catch (IOException e) {
+            resource.close();
+        } catch (Exception e) {
             LOG.atWarn()
-                    .setMessage("closing function class loader failed")
+                    .setMessage("closing function runtime resource failed")
                     .addKeyValue("address", address.render())
                     .addKeyValue("version", version)
                     .setCause(e)
@@ -233,6 +245,9 @@ public final class LoadedFunction implements AutoCloseable {
     }
 
     private <T> T withFunctionContextLoader(ThrowingSupplier<T> body) throws Exception {
+        if (!(resource instanceof ClassLoader loader)) {
+            return body.get(); // not a JVM function: the context loader is not ours to touch
+        }
         Thread thread = Thread.currentThread();
         ClassLoader previous = thread.getContextClassLoader();
         thread.setContextClassLoader(loader);

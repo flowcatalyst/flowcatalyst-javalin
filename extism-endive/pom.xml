@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.flowcatalyst</groupId>
+    <artifactId>flowcatalyst-parent</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>flowcatalyst-extism-endive</artifactId>
+  <packaging>jar</packaging>
+
+  <name>Extism host SDK on Endive (vendored)</name>
+  <description>
+    Extism's Java host SDK (github.com/extism/chicory-sdk, core/ only, BSD-3) ported
+    from Chicory to Endive — docs/spec/function-wasm-runtime.md §1. The package stays
+    org.extism.sdk.chicory so a future upstream Endive release can replace this module
+    wholesale; every change from upstream is listed in NOTICE. Used by function-host's
+    Wasm loader; nothing else depends on it.
+  </description>
+
+  <properties>
+    <!-- Vendored upstream code, kept as close to upstream as possible so it can be
+         replaced wholesale: its deprecation / raw-type / fallthrough warnings are
+         upstream's, not ours to fix here (same reasoning as `sdk`'s generated code).
+         -Xlint:all still runs and prints them. -->
+    <maven.compiler.failOnWarning>false</maven.compiler.failOnWarning>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>run.endive</groupId>
+      <artifactId>runtime</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>run.endive</groupId>
+      <artifactId>wasi</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>run.endive</groupId>
+      <artifactId>compiler</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.extism.sdk</groupId>
+      <artifactId>http-api</artifactId>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+      </resource>
+      <!-- BSD-3 clause 2: the licence and notice travel with the binary (function-host's
+           shade appends META-INF/LICENSE and META-INF/NOTICE across every jar). -->
+      <resource>
+        <directory>${project.basedir}</directory>
+        <targetPath>META-INF</targetPath>
+        <includes>
+          <include>LICENSE</include>
+          <include>NOTICE</include>
+        </includes>
+      </resource>
+    </resources>
+  </build>
+</project>

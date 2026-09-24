@@ -26,6 +26,7 @@ COPY usecase/pom.xml usecase/
 COPY sdk/pom.xml sdk/
 COPY function-api/pom.xml function-api/
 COPY server/pom.xml server/
+COPY extism-endive/pom.xml extism-endive/
 COPY function-host/pom.xml function-host/
 RUN mvn -q -B -pl function-host -am dependency:go-offline || true
 COPY . .

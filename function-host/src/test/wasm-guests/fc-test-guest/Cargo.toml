@@ -1,0 +1,26 @@
+# The behaviour fixture for the function host's Wasm tests
+# (docs/spec/function-wasm-runtime.md §5). Rebuilt ONLY by `make wasm-fixtures`,
+# which copies the module to function-host/src/test/resources/wasm/ and records
+# its sha256 — WasmFixturesTest fails if the committed module drifts from that
+# record, so a fixture never changes without being rebuilt on purpose.
+[package]
+name = "fc_test_guest"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+extism-pdk = "=1.4.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -16,7 +16,7 @@ public interface ReconcileObserver {
     };
 
     /// A prepare/load failure reason (`ARTIFACT:...`, `SIGNATURE:...`,
-    /// `SIGNER_MISMATCH`, `UNSIGNED`, `RUNTIME_UNSUPPORTED`, `LOAD:...`) —
+    /// `SIGNER_MISMATCH`, `UNSIGNED`, `LOAD:...`) —
     /// spec §2's `fc_fn_load_errors_total{reason}`. Deliberately NOT called
     /// for `NO_SIGNING_SECRET` (`Reconciler#checkSigningSecrets`) — that is
     /// an auth-configuration state, not a load failure (spec

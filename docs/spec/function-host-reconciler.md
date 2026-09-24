@@ -76,7 +76,11 @@ every version fetched and verified; `failures` — `(address, version) → error
    `LoadedFunction ensureLoaded(FunctionAddress)` is what D3 calls, and it loads from `prepared`
    under a per-address lock so two first invocations load once. A `candidate` is never loaded **and never routed**: it must not enter `lazyRoutes`, or
    `ensureLoaded` would serve a version nobody promoted.
-   `runtime: wasm` ⇒ failure `RUNTIME_UNSUPPORTED` (phase 3).
+   `manifest.runtime()` chooses the loader — `jvm` ⇒ `JvmFunctionLoader`, `wasm` ⇒
+   `WasmFunctionLoader` (`docs/spec/function-wasm-runtime.md` §2; before W1 a wasm entry failed
+   `RUNTIME_UNSUPPORTED`). `MetaspaceGuard.check()` runs before **either** (Wasm compile mode defines
+   classes too); a Wasm refusal is `LOAD:WASM_INVALID` / `LOAD:WASM_ENTRYPOINT_NOT_EXPORTED` /
+   `LOAD:WASM_IMPORT_NOT_ALLOWED` / `LOAD:WASM_MEMORY_OVER_CAP`, like any other load failure.
 4. **Unload.** Everything in the document's `unload`, and everything loaded or in `lazyRoutes` whose
    address is no longer a `live` entry ⇒ close and remove; their `prepared` artifacts are dropped from
    the map (the store's cache is left to the OS — it is content-addressed and harmless). Lazy entries
@@ -144,7 +148,7 @@ Time is a parameter; nothing sleeps except the loop tests, which use latches.
 | R10 | loop: N triggers during a run ⇒ exactly one more run; `close()` interrupts a run blocked in the control plane and joins within 5 s; an exception in a run does not end the loop | run once per trigger; swallow the interrupt |
 | R1b | live v1 (lazy) + candidate v2: `ensureLoaded` returns **v1**; the candidate is in no route | let candidates through the role check |
 | R3b | the registry refusing a load (capacity, all warm) is a `FAILED` entry, not an exception out of `reconcileOnce` | let it propagate |
-| R11 | wasm entry ⇒ `RUNTIME_UNSUPPORTED`, others unaffected | — |
+| R11 | (W1) a wasm entry goes to the Wasm loader: a module loads and is `LOADED`; a JAR declared `wasm` is `FAILED LOAD:WASM_INVALID`, never loaded as a JVM function; others unaffected; the metaspace guard refuses a wasm load as it does a JVM one (`ReconcilerWasmTest`) | send wasm entries to the JVM loader; skip the guard for wasm |
 | R12 | **in-process end to end** (platform `Server` on `TestPg`, signatures `Required` over a `TestSigstore` root on both sides, a `function-host` service principal): create → policy → publish (signed) → host reconciles ⇒ heartbeat ⇒ version `READY` ⇒ promote ⇒ next reconcile ⇒ `LOADED` (warm) and `GET …/status` shows this host with `LOADED`; retire-after-promote-v2 ⇒ v1 unloaded within one reconcile | — (integration pin) |
 | R13 | platform: desired state carries `signer` when recorded and omits it when not; bytes still deterministic | — |
 
