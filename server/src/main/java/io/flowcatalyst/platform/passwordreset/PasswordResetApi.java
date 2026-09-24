@@ -252,6 +252,9 @@ public final class PasswordResetApi {
 
     // ── password-setup/request (app-managed-invitations §3) ─────────────────
 
+    /// Rate-limit key prefix: password-setup requests budget apart from resets.
+    private static final String SETUP_KEY = "password-setup:";
+
     /// The login-detected pattern's other half of `request`: same
     /// never-reveal-existence shape, a different fixed message, and it is
     /// eligible only for a passwordless INTERNAL user awaiting setup.
@@ -264,7 +267,18 @@ public final class PasswordResetApi {
         String email = body.path("email").asString("").trim().toLowerCase(Locale.ROOT);
         String redirectUri = body.path("redirectUri").asString(null);
         try {
-            tryIssuePasswordSetupInvite(s, email, redirectUri);
+            // The same per-IP and per-address budgets as a reset (S2.7) — this too mails an
+            // unauthenticated caller's chosen address — under their own keys, so the two
+            // routes never spend each other's budget. Over budget: nothing sent, same answer.
+            String ip = ClientIp.of(ctx);
+            if (withinResetBudget(s, ip == null || ip.isBlank() ? ip : SETUP_KEY + ip,
+                    email.isEmpty() ? email : SETUP_KEY + email)) {
+                tryIssuePasswordSetupInvite(s, email, redirectUri);
+            } else {
+                LOG.atWarn().setMessage("password setup request rate limited; nothing sent")
+                        .addKeyValue("domain", domainOf(email))
+                        .log();
+            }
         } catch (RuntimeException e) {
             LOG.atWarn().setMessage("password setup request suppressed error")
                     .addKeyValue("domain", domainOf(email))

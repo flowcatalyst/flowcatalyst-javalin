@@ -255,6 +255,32 @@ class PasswordResetApiTest {
         }
     }
 
+    /// Password-setup requests mail an unauthenticated caller's chosen address too:
+    /// the same per-address budget, with an indistinguishable answer. Mutant: no budget.
+    @Test
+    void passwordSetupRequestIsBudgetedPerAddressWithAnIndistinguishableAnswer() {
+        var limits = RateLimit.Policies.fromEnv(new EnvReader(Map.of(
+                "FC_RL_PASSWORD_RESET_EMAIL_PER_HOUR", "2", "FC_RL_PASSWORD_RESET_IP_PER_HOUR", "50")));
+        String ipBase = "10." + (1 + Math.floorMod(RUN.hashCode(), 200)) + "." + (1 + Math.floorMod(UUID.randomUUID().hashCode(), 200));
+        try (var h = TestHttp.routes(routes -> {
+            HttpError.install(routes);
+            PasswordResetApi.register(routes, limitedState(new PostgresRateLimitStore(DS), limits));
+        })) {
+            String email = "setup-budget-" + RUN + "@example.com";
+            user(email, null, null);
+            SENT.clear();
+            var answers = new ArrayList<String>();
+            for (int i = 0; i < 3; i++) {
+                var r = h.post("/auth/password-setup/request", Json.write(Map.of("email", email)),
+                        "X-Forwarded-For", ipBase + "." + (20 + i));
+                answers.add(r.statusCode() + " " + r.body());
+            }
+            assertThat(SENT.stream().filter(m -> m.to().equals(email)).count())
+                    .as("mutant: password-setup requests are not budgeted").isEqualTo(2);
+            assertThat(answers).as("the limited answer is byte-identical").containsOnly(answers.getFirst());
+        }
+    }
+
     private static PasswordResetApi.State limitedState(RateLimit.Store store, RateLimit.Policies limits) {
         return new PasswordResetApi.State(LINKS, TOKENS, PRINCIPALS, UOW, MFA, MFA_TOKENS, new DomainPolicy.Evaluator(MAPPINGS),
                 GRANTS, NOTICES, PortalPasswords.notWired(), ApprovalQueue.none(), false, MOVABLE, null, null, ATTEMPTS,
