@@ -1893,7 +1893,8 @@ What is left needs a ruling or was judged not worth changing:
    presentation revokes (signs out users of the Laravel/TS SDKs, which refresh without a lock).
 6. **`/oauth/authorize` Bearer fallback** (C-Q25) — kept but narrowed to session tokens. Drop it?
 7. **2FA email-challenge budget** — reuses the password-reset policies (20/h per IP, 5/h per
-   address). And `/auth/password-setup/request` still sends mail unlimited — same limiter?
+   address). `/auth/password-setup/request` now spends the same budgets under its own keys
+   (`dbe3ad9c`) — revisit if the numbers change.
 8. **Unmapped email domain at `/auth/oidc/login`** answers 500 `OIDC_RESOLVE_FAILED` (spec
    auth-identity §4.3, Go parity) — a user's typo, not a server fault. 400/404 instead?
 9. **Function outbound HTTP response cap** — `AllowlistHttpCaller` reads the whole body; an
