@@ -145,7 +145,7 @@ public final class PasskeyService {
         try {
             result = rp.finishRegistration(FinishRegistrationOptions.builder().request(request).response(response).build());
         } catch (RegistrationFailedException | RuntimeException e) {
-            throw new InvalidCredential("ATTESTATION_INVALID", rootMessage(e, "attestation rejected"));
+            throw new InvalidCredential("ATTESTATION_INVALID", rootMessage(e, "attestation rejected"), e);
         }
         List<String> transports = result.getKeyId().getTransports().map(t -> t.stream().map(x -> x.getId()).toList()).orElse(List.of());
         byte[] aaguid = result.getAaguid().getBytes();
@@ -186,7 +186,7 @@ public final class PasskeyService {
         try {
             result = rp.finishAssertion(FinishAssertionOptions.builder().request(request).response(response).build());
         } catch (AssertionFailedException | RuntimeException e) {
-            throw new InvalidCredential("INVALID_CREDENTIALS", rootMessage(e, "assertion rejected"));
+            throw new InvalidCredential("INVALID_CREDENTIALS", rootMessage(e, "assertion rejected"), e);
         }
         if (!result.isSuccess()) {
             throw new InvalidCredential("INVALID_CREDENTIALS", "assertion rejected");
@@ -226,6 +226,14 @@ public final class PasskeyService {
 
         public InvalidCredential(String code, String message) {
             super(message);
+            this.code = code;
+        }
+
+        /// With the library's own failure kept as the cause, so the route's log
+        /// line shows why (a malformed response, a store failure inside the
+        /// library's credential lookup) — the message alone is the root's text.
+        public InvalidCredential(String code, String message, Throwable cause) {
+            super(message, cause);
             this.code = code;
         }
     }
