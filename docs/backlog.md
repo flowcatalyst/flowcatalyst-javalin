@@ -1927,9 +1927,8 @@ What is left needs a ruling or was judged not worth changing:
     `/sign` now 403 when the signer is out of reach; duplicate-id 409 vs a per-item result; the
     duplicate check covers only the write table. Specs `subscription.md` / `connection.md` still say
     "not validated" for the account reference.
-18. **Spec docs stale after S1** — `principal.md` §3 ("anchors pass every permission gate"), bff
-    §6, application §10, service-account §3 describe the old gates; `auth-core.md` §7.4 describes
-    non-transactional rotation. A doc sweep.
+18. ~~**Spec docs stale after S1**~~ — swept 2026-09-25 (`0ec420b9`, `dd8089b4`): principal,
+    bff, application, serviceaccount, auth-core §9, subscription, connection.
 19. **Go**: the service-principal-id-as-account-id defect exists in Go's connection sync too (no
     hand-off written — Go is being retired).
 
