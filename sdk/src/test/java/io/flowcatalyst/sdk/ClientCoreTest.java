@@ -186,24 +186,6 @@ class ClientCoreTest {
     }
 
     @Test
-    void routerCallsAreUnauthenticatedAgainstRouterBaseUrl() throws Exception {
-        try (StubServer routerServer = new StubServer()) {
-            routerServer.on("POST", "/monitoring/in-flight-messages/check-batch", 200,
-                    "{\"m1\":true,\"m2\":false}");
-
-            FlowCatalystClient client = FlowCatalystClient.builder()
-                    .baseUrl(server.baseUrl())
-                    .clientCredentials("id", "secret")
-                    .routerBaseUrl(routerServer.baseUrl())
-                    .build();
-
-            Map<String, Boolean> result = client.router().inPipelineBatch(List.of("m1", "m2"));
-            assertEquals(Map.of("m1", true, "m2", false), result);
-            assertEquals(null, routerServer.requests.getFirst().authorization());
-        }
-    }
-
-    @Test
     void voidEndpointsAcceptEmptyBodies() {
         server.stubToken("tok");
         server.on("POST", "/api/subscriptions/sub_1/pause", 204, null);

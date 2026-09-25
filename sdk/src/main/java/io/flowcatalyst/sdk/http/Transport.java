@@ -87,10 +87,15 @@ public final class Transport {
         return execute("DELETE", baseUrl + path, null, null, javaType(type), true);
     }
 
-    /** Unauthenticated request against an absolute URL (router monitoring). */
-    public <T> T rawUnauthenticated(
+    /**
+     * Authenticated request against an absolute URL: the message router, a
+     * separate process that verifies the same platform bearer token (spec
+     * router-api-auth.md rule 8). Same one-shot refresh on 401 as the platform
+     * calls.
+     */
+    public <T> T rawAuthenticated(
             String method, String url, Map<String, Object> query, Object body, JavaType type) {
-        return execute(method, url, query, body, type, false);
+        return execute(method, url, query, body, type, true);
     }
 
     /** URL-encode a path segment. */

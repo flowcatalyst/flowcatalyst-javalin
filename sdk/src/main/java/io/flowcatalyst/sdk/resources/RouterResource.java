@@ -7,8 +7,10 @@ import java.util.Map;
 
 /**
  * Router monitoring resource — talks to the message router (a separate
- * process from the platform) at the configured router base URL, without
- * authentication, mirroring the TypeScript SDK.
+ * process from the platform) at the configured router base URL, sending the
+ * same platform bearer token the SDK uses for the platform. The router checks
+ * it for {@code platform:messaging:router:view}, which the built-in
+ * {@code platform:application-service} role holds (router-api-auth.md rule 8).
  *
  * <p>Designed for an external recovery / replay process that maintains its
  * own list of "messages that look stuck" and wants to confirm whether the
@@ -49,7 +51,7 @@ public final class RouterResource {
      * {@code inPipeline=false} is a normal answer.
      */
     public InPipelineCheckResponse inPipeline(String messageId) {
-        return transport.rawUnauthenticated(
+        return transport.rawAuthenticated(
                 "GET",
                 routerBaseUrl + "/monitoring/in-flight-messages/check",
                 Map.of("messageId", messageId),
@@ -65,7 +67,7 @@ public final class RouterResource {
      * client-side before calling.
      */
     public Map<String, Boolean> inPipelineBatch(List<String> messageIds) {
-        return transport.rawUnauthenticated(
+        return transport.rawAuthenticated(
                 "POST",
                 routerBaseUrl + "/monitoring/in-flight-messages/check-batch",
                 null,
