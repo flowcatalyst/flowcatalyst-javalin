@@ -213,7 +213,9 @@ public final class VertxListener implements AutoCloseable {
                 .setHost(options.host())
                 .setPort(options.port())
                 .setHttp2ClearTextEnabled(options.h2c());
-        HttpServer server = vertx.createHttpServer(serverOptions).requestHandler(router);
+        // A connection with no request in flight closes after 75 s (KeepAliveIdle, backlog item 10).
+        HttpServer server = vertx.createHttpServer(serverOptions);
+        server.requestHandler(KeepAliveIdle.install(vertx, server, router));
 
         // The TLS listener (`docs/spec/http-transport.md` §1): TLS 1.2/1.3 with
         // ALPN -> h2, http/1.1, the SAME router as the plain listener — Vert.x
@@ -226,7 +228,8 @@ public final class VertxListener implements AutoCloseable {
                     .setSsl(true)
                     .setUseAlpn(true)
                     .setKeyCertOptions(tls.pfxOptions());
-            return vertx.createHttpServer(tlsServerOptions).requestHandler(router);
+            HttpServer tls1 = vertx.createHttpServer(tlsServerOptions);
+            return tls1.requestHandler(KeepAliveIdle.install(vertx, tls1, router));
         }).orElse(null);
 
         // The route handlers above capture `listener[0]`; no request can arrive
