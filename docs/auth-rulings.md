@@ -62,7 +62,7 @@ Already ruled before this session and therefore not re-asked: C-Q5 (A-14), C-Q6 
 - **C-Q22** — RULED: reject a `state` > 116 chars up front with `invalid_request`; the cap stays.
 - **C-Q23** — RULED: rate-limit store fails open; backoff store fails **closed** (deny the login, 503). *Scope note (owner, later the same day):* the backoff store is the platform database, so this adds no new hard dependency; the residual failure is a missing `iam_login_attempts` partition. Phase 3 therefore also ships a readiness check that the current and next quarterly partitions exist, and a counter for backoff-store errors that alarms on the first one.
 - **C-Q24** — RULED: populate `status` with the principal's real status (the field already exists, so no reader breaks); verify the SPA/SDK types treat it as optional.
-- **C-Q25** — RULED: keep both orders as Go.
+- **C-Q25** — RULED: keep both orders as Go. **Superseded 2026-09-25** (backlog "Overnight review" item 6): `/oauth/authorize` reads the session cookie only; the Bearer fallback is gone.
 - **C-Q26** — RULED: **RFC 7662** — `client_id` is the OAuth client that minted the token. Verified 2026-09-05: no caller of introspection in InhanceMono (`apps`, `packages_root/packages`) or any SDK; the Go SDK's `IntrospectToken` has no callers; the tenant pair stays in the token's `clients` claim.
 - **C-Q27** — RULED: RFC 6749 error shape for the 429 on **both** `/oauth/authorize` and `/oauth/token`; **backlog**: update the SDKs/SPA error parsing.
 - **C-Q28** — RULED: keep refresh-token-only revocation for now. **Backlog (designed option)**: an access-token denylist, cache-first with the table as the fallback store; the one-hour access TTL bounds its value.

@@ -56,9 +56,8 @@ public record TokenClaims(
     /// access token the platform mints (API or identity, Java or Go) carries
     /// all three; a session token carries none — the session has no
     /// `token_use` value of its own, so its kind is read from what it lacks.
-    /// Used where a session token may arrive outside its cookie
-    /// (`/oauth/authorize`'s Bearer fallback, ruling C-Q25) so an access
-    /// token is never mistaken for a sign-in.
+    /// Used where a sign-in is read from a token (`/oauth/authorize`'s session
+    /// cookie) so an access token is never mistaken for one.
     public boolean isSessionToken() {
         return tokenUse == null && principalType == null && jti == null;
     }

@@ -372,12 +372,18 @@ class OAuthProviderTest {
         assertThat(stored.nonce()).isEqualTo("n-" + RUN);
     }
 
+    /// Owner ruling 2026-09-25 (item 6): the session cookie only. The same
+    /// session token sent as a Bearer is no sign-in: the browser is sent to log
+    /// in and no code is minted.
     @Test
-    void aBearerHeaderIsTheFallbackWhenThereIsNoCookie() {
+    void aBearerHeaderIsNoSignInAtAuthorize() {
         String session = ISSUER_UNDER_TEST.sessionToken(userId, userEmail);
         var r = authorize(Map.of("response_type", "code", "client_id", web.clientId(), "redirect_uri", REDIRECT, "state", "s",
                 "code_challenge", CHALLENGE_PKCE), "Authorization", "Bearer " + session);
-        assertThat(location(r)).startsWith(REDIRECT + "?code=");
+        assertThat(location(r)).startsWith("/auth/login?oauth=true");
+        var none = authorize(Map.of("response_type", "code", "client_id", web.clientId(), "redirect_uri", REDIRECT, "state", "s",
+                "code_challenge", CHALLENGE_PKCE, "prompt", "none"), "Authorization", "Bearer " + session);
+        assertThat(query(location(none)).get("error")).isEqualTo("login_required");
     }
 
     /// S2.2: whichever header carries it, the authorize session must be a
