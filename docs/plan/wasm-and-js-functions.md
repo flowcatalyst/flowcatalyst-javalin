@@ -107,8 +107,12 @@ section above. **Done.**
   else a minimal committed set with their source beside them.
 - Tests: load/refuse/invoke/timeout/memory-cap/unload, each mutant-checked.
 
-*Status (2026-09-24): W1 + W2 implemented per `docs/spec/function-wasm-runtime.md`, awaiting the
-orchestrator's review. One W0 finding did not hold for the SDK as ported: `CompiledPlugin.instantiate()`
+*Status (2026-09-25): **W1–W5 all landed** — W1+W2 `3b44ecc7` (runtime), W3 `4de4a51c` (JS guest,
+sample, `fn init --lang js`), W4 `d7cb3bef` (`fc_db_*`), W5 (SPA create/publish, `fn validate`
+test, docs, an e2e step publishing and calling the JS sample — e2e 55/55 on Java). Remaining from
+this plan: "Later" (Rust guest sample + template, TinyGo). The note below is from the W1+W2 review:*
+
+*Status (2026-09-24): W1 + W2 implemented per `docs/spec/function-wasm-runtime.md`, reviewed and merged. One W0 finding did not hold for the SDK as ported: `CompiledPlugin.instantiate()`
 re-parses the module and builds a fresh `CachedAotMachineFactory` per instance, so every instance
 recompiled (new classes, new metaspace); the vendored module's `ManifestWasm.fromModule` + a
 once-per-process parsed kernel (`extism-endive/NOTICE`) let the host compile once per version and

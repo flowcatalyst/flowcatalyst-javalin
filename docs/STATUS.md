@@ -14,6 +14,9 @@ duplication/builders) → fixes, each with a test that fails on the old code (mu
 orchestrator, or by the agent and spot-checked). Spec `docs/spec/security-fixes-2026-09-24.md`
 (S0–S3); owner questions and deliberate deferrals in `docs/backlog.md` §"Overnight review".
 
+- **W5 landed (2026-09-25): the Wasm/JS plan is complete** — the SPA's create drawer offers WASM, the
+  publish drawer takes a `.wasm` for a wasm manifest, `fn validate` pinned for wasm, docs (overview
+  §12), and an e2e step that creates, publishes, promotes and calls the JS sample (e2e 55/55 Java).
 - **W3 (JavaScript functions) and W4 (Wasm `fc_db_*`) landed**; JS `handler()` now logs an uncaught
   exception and answers a fixed reason (it put the message in the body).
 - **S0 (orchestrator):** `Exchange.path()` is the normalised path (dot-segments bypassed router
