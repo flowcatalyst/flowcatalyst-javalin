@@ -75,12 +75,19 @@ public final class Normaliser {
     /// step, compared there once it resurfaces (rule 4), not here — and
     /// masks an `Expires` attribute's value to `«time»` (it is a timestamp,
     /// just not an RFC 3339 one, so rule 3 never reaches it on its own).
+    private static final String SESSION_COOKIE = "fc_session";
+    private static final String HARDENED_SESSION_COOKIE = "__Host-fc_session";
+
     static String maskCookie(String setCookie) {
         int semi = setCookie.indexOf(';');
         String pair = semi < 0 ? setCookie : setCookie.substring(0, semi);
         String rest = semi < 0 ? "" : setCookie.substring(semi);
         int eq = pair.indexOf('=');
         String name = eq < 0 ? pair : pair.substring(0, eq);
+        // The one ruled rename: Java's session cookie carries the __Host- prefix
+        // (docs/spec/cookie-hardening.md, owner-approved 2026-09-24), Go's does not.
+        // Only that exact name maps; every other cookie, and every attribute, compares.
+        if (HARDENED_SESSION_COOKIE.equals(name)) name = SESSION_COOKIE;
         // Attributes compared as a set: RFC 6265 gives their order no meaning, and
         // the two servers' HTTP stacks emit them in different orders.
         List<String> attrs = new ArrayList<>();

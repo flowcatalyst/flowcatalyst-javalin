@@ -246,6 +246,16 @@ class NormaliserTest {
         assertThat(n.body().get("status").asString()).isEqualTo("ok-ish");
     }
 
+    /// The session cookie's ruled rename (`__Host-` on Java) compares equal to Go's
+    /// name; any other cookie keeps its own name. Mutant: map no names.
+    @Test
+    void theHardenedSessionCookieNameComparesAsGosAndNoOtherNameIsMapped() {
+        assertThat(Normaliser.maskCookie("__Host-fc_session=a; Path=/; Secure"))
+                .isEqualTo(Normaliser.maskCookie("fc_session=b; Path=/; Secure"));
+        assertThat(Normaliser.maskCookie("__Host-fc_td=a; Path=/; Secure"))
+                .as("only the session cookie is mapped").startsWith("__Host-fc_td=");
+    }
+
     /// Rule 5: attribute order carries no meaning, so two orderings of the
     /// same attributes normalise to the same text.
     @Test

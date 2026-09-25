@@ -24,6 +24,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 
 /// Runs one [Scenario] against one side (parity-harness spec §3, §4): its
 /// own `HttpClient`, its own cookie jar, `Redirect.NEVER`, 10 s per request.
@@ -46,6 +47,9 @@ import java.util.Map;
 /// simulating a trusted local client over its own loopback transport, which
 /// is what running two real dev servers side by side actually is.
 public final class Runner {
+
+    private static final String SESSION_COOKIE = "fc_session";
+    private static final String HARDENED_SESSION_COOKIE = "__Host-fc_session";
 
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
 
@@ -353,7 +357,13 @@ public final class Runner {
                         .orElseThrow(() -> new IllegalStateException("capture '" + name + "': " + rest.substring(0, q) + " has no query parameter " + param));
             } else if (spec.startsWith("cookie:")) {
                 String cookie = spec.substring("cookie:".length());
+                // The session cookie is `__Host-fc_session` on the Java side since the cookie
+                // hardening (docs/spec/cookie-hardening.md, owner-approved 2026-09-24) and still
+                // `fc_session` on Go's: the same cookie by its hardened name, not a difference to
+                // capture around.
                 value = cookieValue(sent.headers(), cookie)
+                        .or(() -> SESSION_COOKIE.equals(cookie)
+                                ? cookieValue(sent.headers(), HARDENED_SESSION_COOKIE) : Optional.empty())
                         .orElseThrow(() -> new IllegalStateException("capture '" + name + "': cookie " + cookie + " not present"));
             } else {
                 JsonNode body = sent.jsonBodyOrNull();
