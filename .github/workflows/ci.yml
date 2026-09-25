@@ -4,6 +4,7 @@ name: ci
 #
 #   test      the whole Maven reactor on Temurin 25 (embedded Postgres via zonky), plus
 #             the jOOQ drift check — the authority for correctness
+#   units     the SPA's vitest suite and the JS/Rust function guest libraries' own tests
 #   image     the Dockerfile's jlink image, started router-only and probed on /health —
 #             the default deployable (cutover.md: "the jlink image for the platform tier")
 #   native    GraalVM native-image on Linux amd64 + arm64 and macOS arm64 (the one
@@ -91,6 +92,36 @@ jobs:
             git diff --stat -- clients sdk/openapi
             exit 1
           }
+
+  # The SPA's and the two function guest libraries' own unit tests — none of them is part of
+  # the Maven reactor, so without this job a break in any of them reaches main unnoticed.
+  units:
+    name: SPA + guest library unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.27.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: SPA (vitest)
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec vitest run
+      - name: "@flowcatalyst/function (vitest + tsc)"
+        working-directory: clients/function-js
+        run: |
+          npm ci
+          npx vitest run
+          npm run lint
+      - uses: dtolnay/rust-toolchain@stable
+      - name: flowcatalyst-function (cargo test)
+        working-directory: clients/function-rust
+        run: cargo test --locked
 
   image:
     name: jlink image (Dockerfile)
