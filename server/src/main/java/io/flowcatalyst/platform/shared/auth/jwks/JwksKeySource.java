@@ -1,4 +1,4 @@
-package io.flowcatalyst.fnhost.http;
+package io.flowcatalyst.platform.shared.auth.jwks;
 
 import io.flowcatalyst.platform.shared.json.Json;
 import org.slf4j.Logger;
@@ -26,7 +26,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/// Caches the platform's JWKS (spec `function-host-listener.md` §3): an
+/// Caches the platform's JWKS for a process that verifies platform tokens
+/// without being the platform: the function host (spec
+/// `function-host-listener.md` §3) and the router (`router-api-auth.md`). An
 /// unknown `kid` refetches **at most once per 30 s** — a flood of bad tokens
 /// must not become a flood of JWKS requests. The JWK → [RSAPublicKey]
 /// decoding is the inverse of the platform's own encoder

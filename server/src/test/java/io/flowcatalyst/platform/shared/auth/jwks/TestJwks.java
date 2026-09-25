@@ -1,4 +1,4 @@
-package io.flowcatalyst.fnhost.http;
+package io.flowcatalyst.platform.shared.auth.jwks;
 
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
@@ -38,10 +38,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 /// minted with `iss = issuer` (the address) must be REJECTED once discovery
 /// is wired correctly; {@link #mintWithIssuer} lets a test build that token
 /// explicitly.
-final class TestJwks implements AutoCloseable {
+public final class TestJwks implements AutoCloseable {
 
-    final String issuer;
-    final String discoveryIssuer;
+    public final String issuer;
+    public final String discoveryIssuer;
     private final HttpServer server;
     private final AtomicInteger jwksRequestCount = new AtomicInteger();
     private final AtomicInteger discoveryRequestCount = new AtomicInteger();
@@ -62,7 +62,7 @@ final class TestJwks implements AutoCloseable {
     /// "discovery down at first, then up" case.
     private volatile boolean discoveryDown;
 
-    TestJwks() throws IOException {
+    public TestJwks() throws IOException {
         KeyPair pair = generate();
         this.currentPrivate = (RSAPrivateKey) pair.getPrivate();
         this.currentPublic = (RSAPublicKey) pair.getPublic();
@@ -78,19 +78,19 @@ final class TestJwks implements AutoCloseable {
     /// Makes the discovery document's `jwks_uri` point somewhere else
     /// entirely (a foreign origin) — the host must ignore it and keep using
     /// `<platformUrl>/.well-known/jwks.json`.
-    void useForeignJwksUri(String url) {
+    public void useForeignJwksUri(String url) {
         this.jwksUriOverride = url;
     }
 
-    void breakDiscovery() {
+    public void breakDiscovery() {
         discoveryDown = true;
     }
 
-    void fixDiscovery() {
+    public void fixDiscovery() {
         discoveryDown = false;
     }
 
-    int discoveryRequestCount() {
+    public int discoveryRequestCount() {
         return discoveryRequestCount.get();
     }
 
@@ -106,7 +106,7 @@ final class TestJwks implements AutoCloseable {
 
     /// Rotates: the current key becomes "previous" (still listed in the
     /// JWKS), and a fresh key becomes current.
-    void rotate() {
+    public void rotate() {
         KeyPair pair = generate();
         previousPublic = currentPublic;
         previousKid = currentKid;
@@ -117,11 +117,11 @@ final class TestJwks implements AutoCloseable {
 
     /// A key from a DIFFERENT, unrelated trust root — for a token signed by
     /// nobody this JWKS document ever lists.
-    static KeyPair foreignKeyPair() {
+    public static KeyPair foreignKeyPair() {
         return generate();
     }
 
-    int jwksRequestCount() {
+    public int jwksRequestCount() {
         return jwksRequestCount.get();
     }
 
@@ -133,21 +133,21 @@ final class TestJwks implements AutoCloseable {
     private final CountDownLatch fetchStarted = new CountDownLatch(1);
     private final CountDownLatch releaseFetch = new CountDownLatch(1);
 
-    void parkNextJwksFetch() {
+    public void parkNextJwksFetch() {
         parkNext = true;
     }
 
-    boolean awaitFetchStarted(java.time.Duration timeout) throws InterruptedException {
+    public boolean awaitFetchStarted(java.time.Duration timeout) throws InterruptedException {
         return fetchStarted.await(timeout.toMillis(), TimeUnit.MILLISECONDS);
     }
 
-    void releaseParkedFetch() {
+    public void releaseParkedFetch() {
         releaseFetch.countDown();
     }
 
     /// A validly-issued token: signed with the CURRENT key, `iss` = the
     /// discovered issuer (never {@link #issuer}, the address — see the class doc).
-    String mint(String subject, String type, String tier, String scope, List<String> clients,
+    public String mint(String subject, String type, String tier, String scope, List<String> clients,
                 List<String> applications, boolean allApplications, Instant expiresAt) {
         return mint(subject, type, tier, scope, clients, List.of(), applications, allApplications, expiresAt);
     }
@@ -155,7 +155,7 @@ final class TestJwks implements AutoCloseable {
     /// Same as {@link #mint(String, String, String, String, List, List, boolean, Instant)}
     /// but with an explicit `roles` claim (P2, `docs/spec/function-caller-claims.md` §5) —
     /// the plain overload above always mints an empty `roles` list.
-    String mint(String subject, String type, String tier, String scope, List<String> clients,
+    public String mint(String subject, String type, String tier, String scope, List<String> clients,
                 List<String> roles, List<String> applications, boolean allApplications, Instant expiresAt) {
         return mint(currentPrivate, currentKid, discoveryIssuer, subject, type, tier, scope, clients, roles,
                 applications, allApplications, expiresAt);
@@ -163,21 +163,21 @@ final class TestJwks implements AutoCloseable {
 
     /// Same current (known) key/kid, but a DIFFERENT `iss` claim — isolates
     /// the issuer check from the kid-refetch machinery (H4's "wrong issuer" case).
-    String mintWithIssuer(String issuer, String subject, String type, String tier, String scope,
+    public String mintWithIssuer(String issuer, String subject, String type, String tier, String scope,
                           List<String> clients, List<String> applications, boolean allApplications,
                           Instant expiresAt) {
         return mint(currentPrivate, currentKid, issuer, subject, type, tier, scope, clients, List.of(), applications,
                 allApplications, expiresAt);
     }
 
-    static String mint(RSAPrivateKey key, String kid, String issuer, String subject, String type, String tier,
+    public static String mint(RSAPrivateKey key, String kid, String issuer, String subject, String type, String tier,
                         String scope, List<String> clients, List<String> applications, boolean allApplications,
                         Instant expiresAt) {
         return mint(key, kid, issuer, subject, type, tier, scope, clients, List.of(), applications, allApplications,
                 expiresAt);
     }
 
-    static String mint(RSAPrivateKey key, String kid, String issuer, String subject, String type, String tier,
+    public static String mint(RSAPrivateKey key, String kid, String issuer, String subject, String type, String tier,
                         String scope, List<String> clients, List<String> roles, List<String> applications,
                         boolean allApplications, Instant expiresAt) {
         return mint(key, kid, issuer, subject, type, tier, scope, clients, roles, applications, allApplications,
@@ -185,12 +185,12 @@ final class TestJwks implements AutoCloseable {
     }
 
     /// A token whose `token_use` claim is `tokenUse` (`"identity"` for a relying party's identity token).
-    String mintWithTokenUse(String tokenUse, String subject, String tier, List<String> clients, Instant expiresAt) {
+    public String mintWithTokenUse(String tokenUse, String subject, String tier, List<String> clients, Instant expiresAt) {
         return mint(currentPrivate, currentKid, discoveryIssuer, subject, "USER", tier,
                 "platform:function:function:view", clients, List.of(), List.of(), true, expiresAt, tokenUse);
     }
 
-    static String mint(RSAPrivateKey key, String kid, String issuer, String subject, String type, String tier,
+    public static String mint(RSAPrivateKey key, String kid, String issuer, String subject, String type, String tier,
                         String scope, List<String> clients, List<String> roles, List<String> applications,
                         boolean allApplications, Instant expiresAt, String tokenUse) {
         try {

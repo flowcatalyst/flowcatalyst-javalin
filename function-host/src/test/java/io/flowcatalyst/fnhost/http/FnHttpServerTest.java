@@ -1,5 +1,6 @@
 package io.flowcatalyst.fnhost.http;
 
+import io.flowcatalyst.platform.shared.auth.jwks.TestJwks;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import io.flowcatalyst.fnhost.load.LoadedFunction;

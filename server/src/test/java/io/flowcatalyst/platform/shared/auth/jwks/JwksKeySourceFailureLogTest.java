@@ -1,4 +1,4 @@
-package io.flowcatalyst.fnhost.http;
+package io.flowcatalyst.platform.shared.auth.jwks;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;

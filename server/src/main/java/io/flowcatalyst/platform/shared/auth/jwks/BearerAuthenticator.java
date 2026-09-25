@@ -1,4 +1,4 @@
-package io.flowcatalyst.fnhost.http;
+package io.flowcatalyst.platform.shared.auth.jwks;
 
 import com.nimbusds.jwt.SignedJWT;
 import io.flowcatalyst.platform.shared.auth.JwtVerifier;
@@ -10,7 +10,10 @@ import java.time.Clock;
 import java.util.List;
 import java.util.Objects;
 
-/// `auth: platform` (spec `function-host-listener.md` §3): a bearer JWT
+/// A platform-issued bearer JWT verified by a process that is not the
+/// platform. Shared by the function host (`auth: platform`, spec
+/// `function-host-listener.md` §3) and the router's API
+/// (`docs/spec/router-api-auth.md`). The token is
 /// verified locally with the server's own [JwtVerifier] over keys from
 /// [JwksKeySource] — issuer and expiry checked the same way the platform's
 /// own authenticator does, because it IS the same [JwtVerifier].

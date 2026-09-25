@@ -1,5 +1,7 @@
 package io.flowcatalyst.fnhost.http;
 
+import io.flowcatalyst.platform.shared.auth.jwks.BearerAuthenticator;
+import io.flowcatalyst.platform.shared.auth.jwks.JwksKeySource;
 import io.flowcatalyst.fnhost.FunctionInvocationEvent;
 import io.flowcatalyst.fnhost.load.LoadedFunction;
 import io.flowcatalyst.fnhost.reconcile.DesiredDocument;

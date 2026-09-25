@@ -1,5 +1,6 @@
 package io.flowcatalyst.fnhost.http;
 
+import io.flowcatalyst.platform.shared.auth.jwks.TestJwks;
 import com.sun.net.httpserver.HttpServer;
 import io.flowcatalyst.fnhost.reconcile.ControlPlane;
 import io.flowcatalyst.fnhost.reconcile.DesiredDocument;
