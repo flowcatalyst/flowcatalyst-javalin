@@ -54,6 +54,7 @@ public final class MavenCentralPgBinaryResolver implements PgBinaryResolver {
     private final String version;
     private final Path offlineOverride;
     private final BooleanSupplier alpineDetector;
+    private final Duration downloadDeadline;
 
     /// Production wiring: classpath first ([DefaultPostgresBinaryResolver]),
     /// then `<cacheDir>/downloads`, repository base URL from
@@ -74,6 +75,15 @@ public final class MavenCentralPgBinaryResolver implements PgBinaryResolver {
     /// `HttpServer` as the repository, and a fixed Alpine answer.
     MavenCentralPgBinaryResolver(PgBinaryResolver classpathDelegate, Path cacheDir, String repoBaseUrl,
                                   String version, Path offlineOverride, BooleanSupplier alpineDetector) {
+        this(classpathDelegate, cacheDir, repoBaseUrl, version, offlineOverride, alpineDetector, DOWNLOAD_DEADLINE);
+    }
+
+    /// With the whole-exchange download deadline injected — a test's trickling
+    /// server must fail in seconds, not [#DOWNLOAD_DEADLINE].
+    MavenCentralPgBinaryResolver(PgBinaryResolver classpathDelegate, Path cacheDir, String repoBaseUrl,
+                                  String version, Path offlineOverride, BooleanSupplier alpineDetector,
+                                  Duration downloadDeadline) {
+        this.downloadDeadline = Objects.requireNonNull(downloadDeadline, "downloadDeadline");
         this.classpathDelegate = Objects.requireNonNull(classpathDelegate, "classpathDelegate");
         this.cacheDir = Objects.requireNonNull(cacheDir, "cacheDir");
         this.repoBaseUrl = Objects.requireNonNull(repoBaseUrl, "repoBaseUrl");
@@ -154,8 +164,8 @@ public final class MavenCentralPgBinaryResolver implements PgBinaryResolver {
 
         Path tmp = Files.createTempFile(downloads, artifact, ".jar.tmp");
         try {
-            long bytes = httpDownloadToFile(jarUrl, tmp);
-            String expectedSha1 = firstToken(httpGetString(sha1Url));
+            long bytes = httpDownloadToFile(jarUrl, tmp, downloadDeadline);
+            String expectedSha1 = firstToken(httpGetString(sha1Url, downloadDeadline));
             String actualSha1 = sha1Hex(tmp);
             if (!actualSha1.equalsIgnoreCase(expectedSha1)) {
                 throw new IOException("sha1 mismatch downloading " + jarUrl + ": expected " + expectedSha1 + " but got " + actualSha1);
@@ -183,39 +193,55 @@ public final class MavenCentralPgBinaryResolver implements PgBinaryResolver {
     /// hang, when a mirror accepts the connection and never answers.
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(20);
     private static final Duration REQUEST_TIMEOUT = Duration.ofMinutes(5);
+    /// The JDK's request timeout stops applying once response headers arrive, so a
+    /// mirror that sends headers and then trickles (or stalls) the body would hold
+    /// a first `fcdev start` forever. The whole exchange runs under this instead.
+    static final Duration DOWNLOAD_DEADLINE = Duration.ofMinutes(15);
     private static final HttpClient HTTP = HttpClient.newBuilder()
             .connectTimeout(CONNECT_TIMEOUT)
             .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
 
-    private static long httpDownloadToFile(String url, Path dest) throws IOException {
+    private static long httpDownloadToFile(String url, Path dest, Duration deadline) throws IOException {
         var client = HTTP;
         var request = HttpRequest.newBuilder(URI.create(url)).timeout(REQUEST_TIMEOUT).GET().build();
+        HttpResponse<Path> response = withinDeadline(url, deadline,
+                client.sendAsync(request, HttpResponse.BodyHandlers.ofFile(dest)));
+        if (response.statusCode() != 200) {
+            throw new IOException("GET " + url + " -> HTTP " + response.statusCode());
+        }
+        return Files.size(dest);
+    }
+
+    /// Waits for the whole exchange — headers AND body — at most `deadline`,
+    /// cancelling it past that.
+    private static <T> HttpResponse<T> withinDeadline(String url, Duration deadline,
+            java.util.concurrent.CompletableFuture<HttpResponse<T>> pending) throws IOException {
         try {
-            HttpResponse<Path> response = client.send(request, HttpResponse.BodyHandlers.ofFile(dest));
-            if (response.statusCode() != 200) {
-                throw new IOException("GET " + url + " -> HTTP " + response.statusCode());
-            }
-            return Files.size(dest);
+            return pending.get(deadline.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException e) {
+            pending.cancel(true);
+            throw new IOException("downloading " + url + " did not finish within " + deadline, e);
+        } catch (java.util.concurrent.ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof IOException io) throw io;
+            throw new IOException("downloading " + url + " failed", cause);
         } catch (InterruptedException e) {
+            pending.cancel(true);
             Thread.currentThread().interrupt();
             throw new IOException("interrupted downloading " + url, e);
         }
     }
 
-    private static String httpGetString(String url) throws IOException {
+    private static String httpGetString(String url, Duration deadline) throws IOException {
         var client = HTTP;
         var request = HttpRequest.newBuilder(URI.create(url)).timeout(REQUEST_TIMEOUT).GET().build();
-        try {
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() != 200) {
-                throw new IOException("GET " + url + " -> HTTP " + response.statusCode());
-            }
-            return response.body();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("interrupted downloading " + url, e);
+        HttpResponse<String> response = withinDeadline(url, deadline,
+                client.sendAsync(request, HttpResponse.BodyHandlers.ofString()));
+        if (response.statusCode() != 200) {
+            throw new IOException("GET " + url + " -> HTTP " + response.statusCode());
         }
+        return response.body();
     }
 
     private static String sha1Hex(Path file) throws IOException {

@@ -131,6 +131,37 @@ class MavenCentralPgBinaryResolverTest {
         assertThat(requestCount.get()).isZero();
     }
 
+    /// A mirror that sends headers and then stalls the body must fail the download,
+    /// not hold a first `fcdev start` forever (the JDK request timeout stops once
+    /// headers arrive). Mutant: the plain blocking send — the test times out.
+    @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void aStalledBodyFailsTheDownloadWithinItsDeadline() throws Exception {
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            exchange.sendResponseHeaders(200, 10_000_000);
+            exchange.getResponseBody().write(new byte[16]);
+            exchange.getResponseBody().flush();
+            try {
+                Thread.sleep(60_000); // never finishes the body
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            exchange.close();
+        });
+        server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
+        server.start();
+        var resolver = new MavenCentralPgBinaryResolver(throwingDelegate(), cacheDir,
+                "http://127.0.0.1:" + server.getAddress().getPort(), VERSION, null, () -> false,
+                java.time.Duration.ofSeconds(2));
+
+        long t0 = System.nanoTime();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> resolver.getPgBinary("Linux", "amd64"))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("did not finish within");
+        assertThat((System.nanoTime() - t0) / 1_000_000).as("bounded by the deadline").isLessThan(15_000);
+    }
+
     // ── fixtures ─────────────────────────────────────────────────────────
 
     private MavenCentralPgBinaryResolver resolver(io.zonky.test.db.postgres.embedded.PgBinaryResolver delegate,

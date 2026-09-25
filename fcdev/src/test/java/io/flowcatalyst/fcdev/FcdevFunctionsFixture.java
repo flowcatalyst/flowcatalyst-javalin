@@ -66,6 +66,7 @@ public final class FcdevFunctionsFixture implements AutoCloseable {
         Path dataPath = root.resolve("flowcatalyst/embedded-pg");
         Path pidFile = root.resolve("flowcatalyst/fcdev.pid");
         Path cache = root.resolve("cache");
+        SharedPgDownloads.link(cache); // one Postgres download per test run, not per boot
         // Two REAL ports, probed and released. `--fn-port 0` cannot be used here: the platform's own
         // FC_FN_POOL_URL default is computed BEFORE Server#start (Env is
         // immutable once built), while the function host's REAL bound port

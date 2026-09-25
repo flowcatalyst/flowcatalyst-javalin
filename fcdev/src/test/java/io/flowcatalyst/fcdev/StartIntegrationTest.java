@@ -43,6 +43,7 @@ class StartIntegrationTest {
         dataPath = root.resolve("flowcatalyst/embedded-pg");
         pidFile = root.resolve("flowcatalyst/fcdev.pid");
         var cache = root.resolve("cache");
+        SharedPgDownloads.link(cache); // one Postgres download per test run, not per boot
         var env = DevEnv.of(Map.of(
                 "FC_EMBEDDED_DB_PATH", dataPath.toString(),
                 "FC_DEV_PID_FILE", pidFile.toString(),
