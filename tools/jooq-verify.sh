@@ -13,7 +13,7 @@ COMMITTED="$ROOT/server/src/main/java/$PKG_DIR"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/jooq-verify.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
-MVN_ARGS=(-q -B -pl server -Pjooq-codegen "-Djooq.target=$TMP" process-test-classes)
+MVN_ARGS=(-q -B -pl server -am -Pjooq-codegen "-Djooq.target=$TMP" process-test-classes)
 (cd "$ROOT" && mvn "${MVN_ARGS[@]}")
 
 if diff -ru "$COMMITTED" "$TMP/$PKG_DIR"; then

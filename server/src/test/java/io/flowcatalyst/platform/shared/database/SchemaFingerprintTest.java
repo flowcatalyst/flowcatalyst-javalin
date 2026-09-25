@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -48,6 +49,11 @@ class SchemaFingerprintTest {
     /// and exact, not a blanket exclusion: every other line on
     /// `msg_subscriptions`, and every other table, is still compared
     /// byte-for-byte against Go.
+    /// V18 (`aud_logs.entity_id` 17 -> 100 characters) as the fingerprint prints it,
+    /// on Java and on Go.
+    static final String WIDENED_COLUMN_JAVA = "COLUMN\taud_logs\tentity_id\t3\tcharacter varying\t100\t\tNO\t\tNO";
+    static final String WIDENED_COLUMN_GO = "COLUMN\taud_logs\tentity_id\t3\tcharacter varying\t17\t\tNO\t\tNO";
+
     static final String DIVERGENT_CONSTRAINT_TABLE = "msg_subscriptions";
     static final String DIVERGENT_CONSTRAINT_NAME = "chk_msg_subscriptions_source";
     static final String DIVERGENT_CONSTRAINT_JAVA_DEF =
@@ -110,7 +116,7 @@ class SchemaFingerprintTest {
             assertThat(in).as("fixture %s (regenerate with -Dfc.regenerateFingerprint=true)", FIXTURE).isNotNull();
             expected = new String(in.readAllBytes(), StandardCharsets.UTF_8);
         }
-        var javaLines = actual.lines().filter(l -> !isJavaOnly(l)).toList();
+        List<String> javaLines = actual.lines().filter(l -> !isJavaOnly(l)).toList();
 
         // The one named, exact divergent-constraint allowance (function-invocation.md
         // §4.1): assert the Java line is exactly the widened definition — not "any
@@ -121,6 +127,13 @@ class SchemaFingerprintTest {
         assertThat(actualDivergent.getFirst())
                 .as("the divergent constraint is widened to exactly the Java definition, nothing else")
                 .endsWith(DIVERGENT_CONSTRAINT_JAVA_DEF);
+
+        // The one named, exact divergent-column allowance (V18): aud_logs.entity_id is
+        // widened 17 -> 100 so a sync rollup's audit row (entity id = the application
+        // code) fits. Asserted exactly, then compared as Go's line — any other change
+        // to that column still fails.
+        assertThat(javaLines).as("aud_logs.entity_id widened by V18, exactly").contains(WIDENED_COLUMN_JAVA);
+        javaLines = javaLines.stream().map(l -> l.equals(WIDENED_COLUMN_JAVA) ? WIDENED_COLUMN_GO : l).toList();
 
         var javaLinesExceptDivergent = javaLines.stream().filter(l -> !isDivergentConstraintLine(l)).toList();
         var expectedLinesExceptDivergent = expected.lines().filter(l -> !isDivergentConstraintLine(l)).toList();

@@ -67,13 +67,15 @@ class GoAdoptionTest {
         // counterpart at all (like V13's own fn_ tables) — each is a genuine
         // addition here too. V17 (config-permissions.md §A.4, the
         // platform:admin:config:update -> :manage rename) is data-only and a
-        // no-op here too: this fixture never seeds iam_role_permissions rows.
-        assertThat(result.migrationsExecuted).isEqualTo(16);
+        // no-op here too: this fixture never seeds iam_role_permissions rows. V18
+        // widens aud_logs.entity_id (17 -> 100) — a real change here too, and a
+        // compatible one for Go, which only ever writes 17 characters.
+        assertThat(result.migrationsExecuted).isEqualTo(17);
         assertThat(result.migrations).extracting(m -> m.version)
-                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17");
+                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18");
 
         MigrationInfo[] applied = Migrator.flyway(ds).info().applied();
-        assertThat(applied).hasSize(17);
+        assertThat(applied).hasSize(18);
         assertThat(applied[0].getVersion().getVersion()).isEqualTo("1");
         assertThat(applied[0].getState()).isEqualTo(MigrationState.BASELINE);
         for (int i = 1; i < applied.length; i++) {
@@ -93,7 +95,7 @@ class GoAdoptionTest {
                 assertThat(rs.getString(1)).isEqualTo("BASELINE");
                 assertThat(rs.getString(2)).isEqualTo("1");
                 assertThat(rs.getBoolean(3)).isTrue();
-                for (int v = 2; v <= 17; v++) {
+                for (int v = 2; v <= 18; v++) {
                     assertThat(rs.next()).isTrue();
                     assertThat(rs.getString(2)).isEqualTo(String.valueOf(v));
                     assertThat(rs.getBoolean(3)).isTrue();
@@ -271,15 +273,19 @@ class GoAdoptionTest {
         assertThat(beforeDivergent).as("Go's own (un-widened) definition, present before V13 runs").hasSize(1);
         assertThat(beforeDivergent.getFirst()).isNotEqualTo(afterDivergent.getFirst());
 
+        // V18 widens aud_logs.entity_id: exactly that line changes, from Go's to Java's.
+        assertThat(before.lines().toList()).contains(SchemaFingerprintTest.WIDENED_COLUMN_GO);
+        assertThat(afterLines).contains(SchemaFingerprintTest.WIDENED_COLUMN_JAVA);
         List<String> afterWithoutNewLines = afterLines.stream()
                 .filter(l -> !javaOnlyTableLines.contains(l))
                 .filter(l -> !SchemaFingerprintTest.isDivergentConstraintLine(l))
+                .map(l -> l.equals(SchemaFingerprintTest.WIDENED_COLUMN_JAVA) ? SchemaFingerprintTest.WIDENED_COLUMN_GO : l)
                 .toList();
         List<String> beforeWithoutDivergent = before.lines()
                 .filter(l -> !SchemaFingerprintTest.isDivergentConstraintLine(l))
                 .toList();
         assertThat(afterWithoutNewLines)
-                .as("V2..V7, V9, V10, V12 and V14 change nothing beyond V8's/V13's new Java-only tables and the one named divergent constraint")
+                .as("V2..V7, V9, V10, V12 and V14 change nothing beyond V8's/V13's new Java-only tables, the one named divergent constraint and V18's one widened column")
                 .containsExactlyInAnyOrderElementsOf(beforeWithoutDivergent);
         assertThat(javaOnlyTableLines).as("V8 adds mail_outbox and V13 adds the fn_ tables").isNotEmpty();
 

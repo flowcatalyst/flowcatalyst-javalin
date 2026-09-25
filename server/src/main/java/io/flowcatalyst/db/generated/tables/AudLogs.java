@@ -69,7 +69,7 @@ public class AudLogs extends TableImpl<AudLogsRecord> {
     /**
      * The column <code>public.aud_logs.entity_id</code>.
      */
-    public final TableField<AudLogsRecord, String> ENTITY_ID = createField(DSL.name("entity_id"), SQLDataType.VARCHAR(17).nullable(false), this, "");
+    public final TableField<AudLogsRecord, String> ENTITY_ID = createField(DSL.name("entity_id"), SQLDataType.VARCHAR(100).nullable(false), this, "");
 
     /**
      * The column <code>public.aud_logs.operation</code>.

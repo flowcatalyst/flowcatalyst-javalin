@@ -254,6 +254,20 @@ class SdkSyncApiTest {
         assertThat(json(r).get("error").asText()).isEqualTo("FORBIDDEN");
     }
 
+    /// An application code longer than 17 characters: the sync rollup's audit row
+    /// carries the code as its entity id (subject `platform.eventtypes.{code}`), and
+    /// `aud_logs.entity_id` was varchar(17) — every such sync answered 500
+    /// AUDIT_WRITE (V18 widens it). Mutant: drop V18.
+    @Test
+    void aSyncForAnApplicationWithALongCodeIsNotAnAuditWriteFailure() {
+        String longCode = "sdksynclongcodeapp" + RUN; // well past 17 characters
+        seedApplication(longCode);
+        var r = post("/api/applications/" + longCode + "/event-types/sync",
+                "{\"eventTypes\":[{\"code\":\"" + longCode + ":orders:order:created\",\"name\":\"Order created\"}]}",
+                anchor());
+        assertThat(r.statusCode()).as("body was: %s", r.body()).isEqualTo(200);
+    }
+
     // ── Connections (code-first-connections.md §3, tests C9 + C10) ──────────
 
     private static String connBody(String code) {
