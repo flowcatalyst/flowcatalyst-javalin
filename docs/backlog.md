@@ -1959,15 +1959,17 @@ surefire fork while it is silent.
   must be an account the caller can reach (S3).
 
 The sync `AUDIT_WRITE` 500 that ran through the corpus for weeks was a real defect on both sides,
-now fixed in Java (V18, `f4611623`). One more of the 59 was a Go commit Java did not yet have:
-`a8ff165`, "a new service account starts with no application access", ported the same night. What
-is left falls into these groups; none is a Java regression.
+now fixed in Java (V18, `f4611623`). `service-accounts mint-token` also exposed a Go commit Java
+did not yet have: `a8ff165`, "a new service account starts with no application access". It was
+ported the same night (`fe441ed8`). On the rerun that step's application claims match Go's, and
+only its scope list differs (the function permissions). Rerun: 1,363 steps, 59 bad, in these
+groups. None is a Java regression.
 
 | Cause | Steps | What differs |
 |---|---|---|
 | **Go's sync `AUDIT_WRITE` bug** (`aud_logs.entity_id` varchar(17); fixed in Java by V18, not in Go) | 11 `applications sync-*`, 3 `code-first-connections` ERRORs | Go 500, Java 200 |
 | …and what Java's successful syncs left behind | ~20 list reads across `bff`, `clients`, `docs`, `roles`, `principals`, `profile-only`, `dispatch-pools`, `connections`, `subscriptions`, `me-public-config` | Java has the synced app's rows (a pool, a user, application links). The synced app's code is also masked as `«auto:entityId»` in Java only, because Java's audit rows captured it as an entity id; that reorders the sorted lists. |
-| **Java-only function service** | 11 `login-as-b` / `confinement-*` permission lists; `bff dashboard-stats` (18 roles vs 16) and `bff-sync-platform-roles` (17 vs 15) | `platform:function:*` permissions; the `function-host` and `function-publisher` roles |
+| **Java-only function service** | 11 `login-as-b` / `confinement-*` permission lists; `service-accounts mint-token` scope; `bff dashboard-stats` (18 roles vs 16) and `bff-sync-platform-roles` (17 vs 15) | `platform:function:*` permissions; the `function-host` and `function-publisher` roles |
 | **`config:update` → `config:manage`** (V17, `docs/spec/config-permissions.md`) | 3 `confinement-login` | permission name |
 | **Refresh replay leeway** (S2; owner question 5 above) | `refresh-reuse-rotated-token`, `refresh-after-family-revoked` | Go 400, Java 200 inside the 10 s leeway |
 | **Cross-application role permissions refused** (S1.5; owner question 15 above) | `roles grant-on-code-sourced-role-is-allowed` | Go 200, Java 400 `PERMISSION_OUTSIDE_APPLICATION` |
