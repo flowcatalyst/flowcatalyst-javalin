@@ -40,6 +40,18 @@ class MigrationsAreAdditiveTest {
     static final Pattern TABLE_STATEMENT = Pattern.compile(
             "(?is)\\b(?:ALTER|DROP)\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?([\\w.]+)");
 
+    /// Retypes reviewed as **widenings** Go survives, keyed by migration, each
+    /// with the exact violation list the scan reports for it. The predicate
+    /// cannot tell `varchar(17) → varchar(100)` from a real retype, so each is
+    /// named here; [SchemaFingerprintTest#WIDENED_COLUMN_JAVA] /
+    /// [SchemaFingerprintTest#WIDENED_COLUMN_GO] pin the before and after
+    /// widths, so a later edit that narrowed or retyped the column fails
+    /// there. Go reads and writes these columns as strings: a wider column
+    /// only lets Go's own long values in (V18 fixed the sync `AUDIT_WRITE`
+    /// 500 that both platforms hit on an application code over 17 chars).
+    static final java.util.Map<String, List<String>> REVIEWED_WIDENINGS = java.util.Map.of(
+            "V18__aud_logs_entity_id_width.sql", List.of("ALTER COLUMN ENTITY_ID TYPE"));
+
     static boolean isMirror(String sql) {
         return sql.stripLeading().startsWith(MIRROR_MARKER);
     }
@@ -136,7 +148,7 @@ class MigrationsAreAdditiveTest {
                 continue;
             }
             List<String> v = violations(sql);
-            if (!v.isEmpty()) offenders.add(name + " " + v);
+            if (!v.isEmpty() && !v.equals(REVIEWED_WIDENINGS.get(name))) offenders.add(name + " " + v);
         }
         assertThat(offenders)
                 .as("migrations after V1 that Go could not survive (cutover.md §0); mirrors of Go migrations are exempt")
