@@ -72,7 +72,7 @@ class ServiceAccountApiTest {
     private static final SigningKeys KEYS = SigningKeys.generateEphemeral();
     private static final String ISSUER = "https://fc.test";
     /// The role every mint-token test grants, and the permission it flattens to.
-    private static final String GRANTED_PERMISSION = "platform:events:create";
+    private static final String GRANTED_PERMISSION = "platform:events:event:create";
 
     /// Shared by the service account's webhook-secret encryption AND the
     /// minted OAuth client's secret ref, so the `/oauth/token` wiring below
@@ -621,12 +621,35 @@ class ServiceAccountApiTest {
         assertThat(json(mint).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
         assertThat(mint.body()).doesNotContain("accessToken");
 
+        // The role ceiling (owner ruling 2026-09-25) also needs the role's own permission.
         String[] anchorUpdater = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
                 Authenticator.TEST_SCOPE, "ANCHOR",
-                Authenticator.TEST_PERMISSIONS, "platform:iam:service-account:update"};
+                Authenticator.TEST_PERMISSIONS, "platform:iam:service-account:update," + GRANTED_PERMISSION};
         assertThat(http.put("/api/service-accounts/" + id + "/roles", "{\"roles\":[\"" + grantedRole.name() + "\"]}", anchorUpdater)
                 .statusCode()).isEqualTo(200);
         assertThat(http.post("/api/service-accounts/" + id + "/token", null, anchorUpdater).statusCode()).isEqualTo(200);
+    }
+
+    /// Owner ruling 2026-09-25 (backlog "Overnight review" item 14): SERVICE_ACCOUNT_UPDATE
+    /// may not give an account a role whose permissions the caller lacks, nor take one away:
+    /// otherwise it could give an account super-admin and mint its token.
+    @Test
+    void serviceAccountRolesAreBoundedByTheCallersPermissions() {
+        String id = create(code("ceil"), "Ceil").get("serviceAccount").get("id").asText();
+        String[] updaterOnly = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:iam:service-account:update,platform:iam:service-account:view"};
+        // grantedRole holds GRANTED_PERMISSION, which updaterOnly lacks (this fixture seeds no
+        // catalogue roles, so an unseeded name like platform:super-admin would carry nothing).
+        var refused = http.put("/api/service-accounts/" + id + "/roles", "{\"roles\":[\"" + grantedRole.name() + "\"]}", updaterOnly);
+        assertThat(refused.statusCode()).as(refused.body()).isEqualTo(403);
+        assertThat(json(refused).get("error").asText()).isEqualTo("ROLE_ABOVE_CALLER");
+        assertThat(json(http.get("/api/service-accounts/" + id + "/roles", VIEWER)).get("roles").size()).isZero();
+
+        assertThat(http.put("/api/service-accounts/" + id + "/roles", "{\"roles\":[\"" + grantedRole.name() + "\"]}", anchor())
+                .statusCode()).isEqualTo(200);
+        assertThat(http.put("/api/service-accounts/" + id + "/roles", "{\"roles\":[]}", updaterOnly).statusCode())
+                .as("removal counts").isEqualTo(403);
     }
 
     // ── Regenerate token / secret: one-shot disclosure (spec §5) ────────────

@@ -1,5 +1,7 @@
 package io.flowcatalyst.platform.role.operations;
 
+import io.flowcatalyst.platform.role.RoleCeiling;
+import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.role.Role;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.role.operations.RoleEvents.RoleDeleted;
@@ -22,6 +24,9 @@ public final class DeleteRole {
                 .authorize(Operation.Authorize.publicAccess())
                 .execute((cmd, ec) -> {
                     Role role = Access.byId(repo, cmd.id()).requireDeletable();
+                    // Owner ruling 2026-09-25: deleting a role strips it from everyone holding it,
+                    // so it is a removal of each of its permissions.
+                    RoleCeiling.requirePermissions(Auth.current(), role.permissions());
                     return Plan.delete(role, repo, RoleDeleted.of(ec, role));
                 });
     }

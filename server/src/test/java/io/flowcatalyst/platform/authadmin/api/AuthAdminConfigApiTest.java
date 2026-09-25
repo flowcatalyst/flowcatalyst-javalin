@@ -72,7 +72,8 @@ class AuthAdminConfigApiTest {
     private static final AuthAdminConfigApi.State state = new AuthAdminConfigApi.State(
             new AnchorDomainRepository(TestPg.dataSource()), new ClientAuthConfigRepository(TestPg.dataSource()),
             new IdpRoleMappingRepository(TestPg.dataSource()), new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)),
-            io.flowcatalyst.platform.identityprovider.api.ClientSecretEncryption.of(java.util.Optional.of(ENCRYPTION)));
+            io.flowcatalyst.platform.identityprovider.api.ClientSecretEncryption.of(java.util.Optional.of(ENCRYPTION)),
+            io.flowcatalyst.platform.role.RoleCeiling.RolePermissions.from(new io.flowcatalyst.platform.role.RoleRepository(TestPg.dataSource())));
     private static TestHttp http;
 
     @BeforeAll
@@ -386,5 +387,33 @@ class AuthAdminConfigApiTest {
         assertThat(irmWriteDenied.statusCode()).isEqualTo(403);
         assertThat(json(irmWriteDenied).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
         assertThat(http.get("/api/idp-role-mappings", IDP_VIEW_ONLY).statusCode()).isEqualTo(200);
+    }
+
+    /// Owner ruling 2026-09-25: a mapping confers its platform role on every login carrying
+    /// the IdP role, so only a caller holding that role's permissions may create or delete one.
+    @Test
+    void idpRoleMappingsAreBoundedByTheCallersPermissions() {
+        var wide = io.flowcatalyst.platform.role.Role.create("platform", "ceil-idp-" + java.util.UUID.randomUUID().toString().substring(0, 8), "C")
+                .withPermissions(java.util.List.of("platform:iam:role:update"));
+        state.uow().inTransaction(tx -> {
+            new io.flowcatalyst.platform.role.RoleRepository(TestPg.dataSource()).persist(wide, tx.dbTx());
+            return null;
+        });
+        String[] idpAdmin = {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:iam:idp:update,platform:iam:idp:view"};
+        var refused = http.post("/api/idp-role-mappings",
+                "{\"idpType\":\"keycloak\",\"idpRoleName\":\"ceil-" + java.util.UUID.randomUUID() + "\",\"platformRoleName\":\"" + wide.name() + "\"}",
+                idpAdmin);
+        assertThat(refused.statusCode()).as(refused.body()).isEqualTo(403);
+        assertThat(json(refused).get("error").asText()).isEqualTo("ROLE_ABOVE_CALLER");
+
+        var created = http.post("/api/idp-role-mappings",
+                "{\"idpType\":\"keycloak\",\"idpRoleName\":\"ceil-" + java.util.UUID.randomUUID() + "\",\"platformRoleName\":\"" + wide.name() + "\"}",
+                ANCHOR);
+        assertThat(created.statusCode()).as(created.body()).isEqualTo(201);
+        assertThat(http.delete("/api/idp-role-mappings/" + json(created).get("id").asText(), idpAdmin).statusCode())
+                .as("removal counts").isEqualTo(403);
     }
 }

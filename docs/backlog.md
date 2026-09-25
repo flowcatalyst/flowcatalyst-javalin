@@ -1945,6 +1945,16 @@ What is left needs a ruling or was judged not worth changing:
     add or remove only roles whose every permission they hold, with wildcards honoured. The rule applies
     to the change: kept roles are untouched, and removal counts. A refusal is 403 `ROLE_ABOVE_CALLER`
     naming the roles. The same ceiling applies to IdP role mappings and email-domain `allowedRoles`.
+    **Built 2026-09-25** (`RoleCeiling`), with two refinements the owner should know:
+    (1) it counts `platform:` permissions only. `platform:*:*:*` covers nothing else, so counting an
+    application's own permissions would stop even a super-admin administering application roles.
+    Those stay bounded by the application-reach rules;
+    (2) it also covers role permission edits (create, update, grant, revoke, delete), since otherwise
+    adding `platform:*:*:*` to a role you already hold is a one-edit bypass.
+    Also covered: the platform-route user sync, IdP role mappings (create and delete), and service-account
+    roles. Exempt: the SDK's app-scoped sync, which is bounded by what the application owns, and the
+    built-in catalogue sync. Email-domain mappings carry no allowed-roles field in Java, and the IdP's
+    `allowedRoleIds` only narrows what the mappings grant, so neither needs a check.
     The original question follows. (S1) — anyone with a user-write permission may assign any
     role, `platform:super-admin` included (and `SERVICE_ACCOUNT_UPDATE` may grant an SA super-admin
     and mint for it). Only assign authority you hold? And should `USER_ASSIGN_ROLES`, not the

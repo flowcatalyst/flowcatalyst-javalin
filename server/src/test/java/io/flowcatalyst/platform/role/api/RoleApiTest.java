@@ -253,6 +253,47 @@ class RoleApiTest {
         assertThat(http.get("/api/roles/by-code/" + APP + ":del", ANCHOR).statusCode()).isEqualTo(404);
     }
 
+    /// Owner ruling 2026-09-25 (backlog "Overnight review" item 14): a caller may add or
+    /// remove only platform permissions it holds. Otherwise adding `platform:*:*:*` to a
+    /// role it already holds would bypass the role-assignment ceiling in one edit.
+    @Test
+    void aCallerMayOnlyAddOrRemovePlatformPermissionsItHolds() {
+        String roleName = "ceil" + RUN;
+        var made = http.post("/api/roles", "{\"applicationCode\":\"platform\",\"roleName\":\"" + roleName + "\",\"displayName\":\"C\","
+                + "\"clientManaged\":false,\"permissions\":[\"platform:messaging:event:view\"]}", ANCHOR);
+        assertThat(made.statusCode()).as(made.body()).isEqualTo(201);
+        String id = json(made).get("id").asText();
+        String name = "platform:" + roleName;
+        String[] narrow = {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:iam:role:*,platform:messaging:dispatch-job:view"};
+
+        var above = http.post("/api/roles/" + name + "/permissions/platform:*:*:*", null, narrow);
+        assertThat(above.statusCode()).as(above.body()).isEqualTo(403);
+        assertThat(json(above).get("error").asText()).isEqualTo("PERMISSION_ABOVE_CALLER");
+
+        var within = http.post("/api/roles/" + name + "/permissions/platform:messaging:dispatch-job:view", null, narrow);
+        assertThat(within.statusCode()).as(within.body()).isEqualTo(200);
+
+        assertThat(http.delete("/api/roles/" + name + "/permissions/platform:messaging:event:view", narrow).statusCode())
+                .as("removal counts").isEqualTo(403);
+        var widened = http.put("/api/roles/" + id, "{\"permissions\":[\"platform:messaging:event:view\",\"platform:messaging:dispatch-job:view\","
+                + "\"platform:iam:user:create\"]}", narrow);
+        assertThat(widened.statusCode()).as("an update adding a permission the caller lacks: %s", widened.body()).isEqualTo(403);
+        assertThat(http.delete("/api/roles/" + id, narrow).statusCode())
+                .as("deleting a role removes its permissions from everyone holding it").isEqualTo(403);
+
+        var created = http.post("/api/roles", "{\"applicationCode\":\"platform\",\"roleName\":\"ceil2" + RUN + "\",\"displayName\":\"C\","
+                + "\"clientManaged\":false,\"permissions\":[\"platform:messaging:event:view\"]}", narrow);
+        assertThat(created.statusCode()).as(created.body()).isEqualTo(403);
+
+        // Application permissions are outside the ceiling (RoleCeiling's class doc).
+        var appRole = http.post("/api/roles", "{\"applicationCode\":\"" + APP + "\",\"roleName\":\"ceilapp\",\"displayName\":\"C\","
+                + "\"clientManaged\":false,\"permissions\":[\"" + APP + ":doc:read:*\"]}", narrow);
+        assertThat(appRole.statusCode()).as(appRole.body()).isEqualTo(201);
+    }
+
     @Test
     void grantAndRevokeByPathAndBodyReturnTheUpdatedRole() {
         create("perm", "Perm", ",\"permissions\":[\"" + APP + ":base:read:*\"]");

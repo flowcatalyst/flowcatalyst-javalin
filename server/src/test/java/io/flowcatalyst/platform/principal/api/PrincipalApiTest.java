@@ -444,6 +444,70 @@ class PrincipalApiTest {
         assertThat(body.has("removed")).isTrue();
     }
 
+    // ── Role ceiling (owner ruling 2026-09-25, backlog "Overnight review" item 14) ──
+
+    private static final String ASSIGNER = "platform:iam:user:assign-roles,platform:iam:user:update,platform:messaging:*:*";
+
+    @Test
+    @DisplayName("changing roles needs assign-roles itself: user-update alone is refused")
+    void roleChangesNeedAssignRoles() {
+        var target = createUser("ceilgate", clientA);
+        String role = seedRole("platform", "ceilgate-" + RUN, "platform:messaging:event:view");
+        var r = http.put("/api/principals/" + target + "/roles", "{\"roles\":[\"" + role + "\"]}",
+                anchorWith("platform:iam:user:update,platform:messaging:*:*"));
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(403);
+        assertThat(rolesOf(target)).doesNotContain(role);
+        assertThat(http.post("/api/principals/" + target + "/roles", "{\"role\":\"" + role + "\"}",
+                anchorWith("platform:iam:user:update,platform:messaging:*:*")).statusCode()).isEqualTo(403);
+    }
+
+    @Test
+    @DisplayName("a caller may assign a role it holds the permissions of, and not one it does not")
+    void assignOnlyRolesWithinTheCallersPermissions() {
+        var target = createUser("ceilassign", clientA);
+        String within = seedRole("platform", "ceil-within-" + RUN, "platform:messaging:event:view");
+        String above = seedRole("platform", "ceil-above-" + RUN, "platform:iam:role:update");
+        var ok = http.put("/api/principals/" + target + "/roles", "{\"roles\":[\"" + within + "\"]}", anchorWith(ASSIGNER));
+        assertThat(ok.statusCode()).as(ok.body()).isEqualTo(200);
+        var refused = http.put("/api/principals/" + target + "/roles", "{\"roles\":[\"" + within + "\",\"" + above + "\"]}", anchorWith(ASSIGNER));
+        assertThat(refused.statusCode()).isEqualTo(403);
+        assertThat(json(refused).get("error").asText()).isEqualTo("ROLE_ABOVE_CALLER");
+        assertThat(refused.body()).contains(above).doesNotContain(within + ",");
+        assertThat(rolesOf(target)).containsExactly(within);
+        String wildcard = seedRole("platform", "ceil-wild-" + RUN, "platform:*:*:*");
+        var superAdmin = http.post("/api/principals/" + target + "/roles", "{\"role\":\"" + wildcard + "\"}", anchorWith(ASSIGNER));
+        assertThat(superAdmin.statusCode()).as("a wildcard role is above any narrower caller").isEqualTo(403);
+    }
+
+    @Test
+    @DisplayName("removal counts, but roles the target keeps are not checked")
+    void removalCountsAndKeptRolesAreNot() {
+        var target = createUser("ceilkeep", clientA);
+        String within = seedRole("platform", "ceil-keep-within-" + RUN, "platform:messaging:event:view");
+        String above = seedRole("platform", "ceil-keep-above-" + RUN, "platform:iam:role:update");
+        assertThat(http.put("/api/principals/" + target + "/roles", "{\"roles\":[\"" + above + "\"]}", anchor()).statusCode()).isEqualTo(200);
+
+        var keepAndAdd = http.put("/api/principals/" + target + "/roles", "{\"roles\":[\"" + above + "\",\"" + within + "\"]}", anchorWith(ASSIGNER));
+        assertThat(keepAndAdd.statusCode()).as("keeping a higher role while adding one within reach: %s", keepAndAdd.body()).isEqualTo(200);
+
+        var strip = http.put("/api/principals/" + target + "/roles", "{\"roles\":[\"" + within + "\"]}", anchorWith(ASSIGNER));
+        assertThat(strip.statusCode()).isEqualTo(403);
+        assertThat(http.delete("/api/principals/" + target + "/roles/" + above, anchorWith(ASSIGNER)).statusCode()).isEqualTo(403);
+        assertThat(rolesOf(target)).contains(above);
+    }
+
+    @Test
+    @DisplayName("the platform-route user sync may not hand out a role above the caller")
+    void platformSyncIsBoundedByTheCeiling() {
+        String above = seedRole("platform", "ceil-sync-above-" + RUN, "platform:iam:role:update");
+        String email = "ceilsync" + RUN + "@example.test";
+        var r = http.post("/api/principals/sync",
+                "{\"principals\":[{\"email\":\"" + email + "\",\"name\":\"S\",\"roles\":[\"" + above + "\"],\"active\":true}]}",
+                anchorWith(ASSIGNER + ",platform:iam:user:create"));
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(403);
+        assertThat(REPO.findByEmail(email)).isEmpty();
+    }
+
     // ── Security-fixes S1.1–S1.3: anchor is reach, never authority ──────────
 
     /// An anchor holding everything a user administrator might have EXCEPT a
@@ -469,11 +533,12 @@ class PrincipalApiTest {
     }
 
     /// S1.1 (`Access.requireUserAdmin` no longer skips the permission for an
-    /// anchor): every route that gates through it — roles PUT/POST/DELETE,
-    /// application-access, send-password-reset, developer-credential set and
-    /// revoke — refuses an anchor without a user-write code with
-    /// `PERMISSION_REQUIRED`, and the target's roles are unchanged; the
-    /// specific `USER_UPDATE` code (not the wildcard) admits it.
+    /// anchor): every route that gates through it — application-access,
+    /// send-password-reset, developer-credential set and revoke — refuses an
+    /// anchor without a user-write code with `PERMISSION_REQUIRED`. The role
+    /// routes gate on `USER_ASSIGN_ROLES` itself since the 2026-09-25 ruling
+    /// ([#roleChangesNeedAssignRoles]): `USER_UPDATE` alone no longer admits
+    /// them, and assign-roles does.
     @Test
     void anAnchorWithoutAUserWritePermissionIsRefusedEveryUserAdminRoute() {
         String role = seedRole("s11app" + RUN, "r");
@@ -483,9 +548,6 @@ class PrincipalApiTest {
                 + "platform:iam:client-access:revoke,platform:iam:client-access:view,platform:iam:role:view");
 
         var calls = List.of(
-                http.put("/api/principals/" + target + "/roles", "{\"roles\":[]}", noWrite),
-                http.post("/api/principals/" + target + "/roles", "{\"role\":\"" + role + "\"}", noWrite),
-                http.delete("/api/principals/" + target + "/roles/" + role, noWrite),
                 http.put("/api/principals/" + target + "/application-access", "{\"applicationIds\":[]}", noWrite),
                 http.post("/api/principals/" + target + "/send-password-reset", "", noWrite),
                 http.post("/api/principals/" + target + "/developer-credential", "", noWrite),
@@ -494,9 +556,12 @@ class PrincipalApiTest {
             assertThat(r.statusCode()).as(r.uri() + " " + r.body()).isEqualTo(403);
             assertThat(json(r).get("error").asText()).as(r.uri().toString()).isEqualTo("PERMISSION_REQUIRED");
         }
-        assertThat(rolesOf(target)).as("neither the PUT nor the DELETE took effect").containsExactly(role);
+        assertThat(rolesOf(target)).containsExactly(role);
 
-        var put = http.put("/api/principals/" + target + "/roles", "{\"roles\":[]}", anchorWith("platform:iam:user:update"));
+        assertThat(http.put("/api/principals/" + target + "/roles", "{\"roles\":[]}", anchorWith("platform:iam:user:update"))
+                .statusCode()).as("user-update alone no longer changes roles").isEqualTo(403);
+        assertThat(rolesOf(target)).containsExactly(role);
+        var put = http.put("/api/principals/" + target + "/roles", "{\"roles\":[]}", anchorWith("platform:iam:user:assign-roles"));
         assertThat(put.statusCode()).as(put.body()).isEqualTo(200);
         assertThat(rolesOf(target)).isEmpty();
     }

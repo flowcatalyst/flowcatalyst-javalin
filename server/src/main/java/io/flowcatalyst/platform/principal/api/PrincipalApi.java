@@ -564,7 +564,7 @@ public final class PrincipalApi {
         AuthContext ac = Auth.current();
         String id = ctx.pathParam("id");
         Principal p = principal(s, id);
-        Access.requireUserAdmin(p, "Principal");
+        Access.requireRoleAssigner(p, "Principal");
         String role = ctx.bodyAsClass(AddRoleRequest.class).role();
         if (!ac.isAnchor()) assertAssignableRoles(s, List.of(role), clientApplicationIds(s, p.clientId()));
         if (!p.hasRole(role)) {
@@ -584,7 +584,7 @@ public final class PrincipalApi {
         AuthContext ac = Auth.current();
         String id = ctx.pathParam("id");
         Principal p = principal(s, id);
-        Access.requireUserAdmin(p, "Principal");
+        Access.requireRoleAssigner(p, "Principal");
         String role = ctx.pathParam("role");
         if (!ac.isAnchor()) assertAssignableRoles(s, List.of(role), clientApplicationIds(s, p.clientId()));
         if (p.hasRole(role)) {

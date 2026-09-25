@@ -384,7 +384,7 @@ class AuthAdminConfigOperationsTest {
     @Test
     void createIdpRoleMappingWritesTheRowTheEventAndTheAuditTogether() {
         var cmd = new CreateIdpRoleMappingCommand("keycloak", tok("role-create"), "app:role-create");
-        IdpRoleMappingCreated ev = runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo), cmd);
+        IdpRoleMappingCreated ev = runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo, name -> java.util.List.of()), cmd);
 
         assertThat(ev.mappingId()).startsWith("irm_");
         assertThat(ev.idpType()).isEqualTo("keycloak");
@@ -423,28 +423,28 @@ class AuthAdminConfigOperationsTest {
     @ParameterizedTest(name = "{0} → {2}")
     @MethodSource("malformedCreateIdpRoleMappingCommands")
     void createIdpRoleMappingRejectsTheFirstMissingFieldInOrder(String label, CreateIdpRoleMappingCommand cmd, String expectedMessage) {
-        assertUseCaseError(() -> runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo), cmd), UseCaseError.Validation.class, "FIELD_REQUIRED");
-        assertThatThrownBy(() -> runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo), cmd)).hasMessageContaining(expectedMessage);
+        assertUseCaseError(() -> runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo, name -> java.util.List.of()), cmd), UseCaseError.Validation.class, "FIELD_REQUIRED");
+        assertThatThrownBy(() -> runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo, name -> java.util.List.of()), cmd)).hasMessageContaining(expectedMessage);
     }
 
     @Test
     void createIdpRoleMappingRejectsADuplicateIdpRoleName() {
-        runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo), new CreateIdpRoleMappingCommand("keycloak", tok("dup"), "app:role"));
-        assertUseCaseError(() -> runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo), new CreateIdpRoleMappingCommand("entra", tok("dup"), "app:other")),
+        runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo, name -> java.util.List.of()), new CreateIdpRoleMappingCommand("keycloak", tok("dup"), "app:role"));
+        assertUseCaseError(() -> runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo, name -> java.util.List.of()), new CreateIdpRoleMappingCommand("entra", tok("dup"), "app:other")),
                 UseCaseError.Conflict.class, "MAPPING_EXISTS");
     }
 
     @Test
     void deleteIdpRoleMappingRemovesTheRowAndRejectsAnUnknownId() {
-        var seeded = runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo), new CreateIdpRoleMappingCommand("keycloak", tok("del"), "app:role"));
-        var ev = runAsAnchor(DeleteIdpRoleMapping.of(idpRoleMappingRepo), new DeleteIdpRoleMappingCommand(seeded.mappingId()));
+        var seeded = runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo, name -> java.util.List.of()), new CreateIdpRoleMappingCommand("keycloak", tok("del"), "app:role"));
+        var ev = runAsAnchor(DeleteIdpRoleMapping.of(idpRoleMappingRepo, name -> java.util.List.of()), new DeleteIdpRoleMappingCommand(seeded.mappingId()));
         assertThat(idpRoleMappingRepo.findById(seeded.mappingId())).isEmpty();
         assertThat(eventsFor(ev.subject(), AuthAdminEvents.IDP_ROLE_MAPPING_DELETED)).hasSize(1);
         var deletedData = json(eventsFor(ev.subject(), AuthAdminEvents.IDP_ROLE_MAPPING_DELETED).getFirst().get("data", String.class));
         assertThat(deletedData.propertyNames()).as("deleted carries the same shape as created (spec §5)")
                 .containsExactlyInAnyOrder("mappingId", "idpType", "idpRoleName", "platformRoleName");
 
-        assertUseCaseError(() -> runAsAnchor(DeleteIdpRoleMapping.of(idpRoleMappingRepo), new DeleteIdpRoleMappingCommand(seeded.mappingId())),
+        assertUseCaseError(() -> runAsAnchor(DeleteIdpRoleMapping.of(idpRoleMappingRepo, name -> java.util.List.of()), new DeleteIdpRoleMappingCommand(seeded.mappingId())),
                 UseCaseError.NotFound.class, "IdpRoleMapping_NOT_FOUND");
     }
 
@@ -459,8 +459,8 @@ class AuthAdminConfigOperationsTest {
 
     @Test
     void idpRoleMappingFindAllReturnsRowsInIdpRoleNameOrder() {
-        var b = runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo), new CreateIdpRoleMappingCommand("keycloak", tok("order-b"), "app:role"));
-        var a = runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo), new CreateIdpRoleMappingCommand("keycloak", tok("order-a"), "app:role"));
+        var b = runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo, name -> java.util.List.of()), new CreateIdpRoleMappingCommand("keycloak", tok("order-b"), "app:role"));
+        var a = runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo, name -> java.util.List.of()), new CreateIdpRoleMappingCommand("keycloak", tok("order-a"), "app:role"));
         assertThat(idpRoleMappingRepo.findAll()).extracting(IdpRoleMapping::id).containsSubsequence(a.mappingId(), b.mappingId());
     }
 }

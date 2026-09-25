@@ -72,14 +72,18 @@ public final class AuthAdminConfigApi {
     }
 
     /// The handlers' dependencies.
+    /// @param rolePermissions a role's permissions, for the role ceiling on IdP role
+    ///                        mappings (owner ruling 2026-09-25)
     public record State(AnchorDomainRepository anchorDomainRepo, ClientAuthConfigRepository authConfigRepo,
                         IdpRoleMappingRepository idpRoleMappingRepo, UnitOfWork uow,
-                        io.flowcatalyst.platform.identityprovider.api.ClientSecretEncryption secrets) {
+                        io.flowcatalyst.platform.identityprovider.api.ClientSecretEncryption secrets,
+                        io.flowcatalyst.platform.role.RoleCeiling.RolePermissions rolePermissions) {
         public State {
             Objects.requireNonNull(anchorDomainRepo, "anchorDomainRepo");
             Objects.requireNonNull(authConfigRepo, "authConfigRepo");
             Objects.requireNonNull(idpRoleMappingRepo, "idpRoleMappingRepo");
             Objects.requireNonNull(uow, "uow");
+            Objects.requireNonNull(rolePermissions, "rolePermissions");
         }
     }
 
@@ -175,14 +179,14 @@ public final class AuthAdminConfigApi {
         Checks.requireAnchor(Auth.current());
         Checks.require(Auth.current(), IDP_UPDATE);
         var cmd = ctx.bodyAsClass(CreateIdpRoleMappingRequest.class).toCommand();
-        var event = CreateIdpRoleMapping.of(s.idpRoleMappingRepo()).run(s.uow(), cmd, Auth.executionContext());
+        var event = CreateIdpRoleMapping.of(s.idpRoleMappingRepo(), s.rolePermissions()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.mappingId()));
     }
 
     private static void deleteIdpRoleMapping(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         Checks.require(Auth.current(), IDP_UPDATE);
-        DeleteIdpRoleMapping.of(s.idpRoleMappingRepo()).run(s.uow(), new DeleteIdpRoleMappingCommand(ctx.pathParam("id")), Auth.executionContext());
+        DeleteIdpRoleMapping.of(s.idpRoleMappingRepo(), s.rolePermissions()).run(s.uow(), new DeleteIdpRoleMappingCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 

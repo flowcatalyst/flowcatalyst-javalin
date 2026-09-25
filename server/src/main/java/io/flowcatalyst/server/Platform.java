@@ -427,7 +427,8 @@ public final class Platform {
         var authConfigRepo = new ClientAuthConfigRepository(pool);
         var idpRoleMappingRepo = new IdpRoleMappingRepository(pool);
         AuthAdminConfigApi.register(routes, new AuthAdminConfigApi.State(anchorDomainRepo, authConfigRepo, idpRoleMappingRepo, uow,
-                ClientSecretEncryption.of(Encryption.fromKeys(env.appKey(), env.appKeyPrevious()))));
+                ClientSecretEncryption.of(Encryption.fromKeys(env.appKey(), env.appKeyPrevious())),
+                io.flowcatalyst.platform.role.RoleCeiling.RolePermissions.from(new RoleRepository(pool))));
         var identityProviderRepo = new IdentityProviderRepository(pool);
         // Built from `env`, not the process environment: fcdev loads its environment (and the app key it
         // generates) from a map, so reading System.getenv() here would silently disable encryption there.

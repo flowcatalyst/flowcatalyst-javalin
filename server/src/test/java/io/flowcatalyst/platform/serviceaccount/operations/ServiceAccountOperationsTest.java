@@ -501,7 +501,7 @@ class ServiceAccountOperationsTest {
     void assignRolesWritesThroughToThePrincipalAndAgreesWithTheAccountRead() {
         var seeded = createWithCredentials(code("saroles"), "Roles", null).serviceAccount();
 
-        var ev = runAsAnchor(AssignRolesToServiceAccount.of(repo, principals),
+        var ev = runAsAnchor(AssignRolesToServiceAccount.of(repo, principals, name -> List.of()),
                 new AssignRolesCommand(seeded.id(), List.of("orders:admin", "orders:viewer")));
         assertThat(ev.rolesAdded()).containsExactlyInAnyOrder("orders:admin", "orders:viewer");
         assertThat(ev.rolesRemoved()).isEmpty();
@@ -514,7 +514,7 @@ class ServiceAccountOperationsTest {
                 .containsExactlyInAnyOrder("orders:admin", "orders:viewer");
 
         // A second, different assignment reports the correct diff.
-        var second = runAsAnchor(AssignRolesToServiceAccount.of(repo, principals),
+        var second = runAsAnchor(AssignRolesToServiceAccount.of(repo, principals, name -> List.of()),
                 new AssignRolesCommand(seeded.id(), List.of("orders:viewer", "orders:auditor")));
         assertThat(second.rolesAdded()).containsExactly("orders:auditor");
         assertThat(second.rolesRemoved()).containsExactly("orders:admin");
@@ -524,9 +524,9 @@ class ServiceAccountOperationsTest {
 
     @Test
     void assignRolesRejectsMissingIdOrUnknownAccount() {
-        assertUseCaseError(() -> runAsAnchor(AssignRolesToServiceAccount.of(repo, principals), new AssignRolesCommand(" ", List.of())),
+        assertUseCaseError(() -> runAsAnchor(AssignRolesToServiceAccount.of(repo, principals, name -> List.of()), new AssignRolesCommand(" ", List.of())),
                 UseCaseError.Validation.class, "SERVICE_ACCOUNT_ID_REQUIRED");
-        assertUseCaseError(() -> runAsAnchor(AssignRolesToServiceAccount.of(repo, principals), new AssignRolesCommand("sac_doesnotexist1", List.of())),
+        assertUseCaseError(() -> runAsAnchor(AssignRolesToServiceAccount.of(repo, principals, name -> List.of()), new AssignRolesCommand("sac_doesnotexist1", List.of())),
                 UseCaseError.NotFound.class, "ServiceAccount_NOT_FOUND");
     }
 
@@ -655,7 +655,7 @@ class ServiceAccountOperationsTest {
     void mintTokenComputesTheGrantFromThePrincipalsRolesAndApplications() {
         String appId = "app_" + code("samint");
         var res = createWithCredentials(code("samint"), "Mint", appId);
-        runAsAnchor(AssignRolesToServiceAccount.of(repo, principals), new AssignRolesCommand(res.serviceAccount().id(), List.of("orders:admin")));
+        runAsAnchor(AssignRolesToServiceAccount.of(repo, principals, name -> List.of()), new AssignRolesCommand(res.serviceAccount().id(), List.of("orders:admin")));
 
         var keys = SigningKeys.generateEphemeral();
         var minter = new RsaServiceAccountTokenMinter(keys, "https://fc.test", "https://fc.test");

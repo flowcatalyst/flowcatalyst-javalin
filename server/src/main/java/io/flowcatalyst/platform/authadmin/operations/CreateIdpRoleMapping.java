@@ -1,5 +1,9 @@
 package io.flowcatalyst.platform.authadmin.operations;
 
+import io.flowcatalyst.platform.role.RoleCeiling;
+import io.flowcatalyst.platform.shared.auth.Auth;
+import java.util.List;
+
 import io.flowcatalyst.platform.authadmin.IdpRoleMapping;
 import io.flowcatalyst.platform.authadmin.IdpRoleMappingRepository;
 import io.flowcatalyst.platform.authadmin.operations.AuthAdminEvents.IdpRoleMappingCreated;
@@ -17,7 +21,11 @@ public final class CreateIdpRoleMapping {
     private CreateIdpRoleMapping() {
     }
 
-    public static Operation<CreateIdpRoleMappingCommand, IdpRoleMappingCreated> of(IdpRoleMappingRepository repo) {
+    /// @param rolePermissions for the role ceiling: a mapping confers its platform role on every
+    ///                        login carrying the IdP role, so only a caller holding that role's
+    ///                        permissions may create one (owner ruling 2026-09-25)
+    public static Operation<CreateIdpRoleMappingCommand, IdpRoleMappingCreated> of(IdpRoleMappingRepository repo,
+                                                                                   RoleCeiling.RolePermissions rolePermissions) {
         return Operation.<CreateIdpRoleMappingCommand, IdpRoleMappingCreated>named("CreateIdpRoleMapping")
                 .validate(cmd -> {
                     // First missing field wins, in this order (spec §4.3).
@@ -31,6 +39,7 @@ public final class CreateIdpRoleMapping {
                     if (repo.findByIdpRoleName(cmd.idpRoleName()).isPresent()) {
                         throw UseCaseException.conflict("MAPPING_EXISTS", "IdP role mapping for '" + cmd.idpRoleName() + "' already exists");
                     }
+                    RoleCeiling.requireRoles(Auth.current(), List.of(cmd.platformRoleName()), rolePermissions);
                     IdpRoleMapping m = IdpRoleMapping.create(cmd.idpType(), cmd.idpRoleName(), cmd.platformRoleName());
                     return Plan.save(m, repo, IdpRoleMappingCreated.of(ec, m));
                 });

@@ -1,5 +1,7 @@
 package io.flowcatalyst.platform.role.operations;
 
+import io.flowcatalyst.platform.role.RoleCeiling;
+import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.role.Role;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.role.operations.RoleEvents.RolePermissionRevoked;
@@ -23,7 +25,10 @@ public final class RevokePermission {
                 // Roles are global — no per-resource dimension; the handler's coarse gate is the whole check.
                 .authorize(Operation.Authorize.publicAccess())
                 .execute((cmd, ec) -> {
-                    Role role = Access.byName(repo, cmd.roleName()).revoke(cmd.permission());
+                    Role before = Access.byName(repo, cmd.roleName());
+                    Role role = before.revoke(cmd.permission());
+                    // Owner ruling 2026-09-25: removal counts, so only a permission the caller holds.
+                    RoleCeiling.requirePermissions(Auth.current(), RoleCeiling.changed(before.permissions(), role.permissions()));
                     return Plan.save(role, repo, RolePermissionRevoked.of(ec, role, cmd.permission()));
                 });
     }

@@ -3,14 +3,17 @@ package io.flowcatalyst.platform.principal.operations;
 import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.principal.operations.PrincipalEvents.RolesAssigned;
+import io.flowcatalyst.platform.role.RoleCeiling;
 import io.flowcatalyst.platform.role.RoleRepository;
+import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.op.Operation;
 import io.flowcatalyst.sdk.usecase.op.Plan;
 
 /// Replaces a user's full role set (every assignment becomes
 /// `ADMIN_ASSIGNED`) and emits [RolesAssigned] (spec §2). The per-resource
-/// rule (`Access.requireUserAdmin`) runs post-load; the application-scoped
+/// rule ([Access#requireRoleAssigner]: `USER_ASSIGN_ROLES`) and the
+/// [RoleCeiling] run post-load; the application-scoped
 /// *bounding* of what a non-anchor may name is command shaping the handler
 /// performs before building the desired set (spec §5.3).
 public final class AssignRoles {
@@ -29,7 +32,7 @@ public final class AssignRoles {
                     // out-of-scope 404 must match that, not Access.loadUser's own
                     // "User" spelling above (unreachable in practice — the handler
                     // already proved the row exists).
-                    Access.requireUserAdmin(p, "Principal");
+                    Access.requireRoleAssigner(p, "Principal");
                     if (!p.isUser()) {
                         throw UseCaseException.businessRule("NOT_A_USER", "Roles can only be assigned to USER type principals");
                     }
@@ -38,6 +41,9 @@ public final class AssignRoles {
                             throw UseCaseException.validation("ROLE_NOT_FOUND", "Role not found: " + name);
                         }
                     }
+                    // Owner ruling 2026-09-25: only roles whose permissions the caller holds may be
+                    // added or removed; kept roles are not checked.
+                    RoleCeiling.requireRoles(Auth.current(), RoleCeiling.changed(p.roleNames(), cmd.roles()), roles);
                     var change = p.assignRoles(cmd.roles());
                     return Plan.save(change.principal(), repo.withRoles(), RolesAssigned.of(ec, change));
                 });

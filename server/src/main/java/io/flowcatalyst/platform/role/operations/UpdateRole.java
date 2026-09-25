@@ -1,5 +1,7 @@
 package io.flowcatalyst.platform.role.operations;
 
+import io.flowcatalyst.platform.role.RoleCeiling;
+import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.role.Role;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.role.operations.RoleEvents.RoleUpdated;
@@ -26,8 +28,10 @@ public final class UpdateRole {
                 // Roles are global — no per-resource dimension; the handler's coarse gate is the whole check.
                 .authorize(Operation.Authorize.publicAccess())
                 .execute((cmd, ec) -> {
-                    Role role = Access.byId(repo, cmd.id())
-                            .update(new Role.Changes(cmd.displayName(), cmd.description(), cmd.permissions(), cmd.clientManaged()));
+                    Role before = Access.byId(repo, cmd.id());
+                    Role role = before.update(new Role.Changes(cmd.displayName(), cmd.description(), cmd.permissions(), cmd.clientManaged()));
+                    // Owner ruling 2026-09-25: only permissions the caller holds may be added or removed.
+                    RoleCeiling.requirePermissions(Auth.current(), RoleCeiling.changed(before.permissions(), role.permissions()));
                     return Plan.save(role, repo, RoleUpdated.of(ec, role));
                 });
     }

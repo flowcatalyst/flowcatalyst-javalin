@@ -1,5 +1,7 @@
 package io.flowcatalyst.platform.role.operations;
 
+import io.flowcatalyst.platform.role.RoleCeiling;
+import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.role.Role;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.role.operations.RoleEvents.RoleCreated;
@@ -32,6 +34,8 @@ public final class CreateRole {
                             .withDescription(cmd.description())
                             .withClientManaged(cmd.clientManaged())
                             .withPermissions(cmd.permissions());
+                    // Owner ruling 2026-09-25: only permissions the caller holds.
+                    RoleCeiling.requirePermissions(Auth.current(), role.permissions());
                     return Plan.save(role, repo, RoleCreated.of(ec, role));
                 });
     }

@@ -112,6 +112,12 @@ public final class ServiceAccountApi {
             Objects.requireNonNull(oauthClients, "oauthClients");
             Objects.requireNonNull(clients, "clients");
             Objects.requireNonNull(encryption, "encryption");
+            Objects.requireNonNull(flattenPermissions, "flattenPermissions");
+        }
+
+        /// One role's permissions, for the role-assignment ceiling.
+        public io.flowcatalyst.platform.role.RoleCeiling.RolePermissions rolePermissions() {
+            return name -> flattenPermissions.apply(List.of(name));
         }
     }
 
@@ -222,7 +228,7 @@ public final class ServiceAccountApi {
         Checks.require(Auth.current(), SERVICE_ACCOUNT_UPDATE);
         String id = ctx.pathParam("id");
         var body = ctx.bodyAsClass(AssignRolesRequest.class);
-        var event = AssignRolesToServiceAccount.of(s.repo(), s.principals())
+        var event = AssignRolesToServiceAccount.of(s.repo(), s.principals(), s.rolePermissions())
                 .run(s.uow(), new AssignRolesCommand(id, body.roles()), Auth.executionContext());
         var roles = rolesOf(s, id).stream().map(RoleAssignmentResponse::from).toList();
         ctx.json(new ServiceAccountRolesAssignedResponse(roles, event.rolesAdded(), event.rolesRemoved()));

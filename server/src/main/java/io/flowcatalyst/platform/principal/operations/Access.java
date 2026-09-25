@@ -98,6 +98,19 @@ public final class Access {
         Checks.requireAny(ac, Permission.USER_CREATE, Permission.USER_UPDATE, Permission.USER_DELETE);
     }
 
+    /// The gate for changing a user's roles (owner ruling 2026-09-25, backlog
+    /// §"Overnight review" item 14): the same scope rules as
+    /// [#requireUserAdmin(Principal, String)], but the permission is
+    /// `USER_ASSIGN_ROLES` itself. Holding user-create or user-delete no longer
+    /// lets a caller change roles. [io.flowcatalyst.platform.role.RoleCeiling]
+    /// then bounds which roles.
+    public static void requireRoleAssigner(Principal p, String notFoundResource) {
+        AuthContext ac = Auth.current();
+        blockNonClientTarget(ac, p);
+        requireInScope(ac, p, notFoundResource);
+        Checks.require(ac, Permission.USER_ASSIGN_ROLES);
+    }
+
     /// [#requireUserAdmin(Principal, String)] with the `User_NOT_FOUND`
     /// spelling — correct for the routes that load only inside the operation
     /// ([#loadUser]): the developer-credential admin branch and any future

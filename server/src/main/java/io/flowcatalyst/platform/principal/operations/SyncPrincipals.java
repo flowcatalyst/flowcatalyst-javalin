@@ -10,6 +10,7 @@ import io.flowcatalyst.platform.principal.operations.PrincipalEvents.PrincipalsS
 import io.flowcatalyst.platform.principal.operations.PrincipalEvents.UserCreated;
 import io.flowcatalyst.platform.principal.operations.PrincipalEvents.UserUpdated;
 import io.flowcatalyst.platform.role.Role;
+import io.flowcatalyst.platform.role.RoleCeiling;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
@@ -121,6 +122,7 @@ public final class SyncPrincipals {
                                     .withName(in.name())
                                     .withActive(in.active());
                             if (in.hasPasswordHash() && mayReplaceHashes) p = p.withPasswordHash(in.passwordHash());
+                            requireCeiling(cmd, ac, roles, existing.roleNames(), p.roleNames());
                             saves.add(new SyncSave<>(p, UserUpdated.of(ec, p)));
                             updated++;
                         } else {
@@ -129,6 +131,7 @@ public final class SyncPrincipals {
                                     .withActive(in.active())
                                     .withRoles(roleNames.stream().map(r -> new RoleAssignment(r, RoleAssignment.SDK_SYNC, now)).toList());
                             if (in.hasPasswordHash()) p = p.withPasswordHash(in.passwordHash());
+                            requireCeiling(cmd, ac, roles, List.of(), p.roleNames());
                             saves.add(new SyncSave<>(p, UserCreated.of(ec, p)));
                             created++;
                         }
@@ -145,6 +148,7 @@ public final class SyncPrincipals {
                             // roles are in scope — another application's survive.
                             if (!pr.hasRolesFrom(RoleAssignment.SDK_SYNC, cmd.applicationCode())) continue;
                             Principal stripped = pr.stripSourcedRoles(RoleAssignment.SDK_SYNC, cmd.applicationCode());
+                            requireCeiling(cmd, ac, roles, pr.roleNames(), stripped.roleNames());
                             saves.add(new SyncSave<>(stripped, UserUpdated.of(ec, stripped)));
                             deactivated++;
                         }
@@ -153,6 +157,17 @@ public final class SyncPrincipals {
                     var rollup = PrincipalsSynced.of(ec, cmd.applicationCode(), created, updated, deactivated, syncedEmails);
                     return Plan.sync(repo.withRoles(), saves, List.<SyncDelete<Principal>>of(), rollup);
                 });
+    }
+
+    /// The role ceiling (owner ruling 2026-09-25) on the platform route only.
+    /// An application's own sync is bounded by what the application owns
+    /// instead: every role it names is its own ([#requireSyncableRoles]), and
+    /// its roles hold only its own permissions unless a super-admin put others
+    /// there.
+    private static void requireCeiling(SyncPrincipalsCommand cmd, AuthContext ac, RoleRepository roles,
+                                       List<String> before, List<String> after) {
+        if (appScoped(cmd)) return;
+        RoleCeiling.requireRoles(ac, RoleCeiling.changed(before, after), roles);
     }
 
     private static boolean appScoped(SyncPrincipalsCommand cmd) {
