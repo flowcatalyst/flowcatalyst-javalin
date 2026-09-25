@@ -152,6 +152,19 @@ rules it established (from its audit):
   dimension or the operation is reached from several differently-gated entry
   points (each entry point keeps its own gate).
 - No coarse `Checks.require*` / `requireAnchor` inside `operations/` — ever.
+- **`requireAnchor` is reach, never authority** (owner ruling 2026-09-13; enforced 2026-09-25,
+  `docs/spec/security-fixes-2026-09-24.md` S1): a gate that issues roles, credentials or reach
+  pairs it with a permission — never `requireAnchor` alone, never `if (!ac.isAnchor())` around a
+  permission check.
+- **Routes that manage the signed-in user's own sign-in** (factors, passkeys, password change,
+  client switching, the OAuth authorize session) accept only the session cookie:
+  `AuthContext#viaSessionCookie()`. An API bearer, however narrowly scoped, is not the user at the
+  browser (S2).
+- **Path-based gates read `Exchange.path()`** — the normalised path the router dispatches. Never
+  the raw request path.
+- **Naming a signing identity is choosing where its credentials go**: anything a caller may attach
+  a service account or connection to (subscriptions, connections, ingested jobs) checks
+  `SigningReach` (S3).
 
 ## 4. Wire contract
 
@@ -275,6 +288,13 @@ Rules promoted from audits (recurring findings become rules here):
   (`Verified | Rejected`, `Ok | Mismatch | InvalidHash`) the caller switches
   on. Exceptions are for infrastructure failure. `JwtVerifier.Verification`
   and `PasswordHash.Verification` are the models.
+- **One helper each, never re-derived** (promoted 2026-09-25):
+  `platform.shared.SecureTokens.urlSafe(bytes)` for every opaque random token or secret;
+  `platform.shared.Failures.describe(e)` wherever a failure is kept as text (an attempt record, a
+  status, a message) — `e.getMessage()` is `null` for the JDK HttpClient's `ConnectException` and
+  never names the class; `platform.audit.StoredAuditRedaction` for any read or rewrite of stored
+  audit rows; `ServiceAccountRepository#findByIdOrServicePrincipalId` wherever a stored "service
+  account id" is resolved (it may hold the service principal's id).
 - **No empty-string sentinels inside the JVM.** The wire/DB `""` ↔ `NULL`
   mapping lives in sinks and DTOs; an absent optional string in a record is
   `null` (documented) or an `Optional` return — never `""`.
@@ -459,6 +479,10 @@ terminal or `FC_LOG_FORMAT=text`.
   must still say what happened once the values are removed: `"stopping
   embedded postgres: {}"` becomes `"stopping embedded postgres failed"`, never
   `"stopping embedded postgres"` — a WARN that reads like progress.
+- **A log line that can fire per message or per request is throttled**
+  (`platform.shared.LogThrottle`, one line per interval carrying the count held back) — but
+  still logged: a retry, a fallback or a tolerant reader that drops something must leave a
+  trace (`Pool`, `HttpMediator`, `DbSession`, `Manifest.readStored`).
 - **An exception goes through `setCause(e)`**, never a key-value; it has its own
   field. There is no `err` / `error` / `exception` key. (Go names it `err` on
   the slog side; the field is equivalent, the spelling is per-language.)
