@@ -143,6 +143,10 @@ public final class Parity {
     private static StepResult compareStep(Scenario scenario, Step step, Runner.StepOutcome goOutcome,
                                            Runner.StepOutcome javaOutcome, Vars goVars, Vars javaVars,
                                            String goBaseUrl, String javaBaseUrl, ExpectedDiffs expected) {
+        StepResult knownGoFailure = knownGoFailure(scenario.name(), step, goOutcome, javaOutcome, expected);
+        if (knownGoFailure != null) {
+            return knownGoFailure;
+        }
         if (goOutcome instanceof Runner.StepOutcome.Failed || javaOutcome instanceof Runner.StepOutcome.Failed) {
             StepRecord goRecord = recordOf(goOutcome);
             StepRecord javaRecord = recordOf(javaOutcome);
@@ -164,6 +168,27 @@ public final class Parity {
         StepRecord goRecord = status == StepStatus.OK ? null : goRan.record();
         StepRecord javaRecord = status == StepStatus.OK ? null : javaRan.record();
         return new StepResult(step.id(), status, diffs, unaccepted, goRecord, javaRecord, null);
+    }
+
+    /// The allow-list pointer that accepts Go failing a step's own `expect`.
+    static final String GO_EXPECT = "!go-expect";
+
+    /// A step Go is known to fail (parity-harness spec §6, `!go-expect`): Go
+    /// answered but missed the step's `expect.status`, Java met it, and an
+    /// allow-list entry for this step names [#GO_EXPECT]. Then the step is
+    /// `ACCEPTED` and Go's response is not compared — it is Go's defect, not a
+    /// contract. Anything else (Java failing too, Go never answering, no entry)
+    /// is `null`, and the caller reports the `ERROR` as before.
+    static StepResult knownGoFailure(String scenario, Step step, Runner.StepOutcome goOutcome,
+                                     Runner.StepOutcome javaOutcome, ExpectedDiffs expected) {
+        if (goOutcome instanceof Runner.StepOutcome.Failed(var _, String message, StepRecord goRecord)
+                && goRecord != null
+                && javaOutcome instanceof Runner.StepOutcome.Ran(var _, StepRecord javaRecord, var _, var _)
+                && expected.accepts(scenario, step.id(), GO_EXPECT)) {
+            DiffEntry known = new DiffEntry(GO_EXPECT, message, "expected status met");
+            return new StepResult(step.id(), StepStatus.ACCEPTED, List.of(known), List.of(), goRecord, javaRecord, null);
+        }
+        return null;
     }
 
     private static StepRecord recordOf(Runner.StepOutcome outcome) {

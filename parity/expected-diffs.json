@@ -796,5 +796,586 @@
     "pointer": "/**",
     "reason": "CFG-PERM-2026-09-23 (docs/spec/config-permissions.md §A): both sides refuse a principal holding no grant and no config permission, with different envelopes — Go FORBIDDEN 'No … access to platform config for <app>', Java PERMISSION_REQUIRED",
     "ruling": "CFG-PERM-2026-09-23"
+  },
+  {
+    "scenario": "anchor-domains*",
+    "step": "confinement-login",
+    "pointer": "/permissions/**",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "applications*",
+    "step": "sync-event-types-create",
+    "pointer": "/**",
+    "reason": "Go's sync routes answer 500 AUDIT_WRITE (aud_logs.entity_id varchar(17)); Java's V18 widened the column, so the sync succeeds",
+    "ruling": "V18 (f4611623); owner 2026-09-25 (backlog Overnight review item 19): allow-list until cutover"
+  },
+  {
+    "scenario": "applications*",
+    "step": "sync-event-types-update",
+    "pointer": "/**",
+    "reason": "Go's sync routes answer 500 AUDIT_WRITE (aud_logs.entity_id varchar(17)); Java's V18 widened the column, so the sync succeeds",
+    "ruling": "V18 (f4611623); owner 2026-09-25 (backlog Overnight review item 19): allow-list until cutover"
+  },
+  {
+    "scenario": "applications*",
+    "step": "sync-event-types-remove-unlisted",
+    "pointer": "/**",
+    "reason": "Go's sync routes answer 500 AUDIT_WRITE (aud_logs.entity_id varchar(17)); Java's V18 widened the column, so the sync succeeds",
+    "ruling": "V18 (f4611623); owner 2026-09-25 (backlog Overnight review item 19): allow-list until cutover"
+  },
+  {
+    "scenario": "applications*",
+    "step": "sync-dispatch-pools-create",
+    "pointer": "/**",
+    "reason": "Go's sync routes answer 500 AUDIT_WRITE (aud_logs.entity_id varchar(17)); Java's V18 widened the column, so the sync succeeds",
+    "ruling": "V18 (f4611623); owner 2026-09-25 (backlog Overnight review item 19): allow-list until cutover"
+  },
+  {
+    "scenario": "applications*",
+    "step": "sync-dispatch-pools-update",
+    "pointer": "/**",
+    "reason": "Go's sync routes answer 500 AUDIT_WRITE (aud_logs.entity_id varchar(17)); Java's V18 widened the column, so the sync succeeds",
+    "ruling": "V18 (f4611623); owner 2026-09-25 (backlog Overnight review item 19): allow-list until cutover"
+  },
+  {
+    "scenario": "applications*",
+    "step": "sync-subscriptions-create",
+    "pointer": "/**",
+    "reason": "Go's sync routes answer 500 AUDIT_WRITE (aud_logs.entity_id varchar(17)); Java's V18 widened the column, so the sync succeeds",
+    "ruling": "V18 (f4611623); owner 2026-09-25 (backlog Overnight review item 19): allow-list until cutover"
+  },
+  {
+    "scenario": "applications*",
+    "step": "sync-subscriptions-update",
+    "pointer": "/**",
+    "reason": "Go's sync routes answer 500 AUDIT_WRITE (aud_logs.entity_id varchar(17)); Java's V18 widened the column, so the sync succeeds",
+    "ruling": "V18 (f4611623); owner 2026-09-25 (backlog Overnight review item 19): allow-list until cutover"
+  },
+  {
+    "scenario": "applications*",
+    "step": "sync-principals-create",
+    "pointer": "/**",
+    "reason": "Go's sync routes answer 500 AUDIT_WRITE (aud_logs.entity_id varchar(17)); Java's V18 widened the column, so the sync succeeds",
+    "ruling": "V18 (f4611623); owner 2026-09-25 (backlog Overnight review item 19): allow-list until cutover"
+  },
+  {
+    "scenario": "applications*",
+    "step": "sync-principals-update",
+    "pointer": "/**",
+    "reason": "Go's sync routes answer 500 AUDIT_WRITE (aud_logs.entity_id varchar(17)); Java's V18 widened the column, so the sync succeeds",
+    "ruling": "V18 (f4611623); owner 2026-09-25 (backlog Overnight review item 19): allow-list until cutover"
+  },
+  {
+    "scenario": "applications*",
+    "step": "sync-processes-create",
+    "pointer": "/**",
+    "reason": "Go's sync routes answer 500 AUDIT_WRITE (aud_logs.entity_id varchar(17)); Java's V18 widened the column, so the sync succeeds",
+    "ruling": "V18 (f4611623); owner 2026-09-25 (backlog Overnight review item 19): allow-list until cutover"
+  },
+  {
+    "scenario": "applications*",
+    "step": "sync-processes-update",
+    "pointer": "/**",
+    "reason": "Go's sync routes answer 500 AUDIT_WRITE (aud_logs.entity_id varchar(17)); Java's V18 widened the column, so the sync succeeds",
+    "ruling": "V18 (f4611623); owner 2026-09-25 (backlog Overnight review item 19): allow-list until cutover"
+  },
+  {
+    "scenario": "audit-logs*",
+    "step": "entity-types-facet-contains-our-entity-type",
+    "pointer": "/entityTypes/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "audit-logs*",
+    "step": "operations-facet-contains-create-and-update",
+    "pointer": "/operations/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "*",
+    "step": "*",
+    "pointer": "**/allowedTenantIds",
+    "reason": "Identity providers carry allowedTenantIds (the multi-tenant Entra tenant pin, V19); Go has no such member",
+    "ruling": "owner 2026-09-25 item 3 (nOAuth: multi-tenant providers pin the tenant); item 19"
+  },
+  {
+    "scenario": "auth-remainder*",
+    "step": "oidc-login-unmapped-domain",
+    "pointer": "/status",
+    "reason": "An unmapped email domain at /auth/oidc/login is 404 EMAIL_DOMAIN_NOT_MAPPED; Go answers 500",
+    "ruling": "owner 2026-09-25 item 8; item 19"
+  },
+  {
+    "scenario": "auth-remainder*",
+    "step": "oidc-login-unmapped-domain",
+    "pointer": "/error",
+    "reason": "An unmapped email domain at /auth/oidc/login is 404 EMAIL_DOMAIN_NOT_MAPPED; Go answers 500",
+    "ruling": "owner 2026-09-25 item 8; item 19"
+  },
+  {
+    "scenario": "auth-remainder*",
+    "step": "oidc-login-unmapped-domain",
+    "pointer": "/message",
+    "reason": "An unmapped email domain at /auth/oidc/login is 404 EMAIL_DOMAIN_NOT_MAPPED; Go answers 500",
+    "ruling": "owner 2026-09-25 item 8; item 19"
+  },
+  {
+    "scenario": "S2 auth*",
+    "step": "refresh-reuse-rotated-token",
+    "pointer": "/**",
+    "reason": "Refresh-token reuse inside the 10 s replay leeway returns a sibling token; Go refuses at once",
+    "ruling": "S2 (docs/spec/security-fixes-2026-09-24.md); owner 2026-09-25 item 5: keep the 10 s leeway; item 19"
+  },
+  {
+    "scenario": "S2 auth*",
+    "step": "refresh-after-family-revoked",
+    "pointer": "/**",
+    "reason": "Refresh-token reuse inside the 10 s replay leeway returns a sibling token; Go refuses at once",
+    "ruling": "S2 (docs/spec/security-fixes-2026-09-24.md); owner 2026-09-25 item 5: keep the 10 s leeway; item 19"
+  },
+  {
+    "scenario": "bff*",
+    "step": "dashboard-stats",
+    "pointer": "/rolesDefined",
+    "reason": "Java-only platform roles: function-host, function-publisher, router-operator",
+    "ruling": "function service (R1-R14); owner 2026-09-25 item 2 (router-api-auth rule 3); item 19"
+  },
+  {
+    "scenario": "bff*",
+    "step": "developer-list-applications",
+    "pointer": "/items/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "bff*",
+    "step": "bff-roles-filter-applications",
+    "pointer": "/options/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "bff*",
+    "step": "bff-sync-platform-roles",
+    "pointer": "/total",
+    "reason": "Java-only platform roles: function-host, function-publisher, router-operator",
+    "ruling": "function service (R1-R14); owner 2026-09-25 item 2 (router-api-auth rule 3); item 19"
+  },
+  {
+    "scenario": "bff*",
+    "step": "bff-sync-platform-roles",
+    "pointer": "/updated",
+    "reason": "Java-only platform roles: function-host, function-publisher, router-operator",
+    "ruling": "function service (R1-R14); owner 2026-09-25 item 2 (router-api-auth rule 3); item 19"
+  },
+  {
+    "scenario": "bff*",
+    "step": "confinement-login",
+    "pointer": "/permissions/**",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "bff*",
+    "step": "confinement-roles-read-allowed",
+    "pointer": "/items/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "bff*",
+    "step": "confinement-roles-read-allowed",
+    "pointer": "/total",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "clients*",
+    "step": "client-applications-before",
+    "pointer": "/applications/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "clients*",
+    "step": "client-applications-after-enable",
+    "pointer": "/applications/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "clients*",
+    "step": "client-applications-after-bulk-update",
+    "pointer": "/applications/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "clients*",
+    "step": "confinement-login",
+    "pointer": "/permissions/**",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "clients*",
+    "step": "confinement-applications-of-own-client-allowed",
+    "pointer": "/applications/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "code-first-connections*",
+    "step": "sync-connections-create",
+    "pointer": "!go-expect",
+    "reason": "Go's sync 500 (see V18 entries) fails this step's own expect, or a later step that needs what the sync would have created",
+    "ruling": "V18 (f4611623); owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "code-first-connections*",
+    "step": "sync-subscriptions-by-connection-code",
+    "pointer": "!go-expect",
+    "reason": "Go's sync 500 (see V18 entries) fails this step's own expect, or a later step that needs what the sync would have created",
+    "ruling": "V18 (f4611623); owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "code-first-connections*",
+    "step": "sync-subscriptions-shared-connection-found-with-flag",
+    "pointer": "!go-expect",
+    "reason": "Go's sync 500 (see V18 entries) fails this step's own expect, or a later step that needs what the sync would have created",
+    "ruling": "V18 (f4611623); owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "connections*",
+    "step": "list-by-status",
+    "pointer": "/connections/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "connections*",
+    "step": "list-by-status",
+    "pointer": "/total",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "connections*",
+    "step": "login-as-b",
+    "pointer": "/permissions/**",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "dispatch-jobs*",
+    "step": "login-as-b",
+    "pointer": "/permissions/**",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "dispatch-pools*",
+    "step": "list-by-status",
+    "pointer": "/pools/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "dispatch-pools*",
+    "step": "list-by-status",
+    "pointer": "/total",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "dispatch-pools*",
+    "step": "login-as-b",
+    "pointer": "/permissions/**",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "docs*",
+    "step": "list-before-any-app-docs",
+    "pointer": "/applications/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "docs*",
+    "step": "list-after-sync-includes-application-group",
+    "pointer": "/applications/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "docs*",
+    "step": "confinement-read-succeeds-with-docs-view",
+    "pointer": "/applications/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "event-types*",
+    "step": "login-as-b",
+    "pointer": "/permissions/**",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "idp-role-mappings*",
+    "step": "confinement-login",
+    "pointer": "/permissions/**",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "me-public-config*",
+    "step": "me-applications",
+    "pointer": "/applications/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "me-public-config*",
+    "step": "confinement-login",
+    "pointer": "/permissions/**",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "me-public-config*",
+    "step": "confinement-me",
+    "pointer": "/permissions/**",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "platform cors*",
+    "step": "confinement-login",
+    "pointer": "/permissions/**",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "profile-only gate*",
+    "step": "service-token",
+    "pointer": "/access_token/«jwt»/claims/scope",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "profile-only gate*",
+    "step": "service-token",
+    "pointer": "/scope",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "profile-only gate*",
+    "step": "admin-passes-gated-route",
+    "pointer": "/items/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "profile-only gate*",
+    "step": "admin-passes-gated-route",
+    "pointer": "/total",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "principals*",
+    "step": "list-available-applications",
+    "pointer": "/applications/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "principals*",
+    "step": "sync-users",
+    "pointer": "/syncedEmails/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "principals*",
+    "step": "list-all",
+    "pointer": "/principals/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "principals*",
+    "step": "list-all",
+    "pointer": "/total",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "principals*",
+    "step": "list-by-active",
+    "pointer": "/principals/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "principals*",
+    "step": "list-by-type",
+    "pointer": "/principals/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "principals*",
+    "step": "list-by-type",
+    "pointer": "/total",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "principals*",
+    "step": "list-sorted-desc",
+    "pointer": "/principals/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "principals*",
+    "step": "list-sorted-desc",
+    "pointer": "/total",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "processes*",
+    "step": "login-as-b",
+    "pointer": "/permissions/**",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "roles*",
+    "step": "list",
+    "pointer": "/roles/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "roles*",
+    "step": "list",
+    "pointer": "/total",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "roles*",
+    "step": "filters-applications",
+    "pointer": "/applicationCodes/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "roles*",
+    "step": "grant-on-code-sourced-role-is-allowed",
+    "pointer": "/permissions/**",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "roles*",
+    "step": "revoke-on-code-sourced-role-is-allowed",
+    "pointer": "/permissions/**",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "roles*",
+    "step": "confinement-login",
+    "pointer": "/permissions/**",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "router-config*",
+    "step": "router-token",
+    "pointer": "/access_token/«jwt»/claims/scope",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "router-config*",
+    "step": "router-token",
+    "pointer": "/scope",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "router-config*",
+    "step": "plain-token",
+    "pointer": "/access_token/«jwt»/claims/scope",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "router-config*",
+    "step": "plain-token",
+    "pointer": "/scope",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "scheduled-jobs*",
+    "step": "login-as-b",
+    "pointer": "/permissions/**",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "service-accounts*",
+    "step": "mint-token",
+    "pointer": "/accessToken/«jwt»/claims/scope",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "service-accounts*",
+    "step": "mint-token",
+    "pointer": "/scope",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "S0 smoke*",
+    "step": "login-as-b",
+    "pointer": "/permissions/**",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
+  },
+  {
+    "scenario": "subscriptions*",
+    "step": "list-by-status",
+    "pointer": "/subscriptions/**",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "subscriptions*",
+    "step": "list-by-status",
+    "pointer": "/total",
+    "reason": "Rows Java's successful SDK syncs left behind (Go's syncs 500'd): the synced app's pool/connection/subscription/users/roles/audit rows, and the synced app's code masked as an entity id because Java's audit captured it",
+    "ruling": "V18 (f4611623) consequence; owner 2026-09-25 item 19: allow-list until cutover"
+  },
+  {
+    "scenario": "subscriptions*",
+    "step": "login-as-b",
+    "pointer": "/permissions/**",
+    "reason": "Java-only permissions shift the ordered permission list: the function service's platform:function:*, config:update renamed config:manage, service-account permissions on admin/iam-admin/viewer/iam-readonly, router:view on viewer/application-service",
+    "ruling": "function service (R1-R14); V17 docs/spec/config-permissions.md; owner 2026-09-25 items 2 and 13; item 19"
   }
 ]

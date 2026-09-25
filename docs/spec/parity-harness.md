@@ -273,6 +273,14 @@ check is skipped, since entries for scenarios not run cannot match — the file 
 that removes a difference has to remove its excuse too. No `ruling` field, no
 entry (the reviewer rejects it).
 
+One entry form is not a diff: **`"pointer": "!go-expect"`** accepts Go missing a
+named step's own `expect.status` — a known Go defect a later step would
+otherwise turn into an `ERROR` (Go's sync routes' 500 `AUDIT_WRITE`, owner
+ruling 2026-09-25: allow-list until cutover). It applies only when Go answered
+(a transport failure is still an `ERROR`) and Java met the expectation; the
+step is then `ACCEPTED` and Go's response is not compared. It is stale, like
+any entry, once Go passes the step. The loader refuses it with a `"*"` scenario or step (a scenario name prefix is fine).
+
 Exit status non-zero on any `DIFF`, any `ERROR`, any stale entry, any false
 `covers` claim, or coverage under the threshold. That is what makes it a
 gate rather than a dashboard.

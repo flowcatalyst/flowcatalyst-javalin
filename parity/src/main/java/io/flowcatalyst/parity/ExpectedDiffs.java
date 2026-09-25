@@ -29,9 +29,10 @@ public final class ExpectedDiffs {
     }
 
     /// Loads and validates `path`: every entry must carry a non-blank
-    /// `ruling` (spec §6: "No `ruling` field, no entry").
+    /// `ruling` (spec §6: "No `ruling` field, no entry"), and a
+    /// [Parity#GO_EXPECT] entry must name one step of one scenario (never `"*"`).
     ///
-    /// @throws IllegalStateException an entry has no ruling
+    /// @throws IllegalStateException an entry has no ruling, or a wildcard `!go-expect`
     public static ExpectedDiffs load(Path path) {
         if (!Files.exists(path)) return empty();
         try {
@@ -41,6 +42,10 @@ public final class ExpectedDiffs {
                 if (e.ruling() == null || e.ruling().isBlank()) {
                     throw new IllegalStateException(
                             "expected-diffs.json entry has no ruling: " + e.scenario() + "/" + e.step() + " " + e.pointer());
+                }
+                if (Parity.GO_EXPECT.equals(e.pointer()) && ("*".equals(e.step()) || "*".equals(e.scenario()))) {
+                    throw new IllegalStateException("expected-diffs.json: a " + Parity.GO_EXPECT
+                            + " entry names one step of one scenario (a name prefix is fine), never \"*\": " + e.scenario() + "/" + e.step());
                 }
             }
             return new ExpectedDiffs(List.of(parsed));

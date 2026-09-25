@@ -2041,7 +2041,7 @@ groups. None is a Java regression.
 | **Audit facets** | `audit-logs entity-types-facet…`, `operations-facet…` | Java has the sync commands' audit rows; Go's syncs never wrote them |
 
 **RULED 2026-09-25: allow-list them under their rulings and keep the job running until cutover, then
-retire it.** Once item 15's super-admin exception lands, `roles grant-on-code-sourced-role-is-allowed`
+retire it.** **BUILT 2026-09-25:** 83 entries in `parity/expected-diffs.json`, each naming its ruling; the three `code-first-connections` steps Go itself fails use the new `!go-expect` entry form (parity-harness spec §6). The rulings since the list above added the router and service-account permissions, `allowedTenantIds` and item 8's 404. Parity vs Go `73a6918`: 1,363 steps, 0 DIFF, 0 ERROR, 0 stale. Once item 15's super-admin exception lands, `roles grant-on-code-sourced-role-is-allowed`
 matches Go again. The original question: these are not in `parity/expected-diffs.json`, which needs a ruling id per
 entry. Go is being retired, so the choice is to allow-list them under the rulings above (V17, S1.5,
 S2, function service, "Go's sync defect") or to retire the parity job. Everything except the two

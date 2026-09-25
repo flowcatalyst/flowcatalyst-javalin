@@ -6,6 +6,35 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## Owner rulings implemented (2026-09-25)
+
+The 19 overnight-review questions were ruled one at a time (`docs/backlog.md` §"Overnight
+review", `f6e10994`) and built in the owner's order, one commit per ruling, each with its mutants:
+
+- **Router auth** (`eb21ed2a`…`714f3f2d`, spec `docs/spec/router-api-auth.md`): outside dev mode the
+  router API needs a platform bearer token. It needs `platform:messaging:router:view` to read and
+  `:operate` to change anything. A new `platform:router-operator` role; `viewer` and
+  `application-service` get `:view`. The dashboard signs in through the platform (authorization
+  code + PKCE, `FC_ROUTER_DASHBOARD_CLIENT_ID`). Mock and seed routes are dev-mode only. The SDKs
+  send the token on the in-flight checks. **Deploy order:** the SDK release reaches apps before a
+  router that enforces this.
+- **Roles** (items 14, 13, 15): nobody hands out platform authority they do not hold (a ceiling on
+  `platform:` permissions across role assignment, service-account roles, sync, IdP role mappings
+  and role edits); `admin`/`iam-admin` provision service accounts again; only a super-admin may put
+  another application's permissions on a role.
+- **Sign-in** (items 3, 4, 6): a multi-tenant Entra provider must pin its tenants
+  (`oauth_identity_provider_allowed_tenants`, V19, or the mapping's `requiredOidcTenantId`;
+  `TENANT_NOT_PINNED`); a sync never applies `passwordHash` to an existing principal (reported in
+  `passwordHashIgnored`); `/oauth/authorize` reads the session cookie only.
+- **Ingest** (17a): an event of an application's type only from a caller that may sign as it.
+- **Small items:** sync-platform is platform only (16); unmapped OIDC domain 404 (8); a version
+  still preparing answers 503 + `Retry-After` (12); outbound function HTTP capped at 16 MiB (9);
+  idle keep-alive connections close after 75 s, never mid-request (10).
+- **APIs/SDKs:** single-flight session refresh in the TS and Laravel SDKs (5); webhook `check()`
+  returning a result in Java, TS and Laravel, and function `emit` returning `EmitResult` (11).
+- **Parity** (19): allow-list until cutover. The harness gained `!go-expect` for a step Go itself
+  fails (its sync 500s).
+
 ## Overnight quality + security sweep (2026-09-24/25)
 
 Owner asked for a quality pass overnight: security, duplication, Result-vs-exception use, error
