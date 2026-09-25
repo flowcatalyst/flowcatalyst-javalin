@@ -1736,6 +1736,11 @@ prefix substitution.
 
 ### 9.7 BasicAuth — `router/api/auth.go`, `server/run.go:228-243`
 
+> **Java, 2026-09-25: dev mode only.** Outside `FLOWCATALYST_DEV_MODE` the router API requires a
+> platform bearer token with `platform:messaging:router:view`/`:operate`, and the settings below
+> are ignored with a WARN (`docs/spec/router-api-auth.md`). The mock, benchmark and seed routes
+> are mounted in dev mode only.
+
 - Credentials from `FC_ROUTER_AUTH_USER`/`FC_ROUTER_AUTH_PASS` (aliases
   `AUTH_BASIC_USERNAME`/`AUTH_BASIC_PASSWORD`); `AUTH_MODE=NONE` (case-insens.)
   forces off; empty username → middleware disabled.

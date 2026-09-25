@@ -184,6 +184,14 @@ public final class TestJwks implements AutoCloseable {
                 expiresAt, null);
     }
 
+    /// An API access token (`token_use = api`) whose `scope` is `scope`, as the
+    /// platform mints for a client-credentials caller: signed with the current
+    /// key, `iss` the discovered issuer.
+    public String mintApi(String subject, String scope, Instant expiresAt) {
+        return mint(currentPrivate, currentKid, discoveryIssuer, subject, "SERVICE", "ANCHOR", scope,
+                List.of(), List.of(), List.of(), true, expiresAt, "api");
+    }
+
     /// A token whose `token_use` claim is `tokenUse` (`"identity"` for a relying party's identity token).
     public String mintWithTokenUse(String tokenUse, String subject, String tier, List<String> clients, Instant expiresAt) {
         return mint(currentPrivate, currentKid, discoveryIssuer, subject, "USER", tier,

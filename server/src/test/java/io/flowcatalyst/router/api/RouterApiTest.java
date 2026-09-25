@@ -140,7 +140,7 @@ class RouterApiTest {
 
         var state = new RouterApi.State(manager, tracker, warnings, breakers, election, electionConfig,
                 "test-version", "/router", null, Map.of("POOL-A", poolAMetrics), traffic, brokerStats);
-        http = TestHttp.routes(routes -> RouterApi.register(routes, state));
+        http = TestHttp.routes(routes -> { RouterApi.register(routes, state); RouterApi.registerDevRoutes(routes, state); });
 
         var bareState = new RouterApi.State(null, tracker, warnings, null, null, null, null, "/router", null, null, null, null);
         bare = TestHttp.routes(routes -> RouterApi.register(routes, bareState));

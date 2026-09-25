@@ -730,6 +730,18 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
     record ApiAndReaper(ApiStarter starter, RouteRegistry registry, DispatchJobReaper dispatchJobReaper) {
     }
 
+    /// Where the router API verifies platform tokens (`docs/spec/router-api-auth.md`
+    /// rule 1): `FC_ROUTER_PLATFORM_URL`, else this process's own platform over
+    /// loopback, else blank (every protected router route then answers 401). Only
+    /// the verification address: `FC_ROUTER_PLATFORM_URL`'s other meaning, settle
+    /// reporting, still reads the env value as set.
+    private String routerTokenPlatformUrl() {
+        if (!env.routerPlatformUrl().isBlank()) {
+            return env.routerPlatformUrl();
+        }
+        return mode instanceof Mode.Platform ? "http://127.0.0.1:" + env.apiPort() : "";
+    }
+
     ApiAndReaper buildApiAndReaper(Router router) {
         DispatchJobReaper[] reaperHolder = new DispatchJobReaper[1];
         Consumer<Routes> configure = routes -> {
@@ -752,16 +764,20 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 // The router's API and dashboard read the router's in-memory state, never
                 // the database: unbounded (Group.NO_DB).
                 var routerRoutes = routes.in(io.flowcatalyst.http.Group.NO_DB);
-                io.flowcatalyst.router.api.auth.BasicAuthFilter.register(routerRoutes,
-                        new io.flowcatalyst.router.api.auth.BasicAuthFilter(
-                                env.routerAuthMode(), env.routerAuthUser(), env.routerAuthPass(),
-                                env.routerHttpPrefix()));
-                io.flowcatalyst.router.api.RouterApi.register(routerRoutes,
-                        new io.flowcatalyst.router.api.RouterApi.State(
-                                router.manager(), router.tracker(), router.warnings(), router.breakers(),
-                                router.election(), router.electionConfig(), Version.current(),
-                                env.routerHttpPrefix(), null, router.poolMetrics(),
-                                router.traffic(), router.brokerStats(), router.server()));
+                io.flowcatalyst.router.api.auth.RouterAuth.install(routerRoutes,
+                        new io.flowcatalyst.router.api.auth.RouterAuth.Settings(
+                                env.routerDevMode(), env.routerAuthMode(), env.routerAuthUser(),
+                                env.routerAuthPass(), env.routerHttpPrefix(), routerTokenPlatformUrl()));
+                var routerState = new io.flowcatalyst.router.api.RouterApi.State(
+                        router.manager(), router.tracker(), router.warnings(), router.breakers(),
+                        router.election(), router.electionConfig(), Version.current(),
+                        env.routerHttpPrefix(), null, router.poolMetrics(),
+                        router.traffic(), router.brokerStats(), router.server());
+                io.flowcatalyst.router.api.RouterApi.register(routerRoutes, routerState);
+                if (env.routerDevMode()) {
+                    // docs/spec/router-api-auth.md rule 7: absent, not merely protected, elsewhere.
+                    io.flowcatalyst.router.api.RouterApi.registerDevRoutes(routerRoutes, routerState);
+                }
                 io.flowcatalyst.router.api.dashboard.DashboardHandler.register(
                         routerRoutes, env.routerHttpPrefix());
             }

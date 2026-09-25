@@ -9,12 +9,13 @@ import java.util.concurrent.ThreadLocalRandom;
 /// The dev mock targets (§9.1) — endpoints the router can be pointed at to
 /// exercise a pool without a real downstream.
 ///
-/// Always mounted, as in Go. They are the only handlers here that own mutable
+/// Mounted in dev mode only (`docs/spec/router-api-auth.md` rule 7; Go mounts
+/// them always). They are the only handlers here that own mutable
 /// state ([RouterApi.MockCounters]), and it is theirs alone: nothing else
 /// reads it.
 final class MockRoutes {
 
-    /// Mounts this group. Called by [RouterApi#register].
+    /// Mounts this group. Called by [RouterApi#registerDevRoutes].
     static void register(Routes routes, State s) {
         var p = s.prefix();
         routes.post(p + "/api/test/fast", ctx -> testFast(ctx, s));

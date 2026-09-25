@@ -32,11 +32,15 @@ final class MessageRoutes {
 
     private static final int SEED_MAX_COUNT = 10_000;
 
-    /// Mounts this group. Called by [RouterApi#register].
+    /// Mounts `POST /messages`. Called by [RouterApi#register].
     static void register(Routes routes, State s) {
-        var p = s.prefix();
-        routes.post(p + "/messages", ctx -> publishMessage(ctx, s));
-        routes.post(p + "/api/seed/messages", ctx -> seedMessages(ctx, s));
+        routes.post(s.prefix() + "/messages", ctx -> publishMessage(ctx, s));
+    }
+
+    /// Mounts `POST /api/seed/messages`, in dev mode only
+    /// (`docs/spec/router-api-auth.md` rule 7). Called by [RouterApi#registerDevRoutes].
+    static void registerDev(Routes routes, State s) {
+        routes.post(s.prefix() + "/api/seed/messages", ctx -> seedMessages(ctx, s));
     }
 
     /// `POST /messages` — 201 on success; 422 on a missing required field;

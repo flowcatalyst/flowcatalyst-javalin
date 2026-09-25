@@ -74,7 +74,7 @@ class MessageRoutesTest {
         manager.registerConsumer(new NonPublishingConsumer(QUEUE_C_NO_PUBLISHER));
         var state = new RouterApi.State(manager, new InFlightTracker(CLOCK), new WarningStore(CLOCK), null, null,
                 null, "test-version", "/router", null, null, null, null);
-        http = TestHttp.routes(routes -> RouterApi.register(routes, state));
+        http = TestHttp.routes(routes -> { RouterApi.register(routes, state); RouterApi.registerDevRoutes(routes, state); });
 
         var emptyManager = new RouterManager(new InFlightTracker(CLOCK), Warnings.NO_OP, CLOCK,
                 cfg -> {
@@ -82,11 +82,11 @@ class MessageRoutesTest {
                 });
         var noQueuesState = new RouterApi.State(emptyManager, new InFlightTracker(CLOCK), new WarningStore(CLOCK),
                 null, null, null, "test-version", "/router", null, null, null, null);
-        noQueuesHttp = TestHttp.routes(routes -> RouterApi.register(routes, noQueuesState));
+        noQueuesHttp = TestHttp.routes(routes -> { RouterApi.register(routes, noQueuesState); RouterApi.registerDevRoutes(routes, noQueuesState); });
 
         var bareState = new RouterApi.State(null, new InFlightTracker(CLOCK), new WarningStore(CLOCK), null, null,
                 null, "test-version", "/router", null, null, null, null);
-        bareHttp = TestHttp.routes(routes -> RouterApi.register(routes, bareState));
+        bareHttp = TestHttp.routes(routes -> { RouterApi.register(routes, bareState); RouterApi.registerDevRoutes(routes, bareState); });
     }
 
     @AfterAll

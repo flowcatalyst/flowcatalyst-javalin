@@ -16,10 +16,11 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 
 /// The router's monitoring HTTP API (`docs/spec/router.md` §9.1). Mounted
-/// under [State#prefix] (default `/router`). BasicAuth (§9.7) guards this
-/// surface and is applied by the caller — see
-/// `io.flowcatalyst.router.api.auth.BasicAuthFilter`, which strips the mount
-/// prefix before deciding whether a path is public.
+/// under [State#prefix] (default `/router`). The caller applies the guard:
+/// `io.flowcatalyst.router.api.auth.PlatformTokenFilter` (platform bearer
+/// tokens, `docs/spec/router-api-auth.md`), or §9.7's
+/// `io.flowcatalyst.router.api.auth.BasicAuthFilter` in dev mode. Both strip
+/// the mount prefix before deciding whether a path is public.
 ///
 /// ### Where the handlers live
 ///
@@ -39,8 +40,8 @@ import java.util.concurrent.atomic.AtomicLong;
 ///   - [InFlightRoutes] — what this process owns, plus the force-ACK override
 ///   - [QueueRoutes] — broker-side depth, forced sampling, traffic status
 ///   - [AdminRoutes] — standby, stream health, config snapshot
-///   - [MockRoutes] — the dev mock targets
-///   - [MessageRoutes] — `POST /messages`, `POST /api/seed/messages`
+///   - [MockRoutes] — the dev mock targets (dev mode only, [#registerDevRoutes])
+///   - [MessageRoutes] — `POST /messages`, and `POST /api/seed/messages` in dev mode only
 ///   - [MetricsRoutes] — `GET /metrics`, the Prometheus alias under this
 ///     prefix (§1.4/§9.2), rendered by
 ///     `io.flowcatalyst.router.prometheus.RouterPrometheusCollector`
@@ -194,8 +195,15 @@ public final class RouterApi {
         InFlightRoutes.register(routes, s);
         QueueRoutes.register(routes, s);
         AdminRoutes.register(routes, s);
-        MockRoutes.register(routes, s);
         MessageRoutes.register(routes, s);
         MetricsRoutes.register(routes, s);
+    }
+
+    /// The dev-only routes (`docs/spec/router-api-auth.md` rule 7): the mock
+    /// targets, their benchmark aliases and `POST /api/seed/messages`. A deployed
+    /// router does not have them at all, so they are not merely protected.
+    public static void registerDevRoutes(Routes routes, State s) {
+        MockRoutes.register(routes, s);
+        MessageRoutes.registerDev(routes, s);
     }
 }

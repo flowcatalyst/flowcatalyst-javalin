@@ -315,7 +315,7 @@ changed to produce this table.
 | `FLOWCATALYST_CONFIG_URL` | router | **read** | `Env.routerConfigUrl`; comma-separated multi-URL supported (`HttpConfigSource.create`, `raw.split(",")`) — matches prod's 4-URL value. |
 | `FLOWCATALYST_CONFIG_INTERVAL` | router | **aliased** | `Env.routerConfigIntervalRaw` — `FC_ROUTER_CONFIG_INTERVAL_SECONDS` → `FLOWCATALYST_CONFIG_INTERVAL`; parsed by `RouterServer.parseConfigPollInterval`, WARNs and falls back to 300 if set-but-invalid. |
 | `FLOWCATALYST_STANDBY_ENABLED` | router | **aliased** | `Env.standbyEnabled` — same three-way alias as `STANDBY_ENABLED` above. |
-| `AUTH_MODE` | router | **read** | `Env.routerAuthMode`; `NONE` (case-insensitive) forces router BasicAuth off. |
+| `AUTH_MODE` | router | **read** | `Env.routerAuthMode`; `NONE` (case-insensitive) forces router BasicAuth off, **in dev mode only** (2026-09-25, `docs/spec/router-api-auth.md`); outside dev mode it is ignored with a WARN and the router API needs a platform bearer token. |
 | `NOTIFICATION_TEAMS_ENABLED` | router | **read** | Raw string carried as `Env.routerNotifyTeamsEnabledRaw`; `WarningNotifier.create` — **deliberate deviation from Go/Rust**: an explicit `false` always disables even with a URL set (Go/Rust: `false` is ignored once a URL is configured, so this value is a no-op there but load-bearing in Java). |
 | `NOTIFICATION_TEAMS_WEBHOOK_URL` | router | **aliased** | `Env.routerNotifyWebhookUrl` — `FC_NOTIFY_WEBHOOK_URL` → `NOTIFICATION_TEAMS_WEBHOOK_URL`. |
 | `NOTIFICATION_MIN_SEVERITY` | router | **aliased** | `Env.routerNotifyMinSeverity` — `FC_NOTIFY_MIN_SEVERITY` → `NOTIFICATION_MIN_SEVERITY`; accepts `WARN` and `WARNING`. |
