@@ -121,6 +121,7 @@ public final class IngestApi {
             clientId = ac.clients().get(0); // spec §3.2: singular-only default (§5 D3)
         }
         clientId = requireWritableClient(ac, clientId);
+        requireEventSignable(s.signing(), ac, req.eventType());
 
         var event = EventIngestMapper.toEvent(new EventIngestMapper.RawItem(
                 null, null, req.eventType(), req.source(), req.subject(), req.data(), req.deduplicationId(),
@@ -143,6 +144,7 @@ public final class IngestApi {
         // the valid items are still written (one insert, all of them or none). A tenant
         // violation still refuses the whole batch before anything is written (spec §2).
         Map<String, Optional<String>> clientCodeCache = new HashMap<>();
+        var signing = s.signing().perRequest();
         List<Event> events = new ArrayList<>(items.size());
         List<Integer> eventSlot = new ArrayList<>(items.size());
         BatchResultItem[] results = new BatchResultItem[items.size()];
@@ -164,6 +166,7 @@ public final class IngestApi {
                 }
             }
             clientId = requireWritableClient(ac, clientId);
+            requireEventSignable(signing, ac, item.type());
             events.add(EventIngestMapper.toEvent(new EventIngestMapper.RawItem(
                     item.id(), item.specVersion(), item.type(), item.source(), item.subject(), item.data(),
                     item.deduplicationId(), item.correlationId(), item.causationId(), item.messageGroup(),
@@ -341,6 +344,15 @@ public final class IngestApi {
             throw HttpError.forbidden("No access to client: " + clientId);
         }
         return clientId;
+    }
+
+    /// An event of an application's type only from a caller that may sign as that
+    /// application ([DeliverySigningGuard#checkEvent]) — a whole-request 403 before
+    /// anything is written.
+    private static void requireEventSignable(DeliverySigningGuard signing, AuthContext ac, String eventType) {
+        if (signing.checkEvent(ac, eventType) instanceof Result.Err<String, DeliverySigningGuard.Refusal>(var refusal)) {
+            throw HttpError.forbidden(refusal.message());
+        }
     }
 
     /// The identity that would sign `job` must be the caller's to use

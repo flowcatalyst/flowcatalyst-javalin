@@ -48,6 +48,15 @@ public final class DeliverySigningGuard {
                 return "dispatch job would be signed by an identity the caller may not use: " + cause.message();
             }
         }
+
+        /// An event of another application's type: its fan-out may be signed as that application.
+        record EventOfAnotherApplication(String eventType, SigningReach.Refusal cause) implements Refusal {
+            @Override
+            public String message() {
+                return "an event of type '" + eventType + "' may be delivered signed by its application, which the caller "
+                        + "may not sign as: " + cause.message();
+            }
+        }
     }
 
     private final DeliveryCredentials.SubscriptionLookup subscriptions;
@@ -71,6 +80,30 @@ public final class DeliverySigningGuard {
                 id -> subscriptionMemo.computeIfAbsent(id, subscriptions::findById),
                 id -> connectionMemo.computeIfAbsent(id, connections::findById),
                 reach.perRequest());
+    }
+
+    /// Event ingest (owner ruling 2026-09-25, backlog "Overnight review" item 17a).
+    /// An event of application X's type fans out to X's subscriptions, and one with
+    /// no account or connection of its own is signed with X's account. So ingesting
+    /// the event causes X's signature on a payload the caller chose. Allowed for X
+    /// itself, a super-admin, or an anchor whose application access covers X (the
+    /// operator's own staff). A type naming no known application signs nothing and
+    /// passes.
+    public Result<String, Refusal> checkEvent(AuthContext ac, String eventType) {
+        Objects.requireNonNull(ac, "ac");
+        int colon = eventType == null ? -1 : eventType.indexOf(':');
+        if (colon <= 0) {
+            return Result.ok(eventType);
+        }
+        String applicationCode = eventType.substring(0, colon);
+        Optional<String> applicationId = reach.applicationId(applicationCode);
+        if (applicationId.isEmpty() || (ac.isAnchor() && ac.canAccessApplication(applicationId.get()))) {
+            return Result.ok(eventType);
+        }
+        return switch (reach.mayUseApplication(ac, applicationId.get(), applicationCode)) {
+            case Result.Ok<String, SigningReach.Refusal> ok -> Result.ok(eventType);
+            case Result.Err<String, SigningReach.Refusal>(var cause) -> Result.err(new Refusal.EventOfAnotherApplication(eventType, cause));
+        };
     }
 
     /// `job`, when `ac` may cause its signed delivery; the refusal otherwise.

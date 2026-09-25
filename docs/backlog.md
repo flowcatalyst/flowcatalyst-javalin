@@ -1979,9 +1979,10 @@ What is left needs a ruling or was judged not worth changing:
     platform definitions into it with `removeUnlisted` — anyone with `EVENT_TYPE_SYNC` (in practice
     super-admins) can wipe an application's event types. Restrict to `platform`?
 17. ~~**S3 owner notes**~~ **RULED 2026-09-25:**
-    (a) event ingest is gated like dispatch-job ingest: a caller may ingest an event of application
-        X's type only if it may sign as X (`SigningReach.mayUseApplication`); platform events are
-        unaffected;
+    (a) **BUILT:** event ingest is gated like dispatch-job ingest. A caller may ingest an event of
+        application X's type only if it may sign as X: X's own account, a super-admin, or an anchor
+        whose application access covers X (`DeliverySigningGuard.checkEvent`). Events the platform
+        emits itself do not go through ingest;
     (b) keep the single-client default for an absent `clientId`;
     (c) keep the whole-batch 409 for duplicate dispatch-job ids, checked against the live table only;
     (d) `/sign` answering 403 out of reach is noted; the specs are already swept.

@@ -627,6 +627,46 @@ class IngestApiTest {
         assertThat(countJobsByCode(code)).isEqualTo(0);
     }
 
+    /// Owner ruling 2026-09-25 (backlog "Overnight review" item 17a): an event of
+    /// application X's type fans out to X's subscriptions, and one without its own
+    /// account is signed as X. So only a caller that may sign as X may ingest it: X's
+    /// own account, a super-admin, or an anchor whose application access covers X. A
+    /// type naming no known application signs nothing and is not refused.
+    @Test
+    void anEventOfAnApplicationsTypeNeedsACallerThatMaySignAsIt() {
+        String type = APP_CODE + ":order:created-" + UUID.randomUUID().toString().substring(0, 8);
+        var single = http.post("/api/events",
+                "{\"eventType\":\"" + type + "\",\"source\":\"s\",\"data\":{}}", EVENTS_WRITER);
+        assertThat(single.statusCode()).as(single.body()).isEqualTo(403);
+        var batch = http.post("/api/events/batch",
+                "{\"items\":[{\"type\":\"" + type + "\",\"source\":\"s\",\"data\":{}}]}", EVENTS_WRITER);
+        assertThat(batch.statusCode()).as(batch.body()).isEqualTo(403);
+        assertThat(countEventsByType(type)).as("nothing written").isEqualTo(0);
+
+        String account = SigningAccounts.seed(DB.ds, List.of(CLIENT_A), appId);
+        String[] theApplication = {
+                Authenticator.TEST_PRINCIPAL, SigningAccounts.servicePrincipal(DB.ds, account),
+                Authenticator.TEST_SCOPE, "CLIENT",
+                Authenticator.TEST_CLIENTS, CLIENT_A,
+                Authenticator.TEST_PERMISSIONS, "platform:messaging:batch:events-write"};
+        var own = http.post("/api/events/batch",
+                "{\"items\":[{\"type\":\"" + type + "\",\"source\":\"s\",\"data\":{}}]}", theApplication);
+        assertThat(own.statusCode()).as("the application's own account: %s", own.body()).isEqualTo(201);
+        String[] operator = {   // an anchor, not a super-admin: reach, not the wildcard, is what admits it
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:messaging:batch:events-write"};
+        var anchor = http.post("/api/events",
+                "{\"eventType\":\"" + type + "\",\"source\":\"s\",\"data\":{},\"clientId\":\"" + CLIENT_A + "\"}", operator);
+        assertThat(anchor.statusCode()).as("an anchor reaching the application: %s", anchor.body()).isEqualTo(201);
+        assertThat(countEventsByType(type)).isEqualTo(2);
+
+        String noApplication = "noapp" + DB.run + ":thing:happened";
+        var free = http.post("/api/events",
+                "{\"eventType\":\"" + noApplication + "\",\"source\":\"s\",\"data\":{}}", EVENTS_WRITER);
+        assertThat(free.statusCode()).as(free.body()).isEqualTo(201);
+    }
+
     /// A caller confined to exactly one client writes an absent client as
     /// that client — how an SDK outbox (whose dispatch-job payload carries no
     /// `clientId`) keeps working under a client-scoped credential.
