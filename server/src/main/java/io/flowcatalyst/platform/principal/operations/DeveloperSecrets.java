@@ -4,7 +4,6 @@ import io.flowcatalyst.platform.shared.SecureTokens;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 
-import java.security.SecureRandom;
 import java.util.Objects;
 
 /// Mints and encrypts a developer client secret (spec §2). **Minting only** —
@@ -34,7 +33,6 @@ public final class DeveloperSecrets {
     private static final int SECRET_BYTES = 32;
 
     private final Encryption encryption; // null = app key not configured
-    private final SecureRandom random = new SecureRandom();
 
     private DeveloperSecrets(Encryption encryption) {
         this.encryption = encryption;

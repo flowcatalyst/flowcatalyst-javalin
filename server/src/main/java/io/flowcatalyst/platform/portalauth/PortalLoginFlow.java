@@ -1,8 +1,7 @@
 package io.flowcatalyst.platform.portalauth;
 
-import java.security.SecureRandom;
+import io.flowcatalyst.platform.shared.SecureTokens;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.Objects;
 
 /// One parked `/portal/authorize` handshake (spec `auth-identity.md` §3.2,
@@ -49,7 +48,6 @@ public record PortalLoginFlow(
     /// Spec §13: 15 minutes.
     public static final long TTL_SECONDS = 900;
 
-    private static final SecureRandom RANDOM = new SecureRandom();
 
     public PortalLoginFlow {
         Objects.requireNonNull(id, "id");
@@ -71,9 +69,7 @@ public record PortalLoginFlow(
 
     /// 32 random bytes, unpadded base64url — 43 characters.
     private static String generateId() {
-        byte[] b = new byte[32];
-        RANDOM.nextBytes(b);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(b);
+        return SecureTokens.urlSafe(32);
     }
 
     public boolean isLive(Instant now) {

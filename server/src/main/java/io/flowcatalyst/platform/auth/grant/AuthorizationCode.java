@@ -1,8 +1,7 @@
 package io.flowcatalyst.platform.auth.grant;
 
-import java.security.SecureRandom;
+import io.flowcatalyst.platform.shared.SecureTokens;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.Objects;
 
 /// An OAuth 2.0 authorization code (`docs/spec/auth-core.md` §3.7, §8.1; Go
@@ -43,7 +42,6 @@ public record AuthorizationCode(
     /// `authCodeDefaultExpiry`: ten minutes.
     public static final long TTL_SECONDS = 600;
 
-    private static final SecureRandom RANDOM = new SecureRandom();
 
     public AuthorizationCode {
         Objects.requireNonNull(code, "code");
@@ -62,9 +60,7 @@ public record AuthorizationCode(
 
     /// 64 random bytes as unpadded base64url — 86 characters (Go `generateCode`).
     public static String generateCode() {
-        byte[] b = new byte[64];
-        RANDOM.nextBytes(b);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(b);
+        return SecureTokens.urlSafe(64);
     }
 
     public boolean isExpired(Instant now) {

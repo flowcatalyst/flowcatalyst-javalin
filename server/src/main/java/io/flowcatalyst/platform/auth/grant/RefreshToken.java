@@ -1,11 +1,11 @@
 package io.flowcatalyst.platform.auth.grant;
 
+import io.flowcatalyst.platform.shared.SecureTokens;
 import io.flowcatalyst.sdk.tsid.Tsid;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
@@ -60,7 +60,6 @@ public record RefreshToken(
     /// is what those rows' expiry *was*, not what a new token's should be.
     public static final long TTL_SECONDS = 7 * 24 * 3600;
 
-    private static final SecureRandom RANDOM = new SecureRandom();
 
     public RefreshToken {
         Objects.requireNonNull(id, "id");
@@ -91,9 +90,7 @@ public record RefreshToken(
 
     /// 32 random bytes, unpadded base64url.
     public static String generateRaw() {
-        byte[] b = new byte[32];
-        RANDOM.nextBytes(b);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(b);
+        return SecureTokens.urlSafe(32);
     }
 
     /// base64url(sha256(raw)), unpadded — the only form ever stored or looked up.

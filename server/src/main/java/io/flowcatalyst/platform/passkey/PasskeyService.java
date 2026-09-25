@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.passkey;
 
+import io.flowcatalyst.platform.shared.SecureTokens;
 import com.yubico.webauthn.AssertionRequest;
 import com.yubico.webauthn.AssertionResult;
 import com.yubico.webauthn.CredentialRepository;
@@ -27,9 +28,7 @@ import tools.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.security.SecureRandom;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
@@ -86,7 +85,6 @@ public final class PasskeyService {
         }
     }
 
-    private static final SecureRandom RANDOM = new SecureRandom();
 
     private final Config config;
     private final PasskeyRepository credentials;
@@ -203,17 +201,13 @@ public final class PasskeyService {
     /// §7.3: shape-identical to a real non-discoverable challenge so an
     /// unknown account cannot be told from one without a passkey.
     public JsonNode decoyChallenge() {
-        byte[] challenge = new byte[32];
-        byte[] fakeId = new byte[32];
-        RANDOM.nextBytes(challenge);
-        RANDOM.nextBytes(fakeId);
         ObjectNode pk = Json.MAPPER.createObjectNode();
-        pk.put("challenge", Base64.getUrlEncoder().withoutPadding().encodeToString(challenge));
+        pk.put("challenge", SecureTokens.urlSafe(32));
         pk.put("timeout", 60000); // the decoy keeps go-webauthn's 60 s; only real ceremonies use 300 s (parity S1-B)
         pk.put("rpId", config.rpId());
         ObjectNode allow = pk.putArray("allowCredentials").addObject();
         allow.put("type", "public-key");
-        allow.put("id", Base64.getUrlEncoder().withoutPadding().encodeToString(fakeId));
+        allow.put("id", SecureTokens.urlSafe(32));
         pk.put("userVerification", "preferred");
         ObjectNode out = Json.MAPPER.createObjectNode();
         out.set("publicKey", pk);
