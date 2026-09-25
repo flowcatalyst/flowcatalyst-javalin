@@ -106,7 +106,7 @@ class ServiceAccountOperationsTest {
 
     private static CreateServiceAccountWithCredentials.Result createWithCredentials(String code, String name, String applicationId, List<String> clientIds) {
         return runAsAnchorTx(CreateServiceAccountWithCredentials.of(repo, principals, oauthClients, clients, Optional.of(ENCRYPTION)),
-                new CreateCommand(code, name, null, null, clientIds, applicationId, null));
+                new CreateCommand(code, name, null, null, clientIds, applicationId, null, null));
     }
 
     private static String seedClient(String tag) {
@@ -167,7 +167,9 @@ class ServiceAccountOperationsTest {
         var principal = principals.findByServiceAccount(got.id()).orElseThrow();
         assertThat(principal.id()).isEqualTo(res.principalId());
         assertThat(principal.isService()).isTrue();
-        assertThat(principal.allApplications()).as("no applicationId given -> unconfined").isTrue();
+        assertThat(principal.allApplications())
+                .as("a new account starts with no application access unless it asks for all (Go a8ff165)").isFalse();
+        assertThat(principal.accessibleApplicationIds()).isEmpty();
 
         var events = eventsFor(got.id(), ServiceAccountEvents.CREATED);
         assertThat(events).hasSize(1);
@@ -191,13 +193,25 @@ class ServiceAccountOperationsTest {
         assertThat(principal.accessibleApplicationIds()).containsExactly(appId);
     }
 
+    @Test
+    void createGrantsEveryApplicationOnlyWhenAsked() {
+        var res = runAsAnchorTx(CreateServiceAccountWithCredentials.of(repo, principals, oauthClients, clients, Optional.of(ENCRYPTION)),
+                new CreateCommand(code("saallapps"), "All Apps", null, null, null, null, true, null));
+
+        var principal = principals.findByServiceAccount(res.serviceAccount().id()).orElseThrow();
+        assertThat(principal.allApplications()).isTrue();
+    }
+
     static Stream<Arguments> malformedCreateCommands() {
         return Stream.of(
-                Arguments.of("empty code", new CreateCommand("", "X", null, null, null, null, null), "CODE_REQUIRED"),
-                Arguments.of("underscore code", new CreateCommand("bad_code", "X", null, null, null, null, null), "INVALID_CODE_FORMAT"),
-                Arguments.of("reserved app: namespace (ruling 2026-09-06 #16)", new CreateCommand("app:orders", "X", null, null, null, null, null), "RESERVED_CODE"),
-                Arguments.of("digit-leading code", new CreateCommand("9digit", "X", null, null, null, null, null), "INVALID_CODE_FORMAT"),
-                Arguments.of("blank name", new CreateCommand(code("sacreatebad"), " ", null, null, null, null, null), "NAME_REQUIRED"));
+                Arguments.of("empty code", new CreateCommand("", "X", null, null, null, null, null, null), "CODE_REQUIRED"),
+                Arguments.of("underscore code", new CreateCommand("bad_code", "X", null, null, null, null, null, null), "INVALID_CODE_FORMAT"),
+                Arguments.of("reserved app: namespace (ruling 2026-09-06 #16)", new CreateCommand("app:orders", "X", null, null, null, null, null, null), "RESERVED_CODE"),
+                Arguments.of("digit-leading code", new CreateCommand("9digit", "X", null, null, null, null, null, null), "INVALID_CODE_FORMAT"),
+                Arguments.of("blank name", new CreateCommand(code("sacreatebad"), " ", null, null, null, null, null, null), "NAME_REQUIRED"),
+                Arguments.of("all applications and one application at once",
+                        new CreateCommand(code("sacreatebad"), "X", null, null, null, "app_0000000000001", true, null),
+                        "ALL_APPLICATIONS_WITH_APPLICATION_ID"));
     }
 
     @ParameterizedTest(name = "{0} -> {2}")
@@ -271,7 +285,7 @@ class ServiceAccountOperationsTest {
         String name = "NoKeyAtomicity-" + RUN;
 
         assertUseCaseError(() -> runAsAnchorTx(CreateServiceAccountWithCredentials.of(repo, principals, oauthClients, clients, Optional.empty()),
-                        new CreateCommand(c, name, null, null, null, null, null)),
+                        new CreateCommand(c, name, null, null, null, null, null, null)),
                 UseCaseError.Internal.class, "SECRET");
 
         assertThat(repo.findByCode(c)).as("no service account row survives the rollback").isEmpty();

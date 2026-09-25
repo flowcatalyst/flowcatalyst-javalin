@@ -1,25 +1,20 @@
 // @vitest-environment jsdom
 /**
- * Create Service Account: application scope was previously not settable at
- * all — every account was created unscoped ("all applications"), silently.
- * A toggle now lets the operator confine the account to one application;
- * off (the default) still creates an unscoped account, matching the
- * server's own `CreateCommand.applicationId` default (owner request,
- * 2026-09-24).
+ * Create Service Account: application access is a three-way choice that
+ * matches the server's CreateCommand — none (the default: a new account
+ * starts with no application access, Go a8ff165), every application
+ * (`allApplications`), or one application it is confined to
+ * (`applicationId`). Owner requests 2026-09-24.
  *
- * - off by default: `applicationId` is NOT sent, and no application is
- *   selected (mutant: send a stray applicationId even when off — this
- *   fails because `toHaveBeenCalledWith` no longer matches)
- * - switching on requires picking an application before Create is enabled
- *   (mutant: drop the validity check — this fails because the button would
- *   stay enabled with no selection)
- * - switching on then picking an application sends exactly that
- *   `applicationId`
- * - switching back off hides the Application field and re-validates
- * - switching off then on again never resurrects a prior pick (mutant: drop
- *   the clear-on-toggle-off watcher — the Select would still carry the
- *   stale value and Create would be enabled with nothing actually chosen
- *   in the now-fresh field)
+ * - default "None": neither `applicationId` nor `allApplications` is sent
+ *   (mutant: default to "ALL" — fails on the `allApplications` assertion)
+ * - "All applications" sends `allApplications: true` and no applicationId
+ * - "One application" requires picking an application before Create is
+ *   enabled (mutant: drop the validity check — the button stays enabled)
+ *   and then sends exactly that `applicationId`
+ * - leaving "One application" hides the field and never resurrects a prior
+ *   pick on return (mutant: drop the clear-on-leave watcher — the Select
+ *   would still carry the stale value and Create would be enabled)
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -132,7 +127,7 @@ function fillRequiredFields(wrapper: VueWrapper) {
 	]);
 }
 
-// Exact match (asterisk stripped) — "Application" and "Application Scope"
+// Exact match (asterisk stripped) — "Application" and "Application Access"
 // are two different fields, and a substring match would confuse them.
 function fieldByLabel(wrapper: VueWrapper, labelText: string) {
 	return wrapper.findAll(".fc-form-field").find((f) => {
@@ -141,10 +136,11 @@ function fieldByLabel(wrapper: VueWrapper, labelText: string) {
 	});
 }
 
-function applicationScopeToggle(wrapper: VueWrapper) {
-	return fieldByLabel(wrapper, "Application Scope")!.find(
-		'input[type="checkbox"][role="switch"]',
-	);
+async function chooseAccess(wrapper: VueWrapper, access: "NONE" | "ALL" | "ONE") {
+	await fieldByLabel(wrapper, "Application Access")!
+		.findComponent({ name: "Select" })
+		.vm.$emit("update:modelValue", access);
+	await flushPromises();
 }
 
 function applicationSelect(wrapper: VueWrapper) {
@@ -155,7 +151,7 @@ function createButton(wrapper: VueWrapper) {
 	return wrapper.findAll("button").find((b) => b.text() === "Create Service Account")!;
 }
 
-describe("ServiceAccountCreateDrawer — application scope toggle", () => {
+describe("ServiceAccountCreateDrawer — application access", () => {
 	beforeEach(() => {
 		pinia = createPinia();
 		setActivePinia(pinia);
@@ -166,28 +162,44 @@ describe("ServiceAccountCreateDrawer — application scope toggle", () => {
 		mocks.replace.mockReset();
 	});
 
-	it("is off by default: no application field shown, and create sends no applicationId", async () => {
+	async function submit(wrapper: VueWrapper) {
+		await createButton(wrapper).trigger("click");
+		await flushPromises();
+		expect(mocks.create).toHaveBeenCalledTimes(1);
+		return mocks.create.mock.calls[0][0];
+	}
+
+	it("defaults to none: no application field shown, and create sends neither applicationId nor allApplications", async () => {
 		mocks.create.mockResolvedValue(createdServiceAccount);
 		const wrapper = await mountDrawer();
 
 		expect(fieldByLabel(wrapper, "Application")).toBeUndefined();
 
 		await fillRequiredFields(wrapper);
-		await createButton(wrapper).trigger("click");
-		await flushPromises();
+		const request = await submit(wrapper);
+		expect(request.applicationId).toBeUndefined();
+		expect(request.allApplications).toBeUndefined();
+	});
 
-		expect(mocks.create).toHaveBeenCalledTimes(1);
-		const request = mocks.create.mock.calls[0][0];
+	it("all applications sends allApplications and no applicationId", async () => {
+		mocks.create.mockResolvedValue(createdServiceAccount);
+		const wrapper = await mountDrawer();
+		await fillRequiredFields(wrapper);
+
+		await chooseAccess(wrapper, "ALL");
+		expect(fieldByLabel(wrapper, "Application")).toBeUndefined();
+
+		const request = await submit(wrapper);
+		expect(request.allApplications).toBe(true);
 		expect(request.applicationId).toBeUndefined();
 	});
 
-	it("disables Create when switched on with no application picked, and enables it once one is picked", async () => {
+	it("one application disables Create until one is picked, then enables it", async () => {
 		const wrapper = await mountDrawer();
 		await fillRequiredFields(wrapper);
 		expect(createButton(wrapper).attributes("disabled")).toBeUndefined();
 
-		await applicationScopeToggle(wrapper).trigger("change");
-		await flushPromises();
+		await chooseAccess(wrapper, "ONE");
 
 		expect(fieldByLabel(wrapper, "Application")).toBeTruthy();
 		expect(createButton(wrapper).attributes("disabled")).toBeDefined();
@@ -198,55 +210,33 @@ describe("ServiceAccountCreateDrawer — application scope toggle", () => {
 		expect(createButton(wrapper).attributes("disabled")).toBeUndefined();
 	});
 
-	it("switched on with an application picked sends exactly that applicationId", async () => {
+	it("one application with an application picked sends exactly that applicationId and not allApplications", async () => {
 		mocks.create.mockResolvedValue(createdServiceAccount);
 		const wrapper = await mountDrawer();
 		await fillRequiredFields(wrapper);
 
-		await applicationScopeToggle(wrapper).trigger("change");
-		await flushPromises();
+		await chooseAccess(wrapper, "ONE");
 		await applicationSelect(wrapper).vm.$emit("update:modelValue", "app_1");
 		await flushPromises();
 
-		await createButton(wrapper).trigger("click");
-		await flushPromises();
-
-		expect(mocks.create).toHaveBeenCalledTimes(1);
-		const request = mocks.create.mock.calls[0][0];
+		const request = await submit(wrapper);
 		expect(request.applicationId).toBe("app_1");
+		expect(request.allApplications).toBeUndefined();
 	});
 
-	it("switching back off immediately drops the picked application (the field disappears)", async () => {
+	it("leaving one application hides the field and a later return does not resurrect the pick (mutant: skip the clear-on-leave watcher)", async () => {
 		const wrapper = await mountDrawer();
 		await fillRequiredFields(wrapper);
 
-		await applicationScopeToggle(wrapper).trigger("change");
-		await flushPromises();
+		await chooseAccess(wrapper, "ONE");
 		await applicationSelect(wrapper).vm.$emit("update:modelValue", "app_1");
 		await flushPromises();
 
-		await applicationScopeToggle(wrapper).trigger("change");
-		await flushPromises();
-
+		await chooseAccess(wrapper, "NONE");
 		expect(fieldByLabel(wrapper, "Application")).toBeUndefined();
-		// Create is valid again with no application field in play.
 		expect(createButton(wrapper).attributes("disabled")).toBeUndefined();
-	});
 
-	it("does not resurrect a prior pick when toggled off then on again (mutant: skip the clear-on-toggle-off watcher)", async () => {
-		const wrapper = await mountDrawer();
-		await fillRequiredFields(wrapper);
-
-		await applicationScopeToggle(wrapper).trigger("change"); // on
-		await flushPromises();
-		await applicationSelect(wrapper).vm.$emit("update:modelValue", "app_1");
-		await flushPromises();
-
-		await applicationScopeToggle(wrapper).trigger("change"); // off
-		await flushPromises();
-		await applicationScopeToggle(wrapper).trigger("change"); // on again
-		await flushPromises();
-
+		await chooseAccess(wrapper, "ONE");
 		// Without the clearing watcher, the Select would still be bound to the
 		// stale "app_1" and Create would already be enabled here.
 		expect(createButton(wrapper).attributes("disabled")).toBeDefined();

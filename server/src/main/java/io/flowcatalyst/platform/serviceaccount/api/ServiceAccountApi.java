@@ -31,6 +31,7 @@ import io.flowcatalyst.platform.serviceaccount.operations.ServiceAccountTokenMin
 import io.flowcatalyst.platform.serviceaccount.operations.UpdateCommand;
 import io.flowcatalyst.platform.serviceaccount.operations.UpdateServiceAccount;
 import io.flowcatalyst.platform.shared.auth.Auth;
+import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
@@ -165,8 +166,14 @@ public final class ServiceAccountApi {
     }
 
     private static void create(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
+        AuthContext ac = Auth.current();
+        Checks.requireAny(ac, SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
         var cmd = ctx.bodyAsClass(CreateServiceAccountRequest.class).toCommand();
+        // Same rule as assigning application access (PrincipalApi): only a caller that
+        // itself holds all-applications access may grant it.
+        if (Boolean.TRUE.equals(cmd.allApplications()) && !ac.allApplications()) {
+            throw HttpError.forbidden("Only an all-applications administrator may grant all-applications access");
+        }
         var result = CreateServiceAccountWithCredentials.of(s.repo(), s.principals(), s.oauthClients(), s.clients(), s.encryption())
                 .run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreateServiceAccountResponse(
@@ -304,10 +311,10 @@ public final class ServiceAccountApi {
     /// and validated (an unknown `authType` still rejects, see
     /// [WebhookCredentialsDto#toEntity]) but never used — see [CreateCommand].
     public record CreateServiceAccountRequest(String code, String name, String description, String scope,
-                                               List<String> clientIds, String applicationId,
+                                               List<String> clientIds, String applicationId, Boolean allApplications,
                                                WebhookCredentialsDto webhookCredentials) {
         public CreateCommand toCommand() {
-            return new CreateCommand(code, name, description, scope, clientIds, applicationId,
+            return new CreateCommand(code, name, description, scope, clientIds, applicationId, allApplications,
                     webhookCredentials == null ? null : webhookCredentials.toEntity());
         }
     }

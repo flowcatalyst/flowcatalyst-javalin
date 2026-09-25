@@ -288,6 +288,52 @@ class ServiceAccountApiTest {
         assertThat(body.get("webhook").get("signingSecret").asText()).isNotBlank();
     }
 
+    /// Go `a8ff165`: a new account starts with no application access, and the
+    /// token minted for it says so — `applications` empty, `all_applications`
+    /// false — until the create asks for every application. Read off the
+    /// minted token, because that is what a resource server acts on.
+    @Test
+    void aNewAccountsTokenReachesNoApplicationUnlessTheCreateAskedForAll() {
+        String plainId = create(code("noapps"), "No Apps").get("serviceAccount").get("id").asText();
+        var plain = decodePayload(json(http.post("/api/service-accounts/" + plainId + "/token", null, anchor()))
+                .get("accessToken").asText());
+        assertThat(plain.get("all_applications").asBoolean()).isFalse();
+        assertThat(plain.get("applications")).isEmpty();
+
+        var r = http.post("/api/service-accounts",
+                "{\"code\":\"" + code("allapps") + "\",\"name\":\"All Apps\",\"allApplications\":true}", anchor());
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        String allId = json(r).get("serviceAccount").get("id").asText();
+        var all = decodePayload(json(http.post("/api/service-accounts/" + allId + "/token", null, anchor()))
+                .get("accessToken").asText());
+        assertThat(all.get("all_applications").asBoolean()).isTrue();
+        assertThat(all.get("applications").get(0).asText()).isEqualTo("*");
+    }
+
+    /// Only a caller that itself holds all-applications access may grant it
+    /// (the same rule as assigning a principal's application access); and it
+    /// cannot be combined with an `applicationId`.
+    @Test
+    void allApplicationsNeedsACallerWhoHoldsItAndExcludesAnApplicationId() {
+        String[] confinedWriter = {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_ALL_APPLICATIONS, "false",
+                Authenticator.TEST_PERMISSIONS, "platform:iam:service-account:create"};
+        String withFlag = "{\"code\":\"" + code("allappsdenied") + "\",\"name\":\"X\",\"allApplications\":true}";
+        assertThat(http.post("/api/service-accounts", withFlag, confinedWriter).statusCode()).isEqualTo(403);
+        assertThat(http.get("/api/service-accounts/code/" + code("allappsdenied"), anchor()).statusCode())
+                .as("nothing was created").isEqualTo(404);
+        assertThat(http.post("/api/service-accounts",
+                        "{\"code\":\"" + code("allappsplain") + "\",\"name\":\"X\"}", confinedWriter).statusCode())
+                .as("the same caller may still create an account without it").isEqualTo(201);
+
+        var both = http.post("/api/service-accounts", "{\"code\":\"" + code("allappsboth") + "\",\"name\":\"X\","
+                + "\"allApplications\":true,\"applicationId\":\"" + EntityType.APPLICATION.generate() + "\"}", anchor());
+        assertThat(both.statusCode()).isEqualTo(400);
+        assertThat(json(both).get("error").asText()).isEqualTo("ALL_APPLICATIONS_WITH_APPLICATION_ID");
+    }
+
     /// Proves the minted pair (spec §4.1, §8) is a REAL, usable credential —
     /// not merely a row that exists. Drives `/oauth/token` through a second,
     /// independent server (`oauthHttp`) wired against the same

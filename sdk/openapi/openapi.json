@@ -2906,6 +2906,9 @@
             "readOnly": true,
             "type": "string"
           },
+          "allApplications": {
+            "type": "boolean"
+          },
           "applicationId": {
             "type": "string"
           },

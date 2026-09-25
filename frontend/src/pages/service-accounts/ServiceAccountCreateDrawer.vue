@@ -21,10 +21,12 @@ const description = ref("");
 const scope = ref<PrincipalScope>("ANCHOR");
 const selectedClientIds = ref<string[]>([]);
 const clients = ref<Client[]>([]);
-// Application scope: off by default — an unscoped account (no applicationId,
-// "all applications"), matching CreateCommand's own default. Toggling this on
-// requires picking one application to confine the account to.
-const restrictToApplication = ref(false);
+// Application access, matching the server's CreateCommand: a new account
+// starts with none (the default), every application (`allApplications`), or
+// one application it is confined to (`applicationId`, which then must be
+// picked). The server refuses the last two together.
+type ApplicationAccess = "NONE" | "ALL" | "ONE";
+const applicationAccess = ref<ApplicationAccess>("NONE");
 const selectedApplicationId = ref<string | null>(null);
 const applications = ref<Application[]>([]);
 const saving = ref(false);
@@ -43,6 +45,12 @@ const { goToList, replaceToDetail } = useDrawerRoute({
 	listPath: "/identity/service-accounts",
 	dirty,
 });
+
+const applicationAccessOptions: { label: string; value: ApplicationAccess }[] = [
+	{ label: "None (grant applications after creating)", value: "NONE" },
+	{ label: "All applications", value: "ALL" },
+	{ label: "One application", value: "ONE" },
+];
 
 const scopeOptions = [
 	{ label: "Anchor (all clients)", value: "ANCHOR" },
@@ -64,7 +72,7 @@ const isValid = computed(() => {
 	return (
 		!!code.value.trim() &&
 		!!name.value.trim() &&
-		(!restrictToApplication.value || !!selectedApplicationId.value)
+		(applicationAccess.value !== "ONE" || !!selectedApplicationId.value)
 	);
 });
 
@@ -104,12 +112,12 @@ async function loadApplications() {
 	}
 }
 
-// Turning the toggle off drops any picked application immediately — a
-// stray selection must never survive to a later toggle-on, and it keeps
-// "off" and "no application linked" the same state at every point in time,
+// Leaving "One application" drops any picked application immediately — a
+// stray selection must never survive to a later return, and it keeps "not
+// ONE" and "no application linked" the same state at every point in time,
 // not just at submit.
-watch(restrictToApplication, (restricted) => {
-	if (!restricted) selectedApplicationId.value = null;
+watch(applicationAccess, (access) => {
+	if (access !== "ONE") selectedApplicationId.value = null;
 });
 
 function generateCode() {
@@ -128,7 +136,7 @@ async function createServiceAccount() {
 	if (!isValid.value) {
 		toast.error(
 			"Error",
-			restrictToApplication.value && !selectedApplicationId.value
+			applicationAccess.value === "ONE" && !selectedApplicationId.value
 				? "Pick the application to restrict this account to"
 				: "Code and name are required",
 		);
@@ -148,9 +156,10 @@ async function createServiceAccount() {
 						? selectedClientIds.value
 						: undefined,
 				applicationId:
-					restrictToApplication.value && selectedApplicationId.value
+					applicationAccess.value === "ONE" && selectedApplicationId.value
 						? selectedApplicationId.value
 						: undefined,
+				allApplications: applicationAccess.value === "ALL" || undefined,
 			});
 
 		// Store credentials and show the secret-once dialog; navigation waits
@@ -237,22 +246,23 @@ function closeDialogAndNavigate() {
         </FcFormField>
 
         <FcFormField
-          label="Application Scope"
+          label="Application Access"
           span
-          help="Off by default: this account is usable across every application. Turn on to confine it to one application."
+          help="A new account has no application access unless you grant it here or from its detail view afterwards."
         >
           <template #default="{ id: fieldId }">
-            <div class="toggle-row">
-              <ToggleSwitch :inputId="fieldId" v-model="restrictToApplication" />
-              <span class="toggle-label">
-                {{ restrictToApplication ? "Restricted to one application" : "All applications" }}
-              </span>
-            </div>
+            <Select
+              :id="fieldId"
+              v-model="applicationAccess"
+              :options="applicationAccessOptions"
+              optionLabel="label"
+              optionValue="value"
+            />
           </template>
         </FcFormField>
 
         <FcFormField
-          v-if="restrictToApplication"
+          v-if="applicationAccess === 'ONE'"
           label="Application"
           required
           span
@@ -430,17 +440,6 @@ function closeDialogAndNavigate() {
 </template>
 
 <style scoped>
-.toggle-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.toggle-label {
-  font-size: 14px;
-  color: #475569;
-}
-
 .help-text {
   display: block;
   font-size: 12px;

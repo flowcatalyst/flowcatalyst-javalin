@@ -42,6 +42,9 @@ import java.util.Optional;
 /// app-scoped account's `client_credentials` token should not carry a wider
 /// application claim than the account it was minted for.
 ///
+/// The linked principal starts with **no** application access unless the
+/// command asks for all of them (`allApplications`, Go `a8ff165`).
+///
 /// When `applicationId` is given, the linked principal is confined to that
 /// application (`allApplications = false` + one application-access grant) —
 /// mirrors Go's `CreateServiceAccountWithCredentials`, which confines the
@@ -77,6 +80,10 @@ public final class CreateServiceAccountWithCredentials {
                 .validate(cmd -> {
                     ServiceAccountCode.parseUserChosen(cmd.code());
                     UseCaseException.requireNonBlank(cmd.name(), "NAME_REQUIRED", "name is required");
+                    if (Boolean.TRUE.equals(cmd.allApplications()) && cmd.applicationId() != null && !cmd.applicationId().isBlank()) {
+                        throw UseCaseException.validation("ALL_APPLICATIONS_WITH_APPLICATION_ID",
+                                "allApplications cannot be combined with applicationId");
+                    }
                 })
                 // Admin-managed create, no per-client resource check (spec §4.1); the coarse
                 // "may write service accounts" permission is enforced at the handler.
@@ -111,7 +118,11 @@ public final class CreateServiceAccountWithCredentials {
                             throw UseCaseException.resourceNotFound("Client", clientId);
                         }
                     }
-                    Principal.ClientAssociationChanged reach = Principal.newService(sa.id(), sa.name()).withServiceReach(clientIds);
+                    // No application access unless asked for: the account starts with none and
+                    // access is granted explicitly afterwards (Go a8ff165).
+                    Principal.ClientAssociationChanged reach = Principal.newService(sa.id(), sa.name())
+                            .withAllApplications(Boolean.TRUE.equals(cmd.allApplications()))
+                            .withServiceReach(clientIds);
                     Principal principal = reach.principal();
                     boolean appScoped = cmd.applicationId() != null && !cmd.applicationId().isBlank();
                     if (appScoped) {

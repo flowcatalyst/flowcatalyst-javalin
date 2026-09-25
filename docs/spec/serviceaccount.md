@@ -115,6 +115,17 @@ Validate, in order: `code` non-blank → `CODE_REQUIRED`; code format →
 uniqueness check → 409 `CODE_EXISTS` "Service account with code '<code>'
 already exists".
 
+**Application access (Go `a8ff165`, ported 2026-09-25).** The linked
+principal starts with **no** application access unless the body asks for
+it. `allApplications: true` grants every application. The handler first
+refuses it with 403 unless the caller itself holds all-applications access,
+the same rule as assigning a principal's application access. `applicationId`
+confines the account to that one application. The two together are
+refused with 400 `ALL_APPLICATIONS_WITH_APPLICATION_ID`. Before this change
+every account without an `applicationId` reached every application. Pinned by
+`ServiceAccountApiTest#aNewAccountsTokenReachesNoApplicationUnlessTheCreateAskedForAll`,
+which reads the minted token's claims.
+
 Creation also mints an OAuth client secret (`generateOAuthClientSecret`
 returns plaintext + a stored reference) and the initial webhook credentials.
 **The plaintext is returned once and never stored in the clear** — see §5.

@@ -51,6 +51,8 @@ export interface CreateServiceAccountRequest {
 	description?: string;
 	clientIds?: string[];
 	applicationId?: string;
+	/** Grant every application. Omitted/false → no application access. */
+	allApplications?: boolean;
 	scope?: PrincipalScope;
 }
 
