@@ -4,7 +4,10 @@ import io.flowcatalyst.function.HttpCall;
 import io.flowcatalyst.function.HttpCallRefusedException;
 import io.flowcatalyst.function.HttpCaller;
 import io.flowcatalyst.function.HttpReply;
+import io.flowcatalyst.function.HttpResponseTooLargeException;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -87,8 +90,25 @@ public final class AllowlistHttpCaller implements HttpCaller {
                 ? HttpRequest.BodyPublishers.noBody()
                 : HttpRequest.BodyPublishers.ofByteArray(body));
 
-        HttpResponse<byte[]> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
+        HttpResponse<InputStream> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
         Map<String, List<String>> headers = response.headers().map();
-        return new HttpReply(response.statusCode(), headers, response.body());
+        return new HttpReply(response.statusCode(), headers, cappedBody(response, String.valueOf(host)));
+    }
+
+    /// The body, read as a stream and refused past [HttpResponseTooLargeException#MAX_BYTES]
+    /// (owner ruling 2026-09-25, item 9). A declared `Content-Length` over the cap fails
+    /// before anything is read. Closing the stream early releases the connection.
+    static byte[] cappedBody(HttpResponse<InputStream> response, String host) throws IOException {
+        long declared = response.headers().firstValueAsLong("Content-Length").orElse(-1L);
+        try (InputStream in = response.body()) {
+            if (declared > HttpResponseTooLargeException.MAX_BYTES) {
+                throw new HttpResponseTooLargeException(host);
+            }
+            byte[] body = in.readNBytes(HttpResponseTooLargeException.MAX_BYTES + 1);
+            if (body.length > HttpResponseTooLargeException.MAX_BYTES) {
+                throw new HttpResponseTooLargeException(host);
+            }
+            return body;
+        }
     }
 }

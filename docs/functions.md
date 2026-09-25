@@ -157,7 +157,7 @@ first, on the platform, not at runtime on a host. **Unknown keys at any level ar
 | `public[].hostname` / `.pathPrefix` | — | a public HTTP route on a verified domain you own (§6a); `pathPrefix` defaults to `/` |
 | `config` / `secrets` | no | the keys your function needs; each must match `^[A-Za-z][A-Za-z0-9_./-]{0,99}$`; promote refuses (`SETTINGS_MISSING`) if any declared key has no value set |
 | `db[].name` / `.secretRef` / `.poolSize` | no | a database connection; `secretRef` names a secret holding the DSN |
-| `httpAllow` | no | outbound hosts `ctx.http()` may call (exact host, or `*.suffix` for subdomains) |
+| `httpAllow` | no | outbound hosts `ctx.http()` may call (exact host, or `*.suffix` for subdomains). A response body over **16 MiB** fails the call with `RESPONSE_TOO_LARGE` (`HttpResponseTooLargeException` on the JVM; an error body for JS and Rust). The cap is fixed, so page or stream large exports instead |
 
 There is **no `filter`** on a subscription entry — the platform accepts and silently drops it (a
 known gap, tracked in `docs/backlog.md`); do not rely on server-side filtering.

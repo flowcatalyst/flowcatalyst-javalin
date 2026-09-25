@@ -166,4 +166,38 @@ class AllowlistHttpCallerTest {
         assertThat(elapsed).as("mutant: ignore HttpCall#timeout and always use the host default")
                 .isLessThan(Duration.ofSeconds(3));
     }
+
+    /// Owner ruling 2026-09-25 (backlog item 9): a response past 16 MiB fails the call
+    /// with RESPONSE_TOO_LARGE, whether or not it declared its length; one at the cap
+    /// is delivered whole.
+    @Test
+    void aResponseLargerThanTheCapFailsTheCallAndOneAtTheCapIsDelivered() throws Exception {
+        int cap = io.flowcatalyst.function.HttpResponseTooLargeException.MAX_BYTES;
+        HttpServer s = start("/", ex -> {
+            boolean chunked = ex.getRequestURI().getPath().endsWith("chunked");
+            int size = ex.getRequestURI().getPath().startsWith("/over") ? cap + 1 : cap;
+            ex.sendResponseHeaders(200, chunked ? 0 : size);
+            byte[] block = new byte[64 * 1024];
+            int left = size;
+            try (var out = ex.getResponseBody()) {
+                while (left > 0) {
+                    int n = Math.min(block.length, left);
+                    out.write(block, 0, n);
+                    left -= n;
+                }
+            } catch (java.io.IOException ignored) {
+                // the caller hung up at the cap
+            }
+        });
+        AllowlistHttpCaller caller = new AllowlistHttpCaller(
+                AllowlistHttpCaller.newSharedClient(), List.of("localhost"), Clock.systemUTC());
+        String base = "http://localhost:" + s.getAddress().getPort();
+        for (String path : List.of("/over", "/over-chunked")) {
+            assertThatThrownBy(() -> caller.send(new HttpCall("GET", base + path, Map.of(), new byte[0])))
+                    .as(path).isInstanceOf(io.flowcatalyst.function.HttpResponseTooLargeException.class)
+                    .hasMessageContaining("RESPONSE_TOO_LARGE");
+        }
+        HttpReply atCap = caller.send(new HttpCall("GET", base + "/at-chunked", Map.of(), new byte[0]));
+        assertThat(atCap.body()).hasSize(cap);
+    }
 }
