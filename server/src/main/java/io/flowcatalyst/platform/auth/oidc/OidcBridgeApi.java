@@ -304,24 +304,19 @@ public final class OidcBridgeApi {
                 record(s, ctx, state, AttemptOutcome.FAILURE, email, null, "SSO: email domain not allowed");
                 return;
             }
+            // Owner ruling 2026-09-25 (backlog item 3): a multi-tenant provider's
+            // provider-direct login is pinned by the provider's own tenant list.
+            if (!tenantAllowed(ctx, s, state, idp, null, claims, email)) {
+                return;
+            }
         } else {
             if (!emailDomain.equalsIgnoreCase(state.emailDomain())) {
                 HttpError.write(ctx, 403, "EMAIL_DOMAIN_MISMATCH", "the token's email domain does not match the login domain", Map.of());
                 record(s, ctx, state, AttemptOutcome.FAILURE, email, null, "SSO: email domain not allowed");
                 return;
             }
-            String requiredTenant = mapping.requiredOidcTenantId();
-            if (requiredTenant != null && !requiredTenant.isEmpty()) {
-                if (claims.tenantId() == null || claims.tenantId().isEmpty()) {
-                    HttpError.write(ctx, 403, "TENANT_MISMATCH", "id_token has no tenant id (tid) claim", Map.of());
-                    record(s, ctx, state, AttemptOutcome.FAILURE, email, null, "SSO: tenant mismatch");
-                    return;
-                }
-                if (!claims.tenantId().equals(requiredTenant)) {
-                    HttpError.write(ctx, 403, "TENANT_MISMATCH", "id_token tenant does not match the configured tenant", Map.of());
-                    record(s, ctx, state, AttemptOutcome.FAILURE, email, null, "SSO: tenant mismatch");
-                    return;
-                }
+            if (!tenantAllowed(ctx, s, state, idp, mapping.requiredOidcTenantId(), claims, email)) {
+                return;
             }
         }
         if (state.portal()) {
@@ -380,6 +375,44 @@ public final class OidcBridgeApi {
         record(s, ctx, state, AttemptOutcome.SUCCESS, email, principal.id(), null);
         s.cookie().set(ctx, token);
         ctx.redirect(landing(state), 302);
+    }
+
+    /// The tenant rule (owner ruling 2026-09-25, backlog "Overnight review" item 3). The
+    /// tenants a login may come from are the mapping's own pin when set, else the
+    /// provider's `allowedTenantIds`. A multi-tenant provider with neither is refused:
+    /// its shared keys sign tokens for any tenant and the `email` claim is settable by
+    /// any tenant admin, so nothing would bind the token to this customer. The row
+    /// predates the rule; saving it now is refused too. A single-tenant provider needs
+    /// no pin (its issuer is one tenant), but one that is set is still enforced.
+    ///
+    /// @param mappingPin the mapping's `requiredOidcTenantId`; `null` on a provider-direct login
+    /// @return whether the login may continue; when not, the response is written
+    private static boolean tenantAllowed(Exchange ctx, State s, LoginState state, IdentityProvider idp, String mappingPin,
+                                         IdTokenClaims claims, String email) {
+        List<String> allowed = mappingPin != null && !mappingPin.isBlank() ? List.of(mappingPin) : idp.allowedTenantIds();
+        if (allowed.isEmpty()) {
+            if (!idp.oidcMultiTenant()) {
+                return true;
+            }
+            LOG.atWarn().setMessage("oidc login refused: multi-tenant identity provider pins no tenant")
+                    .addKeyValue("identityProvider", idp.code())
+                    .addKeyValue("emailDomain", state.emailDomain())
+                    .log();
+            HttpError.write(ctx, 403, "TENANT_NOT_PINNED", "this identity provider accepts any tenant and pins none", Map.of());
+            record(s, ctx, state, AttemptOutcome.FAILURE, email, null, "SSO: tenant not pinned");
+            return false;
+        }
+        if (claims.tenantId() == null || claims.tenantId().isEmpty()) {
+            HttpError.write(ctx, 403, "TENANT_MISMATCH", "id_token has no tenant id (tid) claim", Map.of());
+            record(s, ctx, state, AttemptOutcome.FAILURE, email, null, "SSO: tenant mismatch");
+            return false;
+        }
+        if (!allowed.contains(claims.tenantId())) {
+            HttpError.write(ctx, 403, "TENANT_MISMATCH", "id_token tenant does not match the configured tenant", Map.of());
+            record(s, ctx, state, AttemptOutcome.FAILURE, email, null, "SSO: tenant mismatch");
+            return false;
+        }
+        return true;
     }
 
     /// Spec `docs/spec/sso-login-attempts.md`: the callback's accept/refuse

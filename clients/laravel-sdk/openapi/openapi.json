@@ -2341,6 +2341,12 @@
             },
             "type": "array"
           },
+          "allowedTenantIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "code": {
             "description": "IDP code (e.g. internal, entra)",
             "type": "string"
@@ -4233,6 +4239,12 @@
             },
             "type": "array"
           },
+          "allowedTenantIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "code": {
             "type": "string"
           },
@@ -4282,6 +4294,7 @@
           "allowedEmailDomains",
           "syncRolesFromIdp",
           "allowedRoleIds",
+          "allowedTenantIds",
           "createdAt",
           "updatedAt"
         ],
@@ -8485,6 +8498,12 @@
             "type": "array"
           },
           "allowedRoleIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "allowedTenantIds": {
             "items": {
               "type": "string"
             },

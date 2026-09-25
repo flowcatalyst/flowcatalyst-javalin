@@ -201,7 +201,9 @@ class IdentityProviderOperationsTest {
         var cmd = new CreateCommand(code("idpoidc"), "IdP Create Happy", "OIDC",
                 "https://login.idpcrt.example.com/v2.0", "idpcrt-client-id", "encrypted:AAAA", true, "https://login\\.idpcrt\\.example\\.com/.*",
                 List.of(domain("IDPOIDC-A").toUpperCase(Locale.ROOT), " " + domain("idpoidc-b") + " ", domain("idpoidc-b"), ""),
-                "ANCHOR", null, true, List.of("rol_idpcrtrole1"));
+                "ANCHOR", null, true, List.of("rol_idpcrtrole1"),
+                // multi-tenant routing domains: the provider pins its tenant (backlog item 3)
+                List.of("tid-idpcrt"));
         var res = runAsAnchor(CreateIdentityProvider.of(repo, mappings), cmd);
 
         assertThat(res.domainsCreated()).as("lower-cased, trimmed, de-duplicated, blanks skipped")
@@ -330,7 +332,8 @@ class IdentityProviderOperationsTest {
     void updateAppliesTheSuppliedFieldsAndMapsNewDomains() {
         var seeded = createInternal(code("idpupd"), "Before");
         var res = runAsAnchor(UpdateIdentityProvider.of(repo, mappings), new UpdateCommand(seeded.identityProviderId(), "  After  ",
-                "https://login.idpupd.example.com", null, null, true, null, List.of(domain("idpupd")), "ANCHOR", null, true, List.of("rol_idpupdrole1")));
+                "https://login.idpupd.example.com", null, null, true, null, List.of(domain("idpupd")), "ANCHOR", null, true, List.of("rol_idpupdrole1"),
+                List.of("tid-idpupd")));
         assertThat(res.identityProviderId()).isEqualTo(seeded.identityProviderId());
         assertThat(res.code()).isEqualTo(code("idpupd"));
         assertThat(res.domainsCreated()).containsExactly(domain("idpupd"));
@@ -535,5 +538,42 @@ class IdentityProviderOperationsTest {
         assertThat(repo.findAll()).extracting(IdentityProvider::id).containsSubsequence(a.identityProviderId(), b.identityProviderId());
         assertThat(repo.findByCode(code("idpall-a"))).map(IdentityProvider::id).contains(a.identityProviderId());
         assertThat(repo.findByCode(code("idpall-a").toUpperCase(Locale.ROOT))).as("by-code is exact").isEmpty();
+    }
+
+    // ── Tenant pin (owner ruling 2026-09-25, backlog "Overnight review" item 3) ──
+
+    private static CreateCommand multiTenantCommand(String code, List<String> domains, List<String> tenants) {
+        return new CreateCommand(code, code, "OIDC", "https://login.microsoftonline.com/common/v2.0", code + "-client-id",
+                null, true, "^https://login\\.microsoftonline\\.com/[^/]+/v2\\.0$", domains, domains.isEmpty() ? null : "ANCHOR",
+                null, false, null, tenants);
+    }
+
+    @Test
+    void aMultiTenantProviderRoutingDomainsMustPinTheTenant() {
+        assertUseCaseError(() -> runAsAnchor(CreateIdentityProvider.of(repo, mappings),
+                        multiTenantCommand(code("mt-none"), List.of(domain("mt-none")), null)),
+                UseCaseError.Validation.class, "TENANT_PIN_REQUIRED");
+        assertThat(repo.findByCode(code("mt-none"))).as("nothing stored").isEmpty();
+        assertThat(mappings.findByEmailDomain(domain("mt-none"))).isEmpty();
+
+        var pinned = runAsAnchor(CreateIdentityProvider.of(repo, mappings),
+                multiTenantCommand(code("mt-pinned"), List.of(domain("mt-pinned")), List.of("tid-1", "tid-2")));
+        assertThat(repo.findById(pinned.identityProviderId()).orElseThrow().allowedTenantIds()).containsExactly("tid-1", "tid-2");
+
+        assertUseCaseError(() -> runAsAnchor(UpdateIdentityProvider.of(repo, mappings), new UpdateCommand(pinned.identityProviderId(),
+                        null, null, null, null, null, null, null, null, null, null, null, List.of())),
+                UseCaseError.Validation.class, "TENANT_PIN_REQUIRED");
+        assertThat(repo.findById(pinned.identityProviderId()).orElseThrow().allowedTenantIds())
+                .as("clearing the provider's tenants while a mapping relies on them is refused").containsExactly("tid-1", "tid-2");
+
+        var single = runAsAnchor(CreateIdentityProvider.of(repo, mappings), oidcCommand(code("mt-switch"), List.of(domain("mt-switch")), null));
+        assertUseCaseError(() -> runAsAnchor(UpdateIdentityProvider.of(repo, mappings), new UpdateCommand(single.identityProviderId(),
+                        null, null, null, null, true, null, null, null, null, null, null)),
+                UseCaseError.Validation.class, "TENANT_PIN_REQUIRED");
+        assertThat(repo.findById(single.identityProviderId()).orElseThrow().oidcMultiTenant()).isFalse();
+        var switched = runAsAnchor(UpdateIdentityProvider.of(repo, mappings), new UpdateCommand(single.identityProviderId(),
+                null, null, null, null, true, null, null, null, null, null, null, List.of("tid-3")));
+        assertThat(repo.findById(single.identityProviderId()).orElseThrow().oidcMultiTenant()).isTrue();
+        assertThat(switched).isNotNull();
     }
 }

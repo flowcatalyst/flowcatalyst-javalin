@@ -146,12 +146,14 @@ public final class IdentityProviderApi {
             String mappingScope,
             String primaryClientId,
             boolean syncRolesFromIdp,
-            List<String> allowedRoleIds) {
+            List<String> allowedRoleIds,
+            List<String> allowedTenantIds) {
 
         /// The command, with the secret already in its at-rest form (spec §5).
         public CreateCommand toCommand(ClientSecretEncryption secrets) {
             return new CreateCommand(code, name, type, oidcIssuerUrl, oidcClientId, secrets.atRest(oidcClientSecretRef),
-                    oidcMultiTenant, oidcIssuerPattern, allowedEmailDomains, mappingScope, primaryClientId, syncRolesFromIdp, allowedRoleIds);
+                    oidcMultiTenant, oidcIssuerPattern, allowedEmailDomains, mappingScope, primaryClientId, syncRolesFromIdp,
+                    allowedRoleIds, allowedTenantIds);
         }
     }
 
@@ -167,12 +169,14 @@ public final class IdentityProviderApi {
             String mappingScope,
             String primaryClientId,
             Boolean syncRolesFromIdp,
-            List<String> allowedRoleIds) {
+            List<String> allowedRoleIds,
+            List<String> allowedTenantIds) {
 
         /// The command, with the secret already in its at-rest form (spec §5).
         public UpdateCommand toCommand(String id, ClientSecretEncryption secrets) {
             return new UpdateCommand(id, name, oidcIssuerUrl, oidcClientId, secrets.atRest(oidcClientSecretRef),
-                    oidcMultiTenant, oidcIssuerPattern, allowedEmailDomains, mappingScope, primaryClientId, syncRolesFromIdp, allowedRoleIds);
+                    oidcMultiTenant, oidcIssuerPattern, allowedEmailDomains, mappingScope, primaryClientId, syncRolesFromIdp,
+                    allowedRoleIds, allowedTenantIds);
         }
     }
 
@@ -192,13 +196,15 @@ public final class IdentityProviderApi {
             List<String> allowedEmailDomains,
             boolean syncRolesFromIdp,
             List<String> allowedRoleIds,
+            List<String> allowedTenantIds,
             Instant createdAt,
             Instant updatedAt) {
 
         public static IdentityProviderResponse from(IdentityProvider ip) {
             return new IdentityProviderResponse(ip.id(), ip.code(), ip.name(), ip.type().name(), ip.oidcIssuerUrl(),
                     ip.oidcClientId(), ip.hasClientSecret(), ip.oidcMultiTenant(), ip.oidcIssuerPattern(),
-                    ip.allowedEmailDomains(), ip.syncRolesFromIdp(), ip.allowedRoleIds(), ip.createdAt(), ip.updatedAt());
+                    ip.allowedEmailDomains(), ip.syncRolesFromIdp(), ip.allowedRoleIds(), ip.allowedTenantIds(),
+                    ip.createdAt(), ip.updatedAt());
         }
     }
 

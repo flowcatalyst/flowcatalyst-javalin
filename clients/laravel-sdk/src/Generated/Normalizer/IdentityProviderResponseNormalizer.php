@@ -72,6 +72,16 @@ class IdentityProviderResponseNormalizer implements DenormalizerInterface, Norma
         elseif (\array_key_exists('allowedRoleIds', $data) && $data['allowedRoleIds'] === null) {
             $object->setAllowedRoleIds(null);
         }
+        if (\array_key_exists('allowedTenantIds', $data) && $data['allowedTenantIds'] !== null) {
+            $values_2 = [];
+            foreach ($data['allowedTenantIds'] as $value_2) {
+                $values_2[] = $value_2;
+            }
+            $object->setAllowedTenantIds($values_2);
+        }
+        elseif (\array_key_exists('allowedTenantIds', $data) && $data['allowedTenantIds'] === null) {
+            $object->setAllowedTenantIds(null);
+        }
         if (\array_key_exists('code', $data) && $data['code'] !== null) {
             $object->setCode($data['code']);
         }
@@ -159,6 +169,11 @@ class IdentityProviderResponseNormalizer implements DenormalizerInterface, Norma
             $values_1[] = $value_1;
         }
         $dataArray['allowedRoleIds'] = $values_1;
+        $values_2 = [];
+        foreach ($data->getAllowedTenantIds() as $value_2) {
+            $values_2[] = $value_2;
+        }
+        $dataArray['allowedTenantIds'] = $values_2;
         $dataArray['code'] = $data->getCode();
         $dataArray['createdAt'] = $data->getCreatedAt()->format('Y-m-d\TH:i:sP');
         $dataArray['hasClientSecret'] = $data->getHasClientSecret();

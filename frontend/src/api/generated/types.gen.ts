@@ -879,6 +879,7 @@ export type CreateIdentityProviderRequest = {
      * Platform roles (by id) this provider may confer via role sync; empty = no restriction
      */
     allowedRoleIds?: Array<string>;
+    allowedTenantIds?: Array<string>;
     /**
      * IDP code (e.g. internal, entra)
      */
@@ -1534,6 +1535,7 @@ export type IdentityProviderResponse = {
      */
     allowedEmailDomains: Array<string>;
     allowedRoleIds: Array<string>;
+    allowedTenantIds: Array<string>;
     code: string;
     createdAt: string;
     hasClientSecret: boolean;
@@ -2942,6 +2944,7 @@ export type UpdateIdentityProviderRequest = {
      */
     allowedEmailDomains?: Array<string>;
     allowedRoleIds?: Array<string>;
+    allowedTenantIds?: Array<string>;
     /**
      * Scope for email-domain mappings this request creates: ANCHOR (platform administrators) or CLIENT (requires primaryClientId). Required when the request creates a new mapping. Existing mappings keep their scope; with CLIENT the client is linked on any mapping that has no primary client yet.
      */
@@ -3661,6 +3664,7 @@ export type CreateIdentityProviderRequestWritable = {
      * Platform roles (by id) this provider may confer via role sync; empty = no restriction
      */
     allowedRoleIds?: Array<string>;
+    allowedTenantIds?: Array<string>;
     /**
      * IDP code (e.g. internal, entra)
      */
@@ -4097,6 +4101,7 @@ export type IdentityProviderResponseWritable = {
      */
     allowedEmailDomains: Array<string>;
     allowedRoleIds: Array<string>;
+    allowedTenantIds: Array<string>;
     code: string;
     createdAt: string;
     hasClientSecret: boolean;
@@ -4813,6 +4818,7 @@ export type UpdateIdentityProviderRequestWritable = {
      */
     allowedEmailDomains?: Array<string>;
     allowedRoleIds?: Array<string>;
+    allowedTenantIds?: Array<string>;
     /**
      * Scope for email-domain mappings this request creates: ANCHOR (platform administrators) or CLIENT (requires primaryClientId). Required when the request creates a new mapping. Existing mappings keep their scope; with CLIENT the client is linked on any mapping that has no primary client yet.
      */

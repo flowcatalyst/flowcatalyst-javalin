@@ -26,7 +26,7 @@ public final class UpdateEmailDomainMapping {
                 // Mappings are anchor-only with no per-resource dimension; the handler's requireAnchor is the whole check.
                 .authorize(Operation.Authorize.publicAccess())
                 .execute((cmd, ec) -> {
-                    EmailDomainMapping m = Access.byId(repo, cmd.id()).update(changesOf(cmd));
+                    EmailDomainMapping m = Access.requireTenantPin(repo, Access.byId(repo, cmd.id()).update(changesOf(cmd)));
                     return Plan.save(m, repo, EmailDomainMappingUpdated.of(ec, m));
                 });
     }

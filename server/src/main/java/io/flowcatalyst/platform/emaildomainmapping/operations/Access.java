@@ -20,4 +20,19 @@ final class Access {
     static EmailDomainMapping byId(EmailDomainMappingRepository repo, String id) {
         return repo.findById(id).orElseThrow(() -> UseCaseException.resourceNotFound("EmailDomainMapping", id));
     }
+
+    /// Owner ruling 2026-09-25 (backlog item 3): a mapping to a multi-tenant
+    /// provider that pins no tenants itself must carry its own
+    /// `requiredOidcTenantId`.
+    ///
+    /// @throws UseCaseException validation `TENANT_PIN_REQUIRED`
+    static EmailDomainMapping requireTenantPin(EmailDomainMappingRepository repo, EmailDomainMapping m) {
+        String pin = m.requiredOidcTenantId();
+        if ((pin == null || pin.isBlank()) && repo.mappingNeedsOwnTenantPin(m.identityProviderId())) {
+            throw UseCaseException.validation("TENANT_PIN_REQUIRED",
+                    "Email domain '" + m.emailDomain() + "' routes to a multi-tenant identity provider that pins no "
+                            + "tenant: set requiredOidcTenantId on the mapping, or allowedTenantIds on the provider");
+        }
+        return m;
+    }
 }

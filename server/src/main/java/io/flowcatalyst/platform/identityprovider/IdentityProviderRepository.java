@@ -41,6 +41,9 @@ public final class IdentityProviderRepository implements Persist<IdentityProvide
 
     private static final OauthIdentityProviders T = OAUTH_IDENTITY_PROVIDERS;
     private static final OauthIdentityProviderAllowedRoles ROLES = OAUTH_IDENTITY_PROVIDER_ALLOWED_ROLES;
+    /// The provider-level tenant pin (V19, backlog item 3). Java-only.
+    private static final io.flowcatalyst.db.generated.tables.OauthIdentityProviderAllowedTenants TENANTS =
+            io.flowcatalyst.db.generated.Tables.OAUTH_IDENTITY_PROVIDER_ALLOWED_TENANTS;
     /// Legacy junction, dead since mappings took over routing; cleared on delete so migrated installs keep no orphans.
     private static final OauthIdentityProviderAllowedDomains LEGACY_DOMAINS = OAUTH_IDENTITY_PROVIDER_ALLOWED_DOMAINS;
     private static final TntEmailDomainMappings MAPPINGS = TNT_EMAIL_DOMAIN_MAPPINGS;
@@ -85,13 +88,18 @@ public final class IdentityProviderRepository implements Persist<IdentityProvide
     private final class Children {
         private final Map<String, List<String>> roles;
         private final Map<String, List<String>> domains;
+        private final Map<String, List<String>> tenants;
 
         Children(List<String> providerIds) {
             if (providerIds.isEmpty()) {
                 roles = Map.of();
                 domains = Map.of();
+                tenants = Map.of();
                 return;
             }
+            tenants = dsl.select(TENANTS.IDENTITY_PROVIDER_ID, TENANTS.TENANT_ID).from(TENANTS)
+                    .where(TENANTS.IDENTITY_PROVIDER_ID.in(providerIds)).orderBy(TENANTS.TENANT_ID.asc()).fetch().stream()
+                    .collect(groupingBy(r -> r.get(TENANTS.IDENTITY_PROVIDER_ID), mapping(r -> r.get(TENANTS.TENANT_ID), toList())));
             roles = dsl.select(ROLES.IDENTITY_PROVIDER_ID, ROLES.ROLE_ID).from(ROLES)
                     .where(ROLES.IDENTITY_PROVIDER_ID.in(providerIds)).orderBy(ROLES.ROLE_ID.asc()).fetch().stream()
                     .collect(groupingBy(r -> r.get(ROLES.IDENTITY_PROVIDER_ID), mapping(r -> r.get(ROLES.ROLE_ID), toList())));
@@ -106,6 +114,10 @@ public final class IdentityProviderRepository implements Persist<IdentityProvide
 
         List<String> domainsOf(String providerId) {
             return domains.getOrDefault(providerId, List.of());
+        }
+
+        List<String> tenantsOf(String providerId) {
+            return tenants.getOrDefault(providerId, List.of());
         }
     }
 
@@ -141,6 +153,11 @@ public final class IdentityProviderRepository implements Persist<IdentityProvide
         for (String roleId : ip.allowedRoleIds()) {
             txDsl.insertInto(ROLES).set(ROLES.IDENTITY_PROVIDER_ID, ip.id()).set(ROLES.ROLE_ID, roleId).execute();
         }
+
+        txDsl.deleteFrom(TENANTS).where(TENANTS.IDENTITY_PROVIDER_ID.eq(ip.id())).execute();
+        for (String tenantId : ip.allowedTenantIds()) {
+            txDsl.insertInto(TENANTS).set(TENANTS.IDENTITY_PROVIDER_ID, ip.id()).set(TENANTS.TENANT_ID, tenantId).execute();
+        }
     }
 
     /// Clears the allowed-roles junction and the legacy allowed-domains
@@ -151,6 +168,7 @@ public final class IdentityProviderRepository implements Persist<IdentityProvide
         DSLContext txDsl = DSL.using(tx.connection(), SQLDialect.POSTGRES);
         txDsl.deleteFrom(LEGACY_DOMAINS).where(LEGACY_DOMAINS.IDENTITY_PROVIDER_ID.eq(ip.id())).execute();
         txDsl.deleteFrom(ROLES).where(ROLES.IDENTITY_PROVIDER_ID.eq(ip.id())).execute();
+        txDsl.deleteFrom(TENANTS).where(TENANTS.IDENTITY_PROVIDER_ID.eq(ip.id())).execute();
         txDsl.deleteFrom(T).where(T.ID.eq(ip.id())).execute();
     }
 
@@ -171,6 +189,7 @@ public final class IdentityProviderRepository implements Persist<IdentityProvide
                 children.domainsOf(id),
                 row.getSyncRolesFromIdp(),
                 children.rolesOf(id),
+                children.tenantsOf(id),
                 row.getCreatedAt().toInstant(),
                 row.getUpdatedAt().toInstant());
     }

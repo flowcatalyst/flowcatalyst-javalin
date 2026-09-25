@@ -19,6 +19,7 @@ import java.util.List;
 /// @param primaryClientId     client to link on mappings that are new or not yet linked; `null` = none
 /// @param syncRolesFromIdp    `null` = unchanged
 /// @param allowedRoleIds      replaces the restriction; `[]` clears it; `null` = unchanged
+/// @param allowedTenantIds    replaces the provider-level tenant pin; `[]` clears it; `null` = unchanged (backlog item 3)
 public record UpdateCommand(
         String id,
         String name,
@@ -31,10 +32,20 @@ public record UpdateCommand(
         String mappingScope,
         String primaryClientId,
         Boolean syncRolesFromIdp,
-        List<String> allowedRoleIds) {
+        List<String> allowedRoleIds,
+        List<String> allowedTenantIds) {
 
     public UpdateCommand {
         allowedEmailDomains = allowedEmailDomains == null ? null : List.copyOf(allowedEmailDomains);
         allowedRoleIds = allowedRoleIds == null ? null : List.copyOf(allowedRoleIds);
+        allowedTenantIds = allowedTenantIds == null ? null : List.copyOf(allowedTenantIds);
+    }
+
+    /// Without a tenant change.
+    public UpdateCommand(String id, String name, String oidcIssuerUrl, String oidcClientId, String oidcClientSecretRef,
+                         Boolean oidcMultiTenant, String oidcIssuerPattern, List<String> allowedEmailDomains,
+                         String mappingScope, String primaryClientId, Boolean syncRolesFromIdp, List<String> allowedRoleIds) {
+        this(id, name, oidcIssuerUrl, oidcClientId, oidcClientSecretRef, oidcMultiTenant, oidcIssuerPattern,
+                allowedEmailDomains, mappingScope, primaryClientId, syncRolesFromIdp, allowedRoleIds, null);
     }
 }

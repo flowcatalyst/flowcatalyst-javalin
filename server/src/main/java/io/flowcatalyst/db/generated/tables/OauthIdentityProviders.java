@@ -7,6 +7,7 @@ package io.flowcatalyst.db.generated.tables;
 import io.flowcatalyst.db.generated.Indexes;
 import io.flowcatalyst.db.generated.Keys;
 import io.flowcatalyst.db.generated.Public;
+import io.flowcatalyst.db.generated.tables.OauthIdentityProviderAllowedTenants.OauthIdentityProviderAllowedTenantsPath;
 import io.flowcatalyst.db.generated.tables.records.OauthIdentityProvidersRecord;
 
 import java.time.OffsetDateTime;
@@ -17,10 +18,14 @@ import java.util.List;
 import org.jooq.Check;
 import org.jooq.Condition;
 import org.jooq.Field;
+import org.jooq.ForeignKey;
 import org.jooq.Index;
+import org.jooq.InverseForeignKey;
 import org.jooq.Name;
+import org.jooq.Path;
 import org.jooq.PlainSQL;
 import org.jooq.QueryPart;
+import org.jooq.Record;
 import org.jooq.SQL;
 import org.jooq.Schema;
 import org.jooq.Stringly;
@@ -151,6 +156,39 @@ public class OauthIdentityProviders extends TableImpl<OauthIdentityProvidersReco
         this(DSL.name("oauth_identity_providers"), null);
     }
 
+    public <O extends Record> OauthIdentityProviders(Table<O> path, ForeignKey<O, OauthIdentityProvidersRecord> childPath, InverseForeignKey<O, OauthIdentityProvidersRecord> parentPath) {
+        super(path, childPath, parentPath, OAUTH_IDENTITY_PROVIDERS);
+    }
+
+    /**
+     * A subtype implementing {@link Path} for simplified path-based joins.
+     */
+    public static class OauthIdentityProvidersPath extends OauthIdentityProviders implements Path<OauthIdentityProvidersRecord> {
+
+        private static final long serialVersionUID = 1L;
+        public <O extends Record> OauthIdentityProvidersPath(Table<O> path, ForeignKey<O, OauthIdentityProvidersRecord> childPath, InverseForeignKey<O, OauthIdentityProvidersRecord> parentPath) {
+            super(path, childPath, parentPath);
+        }
+        private OauthIdentityProvidersPath(Name alias, Table<OauthIdentityProvidersRecord> aliased) {
+            super(alias, aliased);
+        }
+
+        @Override
+        public OauthIdentityProvidersPath as(String alias) {
+            return new OauthIdentityProvidersPath(DSL.name(alias), this);
+        }
+
+        @Override
+        public OauthIdentityProvidersPath as(Name alias) {
+            return new OauthIdentityProvidersPath(alias, this);
+        }
+
+        @Override
+        public OauthIdentityProvidersPath as(Table<?> alias) {
+            return new OauthIdentityProvidersPath(alias.getQualifiedName(), this);
+        }
+    }
+
     @Override
     public Schema getSchema() {
         return aliased() ? null : Public.PUBLIC;
@@ -164,6 +202,19 @@ public class OauthIdentityProviders extends TableImpl<OauthIdentityProvidersReco
     @Override
     public UniqueKey<OauthIdentityProvidersRecord> getPrimaryKey() {
         return Keys.OAUTH_IDENTITY_PROVIDERS_PKEY;
+    }
+
+    private transient OauthIdentityProviderAllowedTenantsPath _oauthIdentityProviderAllowedTenants;
+
+    /**
+     * Get the implicit to-many join path to the
+     * <code>public.oauth_identity_provider_allowed_tenants</code> table
+     */
+    public OauthIdentityProviderAllowedTenantsPath oauthIdentityProviderAllowedTenants() {
+        if (_oauthIdentityProviderAllowedTenants == null)
+            _oauthIdentityProviderAllowedTenants = new OauthIdentityProviderAllowedTenantsPath(this, null, Keys.OAUTH_IDENTITY_PROVIDER_ALLOWED_TENANTS__OAUTH_IDENTITY_PROVIDER_ALLOWED_TENAN_IDENTITY_PROVIDER_ID_FKEY.getInverseKey());
+
+        return _oauthIdentityProviderAllowedTenants;
     }
 
     @Override

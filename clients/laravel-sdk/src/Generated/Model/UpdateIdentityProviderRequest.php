@@ -29,6 +29,10 @@ class UpdateIdentityProviderRequest extends \ArrayObject
      */
     protected $allowedRoleIds;
     /**
+     * @var list<string>|null
+     */
+    protected $allowedTenantIds;
+    /**
      * Scope for email-domain mappings this request creates: ANCHOR (platform administrators) or CLIENT (requires primaryClientId). Required when the request creates a new mapping. Existing mappings keep their scope; with CLIENT the client is linked on any mapping that has no primary client yet.
      *
      * @var string|null
@@ -128,6 +132,24 @@ class UpdateIdentityProviderRequest extends \ArrayObject
     {
         $this->initialized['allowedRoleIds'] = true;
         $this->allowedRoleIds = $allowedRoleIds;
+        return $this;
+    }
+    /**
+     * @return list<string>|null
+     */
+    public function getAllowedTenantIds(): ?array
+    {
+        return $this->allowedTenantIds;
+    }
+    /**
+     * @param list<string>|null $allowedTenantIds
+     *
+     * @return self
+     */
+    public function setAllowedTenantIds(?array $allowedTenantIds): self
+    {
+        $this->initialized['allowedTenantIds'] = true;
+        $this->allowedTenantIds = $allowedTenantIds;
         return $this;
     }
     /**

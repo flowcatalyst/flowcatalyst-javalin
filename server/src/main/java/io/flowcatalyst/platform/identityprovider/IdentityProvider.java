@@ -34,6 +34,9 @@ import java.util.Objects;
 /// @param allowedEmailDomains domains currently routed here — derived from the mapping table on read (spec §1)
 /// @param syncRolesFromIdp    whether logins reconcile the user's `IDP_SYNC` roles from the token's `roles` claim
 /// @param allowedRoleIds      roles this IdP may confer via role sync; empty = no restriction
+/// @param allowedTenantIds    for a multi-tenant OIDC provider, the Entra tenants (`tid`) it accepts for
+///                            every mapping without its own pin and for provider-direct logins; empty =
+///                            none pinned at the provider level (owner ruling 2026-09-25, backlog item 3)
 /// @param createdAt           creation time
 /// @param updatedAt           last change
 public record IdentityProvider(
@@ -49,6 +52,7 @@ public record IdentityProvider(
         List<String> allowedEmailDomains,
         boolean syncRolesFromIdp,
         List<String> allowedRoleIds,
+        List<String> allowedTenantIds,
         Instant createdAt,
         Instant updatedAt) implements HasId {
 
@@ -67,6 +71,8 @@ public record IdentityProvider(
         oidcIssuerPattern = blankToNull(oidcIssuerPattern);
         allowedEmailDomains = allowedEmailDomains == null ? List.of() : List.copyOf(allowedEmailDomains);
         allowedRoleIds = allowedRoleIds == null ? List.of() : List.copyOf(allowedRoleIds);
+        allowedTenantIds = allowedTenantIds == null ? List.of()
+                : allowedTenantIds.stream().filter(t -> t != null && !t.isBlank()).map(String::strip).distinct().toList();
         Objects.requireNonNull(createdAt, "createdAt");
         Objects.requireNonNull(updatedAt, "updatedAt");
     }
@@ -77,7 +83,7 @@ public record IdentityProvider(
     public static IdentityProvider create(String code, String name, IdentityProviderType type) {
         Instant now = Instant.now();
         return new IdentityProvider(EntityType.IDENTITY_PROVIDER.generate(), code, name, type,
-                null, null, null, false, null, List.of(), false, List.of(), now, now);
+                null, null, null, false, null, List.of(), false, List.of(), List.of(), now, now);
     }
 
     /// Whether a secret ref is configured (the wire's `hasClientSecret`).
@@ -103,13 +109,28 @@ public record IdentityProvider(
     public IdentityProvider withOidc(String issuerUrl, String clientId, String clientSecretRef, boolean multiTenant,
                                      String issuerPattern) {
         return new IdentityProvider(id, code, name, type, issuerUrl, clientId, clientSecretRef, multiTenant,
-                issuerPattern, allowedEmailDomains, syncRolesFromIdp, allowedRoleIds, createdAt, updatedAt);
+                issuerPattern, allowedEmailDomains, syncRolesFromIdp, allowedRoleIds, allowedTenantIds, createdAt, updatedAt);
     }
 
     /// The role-sync settings as supplied at create; a `null` list means no restriction.
     public IdentityProvider withRoleSync(boolean sync, List<String> roleIds) {
         return new IdentityProvider(id, code, name, type, oidcIssuerUrl, oidcClientId, oidcClientSecretRef,
-                oidcMultiTenant, oidcIssuerPattern, allowedEmailDomains, sync, roleIds, createdAt, updatedAt);
+                oidcMultiTenant, oidcIssuerPattern, allowedEmailDomains, sync, roleIds, allowedTenantIds, createdAt, updatedAt);
+    }
+
+    /// The provider-level tenant pin as supplied at create; `null` means none.
+    public IdentityProvider withAllowedTenants(List<String> tenantIds) {
+        return new IdentityProvider(id, code, name, type, oidcIssuerUrl, oidcClientId, oidcClientSecretRef,
+                oidcMultiTenant, oidcIssuerPattern, allowedEmailDomains, syncRolesFromIdp, allowedRoleIds, tenantIds,
+                createdAt, updatedAt);
+    }
+
+    /// Whether a login through a mapping with pin `mappingPin` (may be blank)
+    /// has a tenant to check against: always for a single-tenant provider,
+    /// whose issuer is the pin; for a multi-tenant one, only when the mapping
+    /// or the provider names tenants.
+    public boolean tenantPinned(String mappingPin) {
+        return !oidcMultiTenant || (mappingPin != null && !mappingPin.isBlank()) || !allowedTenantIds.isEmpty();
     }
 
     // ── Transitions (spec §2, §4) ──────────────────────────────────────────
@@ -129,6 +150,7 @@ public record IdentityProvider(
                 allowedEmailDomains,
                 changes.syncRolesFromIdp() == null ? syncRolesFromIdp : changes.syncRolesFromIdp(),
                 changes.allowedRoleIds() == null ? allowedRoleIds : changes.allowedRoleIds(),
+                changes.allowedTenantIds() == null ? allowedTenantIds : changes.allowedTenantIds(),
                 createdAt, Instant.now());
     }
 
@@ -138,9 +160,18 @@ public record IdentityProvider(
     /// keeps it (spec §4).
     public record Changes(String name, String oidcIssuerUrl, String oidcClientId, String oidcClientSecretRef,
                           Boolean oidcMultiTenant, String oidcIssuerPattern, Boolean syncRolesFromIdp,
-                          List<String> allowedRoleIds) {
+                          List<String> allowedRoleIds, List<String> allowedTenantIds) {
         public Changes {
             allowedRoleIds = allowedRoleIds == null ? null : List.copyOf(allowedRoleIds);
+            allowedTenantIds = allowedTenantIds == null ? null : List.copyOf(allowedTenantIds);
+        }
+
+        /// Without a tenant change, as every caller before item 3 built it.
+        public Changes(String name, String oidcIssuerUrl, String oidcClientId, String oidcClientSecretRef,
+                       Boolean oidcMultiTenant, String oidcIssuerPattern, Boolean syncRolesFromIdp,
+                       List<String> allowedRoleIds) {
+            this(name, oidcIssuerUrl, oidcClientId, oidcClientSecretRef, oidcMultiTenant, oidcIssuerPattern,
+                    syncRolesFromIdp, allowedRoleIds, null);
         }
     }
 

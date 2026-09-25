@@ -53,7 +53,16 @@ public final class UpdateIdentityProvider {
 
                     IdentityProvider ip = existing.update(new IdentityProvider.Changes(
                             cmd.name(), cmd.oidcIssuerUrl(), cmd.oidcClientId(), cmd.oidcClientSecretRef(),
-                            cmd.oidcMultiTenant(), cmd.oidcIssuerPattern(), cmd.syncRolesFromIdp(), cmd.allowedRoleIds()));
+                            cmd.oidcMultiTenant(), cmd.oidcIssuerPattern(), cmd.syncRolesFromIdp(), cmd.allowedRoleIds(),
+                            cmd.allowedTenantIds()));
+                    // Backlog item 3: the mappings routed here after this update must all be pinned —
+                    // switching to multi-tenant, or clearing the provider's tenants, included.
+                    TenantPin.require(ip, domains == null
+                            ? routing.routedTo(ip.id()).stream().map(TenantPin.Routed::of).toList()
+                            : domains.stream()
+                                    .map(d -> new TenantPin.Routed(d.value(),
+                                            mappings.findByEmailDomain(d.value()).map(m -> m.requiredOidcTenantId()).orElse(null)))
+                                    .toList());
                     scoped.commit(ip, repo, IdentityProviderUpdated.of(ec, ip), cmd);
 
                     var created = new ArrayList<String>();

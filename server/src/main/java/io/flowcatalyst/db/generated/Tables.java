@@ -67,6 +67,7 @@ import io.flowcatalyst.db.generated.tables.OauthClientRedirectUris;
 import io.flowcatalyst.db.generated.tables.OauthClients;
 import io.flowcatalyst.db.generated.tables.OauthIdentityProviderAllowedDomains;
 import io.flowcatalyst.db.generated.tables.OauthIdentityProviderAllowedRoles;
+import io.flowcatalyst.db.generated.tables.OauthIdentityProviderAllowedTenants;
 import io.flowcatalyst.db.generated.tables.OauthIdentityProviders;
 import io.flowcatalyst.db.generated.tables.OauthIdpRoleMappings;
 import io.flowcatalyst.db.generated.tables.OauthOidcLoginStates;
@@ -407,6 +408,11 @@ public class Tables {
      * The table <code>public.oauth_identity_provider_allowed_roles</code>.
      */
     public static final OauthIdentityProviderAllowedRoles OAUTH_IDENTITY_PROVIDER_ALLOWED_ROLES = OauthIdentityProviderAllowedRoles.OAUTH_IDENTITY_PROVIDER_ALLOWED_ROLES;
+
+    /**
+     * The table <code>public.oauth_identity_provider_allowed_tenants</code>.
+     */
+    public static final OauthIdentityProviderAllowedTenants OAUTH_IDENTITY_PROVIDER_ALLOWED_TENANTS = OauthIdentityProviderAllowedTenants.OAUTH_IDENTITY_PROVIDER_ALLOWED_TENANTS;
 
     /**
      * The table <code>public.oauth_identity_providers</code>.

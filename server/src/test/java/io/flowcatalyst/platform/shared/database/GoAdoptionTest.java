@@ -70,12 +70,14 @@ class GoAdoptionTest {
         // no-op here too: this fixture never seeds iam_role_permissions rows. V18
         // widens aud_logs.entity_id (17 -> 100) — a real change here too, and a
         // compatible one for Go, which only ever writes 17 characters.
-        assertThat(result.migrationsExecuted).isEqualTo(17);
+        // V19 (oauth_identity_provider_allowed_tenants, backlog item 3) is a new
+        // Java-only table, like V8's and V13's.
+        assertThat(result.migrationsExecuted).isEqualTo(18);
         assertThat(result.migrations).extracting(m -> m.version)
-                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18");
+                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19");
 
         MigrationInfo[] applied = Migrator.flyway(ds).info().applied();
-        assertThat(applied).hasSize(18);
+        assertThat(applied).hasSize(19);
         assertThat(applied[0].getVersion().getVersion()).isEqualTo("1");
         assertThat(applied[0].getState()).isEqualTo(MigrationState.BASELINE);
         for (int i = 1; i < applied.length; i++) {
@@ -95,7 +97,7 @@ class GoAdoptionTest {
                 assertThat(rs.getString(1)).isEqualTo("BASELINE");
                 assertThat(rs.getString(2)).isEqualTo("1");
                 assertThat(rs.getBoolean(3)).isTrue();
-                for (int v = 2; v <= 18; v++) {
+                for (int v = 2; v <= 19; v++) {
                     assertThat(rs.next()).isTrue();
                     assertThat(rs.getString(2)).isEqualTo(String.valueOf(v));
                     assertThat(rs.getBoolean(3)).isTrue();
@@ -254,9 +256,8 @@ class GoAdoptionTest {
         // of the Go-shared chk_msg_subscriptions_source constraint
         // (function-invocation.md §4.1) — asserted to the exact definition,
         // not blanket-ignored, and excluded from the "nothing else changed" check.
-        java.util.Set<String> javaOnlyTables = java.util.Set.of(
-                "mail_outbox", "fn_functions", "fn_versions", "fn_aliases", "fn_hosts", "fn_client_policies",
-                "fn_domains", "fn_routes", "fn_trigger_objects", "fn_config", "fn_secrets");
+        // One list of Java-only tables (V8's, V13's, V19's), shared with the fingerprint test.
+        java.util.Set<String> javaOnlyTables = SchemaFingerprintTest.JAVA_ONLY_TABLES;
         List<String> afterLines = SchemaFingerprint.compute(ds).lines().toList();
         List<String> javaOnlyTableLines = afterLines.stream()
                 .filter(l -> l.split("\t", -1).length > 1 && javaOnlyTables.contains(l.split("\t", -1)[1]))

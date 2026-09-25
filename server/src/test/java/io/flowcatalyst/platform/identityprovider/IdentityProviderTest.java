@@ -170,7 +170,7 @@ class IdentityProviderTest {
     @Test
     void requireDeletableRefusesWhileDomainsStillRouteHereNamingThem() {
         var mapped = new IdentityProvider("idp_x", "entra", "Entra", IdentityProviderType.OIDC, null, null, null, false, null,
-                List.of("a.example.com", "b.example.com"), false, List.of(), Instant.now(), Instant.now());
+                List.of("a.example.com", "b.example.com"), false, List.of(), List.of(), Instant.now(), Instant.now());
         assertUseCaseError(mapped::requireDeletable, UseCaseError.Conflict.class, "DOMAINS_STILL_MAPPED");
         assertThatThrownBy(mapped::requireDeletable)
                 .hasMessageContaining("Identity provider still routes email domains (a.example.com, b.example.com); move or delete those mappings first");

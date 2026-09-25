@@ -67,6 +67,7 @@ import io.flowcatalyst.db.generated.tables.OauthClientRedirectUris;
 import io.flowcatalyst.db.generated.tables.OauthClients;
 import io.flowcatalyst.db.generated.tables.OauthIdentityProviderAllowedDomains;
 import io.flowcatalyst.db.generated.tables.OauthIdentityProviderAllowedRoles;
+import io.flowcatalyst.db.generated.tables.OauthIdentityProviderAllowedTenants;
 import io.flowcatalyst.db.generated.tables.OauthIdentityProviders;
 import io.flowcatalyst.db.generated.tables.OauthIdpRoleMappings;
 import io.flowcatalyst.db.generated.tables.OauthOidcLoginStates;
@@ -424,6 +425,11 @@ public class Public extends SchemaImpl {
     public final OauthIdentityProviderAllowedRoles OAUTH_IDENTITY_PROVIDER_ALLOWED_ROLES = OauthIdentityProviderAllowedRoles.OAUTH_IDENTITY_PROVIDER_ALLOWED_ROLES;
 
     /**
+     * The table <code>public.oauth_identity_provider_allowed_tenants</code>.
+     */
+    public final OauthIdentityProviderAllowedTenants OAUTH_IDENTITY_PROVIDER_ALLOWED_TENANTS = OauthIdentityProviderAllowedTenants.OAUTH_IDENTITY_PROVIDER_ALLOWED_TENANTS;
+
+    /**
      * The table <code>public.oauth_identity_providers</code>.
      */
     public final OauthIdentityProviders OAUTH_IDENTITY_PROVIDERS = OauthIdentityProviders.OAUTH_IDENTITY_PROVIDERS;
@@ -593,6 +599,7 @@ public class Public extends SchemaImpl {
             OauthClients.OAUTH_CLIENTS,
             OauthIdentityProviderAllowedDomains.OAUTH_IDENTITY_PROVIDER_ALLOWED_DOMAINS,
             OauthIdentityProviderAllowedRoles.OAUTH_IDENTITY_PROVIDER_ALLOWED_ROLES,
+            OauthIdentityProviderAllowedTenants.OAUTH_IDENTITY_PROVIDER_ALLOWED_TENANTS,
             OauthIdentityProviders.OAUTH_IDENTITY_PROVIDERS,
             OauthIdpRoleMappings.OAUTH_IDP_ROLE_MAPPINGS,
             OauthOidcLoginStates.OAUTH_OIDC_LOGIN_STATES,

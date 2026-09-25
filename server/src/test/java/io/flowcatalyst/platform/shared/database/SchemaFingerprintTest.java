@@ -30,6 +30,7 @@ class SchemaFingerprintTest {
     /// instead of being pretended away. Each entry names its spec.
     static final java.util.Set<String> JAVA_ONLY_TABLES = java.util.Set.of(
             "mail_outbox",           // docs/spec/mail-outbox.md §2, V8
+            "oauth_identity_provider_allowed_tenants", // backlog "Overnight review" item 3, V19
             "fn_functions",          // docs/spec/function-registry.md §2, V13
             "fn_versions",           // docs/spec/function-registry.md §2, V13
             "fn_aliases",            // docs/spec/function-registry.md §2, V13

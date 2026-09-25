@@ -16,3 +16,4 @@ V15__fn_routes_alias_prefixes.sql
 V16__fn_domains_no_verification.sql
 V17__config_manage_permission.sql
 V18__aud_logs_entity_id_width.sql
+V19__idp_allowed_tenants.sql

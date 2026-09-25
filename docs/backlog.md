@@ -1908,9 +1908,17 @@ What is left needs a ruling or was judged not worth changing:
    (b) at login an unpinned multi-tenant mapping is refused and logged (covers existing rows);
    (c) multi-tenant IdPs get an allowed-tenant list for provider-direct logins, enforced like the
        pin (one additive column).
-   **Before deploying**, find the logins that would stop:
+   **BUILT 2026-09-25.** A pin is the mapping's `requiredOidcTenantId`, or the provider's new
+   `allowedTenantIds` (V19, a Java-only table), which covers every mapping without its own pin and
+   provider-direct logins. A login through an unpinned multi-tenant provider is refused with 403
+   `TENANT_NOT_PINNED` and logged. Saves that would leave such a mapping unpinned are refused with
+   400 `TENANT_PIN_REQUIRED`: mapping create, update and move; IdP create or update with routed
+   domains, switching to multi-tenant, or clearing the provider's tenants.
+   **Before deploying**, find the logins that would stop. Until V19 runs, no provider has tenants,
+   so this is every unpinned mapping of a multi-tenant provider:
    `SELECT m.email_domain, p.code FROM tnt_email_domain_mappings m JOIN oauth_identity_providers p
    ON p.id = m.identity_provider_id WHERE p.oidc_multi_tenant AND coalesce(m.required_oidc_tenant_id,'') = '';`
+   Fix each by setting the provider's allowed tenants in the admin UI, or the mapping's tenant.
    The original question follows. — with a multi-tenant Entra IdP and no tenant pin, identity comes
    from the mutable `email` claim (and `preferred_username` fallback; `email_verified` ignored).
    Require a pinned tenant, and/or `email_verified`? (Entra often omits `email_verified`.)

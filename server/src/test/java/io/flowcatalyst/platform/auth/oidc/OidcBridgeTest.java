@@ -139,7 +139,10 @@ class OidcBridgeTest {
     private static String internalDomain;
     private static String oidcIdpId;
     private static String multiIdpId;        // multi-tenant, issuer pattern
-    private static String multiDomain;
+    private static String multiDomain;       // routed to multiIdp, pinned nowhere (a row predating the rule)
+    private static String multiPinnedDomain; // routed to multiIdp, the mapping pins "tid-multi-" + RUN
+    private static String multi2IdpId;       // multi-tenant, provider pins "tid-a-" / "tid-b-" + RUN
+    private static String multi2Domain;      // routed to multi2Idp, no pin of its own
     private static String roleAllowed;       // platform role names
     private static String roleNotAllowed;
     private static String appId;
@@ -193,6 +196,8 @@ class OidcBridgeTest {
         tenantDomain = "tenant-" + RUN + ".example";
         internalDomain = "internal-" + RUN + ".example";
         multiDomain = "multi-" + RUN + ".example";
+        multiPinnedDomain = "multipin-" + RUN + ".example";
+        multi2Domain = "multitwo-" + RUN + ".example";
         var oidcIdp = IdentityProvider.create("idp-oidc-" + RUN, "OIDC " + RUN, IdentityProviderType.OIDC)
                 .withOidc(idpBase, CLIENT_ID, ENC.encryptSecretRef(CLIENT_SECRET), false, null)
                 .withRoleSync(true, List.of(allowedRoleId));
@@ -200,14 +205,22 @@ class OidcBridgeTest {
         var multiIdp = IdentityProvider.create("idp-multi-" + RUN, "Multi " + RUN, IdentityProviderType.OIDC)
                 .withOidc(idpBase, CLIENT_ID, null, true, "^http://tenant-[a-z]+\\.example$");
         multiIdpId = multiIdp.id();
+        var multi2Idp = IdentityProvider.create("idp-multi2-" + RUN, "Multi2 " + RUN, IdentityProviderType.OIDC)
+                .withOidc(idpBase, CLIENT_ID, null, true, "^http://tenant-[a-z]+\\.example$")
+                .withAllowedTenants(List.of("tid-a-" + RUN, "tid-b-" + RUN));
+        multi2IdpId = multi2Idp.id();
         var internalIdp = IdentityProvider.create("idp-int-" + RUN, "Internal " + RUN, IdentityProviderType.INTERNAL);
         persistIdp(oidcIdp);
         persistIdp(multiIdp);
+        persistIdp(multi2Idp);
         persistIdp(internalIdp);
         persistMapping(EmailDomainMapping.create(EmailDomain.parse(oidcDomain), oidcIdpId, ScopeType.ANCHOR));
         persistMapping(EmailDomainMapping.create(EmailDomain.parse(tenantDomain), oidcIdpId, ScopeType.ANCHOR)
                 .update(new EmailDomainMapping.Changes(null, null, null, "tid-" + RUN, null, null, null, null)));
         persistMapping(EmailDomainMapping.create(EmailDomain.parse(multiDomain), multiIdpId, ScopeType.ANCHOR));
+        persistMapping(EmailDomainMapping.create(EmailDomain.parse(multiPinnedDomain), multiIdpId, ScopeType.ANCHOR)
+                .update(new EmailDomainMapping.Changes(null, null, null, "tid-multi-" + RUN, null, null, null, null)));
+        persistMapping(EmailDomainMapping.create(EmailDomain.parse(multi2Domain), multi2IdpId, ScopeType.ANCHOR));
         persistMapping(EmailDomainMapping.create(EmailDomain.parse(internalDomain), internalIdp.id(), ScopeType.ANCHOR));
         persistRoleMapping(IdpRoleMapping.create("OIDC", "Reader-" + RUN, roleAllowed));
         persistRoleMapping(IdpRoleMapping.create("OIDC", "Admin-" + RUN, roleNotAllowed));
@@ -451,18 +464,61 @@ class OidcBridgeTest {
 
     @Test
     void aMultiTenantProviderAcceptsAnIssuerMatchingThePatternAndNothingElse() {
-        String email = "multi-" + RUN + "@" + multiDomain;
+        String email = "multi-" + RUN + "@" + multiPinnedDomain;
         emails.add(email);
-        Map<String, String> q = begin("domain=" + multiDomain);
-        idTokenFor(q, email).issuer("http://tenant-acme.example");
+        Map<String, String> q = begin("domain=" + multiPinnedDomain);
+        idTokenFor(q, email).issuer("http://tenant-acme.example").claim("tid", "tid-multi-" + RUN);
         var ok = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
         assertThat(ok.statusCode()).as(ok.body()).isEqualTo(302);
 
-        q = begin("domain=" + multiDomain);
-        idTokenFor(q, email).issuer("http://evil.example");
+        q = begin("domain=" + multiPinnedDomain);
+        idTokenFor(q, email).issuer("http://evil.example").claim("tid", "tid-multi-" + RUN);
         var bad = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
         assertThat(bad.statusCode()).isEqualTo(403);
         assertThat(json(bad).get("error").asString()).isEqualTo("OIDC_VERIFY");
+    }
+
+    /// Owner ruling 2026-09-25 (backlog "Overnight review" item 3): a multi-tenant
+    /// provider signs tokens for any tenant, and `email` is settable by any tenant admin,
+    /// so a login through it must be pinned, by the mapping or by the provider.
+    @Test
+    void aMultiTenantLoginMustBePinnedByTheMappingOrTheProvider() {
+        String unpinnedEmail = "nopin-" + RUN + "@" + multiDomain;
+        Map<String, String> q = begin("domain=" + multiDomain);
+        idTokenFor(q, unpinnedEmail).issuer("http://tenant-acme.example").claim("tid", "attacker-tenant");
+        var unpinned = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        assertThat(unpinned.statusCode()).as(unpinned.body()).isEqualTo(403);
+        assertThat(json(unpinned).get("error").asString()).isEqualTo("TENANT_NOT_PINNED");
+        assertThat(PRINCIPALS.findByEmail(unpinnedEmail)).as("nothing provisioned").isEmpty();
+
+        String pinnedEmail = "pin-" + RUN + "@" + multiPinnedDomain;
+        q = begin("domain=" + multiPinnedDomain);
+        idTokenFor(q, pinnedEmail).issuer("http://tenant-acme.example").claim("tid", "attacker-tenant");
+        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c")).get("error").asString())
+                .as("the mapping's pin").isEqualTo("TENANT_MISMATCH");
+
+        String providerEmail = "prov-" + RUN + "@" + multi2Domain;
+        emails.add(providerEmail);
+        q = begin("domain=" + multi2Domain);
+        idTokenFor(q, providerEmail).issuer("http://tenant-acme.example").claim("tid", "attacker-tenant");
+        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c")).get("error").asString())
+                .as("the provider's pin covers a mapping without its own").isEqualTo("TENANT_MISMATCH");
+        q = begin("domain=" + multi2Domain);
+        idTokenFor(q, providerEmail).issuer("http://tenant-acme.example").claim("tid", "tid-b-" + RUN);
+        var viaProvider = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        assertThat(viaProvider.statusCode()).as(viaProvider.body()).isEqualTo(302);
+
+        // Provider-direct: the provider's own list, or refused.
+        var r = http.get("/auth/oidc/login?provider_id=" + multiIdpId);
+        q = query(location(r));
+        idTokenFor(q, "direct-nopin-" + RUN + "@" + multiDomain).issuer("http://tenant-acme.example").claim("tid", "any");
+        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c")).get("error").asString())
+                .isEqualTo("TENANT_NOT_PINNED");
+        r = http.get("/auth/oidc/login?provider_id=" + multi2IdpId);
+        q = query(location(r));
+        idTokenFor(q, "direct-" + RUN + "@" + multi2Domain).issuer("http://tenant-acme.example").claim("tid", "attacker-tenant");
+        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c")).get("error").asString())
+                .isEqualTo("TENANT_MISMATCH");
     }
 
     @Test

@@ -134,6 +134,18 @@ public final class EmailDomainMappingRepository implements Persist<EmailDomainMa
                 .fetchOptional(r -> new IdentityProviderRef(r.value1(), r.value2(), r.value3()));
     }
 
+    /// Whether a mapping to provider `identityProviderId` needs its own tenant
+    /// pin: the provider is a multi-tenant OIDC provider that pins no tenants
+    /// itself (owner ruling 2026-09-25, backlog item 3). `false` for an unknown
+    /// provider, which the callers refuse as not found on their own.
+    public boolean mappingNeedsOwnTenantPin(String identityProviderId) {
+        var tenants = io.flowcatalyst.db.generated.Tables.OAUTH_IDENTITY_PROVIDER_ALLOWED_TENANTS;
+        return dsl.fetchExists(dsl.selectOne().from(OAUTH_IDENTITY_PROVIDERS)
+                .where(OAUTH_IDENTITY_PROVIDERS.ID.eq(identityProviderId))
+                .and(OAUTH_IDENTITY_PROVIDERS.OIDC_MULTI_TENANT.isTrue())
+                .andNotExists(dsl.selectOne().from(tenants).where(tenants.IDENTITY_PROVIDER_ID.eq(identityProviderId))));
+    }
+
     /// TEMPORARY (owner: the `identityprovider` aggregate) — display names
     /// keyed by provider id for every id that exists.
     public Map<String, String> identityProviderNames(Collection<String> ids) {

@@ -31,6 +31,10 @@ class CreateIdentityProviderRequest extends \ArrayObject
      */
     protected $allowedRoleIds;
     /**
+     * @var list<string>|null
+     */
+    protected $allowedTenantIds;
+    /**
      * IDP code (e.g. internal, entra)
      *
      * @var string|null
@@ -150,6 +154,24 @@ class CreateIdentityProviderRequest extends \ArrayObject
     {
         $this->initialized['allowedRoleIds'] = true;
         $this->allowedRoleIds = $allowedRoleIds;
+        return $this;
+    }
+    /**
+     * @return list<string>|null
+     */
+    public function getAllowedTenantIds(): ?array
+    {
+        return $this->allowedTenantIds;
+    }
+    /**
+     * @param list<string>|null $allowedTenantIds
+     *
+     * @return self
+     */
+    public function setAllowedTenantIds(?array $allowedTenantIds): self
+    {
+        $this->initialized['allowedTenantIds'] = true;
+        $this->allowedTenantIds = $allowedTenantIds;
         return $this;
     }
     /**

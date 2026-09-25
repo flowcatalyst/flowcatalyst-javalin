@@ -72,6 +72,17 @@ class CreateIdentityProviderRequestNormalizer implements DenormalizerInterface, 
         elseif (\array_key_exists('allowedRoleIds', $data) && $data['allowedRoleIds'] === null) {
             $object->setAllowedRoleIds(null);
         }
+        if (\array_key_exists('allowedTenantIds', $data) && $data['allowedTenantIds'] !== null) {
+            $values_2 = [];
+            foreach ($data['allowedTenantIds'] as $value_2) {
+                $values_2[] = $value_2;
+            }
+            $object->setAllowedTenantIds($values_2);
+            unset($data['allowedTenantIds']);
+        }
+        elseif (\array_key_exists('allowedTenantIds', $data) && $data['allowedTenantIds'] === null) {
+            $object->setAllowedTenantIds(null);
+        }
         if (\array_key_exists('code', $data) && $data['code'] !== null) {
             $object->setCode($data['code']);
             unset($data['code']);
@@ -149,9 +160,9 @@ class CreateIdentityProviderRequestNormalizer implements DenormalizerInterface, 
         elseif (\array_key_exists('type', $data) && $data['type'] === null) {
             $object->setType(null);
         }
-        foreach ($data as $key => $value_2) {
+        foreach ($data as $key => $value_3) {
             if (preg_match('/.*/', (string) $key)) {
-                $object[$key] = $value_2;
+                $object[$key] = $value_3;
             }
         }
         return $object;
@@ -172,6 +183,13 @@ class CreateIdentityProviderRequestNormalizer implements DenormalizerInterface, 
                 $values_1[] = $value_1;
             }
             $dataArray['allowedRoleIds'] = $values_1;
+        }
+        if ($data->isInitialized('allowedTenantIds') && null !== $data->getAllowedTenantIds()) {
+            $values_2 = [];
+            foreach ($data->getAllowedTenantIds() as $value_2) {
+                $values_2[] = $value_2;
+            }
+            $dataArray['allowedTenantIds'] = $values_2;
         }
         $dataArray['code'] = $data->getCode();
         if ($data->isInitialized('mappingScope') && null !== $data->getMappingScope()) {
@@ -200,9 +218,9 @@ class CreateIdentityProviderRequestNormalizer implements DenormalizerInterface, 
             $dataArray['syncRolesFromIdp'] = $data->getSyncRolesFromIdp();
         }
         $dataArray['type'] = $data->getType();
-        foreach ($data as $key => $value_2) {
+        foreach ($data as $key => $value_3) {
             if (preg_match('/.*/', (string) $key)) {
-                $dataArray[$key] = $value_2;
+                $dataArray[$key] = $value_3;
             }
         }
         return $dataArray;

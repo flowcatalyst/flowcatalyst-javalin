@@ -49,7 +49,14 @@ public final class CreateIdentityProvider {
 
                     IdentityProvider ip = IdentityProvider.create(cmd.code(), cmd.name(), IdentityProviderType.parseWire(cmd.type()))
                             .withOidc(cmd.oidcIssuerUrl(), cmd.oidcClientId(), cmd.oidcClientSecretRef(), cmd.oidcMultiTenant(), cmd.oidcIssuerPattern())
-                            .withRoleSync(cmd.syncRolesFromIdp(), cmd.allowedRoleIds());
+                            .withRoleSync(cmd.syncRolesFromIdp(), cmd.allowedRoleIds())
+                            .withAllowedTenants(cmd.allowedTenantIds());
+                    // Backlog item 3: every domain routed here must end up pinned. A claimed
+                    // mapping keeps its own pin; a created one has none.
+                    TenantPin.require(ip, domains.stream()
+                            .map(d -> new TenantPin.Routed(d.value(),
+                                    mappings.findByEmailDomain(d.value()).map(m -> m.requiredOidcTenantId()).orElse(null)))
+                            .toList());
                     scoped.commit(ip, repo, IdentityProviderCreated.of(ec, ip), cmd);
 
                     var created = new ArrayList<String>();

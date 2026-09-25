@@ -47,6 +47,7 @@ public final class CreateEmailDomainMapping {
                             .withAdditionalClientIds(orEmpty(cmd.additionalClientIds()))
                             .withGrantedClientIds(orEmpty(cmd.grantedClientIds()))
                             .withTwoFactor(policyOf(cmd));
+                    Access.requireTenantPin(repo, m);
                     return Plan.save(m, repo, EmailDomainMappingCreated.of(ec, m));
                 });
     }

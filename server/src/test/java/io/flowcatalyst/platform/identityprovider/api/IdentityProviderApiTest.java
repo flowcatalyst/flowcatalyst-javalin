@@ -161,7 +161,8 @@ class IdentityProviderApiTest {
         assertThat(c.get("createdAt").asText()).matches(TS);
         assertThat(c.get("updatedAt").asText()).matches(TS);
         assertThat(c.propertyNames()).containsExactly("id", "code", "name", "type", "oidcIssuerUrl", "oidcClientId",
-                "hasClientSecret", "oidcMultiTenant", "allowedEmailDomains", "syncRolesFromIdp", "allowedRoleIds", "createdAt", "updatedAt");
+                "hasClientSecret", "oidcMultiTenant", "allowedEmailDomains", "syncRolesFromIdp", "allowedRoleIds", "allowedTenantIds",
+                "createdAt", "updatedAt");
 
         // The plaintext was sealed before the command was built: stored as `encrypted:` and decryptable, never in the audit.
         String stored = storedSecret(id);

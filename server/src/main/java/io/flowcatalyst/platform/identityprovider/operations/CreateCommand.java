@@ -20,6 +20,8 @@ import java.util.List;
 /// @param primaryClientId     client to link on mappings that are new or not yet linked; `null` = none
 /// @param syncRolesFromIdp    reconcile `IDP_SYNC` roles at login
 /// @param allowedRoleIds      roles the provider may confer; `null` / empty = no restriction
+/// @param allowedTenantIds    multi-tenant OIDC only: the Entra tenants the provider accepts; `null` / empty =
+///                            none at the provider level, so every mapping needs its own pin (backlog item 3)
 public record CreateCommand(
         String code,
         String name,
@@ -33,10 +35,21 @@ public record CreateCommand(
         String mappingScope,
         String primaryClientId,
         boolean syncRolesFromIdp,
-        List<String> allowedRoleIds) {
+        List<String> allowedRoleIds,
+        List<String> allowedTenantIds) {
 
     public CreateCommand {
         allowedEmailDomains = allowedEmailDomains == null ? null : List.copyOf(allowedEmailDomains);
         allowedRoleIds = allowedRoleIds == null ? null : List.copyOf(allowedRoleIds);
+        allowedTenantIds = allowedTenantIds == null ? null : List.copyOf(allowedTenantIds);
+    }
+
+    /// Without a provider-level tenant pin.
+    public CreateCommand(String code, String name, String type, String oidcIssuerUrl, String oidcClientId,
+                         String oidcClientSecretRef, boolean oidcMultiTenant, String oidcIssuerPattern,
+                         List<String> allowedEmailDomains, String mappingScope, String primaryClientId,
+                         boolean syncRolesFromIdp, List<String> allowedRoleIds) {
+        this(code, name, type, oidcIssuerUrl, oidcClientId, oidcClientSecretRef, oidcMultiTenant, oidcIssuerPattern,
+                allowedEmailDomains, mappingScope, primaryClientId, syncRolesFromIdp, allowedRoleIds, null);
     }
 }

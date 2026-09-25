@@ -441,4 +441,47 @@ class EmailDomainMappingOperationsTest {
         assertThat(repo.identityProvider(target)).map(EmailDomainMappingRepository.IdentityProviderRef::name).contains("IdP " + target);
         assertThat(repo.identityProviderNames(List.of(target, "idp_nope"))).containsOnlyKeys(target);
     }
+
+    // ── Tenant pin (owner ruling 2026-09-25, backlog "Overnight review" item 3) ──
+
+    /// A multi-tenant OIDC provider row, optionally pinning `tenants` at the provider level.
+    private static String multiTenantProvider(String... tenants) {
+        String id = identityProvider("OIDC");
+        DB.update(OAUTH_IDENTITY_PROVIDERS).set(OAUTH_IDENTITY_PROVIDERS.OIDC_MULTI_TENANT, true)
+                .where(OAUTH_IDENTITY_PROVIDERS.ID.eq(id)).execute();
+        var t = io.flowcatalyst.db.generated.Tables.OAUTH_IDENTITY_PROVIDER_ALLOWED_TENANTS;
+        for (String tenant : tenants) {
+            DB.insertInto(t).set(t.IDENTITY_PROVIDER_ID, id).set(t.TENANT_ID, tenant).execute();
+        }
+        return id;
+    }
+
+    @Test
+    void aMappingToAMultiTenantProviderMustBePinnedByItselfOrTheProvider() {
+        String bare = multiTenantProvider();
+        String pinnedProvider = multiTenantProvider("tid-" + RUN);
+
+        assertUseCaseError(() -> runAsAnchor(CreateEmailDomainMapping.of(repo),
+                        new CreateCommand(domain("pin-none"), bare, "ANCHOR", null, null, null, null, false, null, false, null)),
+                UseCaseError.Validation.class, "TENANT_PIN_REQUIRED");
+        assertThat(repo.findByEmailDomain(domain("pin-none"))).as("nothing stored").isEmpty();
+
+        var own = runAsAnchor(CreateEmailDomainMapping.of(repo),
+                new CreateCommand(domain("pin-own"), bare, "ANCHOR", null, null, null, "tid-own", false, null, false, null));
+        assertThat(own.mappingId()).isNotBlank();
+        var byProvider = runAsAnchor(CreateEmailDomainMapping.of(repo),
+                new CreateCommand(domain("pin-provider"), pinnedProvider, "ANCHOR", null, null, null, null, false, null, false, null));
+        assertThat(byProvider.mappingId()).isNotBlank();
+
+        assertUseCaseError(() -> runAsAnchor(UpdateEmailDomainMapping.of(repo),
+                        new UpdateCommand(own.mappingId(), null, null, null, null, null, null, null, null)),
+                UseCaseError.Validation.class, "TENANT_PIN_REQUIRED");
+        assertThat(reload(own.mappingId()).requiredOidcTenantId()).as("the pin survives the refused update").isEqualTo("tid-own");
+
+        var single = created(domain("pin-move"));
+        assertUseCaseError(() -> Auth.runAs(ANCHOR, () ->
+                        MoveEmailDomainMappingProvider.of(repo).run(uow, new MoveProviderCommand(single.mappingId(), bare), EC)),
+                UseCaseError.Validation.class, "TENANT_PIN_REQUIRED");
+        assertThat(reload(single.mappingId()).identityProviderId()).as("not moved").isNotEqualTo(bare);
+    }
 }

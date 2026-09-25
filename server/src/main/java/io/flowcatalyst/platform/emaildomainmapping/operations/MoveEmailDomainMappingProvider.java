@@ -30,7 +30,7 @@ public final class MoveEmailDomainMappingProvider {
                 .authorize(Operation.Authorize.publicAccess())
                 .execute((scoped, cmd, ec) -> {
                     EmailDomainMapping before = Access.byId(repo, cmd.id());
-                    EmailDomainMapping moved = before.moveToProvider(cmd.identityProviderId());
+                    EmailDomainMapping moved = Access.requireTenantPin(repo, before.moveToProvider(cmd.identityProviderId()));
                     IdentityProviderRef target = repo.identityProvider(cmd.identityProviderId())
                             .orElseThrow(() -> UseCaseException.resourceNotFound("IdentityProvider", cmd.identityProviderId()));
 
