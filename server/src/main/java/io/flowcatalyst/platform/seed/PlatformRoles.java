@@ -172,7 +172,9 @@ public final class PlatformRoles {
                             ADMIN_IDENTITY_PROVIDER_READ,
                             ADMIN_EMAIL_DOMAIN_MAPPING_READ,
                             ADMIN_CONFIG_READ,
-                            ADMIN_CORS_ORIGIN_READ)),
+                            ADMIN_CORS_ORIGIN_READ,
+                            // docs/spec/router-api-auth.md rule 3.
+                            ROUTER_VIEW)),
 
             // platform:portal-administrator — CLIENT-delegable: assign to a
             // client administrator (manage their client's portal users in the
@@ -197,7 +199,9 @@ public final class PlatformRoles {
             // platform:application-service
             mk("application-service", "Application Service Account",
                     "Permissions for application service accounts (scoped to own application)",
-                    APPLICATION_SERVICE),
+                    // docs/spec/router-api-auth.md rule 3: the SDK's stuck-message
+                    // recovery asks the router whether a message is in flight.
+                    concat(APPLICATION_SERVICE, List.of(ROUTER_VIEW))),
 
             // platform:router — `docs/spec/router-config-auth.md` R3′: the one
             // permission the router's client-credentials principal needs to
@@ -221,7 +225,13 @@ public final class PlatformRoles {
             // client-delegable.
             mk("function-host", "Function Host",
                     "Fetches desired state and reports heartbeats for the function host",
-                    List.of(FUNCTION_HOST_CONTROL)));
+                    List.of(FUNCTION_HOST_CONTROL)),
+
+            // platform:router-operator — docs/spec/router-api-auth.md rule 3: calls the
+            // router's own API (monitoring reads and operator actions). Appended, as above.
+            mk("router-operator", "Router Operator",
+                    "Monitors and operates the message router: pools, breakers, in-flight messages, publishing",
+                    List.of(ROUTER_VIEW, ROUTER_OPERATE)));
 
     private PlatformRoles() {
     }
@@ -238,5 +248,9 @@ public final class PlatformRoles {
         return new RoleDefinition(
                 APPLICATION_CODE + ":" + roleName, displayName, description,
                 APPLICATION_CODE, RoleDefinition.SOURCE_CODE, permissions);
+    }
+
+    private static List<String> concat(List<String> first, List<String> second) {
+        return java.util.stream.Stream.concat(first.stream(), second.stream()).toList();
     }
 }

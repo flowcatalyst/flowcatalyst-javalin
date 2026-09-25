@@ -107,6 +107,10 @@ public final class Permissions {
     public static final String ADMIN_SCHEDULED_JOB_SYNC = "platform:messaging:scheduled-job:sync";
     public static final String ADMIN_SCHEDULED_JOB_INSTANCE_READ = "platform:messaging:scheduled-job-instance:view";
 
+    // The router's own API (docs/spec/router-api-auth.md): reads, and everything else.
+    public static final String ROUTER_VIEW = "platform:messaging:router:view";
+    public static final String ROUTER_OPERATE = "platform:messaging:router:operate";
+
     // Identity provider
     public static final String ADMIN_IDENTITY_PROVIDER_READ = "platform:iam:idp:view";
     public static final String ADMIN_IDENTITY_PROVIDER_CREATE = "platform:iam:idp:create";

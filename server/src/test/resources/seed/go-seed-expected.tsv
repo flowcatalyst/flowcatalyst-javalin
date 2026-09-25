@@ -18,6 +18,8 @@
 # a live Go database — the exact strings/JSON are read verbatim from Go
 # `internal/platform/seed/{permissions,roles,event_types,event_schemas}.go` at the hand-off's
 # reference commit (`07184da`+), which the K2 report cites; a live-DB re-dump was not run for this unit.
+# router-api-auth.md (2026-09-25): platform:router-operator (role + 2 perm rows) and router:view on
+# platform:viewer and platform:application-service are Java-first; Go has no router API auth.
 # code-first-connections.md slice K3 (2026-09-21): the `platform:admin:subscription:synced` `schema`
 # row's JSON is hand-edited (not re-dumped) to add `"clientId":{"type":["string","null"]}`, read
 # verbatim from Go `internal/platform/seed/event_schemas.go` at `07184da` (`56aea7c`+), which adds
@@ -39,6 +41,7 @@ role	platform:application-service	Application Service Account	Permissions for ap
 role	platform:router	Router	Fetches the dispatch router configuration	CODE	platform	false
 role	platform:function-publisher	Function Publisher	Publishes and promotes function versions	CODE	platform	false
 role	platform:function-host	Function Host	Fetches desired state and reports heartbeats for the function host	CODE	platform	false
+role	platform:router-operator	Router Operator	Monitors and operates the message router: pools, breakers, in-flight messages, publishing	CODE	platform	false
 perm	platform:super-admin	platform:*:*:*
 perm	platform:admin	platform:admin:client:view
 perm	platform:admin	platform:admin:client:create
@@ -231,6 +234,10 @@ perm	platform:function-publisher	platform:function:alias:promote
 perm	platform:function-publisher	platform:function:version:invoke
 perm	platform:function-publisher	platform:function:secret:manage
 perm	platform:function-host	platform:function:host:control
+perm	platform:viewer	platform:messaging:router:view
+perm	platform:application-service	platform:messaging:router:view
+perm	platform:router-operator	platform:messaging:router:view
+perm	platform:router-operator	platform:messaging:router:operate
 eventtype	platform:iam:user:created	User Created	CURRENT	UI	false	platform	iam	user
 eventtype	platform:iam:user:updated	User Updated	CURRENT	UI	false	platform	iam	user
 eventtype	platform:iam:user:activated	User Activated	CURRENT	UI	false	platform	iam	user

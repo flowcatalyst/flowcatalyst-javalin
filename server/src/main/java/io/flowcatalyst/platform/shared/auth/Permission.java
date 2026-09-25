@@ -123,6 +123,10 @@ public enum Permission {
     // messaging / scheduled-job-instance
     SCHEDULED_JOB_INSTANCE_VIEW("platform:messaging:scheduled-job-instance:view"),
 
+    // messaging / router — the router's own API (`docs/spec/router-api-auth.md`)
+    ROUTER_VIEW("platform:messaging:router:view"),
+    ROUTER_OPERATE("platform:messaging:router:operate"),
+
     // iam / idp
     IDP_VIEW("platform:iam:idp:view"),
     IDP_CREATE("platform:iam:idp:create"),

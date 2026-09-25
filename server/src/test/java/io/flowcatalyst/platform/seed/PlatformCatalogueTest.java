@@ -76,14 +76,14 @@ class PlatformCatalogueTest {
     @Test
     void roleCatalogueShape() {
         List<RoleDefinition> roles = PlatformRoles.all();
-        assertThat(roles).hasSize(17);
+        assertThat(roles).hasSize(18);
         assertThat(roles).extracting(RoleDefinition::name).containsExactly(
                 "platform:super-admin", "platform:admin", "platform:admin-readonly",
                 "platform:iam-admin", "platform:iam-readonly", "platform:client-admin",
                 "platform:auth-admin", "platform:auth-readonly", "platform:ai-agent-readonly",
                 "platform:messaging-admin", "platform:viewer", "platform:portal-administrator",
                 "platform:developer", "platform:application-service", "platform:router",
-                "platform:function-publisher", "platform:function-host");
+                "platform:function-publisher", "platform:function-host", "platform:router-operator");
         int total = 0;
         for (RoleDefinition r : roles) {
             assertThat(r.source()).isEqualTo("CODE");
@@ -93,9 +93,16 @@ class PlatformCatalogueTest {
             assertThat(r.permissions()).isNotEmpty().doesNotHaveDuplicates();
             total += r.permissions().size();
         }
-        assertThat(total).isEqualTo(192);
+        assertThat(total).isEqualTo(196);
         assertThat(roles.get(0).permissions()).containsExactly(Permissions.ADMIN_ALL);
-        assertThat(roles.get(13).permissions()).isEqualTo(Permissions.APPLICATION_SERVICE);
+        // router-api-auth.md rule 3: the application-service permissions, then router:view for
+        // the SDK's in-flight check — and nothing that operates the router.
+        assertThat(roles.get(13).permissions()).startsWith(Permissions.APPLICATION_SERVICE.toArray(String[]::new))
+                .endsWith(Permissions.ROUTER_VIEW).hasSize(Permissions.APPLICATION_SERVICE.size() + 1);
+        assertThat(roles.get(17).name()).isEqualTo("platform:router-operator");
+        assertThat(roles.get(17).permissions()).containsExactly(Permissions.ROUTER_VIEW, Permissions.ROUTER_OPERATE);
+        assertThat(roles.get(10).permissions()).as("viewer reads the router, never operates it")
+                .contains(Permissions.ROUTER_VIEW).doesNotContain(Permissions.ROUTER_OPERATE);
         // R3′ (`docs/spec/router-config-auth.md`): exactly the one permission
         // the router's client-credentials principal needs — never more, or a
         // client-scoped token minted for this role would see more than the

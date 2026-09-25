@@ -89,7 +89,7 @@ class SeederTest {
     // `platform:function:domain:manage` added by `docs/spec/function-public-routes.md`
     // §1, package F slice F1) are Java-first
     // again — there is no Go for the function platform. The fixture's
-    // role/perm counts (17/192, not Go's 14/151)
+    // role/perm counts (18/196, not Go's 14/151)
     // and its own comment record that until Go mirrors all of it.
     // The 5 `connection:sync`/application-service `connection:*`
     // permission rows (`code-first-connections.md` slice K2) and the
@@ -102,7 +102,7 @@ class SeederTest {
                 .map(r -> line("role", r.getName(), r.getDisplayName(), r.getDescription(), r.getSource(),
                         r.getApplicationCode(), r.getClientManaged()))
                 .toList();
-        assertThat(actual).hasSize(17).containsExactlyInAnyOrderElementsOf(expected.get("role"));
+        assertThat(actual).hasSize(18).containsExactlyInAnyOrderElementsOf(expected.get("role"));
         assertThat(db.selectFrom(IAM_ROLES).fetch()).allSatisfy(r -> assertThat(r.getApplicationId()).isNull());
         assertThat(db.selectFrom(IAM_ROLES).fetch()).allSatisfy(r -> assertThat(r.getId()).startsWith("rol_"));
     }
@@ -115,7 +115,7 @@ class SeederTest {
                 .fetch().stream()
                 .map(r -> line("perm", r.value1(), r.value2()))
                 .toList();
-        assertThat(actual).hasSize(192).containsExactlyInAnyOrderElementsOf(expected.get("perm"));
+        assertThat(actual).hasSize(196).containsExactlyInAnyOrderElementsOf(expected.get("perm"));
     }
 
     @Test
@@ -259,8 +259,8 @@ class SeederTest {
     @Test
     void secondRunChangesNothing() {
         assertThat(secondRun).isEqualTo(firstRun);
-        assertThat(firstRun.get("iam_roles")).hasSize(17);
-        assertThat(firstRun.get("iam_role_permissions")).hasSize(192);
+        assertThat(firstRun.get("iam_roles")).hasSize(18);
+        assertThat(firstRun.get("iam_role_permissions")).hasSize(196);
         assertThat(firstRun.get("msg_event_types")).hasSize(73);
         assertThat(firstRun.get("msg_event_type_spec_versions")).hasSize(73);
         assertThat(firstRun.get("app_applications")).hasSize(1);
@@ -316,7 +316,7 @@ class SeederTest {
         assertThat(d.fetchCount(TNT_EMAIL_DOMAIN_MAPPINGS)).isZero();
         assertThat(d.fetchCount(IAM_PRINCIPAL_ROLES)).isZero();
         // everything else is still seeded
-        assertThat(d.fetchCount(IAM_ROLES)).isEqualTo(17);
+        assertThat(d.fetchCount(IAM_ROLES)).isEqualTo(PlatformRoles.all().size());
         assertThat(d.fetchCount(MSG_EVENT_TYPES)).isEqualTo(73);
         assertThat(d.fetchCount(APP_APPLICATIONS)).isEqualTo(1);
 
@@ -366,7 +366,7 @@ class SeederTest {
         assertThat(d.fetchCount(IAM_PRINCIPALS, IAM_PRINCIPALS.EMAIL.eq("admin@flowcatalyst.local"))).isZero();
         assertThat(d.fetchCount(OAUTH_IDENTITY_PROVIDERS)).isZero();
         assertThat(d.fetchCount(TNT_EMAIL_DOMAIN_MAPPINGS)).isZero();
-        assertThat(d.fetchCount(IAM_ROLES)).isEqualTo(17);
+        assertThat(d.fetchCount(IAM_ROLES)).isEqualTo(PlatformRoles.all().size());
     }
 
     @Test
