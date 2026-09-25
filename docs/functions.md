@@ -401,10 +401,9 @@ Read this before you design around anything the API *looks* like it should let y
 ## 8a. Wasm functions
 
 A function may also be a WebAssembly module (`runtime: wasm`), run by the host on Endive (pure
-Java) through the Extism ABI — write it with an Extism PDK (Rust, or JavaScript — §8b below; the
-admin UI's create drawer keeps `wasm` disabled until W5). Everything above about endpoints,
-auth modes, subscriptions, schedules, publishing and promoting is the same; what differs is below.
-Spec: `docs/spec/function-wasm-runtime.md`.
+Java) through the Extism ABI — write it with an Extism PDK (Rust, or JavaScript — §8b below).
+Everything above about endpoints, auth modes, subscriptions, schedules, publishing and promoting
+is the same; what differs is below. Spec: `docs/spec/function-wasm-runtime.md`.
 
 **The export.** `entrypoint` names a function export of the module; it is called once per
 invocation with the request as UTF-8 JSON —
@@ -706,16 +705,18 @@ merged) covers most of the same ground with a browser instead:
   `platform:function:function:manage`, hidden rather than disabled otherwise) opens the create
   drawer at `/functions/new`.
 - **Create drawer** — application code, service and name (the three address labels, with the
-  resulting `app.service.name` address previewed live as they're typed), runtime (only `jvm` is
-  offered; `wasm` is shown disabled with a note — the platform refuses it today), description, and
-  for an anchor an owner client (platform-owned by default, matching `CreateFunction.java`'s own
-  rule: a client-scoped caller's function is always their own client's, sent automatically and
-  never a choice in this form). Platform error codes (`APPLICATION_CODE_NOT_ADDRESSABLE`,
+  resulting `app.service.name` address previewed live as they're typed), runtime (`jvm` or `wasm`,
+  with a hint on what a Wasm function is — an Extism PDK module, JavaScript via `fcdev fn init
+  --lang js`), description, and for an anchor an owner client (platform-owned by default, matching
+  `CreateFunction.java`'s own rule: a client-scoped caller's function is always their own client's,
+  sent automatically and never a choice in this form). Platform error codes (`APPLICATION_CODE_NOT_ADDRESSABLE`,
   `FUNCTION_EXISTS`, `Application_NOT_FOUND`, field `details`) surface verbatim in the form; on
   success the drawer closes and opens the new function's own detail drawer.
 - **Publish drawer** — open a function's detail page (`/functions/{address}`) → **Versions** →
-  **Publish Version**: pick the jar and `manifest.json` (a Sigstore bundle is optional), submit. The
-  drawer sha256s the jar in the browser, uploads it (`PUT …/artifacts/{digest}`), then publishes with
+  **Publish Version**: pick the artifact (a `.jar` once `manifest.json`'s `runtime` is `jvm`, a
+  `.wasm` module once it is `wasm` — the input's label and accepted extension switch with the
+  loaded manifest) and `manifest.json` (a Sigstore bundle is optional), submit. The drawer sha256s
+  the artifact in the browser, uploads it (`PUT …/artifacts/{digest}`), then publishes with
   the ref the upload returned — never a locally-built one. Errors from the platform (`DIGEST_MISMATCH`,
   `MANIFEST_INVALID` and its field detail, `SIGNATURE_*`, `ARTIFACT_STORE_NOT_CONFIGURED`) surface
   verbatim in the drawer.

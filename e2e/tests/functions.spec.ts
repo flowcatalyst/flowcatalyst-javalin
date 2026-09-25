@@ -48,12 +48,18 @@ import {
     FN_ALIAS_PREFIX,
     FN_APPLICATION_CODE,
     FN_DOMAIN_HOSTNAME,
+    FN_JS_ADDRESS,
+    FN_JS_APPLICATION_CODE,
+    FN_JS_DOMAIN_HOSTNAME,
+    FN_JS_NAME,
+    FN_JS_SERVICE_NAME,
     FN_NAME,
     FN_PUBLIC_PORT,
     FN_UNOPTED_PREFIX_HOSTNAME,
     aliasesTable,
     createFunctionViaUi,
     deleteAliasViaUi,
+    helloJsManifestWithPublicRoute,
     helloManifestWithPublicRoute,
     promoteViaDialog,
     setConfigAndSecretViaUi,
@@ -73,8 +79,27 @@ const JAR_PATH = path.resolve(
     "function-hello-0.0.1-SNAPSHOT-shrunk.jar",
 );
 
+/// The committed JS-guest fixture (docs/functions.md §8b, built from
+/// `examples/function-hello-js` by `make wasm-fixtures`) — the wasm e2e test
+/// publishes this directly, the same as the JVM test publishes its own
+/// pre-built shrunk jar.
+const WASM_MODULE_PATH = path.resolve(
+    import.meta.dirname,
+    "..",
+    "..",
+    "function-host",
+    "src",
+    "test",
+    "resources",
+    "wasm",
+    "js",
+    "function_hello_js.wasm",
+);
+
 const GREETING_VALUE = "Hello from the E2E flow";
 const API_KEY_VALUE = "e2e-api-key-value";
+const GREETING_JS_VALUE = "Hello from the E2E flow (JS)";
+const API_KEY_JS_VALUE = "e2e-js-api-key-value";
 
 /// A copy of `jarPath` with a different digest and identical entries: the zip end-of-central-
 /// directory record gets an archive comment. Readers locate the EOCD from the end and honour its
@@ -344,5 +369,121 @@ expect(publishRes.ok(), publishResBody).toBe(true);
         await page.getByTestId("manifest-validate-button").click();
         expect((await check).ok()).toBe(true);
         await expect(page.getByTestId("manifest-plan")).toContainText("no changes");
+    });
+
+    // docs/spec/function-wasm-platform-ui.md §4 — the Wasm/JS twin of the flow above, beside it,
+    // same fixtures and style: create a `wasm` function through the UI (W5 §1's now-enabled
+    // runtime option), publish the committed `function_hello_js.wasm` with an adapted
+    // `examples/function-hello-js/manifest.json`, wait for READY, promote to `live`, wait for the
+    // host's LOADED, and call it through the function host's public listener exactly as the JVM
+    // test above calls its own function (step 7) — proving the committed JS module itself ran,
+    // not merely that the platform accepted a `runtime: wasm` manifest. A separate application
+    // (`FN_JS_APPLICATION_CODE`) and domain (`FN_JS_DOMAIN_HOSTNAME`) keep this flow's state apart
+    // from the JVM flow's own "hello" application/domain running in the same `fcdev` instance.
+    test("wasm/JS: create, publish a wasm module, promote, and reach it through the host", async ({
+        adminPage: page,
+    }) => {
+        test.skip(
+            process.env.E2E_SIDE === "go",
+            "the function service has no Go counterpart, and Go has no Wasm runtime at all " +
+                "(docs/function-service-overview.md §9)",
+        );
+        test.setTimeout(Math.max(180_000, test.info().timeout));
+
+        if (!existsSync(WASM_MODULE_PATH)) {
+            throw new Error(
+                `functions.spec.ts: no committed wasm module at ${WASM_MODULE_PATH} — ` +
+                    "docs/functions.md §8b: built by `make wasm-fixtures`",
+            );
+        }
+
+        // ── Prerequisite: functions require an already-registered, addressable application
+        // (CreateFunction.java: `applications.findByCode` — 404 otherwise). No service account or
+        // event types: this manifest declares no subscriptions/schedules (see
+        // helloJsManifestWithPublicRoute's own comment for why), so
+        // FunctionTriggerSync.checkApplicationSigningSecret never applies. ────────────────────
+        await createApplication(page, { code: FN_JS_APPLICATION_CODE, name: "Hello JS" });
+
+        // ── Functions → Domains: claim hellojs.localhost (own zone, distinct from the JVM
+        // flow's hello.localhost). ──────────────────────────────────────────────────────────
+        await page.goto("/function-domains/new");
+        await bareInput(page, "Hostname").fill(FN_JS_DOMAIN_HOSTNAME);
+        const claimed = await submitDrawer<{ hostname: string }>(
+            page,
+            "Claim",
+            "/api/function-domains",
+        );
+        expect(claimed.hostname).toBe(FN_JS_DOMAIN_HOSTNAME);
+        await expect(page).toHaveURL(new RegExp(`/function-domains/${FN_JS_DOMAIN_HOSTNAME}`));
+
+        // ── Create the wasm function through the real Create Function drawer, selecting the
+        // WASM runtime option (W5 §1: enabled, no "not supported" text). ───────────────────────
+        await createFunctionViaUi(page, {
+            applicationCode: FN_JS_APPLICATION_CODE,
+            serviceName: FN_JS_SERVICE_NAME,
+            name: FN_JS_NAME,
+            runtime: "wasm",
+        });
+        await expect(page.getByRole("heading", { name: FN_JS_NAME, exact: true })).toBeVisible();
+        await expect(page.getByText(FN_JS_ADDRESS, { exact: true }).first()).toBeVisible();
+        await expect(page.getByText("wasm", { exact: true }).first()).toBeVisible();
+
+        // ── Publish the committed .wasm module with the adapted manifest.json. The publish
+        // drawer's artifact input now accepts a .wasm file for a wasm function (W5 §1). ─────────
+        await page.getByRole("tab", { name: "Versions", exact: true }).click();
+        await page.getByRole("button", { name: "Publish Version", exact: true }).click();
+
+        await page.getByTestId("publish-jar-input").setInputFiles(WASM_MODULE_PATH);
+        const manifestJson = JSON.stringify(helloJsManifestWithPublicRoute(), null, 2);
+        await page.getByTestId("publish-manifest-input").setInputFiles({
+            name: "manifest.json",
+            mimeType: "application/json",
+            buffer: Buffer.from(manifestJson, "utf8"),
+        });
+
+        const publishResponse = page.waitForResponse(
+            (r) =>
+                new URL(r.url()).pathname === `/api/functions/${FN_JS_ADDRESS}/versions` &&
+                r.request().method() === "POST",
+        );
+        await page.getByTestId("publish-submit").click();
+        const publishRes = await publishResponse;
+        const publishResBody = await publishRes.text().catch(() => "<body discarded by the browser after navigation>");
+        expect(publishRes.ok(), publishResBody).toBe(true);
+        const published = JSON.parse(publishResBody) as { version: number };
+        expect(published.version).toBeGreaterThan(0);
+
+        // ── Config & secrets, same "Add key" UI path as the JVM flow's step 5, set before this
+        // version has ever been promoted. ───────────────────────────────────────────────────────
+        await setConfigAndSecretViaUi(page, FN_JS_ADDRESS, GREETING_JS_VALUE, API_KEY_JS_VALUE);
+
+        // ── Wait for READY, then Promote to `live` through the real dialog. ─────────────────────
+        const pollBudgetMs = Math.max(15_000, Math.floor(test.info().timeout * 0.35));
+        await waitForVersionState(page, published.version, "READY", pollBudgetMs);
+
+        await promoteViaDialog(page, published.version, "live", FN_JS_ADDRESS);
+        await expect(
+            versionsTable(page).locator("tbody tr", { hasText: `v${published.version}` }).getByText("LIVE"),
+        ).toBeVisible();
+
+        // ── Hosts panel (Overview tab) shows LOADED after reload — `warm: true` in the adapted
+        // manifest, same reasoning as the JVM flow's own adaptation. ────────────────────────────
+        await waitForHostState(page, published.version, "LOADED", pollBudgetMs);
+
+        // ── Config & Secrets tab now (post-promote) reflects what was set before promote. ───────
+        await page.getByRole("tab", { name: "Config & Secrets", exact: true }).click();
+        await expect(page.getByText(GREETING_JS_VALUE, { exact: true })).toBeVisible();
+        const secretRow = rowWithText(page, "API_KEY");
+        await expect(secretRow.getByText("set", { exact: true })).toBeVisible();
+        await expect(page.getByText(API_KEY_JS_VALUE)).toHaveCount(0);
+
+        // ── The function is actually reachable on its public route — exactly the call the JVM
+        // flow makes to prove its own function is running (step 7 above) — and the body is the
+        // committed function-hello-js module's OWN /healthz answer
+        // (examples/function-hello-js/src/index.ts's handleHealth: {"status":"ok"}), not merely a
+        // 200 from routing alone. ────────────────────────────────────────────────────────────────
+        const healthRes = await page.request.get(`http://${FN_JS_DOMAIN_HOSTNAME}:${FN_PUBLIC_PORT}/healthz`);
+        expect(healthRes.status(), await healthRes.text().catch(() => "")).toBe(200);
+        expect(await healthRes.json()).toEqual({ status: "ok" });
     });
 });

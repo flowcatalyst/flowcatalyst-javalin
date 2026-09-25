@@ -67,6 +67,24 @@ const canSubmit = computed(
 		!submitting.value,
 );
 
+/**
+ * The manifest's own `runtime` field decides what the artifact input
+ * accepts and how it is labelled (docs/spec/function-wasm-platform-ui.md
+ * §1) — before a manifest is chosen (or while it is invalid) this defaults
+ * to the jvm label/accept, matching the input's pre-W5 behaviour.
+ */
+const artifactRuntime = computed<"jvm" | "wasm">(() =>
+	parsedManifest.value?.runtime === "wasm" ? "wasm" : "jvm",
+);
+const artifactLabel = computed(() =>
+	artifactRuntime.value === "wasm" ? "Wasm module" : "Jar file",
+);
+const artifactAccept = computed(() =>
+	artifactRuntime.value === "wasm"
+		? ".wasm,application/wasm,application/octet-stream"
+		: ".jar,application/java-archive,application/octet-stream",
+);
+
 async function onJarChange(event: Event) {
 	const input = event.target as HTMLInputElement;
 	jarFile.value = input.files?.[0] ?? null;
@@ -194,11 +212,11 @@ async function onSubmit() {
 
     <FcFormSection title="Artifact" flat>
       <div class="fc-form-grid">
-        <FcFormField label="Jar file" required span>
+        <FcFormField :label="artifactLabel" required span>
           <template #default>
             <input
               type="file"
-              accept=".jar,application/java-archive,application/octet-stream"
+              :accept="artifactAccept"
               data-testid="publish-jar-input"
               @change="onJarChange"
             />

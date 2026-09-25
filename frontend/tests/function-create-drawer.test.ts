@@ -182,4 +182,44 @@ describe("FunctionCreateDrawer", () => {
 		expect(mocks.replace).not.toHaveBeenCalled();
 		expect(mocks.push).not.toHaveBeenCalled();
 	});
+
+	// docs/spec/function-wasm-platform-ui.md §1: the runtime select offers
+	// WASM enabled (not the old "WASM (not yet supported)", disabled option),
+	// and choosing it actually reaches the platform with runtime: "wasm" —
+	// asserting the option's own `disabled` flag catches a regression back to
+	// the disabled option; asserting the submitted request catches a
+	// regression that re-adds a runtime gate to isFormValid (mutant: keep
+	// isFormValid's old `runtime.value === "jvm"` check — the submit button
+	// would stay disabled and this test's click would do nothing, so
+	// mocks.create would never be called).
+	it("offers WASM enabled and submits functionsApi.create with runtime: wasm", async () => {
+		mocks.create.mockResolvedValue({
+			...createdFunction,
+			runtime: "wasm",
+		} satisfies FunctionResponse);
+		const wrapper = await mountDrawer();
+
+		const select = wrapper.findComponent({ name: "Select" });
+		const options = select.props("options") as Array<{ value: string; disabled: boolean }>;
+		const wasmOption = options.find((o) => o.value === "wasm");
+		expect(wasmOption).toBeTruthy();
+		expect(wasmOption!.disabled).toBe(false);
+
+		expect(wrapper.text()).not.toContain("not yet supported");
+		expect(wrapper.text()).not.toContain("refused by the platform");
+
+		await select.vm.$emit("update:modelValue", "wasm");
+		await fillAddress(wrapper);
+
+		const submit = wrapper.findAll("button").find((b) => b.text() === "Create Function");
+		expect(submit).toBeTruthy();
+		expect(submit!.attributes("disabled")).toBeUndefined();
+		await submit!.trigger("click");
+		await flushPromises();
+
+		expect(mocks.create).toHaveBeenCalledTimes(1);
+		expect(mocks.create).toHaveBeenCalledWith(
+			expect.objectContaining({ runtime: "wasm" }),
+		);
+	});
 });

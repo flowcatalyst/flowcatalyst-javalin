@@ -261,4 +261,59 @@ describe("PublishVersionDrawer", () => {
 			entrypoint: "com.example.fn.FromEditor",
 		});
 	});
+
+	// docs/spec/function-wasm-platform-ui.md §1: once a `runtime: "wasm"`
+	// manifest is loaded, the artifact input accepts a .wasm module — its
+	// `accept` attribute and label switch off the jar-only ones, and a real
+	// .wasm file can be chosen and published. Mutant: leave `accept` hardcoded
+	// to ".jar,..." — the assertion on the input's `accept` attribute fails;
+	// mutant: leave the label as "Jar file" — the label assertion fails.
+	it("accepts a .wasm artifact and relabels the input once a wasm manifest is loaded", async () => {
+		const wrapper = await mountDrawer();
+
+		const jarInput = wrapper.get('[data-testid="publish-jar-input"]')
+			.element as HTMLInputElement;
+		expect(jarInput.accept).toContain(".jar");
+		expect(wrapper.text()).toContain("Jar file");
+
+		const wasmManifestText = JSON.stringify({ runtime: "wasm", entrypoint: "handle" });
+		const manifestFile = new File([wasmManifestText], "manifest.json", {
+			type: "application/json",
+		});
+		const manifestInput = wrapper.get('[data-testid="publish-manifest-input"]')
+			.element as HTMLInputElement;
+		setFile(manifestInput, manifestFile);
+		await flushPromises();
+
+		expect(jarInput.accept).toContain(".wasm");
+		expect(jarInput.accept).not.toContain(".jar");
+		expect(wrapper.text()).toContain("Wasm module");
+		expect(wrapper.text()).not.toContain("Jar file");
+
+		const uploadResponse: UploadArtifactResponse = {
+			artifactRef: "platform://store/wasm-ref",
+			digest: await expectedDigest(),
+			bytes: JAR_BYTES.length,
+		};
+		mocks.uploadArtifact.mockResolvedValue(uploadResponse);
+		mocks.publishVersion.mockResolvedValue({
+			id: "ver_3",
+			version: 3,
+			state: "PUBLISHED",
+			digest: uploadResponse.digest,
+		} satisfies PublishResponse);
+
+		const wasmFile = new File([JAR_BYTES], "function.wasm");
+		setFile(jarInput, wasmFile);
+		await flushPromises();
+
+		await wrapper.get('[data-testid="publish-submit"]').trigger("click");
+		await settle();
+
+		expect(mocks.publishVersion).toHaveBeenCalledTimes(1);
+		expect(mocks.publishVersion.mock.calls[0][1].manifest).toEqual({
+			runtime: "wasm",
+			entrypoint: "handle",
+		});
+	});
 });

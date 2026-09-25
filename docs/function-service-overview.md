@@ -245,7 +245,39 @@ credentials, defaults the artifact store to its state directory, and runs with s
 
 Full detail: `docs/deployments.md` §4.
 
-## 12. What is deliberately not there
+## 12. Wasm and JavaScript functions
+
+A function's `runtime` may be `wasm` instead of `jvm`: a WebAssembly module run by the host on
+Endive (pure Java) through the Extism ABI, sandboxed the same way — its own instance per call,
+same endpoints/subscriptions/schedules/config/secrets/DB machinery, same promote/reconcile
+lifecycle as §3–§8 describe. What differs:
+
+- **ABI** — `entrypoint` names an export called once per invocation with the request as UTF-8 JSON
+  (method, path, headers, body, caller, …), expected to return a JSON result (status, headers,
+  body). A trap or a malformed return is a fixed `500` — the guest's own message goes to the
+  host's log, never to the caller. Full wire shape: `docs/functions.md` §8a.
+- **Host functions** — the guest reaches the platform only through `extism:host/env` (Extism's own
+  `log`/`config::get`/`http::request`, over the same allowlisted, deadline-capped caller a JVM
+  function gets) and `extism:host/user` (`fc_secret_get`, `fc_emit_event`, and the `fc_db_*` family
+  for `manifest.db[]` pools) — importing anything else is refused at load
+  (`LOAD:WASM_IMPORT_NOT_ALLOWED`).
+- **JavaScript** — runs through the same Wasm path: QuickJS via the Extism JS PDK, compiled ahead
+  of time by `extism-js`. `fcdev fn init --lang js` scaffolds a project against
+  `@flowcatalyst/function` (TypeScript types mirroring `function-api`'s shapes over the same
+  request/result/context). QuickJS has no Node event loop and no Node built-ins beyond what
+  bundles cleanly with `esbuild` — fine for glue code and webhook handlers, not heavy compute.
+  Toolchain and worked example: `docs/functions.md` §8b, `examples/function-hello-js`.
+- **Limits** — `limits.wasmMemoryMb` (default 64) caps each instance's linear memory; a module
+  declaring more as its minimum is refused at load (`LOAD:WASM_MEMORY_OVER_CAP`). The module
+  compiles once per version (≈0.2 s, ≈4–6 MB of metaspace) — counted by the same `MetaspaceGuard`
+  a JVM function's classes are.
+- **Building it** — a Rust guest uses the Extism Rust PDK directly; a JavaScript guest's build is
+  plain npm (`fcdev` never drives it — there is no `fn build` for JS): `npm run build` bundles
+  with `esbuild` then compiles with `extism-js`, and `fcdev fn publish`/`fn deploy` upload the
+  resulting `.wasm` exactly as they upload a jar. The admin SPA's create drawer and publish drawer
+  both offer `wasm` (`docs/functions.md` §12).
+
+## 13. What is deliberately not there
 
 - **A registry write backend for artifacts** — the platform stores jars in a directory or S3;
   pushing them to ECR/OCI gains nothing while the platform is the only reader.
@@ -257,11 +289,11 @@ Full detail: `docs/deployments.md` §4.
   memory is bounded by permits and metaspace headroom, not by a cgroup. Native libraries are refused
   for this reason.
 
-## 13. Where to read next
+## 14. Where to read next
 
 | Want | Read |
 |---|---|
-| to write a function | `docs/functions.md`, `examples/function-hello` |
+| to write a function | `docs/functions.md`, `examples/function-hello` (jvm), `examples/function-hello-js` (wasm/JS) |
 | the design and the owner's decisions | `docs/function-runner-plan.md` (§10 decisions), `docs/function-runner-report.md` (what shipped, performance) |
 | the contracts, per piece | `docs/spec/function-registry.md` (schema, addresses, manifest), `function-api.md` (platform API, control plane), `function-artifacts.md` + `function-artifact-upload.md` (store, signing, upload), `function-invocation.md` (HTTP invocation, wiring at promote), `function-context.md` (config, secrets, DB, HTTP, emit), `function-public-routes.md` (domains, public entry, CORS), `function-host-core.md` / `-reconciler.md` / `-listener.md` / `-process.md` (the host), `function-developer-surface.md` (fcdev, CLI, sample), `function-openapi.md` |
 | the API as a document | `GET /api/openapi-functions.json` on any platform, or `server/src/main/resources/openapi/functions.openapi.json` |

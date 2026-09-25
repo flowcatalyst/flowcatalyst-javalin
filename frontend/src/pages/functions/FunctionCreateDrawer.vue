@@ -42,11 +42,7 @@ const description = ref("");
 const runtime = ref<"jvm" | "wasm">("jvm");
 const runtimeOptions = [
 	{ label: "JVM", value: "jvm", disabled: false },
-	{
-		label: "WASM (not yet supported)",
-		value: "wasm",
-		disabled: true,
-	},
+	{ label: "WASM", value: "wasm", disabled: false },
 ];
 
 const platformOwned = ref(true);
@@ -86,7 +82,6 @@ const isFormValid = computed(() => {
 		LABEL_PATTERN.test(applicationCode.value) &&
 		LABEL_PATTERN.test(serviceName.value) &&
 		LABEL_PATTERN.test(name.value) &&
-		runtime.value === "jvm" &&
 		(!isAnchor.value || platformOwned.value || !!clientId.value)
 	);
 });
@@ -193,7 +188,8 @@ async function onSubmit() {
           appendTo="self"
         />
         <small class="hint">
-          WASM functions are refused by the platform today — only JVM is offered.
+          A WASM function is a module built with an Extism PDK — write one in Rust, or in
+          JavaScript with <code>fcdev fn init --lang js</code>.
         </small>
       </div>
     </div>

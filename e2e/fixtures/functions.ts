@@ -7,7 +7,15 @@
 // state, and two documented workarounds for UI gaps H4 discovered (see the
 // big comment below).
 import type { Locator, Page } from "@playwright/test";
-import { bareInput, confirmWithHeader, dialogWithHeader, expect, submitDrawer } from "./catalogue.js";
+import {
+    bareField,
+    bareInput,
+    choosePrimeOption,
+    confirmWithHeader,
+    dialogWithHeader,
+    expect,
+    submitDrawer,
+} from "./catalogue.js";
 
 /// The three-label address `applicationCode.serviceName.name` this flow
 /// exercises — fixed, not `unique()`-suffixed, because it must match the
@@ -38,6 +46,15 @@ export const FN_UNOPTED_PREFIX_HOSTNAME = `staging-${FN_DOMAIN_HOSTNAME}`;
 /// break the Go side of `pnpm e2e:both`). Only one side ever runs a
 /// function host, so the fixed default cannot collide.
 export const FN_PUBLIC_PORT = 8091;
+
+/// The Wasm/JS flow's own address (`docs/spec/function-wasm-platform-ui.md` §4) — a DIFFERENT
+/// application code from [FN_APPLICATION_CODE] so the two flows' functions, applications and
+/// domain claims never collide when both run against the same `fcdev` instance in one file.
+export const FN_JS_APPLICATION_CODE = "hellojs";
+export const FN_JS_SERVICE_NAME = "default";
+export const FN_JS_NAME = "hello";
+export const FN_JS_ADDRESS = `${FN_JS_APPLICATION_CODE}.${FN_JS_SERVICE_NAME}.${FN_JS_NAME}`;
+export const FN_JS_DOMAIN_HOSTNAME = "hellojs.localhost";
 
 /// examples/function-hello/manifest.json, reproduced here (not read off
 /// disk) so the flow can add the one field the sample's own manifest does
@@ -89,6 +106,36 @@ export function helloManifestWithPublicRoute(): Record<string, unknown> {
     };
 }
 
+/// examples/function-hello-js/manifest.json, reproduced the same way
+/// [helloManifestWithPublicRoute] reproduces the JVM sample's — the same two
+/// adaptations: `warm` flipped to `true` (so the Hosts panel shows LOADED
+/// right after promote) and a `public[]` route added under
+/// [FN_JS_DOMAIN_HOSTNAME] so this test can reach the module exactly as the
+/// JVM flow reaches its own function (docs/spec/function-wasm-platform-ui.md
+/// §4). `subscriptions` is dropped: the sample's own manifest subscribes to
+/// `hello:greeting:greeting:requested`, an event type owned by the OTHER
+/// flow's application ("hello") — this flow never exercises that webhook
+/// path (nothing here asserts an emitted event or a delivery outcome), so
+/// carrying the subscription would only add an app/service-account/event-type
+/// dependency on the JVM flow's own fixtures for zero assertion value, and
+/// would make `FunctionTriggerSync.checkApplicationSigningSecret` apply
+/// (it only runs when `subscriptions`/`schedules` is non-empty). `endpoints`
+/// keeps only `/healthz` for the same reason — it is the only path this test
+/// calls.
+export function helloJsManifestWithPublicRoute(): Record<string, unknown> {
+    return {
+        runtime: "wasm",
+        entrypoint: "handle",
+        pool: "default",
+        warm: true,
+        limits: { maxDurationMs: 10000, maxConcurrency: 8, wasmMemoryMb: 64 },
+        endpoints: [{ path: "/healthz", auth: "none", methods: ["GET"] }],
+        public: [{ hostname: FN_JS_DOMAIN_HOSTNAME }],
+        config: ["GREETING"],
+        secrets: ["API_KEY"],
+    };
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Two real gaps this flow originally found in the admin SPA (commits
 // 8fa6ac78 / c402c98b / 24721348, packages H1–H3) — both now closed
@@ -101,24 +148,44 @@ export function helloManifestWithPublicRoute(): Record<string, unknown> {
 // healthz).
 // ─────────────────────────────────────────────────────────────────────────
 
-/// Creates `hello.default.hello` through the real Create Function drawer
-/// (`/functions/new`) — the one prerequisite every subsequent UI-driven
-/// step in this flow depends on. Lands the browser on the new function's
-/// own detail drawer (`FunctionCreateDrawer.vue`'s `replaceToDetail` on
-/// success), so the caller has no further navigation to do.
-export async function createFunctionViaUi(page: Page): Promise<void> {
+/// Creates `hello.default.hello` (or, with `opts`, another address — the
+/// Wasm/JS flow's own `hellojs.default.hello` at a `wasm` runtime) through
+/// the real Create Function drawer (`/functions/new`) — the one
+/// prerequisite every subsequent UI-driven step in this flow depends on.
+/// Lands the browser on the new function's own detail drawer
+/// (`FunctionCreateDrawer.vue`'s `replaceToDetail` on success), so the
+/// caller has no further navigation to do. `opts.runtime` defaults to `jvm`
+/// (the drawer's own default) — only the Wasm/JS flow passes `"wasm"`,
+/// exercising `docs/spec/function-wasm-platform-ui.md` §1's enabled option.
+export async function createFunctionViaUi(
+    page: Page,
+    opts?: {
+        applicationCode?: string;
+        serviceName?: string;
+        name?: string;
+        runtime?: "jvm" | "wasm";
+    },
+): Promise<void> {
+    const applicationCode = opts?.applicationCode ?? FN_APPLICATION_CODE;
+    const serviceName = opts?.serviceName ?? FN_SERVICE_NAME;
+    const name = opts?.name ?? FN_NAME;
+    const address = `${applicationCode}.${serviceName}.${name}`;
+
     await page.goto("/functions/new");
-    await bareInput(page, "Application Code").fill(FN_APPLICATION_CODE);
-    await bareInput(page, "Service").fill(FN_SERVICE_NAME);
-    await bareInput(page, "Name").fill(FN_NAME);
+    await bareInput(page, "Application Code").fill(applicationCode);
+    await bareInput(page, "Service").fill(serviceName);
+    await bareInput(page, "Name").fill(name);
+    if (opts?.runtime === "wasm") {
+        await choosePrimeOption(page, bareField(page, "Runtime"), "WASM");
+    }
 
     const created = await submitDrawer<{ address: string }>(
         page,
         "Create Function",
         "/api/functions",
     );
-    expect(created.address).toBe(FN_ADDRESS);
-    await expect(page).toHaveURL(new RegExp(`/functions/${FN_ADDRESS}$`));
+    expect(created.address).toBe(address);
+    await expect(page).toHaveURL(new RegExp(`/functions/${address}$`));
 }
 
 /// Sets GREETING (config) and API_KEY (secret) through the Config & Secrets
@@ -240,8 +307,16 @@ export function aliasesTable(page: Page): Locator {
 /// plain PrimeVue `<Dialog>` (`role="dialog"`), NOT a `confirm.require`
 /// popup, because it needs a text field (the alias name, which defaults to
 /// `live`); this always types the wanted name explicitly so one helper
-/// covers both the `live` promote and a named alias like `qa`.
-export async function promoteViaDialog(page: Page, version: number, alias: string): Promise<void> {
+/// covers both the `live` promote and a named alias like `qa`. `address`
+/// defaults to [FN_ADDRESS] (the JVM flow's own); the Wasm/JS flow passes
+/// [FN_JS_ADDRESS] so the response wait matches ITS function, not the JVM
+/// one's.
+export async function promoteViaDialog(
+    page: Page,
+    version: number,
+    alias: string,
+    address: string = FN_ADDRESS,
+): Promise<void> {
     const row = versionsTable(page).locator("tbody tr", { hasText: `v${version}` });
     await row.getByRole("button", { name: "Promote", exact: true }).click();
 
@@ -252,7 +327,7 @@ export async function promoteViaDialog(page: Page, version: number, alias: strin
 
     const promoteResponse = page.waitForResponse(
         (r) =>
-            new URL(r.url()).pathname === `/api/functions/${FN_ADDRESS}/aliases/${alias}` &&
+            new URL(r.url()).pathname === `/api/functions/${address}/aliases/${alias}` &&
             r.request().method() === "PUT",
     );
     await dialog.getByRole("button", { name: "Promote", exact: true }).click();
