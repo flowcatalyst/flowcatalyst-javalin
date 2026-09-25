@@ -7824,6 +7824,12 @@
             "minimum": 0,
             "type": "integer"
           },
+          "passwordHashIgnored": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "syncedCodes": {
             "items": {
               "type": "string"
@@ -8195,6 +8201,12 @@
             "format": "int32",
             "minimum": 0,
             "type": "integer"
+          },
+          "passwordHashIgnored": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "syncedEmails": {
             "items": {

@@ -21,6 +21,9 @@ import io.flowcatalyst.sdk.usecase.op.Operation;
 import io.flowcatalyst.sdk.usecase.op.Plan;
 
 import java.time.Instant;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -63,16 +66,17 @@ import java.util.Set;
 ///     a new principal has no client, so no role at all); an anchor, as there,
 ///     any existing role.
 ///   - **`passwordHash`** is stored verbatim on a principal the sync
-///     creates; on an existing principal it is applied only when the caller
-///     is a super-admin and otherwise ignored (the rest of the entry still
-///     applies) — a hash is a credential for that account, and a sync must
-///     not be a way to take over an account the caller merely reaches.
-///     **Owner question** (security-fixes S1.3): whether a non-super-admin's
-///     hash on an existing principal should instead be refused outright.
+///     creates; on an existing principal it is never applied, whoever the
+///     caller (owner ruling 2026-09-25, backlog item 4). The rest of the entry
+///     still applies, the case is logged, and the route's response names the
+///     email ([#passwordHashesIgnored]). A hash is a credential for that
+///     account, and a password change belongs to the explicit, audited routes.
 ///   - A `removeUnlisted` sweep with no `applicationCode` is a platform-wide
 ///     sweep (every application's `SDK_SYNC` roles are up for stripping), so
 ///     that combination is gated here, anchor-only (X-02(d)).
 public final class SyncPrincipals {
+
+    private static final Logger LOG = LoggerFactory.getLogger(SyncPrincipals.class);
 
     private SyncPrincipals() {
     }
@@ -97,7 +101,6 @@ public final class SyncPrincipals {
                 })
                 .execute((cmd, ec) -> {
                     AuthContext ac = Auth.current();
-                    boolean mayReplaceHashes = ac != null && ac.isSuperAdmin();
                     Instant now = Instant.now();
                     var saves = new ArrayList<SyncSave<Principal>>(cmd.principals().size());
                     var syncedEmails = new ArrayList<String>(cmd.principals().size());
@@ -121,7 +124,13 @@ public final class SyncPrincipals {
                             Principal p = existing.syncSourcedRoles(RoleAssignment.SDK_SYNC, cmd.applicationCode(), roleNames).principal()
                                     .withName(in.name())
                                     .withActive(in.active());
-                            if (in.hasPasswordHash() && mayReplaceHashes) p = p.withPasswordHash(in.passwordHash());
+                            if (in.hasPasswordHash()) {
+                                // Owner ruling 2026-09-25 (item 4): never on an existing principal, for
+                                // any caller. Password changes go through the explicit, audited routes.
+                                LOG.atInfo().setMessage("principal sync: passwordHash ignored for an existing principal")
+                                        .addKeyValue("principalId", existing.id())
+                                        .log();
+                            }
                             requireCeiling(cmd, ac, roles, existing.roleNames(), p.roleNames());
                             saves.add(new SyncSave<>(p, UserUpdated.of(ec, p)));
                             updated++;
@@ -168,6 +177,19 @@ public final class SyncPrincipals {
                                        List<String> before, List<String> after) {
         if (appScoped(cmd)) return;
         RoleCeiling.requireRoles(ac, RoleCeiling.changed(before, after), roles);
+    }
+
+    /// The emails in `cmd` that carry a `passwordHash` for a principal that
+    /// already exists, so the sync will not apply it (item 4). Read before the
+    /// sync runs, for the caller's response. A principal created concurrently
+    /// in between is missed here, and its hash is still not applied.
+    public static List<String> passwordHashesIgnored(PrincipalRepository repo, SyncPrincipalsCommand cmd) {
+        return cmd.principals().stream()
+                .filter(SyncPrincipalInput::hasPasswordHash)
+                .map(in -> EmailAddress.normalise(in.email()))
+                .filter(email -> repo.findByEmail(email).isPresent())
+                .distinct()
+                .toList();
     }
 
     private static boolean appScoped(SyncPrincipalsCommand cmd) {

@@ -444,6 +444,34 @@ class PrincipalApiTest {
         assertThat(body.has("removed")).isTrue();
     }
 
+    /// Owner ruling 2026-09-25 (backlog "Overnight review" item 4): a sync never applies a
+    /// password hash to an existing principal, not even a super-admin's, and the response
+    /// says which ones it ignored. A principal the sync creates still takes its hash.
+    @Test
+    void aSyncNeverReplacesAnExistingPasswordHashAndSaysSo() {
+        var existing = http.post("/api/principals",
+                "{\"email\":\"hashkeep" + RUN + "@example.test\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA
+                        + "\",\"password\":\"correct-horse-battery\"}", anchor());
+        assertThat(existing.statusCode()).as(existing.body()).isEqualTo(201);
+        String id = json(existing).get("id").asText();
+        String before = REPO.findById(id).orElseThrow().userIdentity().passwordHash();
+
+        var r = http.post("/api/principals/sync", "{\"principals\":["
+                + "{\"email\":\"hashkeep" + RUN + "@example.test\",\"name\":\"Kept\",\"passwordHash\":\"$2y$10$replacementhashvalue\"},"
+                + "{\"email\":\"hashnew" + RUN + "@example.test\",\"name\":\"New\",\"passwordHash\":\"$2y$10$migratedhashvalue\"}]}",
+                anchor());
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        assertThat(REPO.findById(id).orElseThrow().userIdentity().passwordHash()).isEqualTo(before);
+        assertThat(REPO.findById(id).orElseThrow().name()).as("the rest of the entry applies").isEqualTo("Kept");
+        assertThat(json(r).get("passwordHashIgnored")).extracting(JsonNode::asText)
+                .containsExactly("hashkeep" + RUN + "@example.test");
+        assertThat(REPO.findByEmail("hashnew" + RUN + "@example.test").orElseThrow().userIdentity().passwordHash())
+                .isEqualTo("$2y$10$migratedhashvalue");
+
+        var noHash = http.post("/api/principals/sync", "{\"principals\":[{\"email\":\"hashkeep" + RUN + "@example.test\",\"name\":\"K\"}]}", anchor());
+        assertThat(json(noHash).has("passwordHashIgnored")).as("omitted when nothing was ignored").isFalse();
+    }
+
     // ── Role ceiling (owner ruling 2026-09-25, backlog "Overnight review" item 14) ──
 
     private static final String ASSIGNER = "platform:iam:user:assign-roles,platform:iam:user:update,platform:messaging:*:*";

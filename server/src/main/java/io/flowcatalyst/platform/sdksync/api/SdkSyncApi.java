@@ -35,6 +35,7 @@ import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 
@@ -204,7 +205,9 @@ public final class SdkSyncApi {
         // As for event-types: the command carries no applicationId.
         Checks.checkApplicationAccess(Auth.current(), app.id(), app.code());
         var cmd = ctx.bodyAsClass(SyncPrincipalsRequest.class).toCommand(app.code(), removeUnlisted(ctx));
-        ctx.json(SyncResultResponse.from(SyncPrincipals.of(s.principals(), s.roles(), s.clientConfigs()).run(s.uow(), cmd, Auth.executionContext())));
+        List<String> ignored = SyncPrincipals.passwordHashesIgnored(s.principals(), cmd);
+        ctx.json(SyncResultResponse.from(SyncPrincipals.of(s.principals(), s.roles(), s.clientConfigs()).run(s.uow(), cmd, Auth.executionContext()),
+                ignored));
     }
 
     private static void syncDocs(Exchange ctx, State s) {

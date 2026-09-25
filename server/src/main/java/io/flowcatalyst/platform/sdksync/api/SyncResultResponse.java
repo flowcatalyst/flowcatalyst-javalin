@@ -9,15 +9,27 @@ import io.flowcatalyst.platform.process.operations.ProcessEvents.ProcessesSynced
 import io.flowcatalyst.platform.role.operations.RoleEvents.RolesSynced;
 import io.flowcatalyst.platform.subscription.operations.SubscriptionEvents.SubscriptionsSynced;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import java.util.List;
 
 /// The shared result of the list-based sync routes (spec §2):
 /// `{applicationCode, created, updated, deleted, syncedCodes[]}`. One
 /// `from` per rollup so the column mapping (roles' `removed`, principals'
 /// `deactivated`/`syncedEmails`) is written once.
-public record SyncResultResponse(String applicationCode, int created, int updated, int deleted, List<String> syncedCodes) {
+///
+/// `passwordHashIgnored` (principal sync only, omitted when empty): the emails
+/// whose `passwordHash` was not applied because the principal already existed
+/// (owner ruling 2026-09-25, backlog "Overnight review" item 4).
+public record SyncResultResponse(String applicationCode, int created, int updated, int deleted, List<String> syncedCodes,
+                                 @JsonInclude(JsonInclude.Include.NON_EMPTY) List<String> passwordHashIgnored) {
+
+    public SyncResultResponse(String applicationCode, int created, int updated, int deleted, List<String> syncedCodes) {
+        this(applicationCode, created, updated, deleted, syncedCodes, List.of());
+    }
 
     public SyncResultResponse {
+        passwordHashIgnored = passwordHashIgnored == null ? List.of() : List.copyOf(passwordHashIgnored);
         syncedCodes = syncedCodes == null ? List.of() : List.copyOf(syncedCodes);
     }
 
@@ -45,8 +57,9 @@ public record SyncResultResponse(String applicationCode, int created, int update
         return new SyncResultResponse(e.applicationCode(), e.created(), e.updated(), e.deleted(), e.syncedCodes());
     }
 
-    static SyncResultResponse from(PrincipalsSynced e) {
-        return new SyncResultResponse(e.applicationCode(), e.created(), e.updated(), e.deactivated(), e.syncedEmails());
+    static SyncResultResponse from(PrincipalsSynced e, List<String> passwordHashIgnored) {
+        return new SyncResultResponse(e.applicationCode(), e.created(), e.updated(), e.deactivated(), e.syncedEmails(),
+                passwordHashIgnored);
     }
 
     /// Docs emit no event: the store's replace result, named by the resolved application.

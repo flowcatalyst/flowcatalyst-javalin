@@ -55,12 +55,22 @@ class SyncUsersResponseNormalizer implements DenormalizerInterface, NormalizerIn
         elseif (\array_key_exists('deleted', $data) && $data['deleted'] === null) {
             $object->setDeleted(null);
         }
-        if (\array_key_exists('syncedEmails', $data) && $data['syncedEmails'] !== null) {
+        if (\array_key_exists('passwordHashIgnored', $data) && $data['passwordHashIgnored'] !== null) {
             $values = [];
-            foreach ($data['syncedEmails'] as $value) {
+            foreach ($data['passwordHashIgnored'] as $value) {
                 $values[] = $value;
             }
-            $object->setSyncedEmails($values);
+            $object->setPasswordHashIgnored($values);
+        }
+        elseif (\array_key_exists('passwordHashIgnored', $data) && $data['passwordHashIgnored'] === null) {
+            $object->setPasswordHashIgnored(null);
+        }
+        if (\array_key_exists('syncedEmails', $data) && $data['syncedEmails'] !== null) {
+            $values_1 = [];
+            foreach ($data['syncedEmails'] as $value_1) {
+                $values_1[] = $value_1;
+            }
+            $object->setSyncedEmails($values_1);
         }
         elseif (\array_key_exists('syncedEmails', $data) && $data['syncedEmails'] === null) {
             $object->setSyncedEmails(null);
@@ -78,11 +88,18 @@ class SyncUsersResponseNormalizer implements DenormalizerInterface, NormalizerIn
         $dataArray = [];
         $dataArray['created'] = $data->getCreated();
         $dataArray['deleted'] = $data->getDeleted();
-        $values = [];
-        foreach ($data->getSyncedEmails() as $value) {
-            $values[] = $value;
+        if ($data->isInitialized('passwordHashIgnored') && null !== $data->getPasswordHashIgnored()) {
+            $values = [];
+            foreach ($data->getPasswordHashIgnored() as $value) {
+                $values[] = $value;
+            }
+            $dataArray['passwordHashIgnored'] = $values;
         }
-        $dataArray['syncedEmails'] = $values;
+        $values_1 = [];
+        foreach ($data->getSyncedEmails() as $value_1) {
+            $values_1[] = $value_1;
+        }
+        $dataArray['syncedEmails'] = $values_1;
         $dataArray['updated'] = $data->getUpdated();
         return $dataArray;
     }

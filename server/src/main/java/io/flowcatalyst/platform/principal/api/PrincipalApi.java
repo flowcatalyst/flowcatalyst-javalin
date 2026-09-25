@@ -455,8 +455,9 @@ public final class PrincipalApi {
     private static void syncUsers(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), USER_MANAGE, USER_CREATE, USER_UPDATE, USER_DELETE, USER_ASSIGN_ROLES);
         var cmd = ctx.bodyAsClass(SyncUsersRequest.class).toCommand();
+        List<String> ignored = SyncPrincipals.passwordHashesIgnored(s.repo(), cmd);
         var ev = SyncPrincipals.of(s.repo(), s.roles(), s.clientConfigs()).run(s.uow(), cmd, Auth.executionContext());
-        ctx.json(new SyncUsersResponse(ev.created(), ev.updated(), ev.deactivated(), ev.syncedEmails()));
+        ctx.json(new SyncUsersResponse(ev.created(), ev.updated(), ev.deactivated(), ev.syncedEmails(), ignored));
     }
 
     private static void update(Exchange ctx, State s) {
@@ -1223,6 +1224,10 @@ public final class PrincipalApi {
     public record BulkImportResponse(int created, int skipped, int failed, List<BulkImportResult> results) {
     }
 
-    public record SyncUsersResponse(int created, int updated, int deleted, List<String> syncedEmails) {
+    /// `passwordHashIgnored` (omitted when empty): the emails whose `passwordHash` was not
+    /// applied because the principal already existed (owner ruling 2026-09-25, item 4).
+    public record SyncUsersResponse(int created, int updated, int deleted, List<String> syncedEmails,
+                                    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_EMPTY)
+                                    List<String> passwordHashIgnored) {
     }
 }

@@ -437,6 +437,7 @@ class PrincipalOperationsTest {
     void syncPrincipalsUpsertsMergesRolesCarriesHashesAndStripsUnlisted() {
         String app = "syncapp" + RUN;
         String existing = createdUser("syncold", "CLIENT", seedClient("sync"));
+        String hashBefore = storedHash(existing);
         Role admin = seedRole("syncapp", "admin");
         Role viewer = seedRole("syncapp", "viewer");
         runAsAnchor(AssignRoles.of(repo, roles), new AssignRolesCommand(existing, List.of(admin.name())));
@@ -453,7 +454,14 @@ class PrincipalOperationsTest {
         assertThat(old.name()).isEqualTo("Old Renamed");
         assertThat(old.active()).isFalse();
         assertThat(old.roleNames()).containsExactlyInAnyOrder(admin.name(), viewer.name());
-        assertThat(storedHash(existing)).as("a super-admin's sync replaces an existing hash").isEqualTo(hash);
+        assertThat(storedHash(existing))
+                .as("owner ruling 2026-09-25 (item 4): not even a super-admin's sync replaces an existing hash")
+                .isEqualTo(hashBefore);
+        assertThat(SyncPrincipals.passwordHashesIgnored(repo, new SyncPrincipalsCommand(app, List.of(
+                new SyncPrincipalInput(email("syncold"), "x", List.of(), true, hash),
+                new SyncPrincipalInput(email("syncnew2"), "y", List.of(), true, hash),
+                new SyncPrincipalInput(email("syncnew"), "z", List.of(), true, null)), false)))
+                .as("reported: only an existing principal that was sent a hash").containsExactly(email("syncold"));
         var fresh = repo.findByEmail(email("syncnew")).orElseThrow();
         assertThat(fresh.scope()).isEqualTo(UserScope.CLIENT);
         assertThat(fresh.roles().getFirst().assignmentSource()).isEqualTo(RoleAssignment.SDK_SYNC);
@@ -467,7 +475,7 @@ class PrincipalOperationsTest {
         assertThat(second.deactivated()).isGreaterThanOrEqualTo(1);
         assertThat(second.subject()).isEqualTo("platform.principals");
         assertThat(reload(existing).roleNames()).as("SDK roles stripped, admin role kept, hash kept").containsExactly(admin.name());
-        assertThat(storedHash(existing)).isEqualTo(hash);
+        assertThat(storedHash(existing)).isEqualTo(hashBefore);
         assertUseCaseError(() -> runAsAnchor(sync(), new SyncPrincipalsCommand(null, List.of(), false)), UseCaseError.Validation.class, "PRINCIPALS_REQUIRED");
     }
 

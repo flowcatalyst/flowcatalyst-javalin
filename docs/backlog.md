@@ -1914,13 +1914,13 @@ What is left needs a ruling or was judged not worth changing:
    The original question follows. — with a multi-tenant Entra IdP and no tenant pin, identity comes
    from the mutable `email` claim (and `preferred_username` fallback; `email_verified` ignored).
    Require a pinned tenant, and/or `email_verified`? (Entra often omits `email_verified`.)
-4. ~~**Principal sync `passwordHash`**~~ **RULED 2026-09-25: never applied to an existing principal, for any caller** (the super-admin exception goes); used only when the sync creates the principal, and the result says when it was ignored. The original question follows. (S1) — applied only on create, and on an existing principal only
+4. ~~**Principal sync `passwordHash`**~~ **RULED and BUILT 2026-09-25: never applied to an existing principal, for any caller** (the super-admin exception goes); used only when the sync creates the principal, and the result says when it was ignored. The original question follows. (S1) — applied only on create, and on an existing principal only
    for a super-admin caller. Confirm, or drop it for existing principals entirely.
 5. ~~**Refresh replay leeway**~~ **RULED 2026-09-25: keep 10 s; make the TS and Laravel SDKs single-flight their refresh**, then revisit dropping the leeway once those ship. The two parity `refresh-*` steps are this ruling. The original question follows. (S2 review) — 10 s: a token rotated out moments ago may be presented
    again (SDK requests racing at expiry, a retry after a lost response) and gets a sibling in the
    same family; after that it is reuse and revokes the family. Strict alternative: every second
    presentation revokes (signs out users of the Laravel/TS SDKs, which refresh without a lock).
-6. ~~**`/oauth/authorize` Bearer fallback**~~ **RULED 2026-09-25: drop it, cookie only** (supersedes C-Q25's "keep both orders"). No caller found in the SPA or the SDKs, and the session token is only ever issued as the cookie. The original question follows. (C-Q25) — kept but narrowed to session tokens. Drop it?
+6. ~~**`/oauth/authorize` Bearer fallback**~~ **RULED and BUILT 2026-09-25: drop it, cookie only** (supersedes C-Q25's "keep both orders"). No caller found in the SPA or the SDKs, and the session token is only ever issued as the cookie. The original question follows. (C-Q25) — kept but narrowed to session tokens. Drop it?
 7. ~~**2FA email-challenge budget**~~ **RULED 2026-09-25: keep the shared limits** (separate buckets, same numbers as password reset). The original question follows. — reuses the password-reset policies (20/h per IP, 5/h per
    address). `/auth/password-setup/request` now spends the same budgets under its own keys
    (`dbe3ad9c`) — revisit if the numbers change.

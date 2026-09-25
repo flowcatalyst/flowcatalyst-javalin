@@ -2689,6 +2689,7 @@ export type SyncResultResponse = {
     applicationCode: string;
     created: number;
     deleted: number;
+    passwordHashIgnored?: Array<string>;
     syncedCodes: Array<string>;
     updated: number;
 };
@@ -2828,6 +2829,7 @@ export type SyncUsersResponse = {
     readonly $schema?: string;
     created: number;
     deleted: number;
+    passwordHashIgnored?: Array<string>;
     syncedEmails: Array<string>;
     updated: number;
 };
@@ -4696,6 +4698,7 @@ export type SyncResultResponseWritable = {
     applicationCode: string;
     created: number;
     deleted: number;
+    passwordHashIgnored?: Array<string>;
     syncedCodes: Array<string>;
     updated: number;
 };
@@ -4733,6 +4736,7 @@ export type SyncUsersRequestWritable = {
 export type SyncUsersResponseWritable = {
     created: number;
     deleted: number;
+    passwordHashIgnored?: Array<string>;
     syncedEmails: Array<string>;
     updated: number;
 };
