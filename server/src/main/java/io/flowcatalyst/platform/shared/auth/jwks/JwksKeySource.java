@@ -72,6 +72,17 @@ public final class JwksKeySource {
     /// which case that exact URL is used instead. Set together with [#discoveredIssuer].
     private volatile String jwksFetchUrl;
 
+    /// The discovery document's `authorization_endpoint`: the platform's
+    /// EXTERNAL authorize URL, which a browser follows (the router dashboard's
+    /// sign-in, `router-api-auth.md` rule 6). `null` until discovery succeeds
+    /// or when the document names none. Set together with [#discoveredIssuer].
+    private volatile String discoveredAuthorizationEndpoint;
+
+    /// When discovery was last attempted through [#ensureDiscovered]: its own
+    /// 30 s floor, separate from the JWKS one, so an on-demand discovery never
+    /// delays the key fetch a following token needs.
+    private volatile Instant lastDiscoveryAttempt = Instant.EPOCH;
+
     /// Test seam: how many times [#fetch] actually hit the JWKS endpoint
     /// (discovery fetches are not counted here).
     private final AtomicInteger fetchCount = new AtomicInteger();
@@ -99,6 +110,33 @@ public final class JwksKeySource {
     /// fall back to `platformUrl` itself (that was the original defect).
     public String issuer() {
         return discoveredIssuer;
+    }
+
+    /// The platform's external authorize URL from its discovery document,
+    /// discovering first if that has never succeeded, at most once per 30 s.
+    public java.util.Optional<String> authorizationEndpoint() {
+        ensureDiscovered();
+        return java.util.Optional.ofNullable(discoveredAuthorizationEndpoint);
+    }
+
+    /// Runs discovery if it has never succeeded, subject to its own 30 s floor.
+    ///
+    /// @return whether discovery has (now) succeeded
+    public boolean ensureDiscovered() {
+        if (discoveredIssuer != null) {
+            return true;
+        }
+        synchronized (fetchLock) {
+            if (discoveredIssuer != null) {
+                return true;
+            }
+            Instant now = clock.instant();
+            if (Duration.between(lastDiscoveryAttempt, now).compareTo(REFETCH_FLOOR) < 0) {
+                return false;
+            }
+            lastDiscoveryAttempt = now;
+            return discover();
+        }
     }
 
     /// Refetches — subject to the 30 s floor — only when `kid` is not
@@ -201,6 +239,8 @@ public final class JwksKeySource {
             jwksFetchUrl = (discoveredJwksUri != null && sameOrigin(discoveredJwksUri, platformUrl))
                     ? discoveredJwksUri
                     : defaultJwksUrl;
+            String authorize = root.path("authorization_endpoint").asString(null);
+            discoveredAuthorizationEndpoint = authorize == null || authorize.isBlank() ? null : authorize;
             discoveredIssuer = issuer;
             return true;
         } catch (InterruptedException e) {

@@ -83,6 +83,8 @@ public final class BasicAuthFilter implements Handler {
                 && MessageDigest.isEqual(creds[1].getBytes(StandardCharsets.UTF_8), expectedPass);
         if (!userOk || !passOk) {
             ctx.header("WWW-Authenticate", "Basic realm=\"" + REALM + "\", charset=\"UTF-8\"");
+            // The dashboard reads this to decide how to sign in (router-api-auth.md rule 6).
+            ctx.header(PlatformTokenFilter.AUTH_MODE_HEADER, "BASIC");
             ctx.status(401).result("unauthorized");
             // A `before` handler does not otherwise stop the matched route
             // handler from running afterwards and overwriting this response.

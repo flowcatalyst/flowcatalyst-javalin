@@ -46,16 +46,16 @@ class PlatformTokenFilterTest {
             // AUTH_MODE=NONE and a Basic user are set, as the deployed router's IaC does:
             // both must be ignored outside dev mode.
             guardedInstall = RouterAuth.install(routes,
-                    new RouterAuth.Settings(false, "NONE", "admin", "pw", PREFIX, jwks.issuer));
+                    new RouterAuth.Settings(false, "NONE", "admin", "pw", PREFIX, jwks.issuer, "oac_dashboard"));
             RouterApi.register(routes, state);
             DashboardHandler.register(routes, PREFIX);
         });
         unverifiable = TestHttp.routes(routes -> {
-            RouterAuth.install(routes, new RouterAuth.Settings(false, "", "", "", PREFIX, ""));
+            RouterAuth.install(routes, new RouterAuth.Settings(false, "", "", "", PREFIX, "", ""));
             RouterApi.register(routes, state);
         });
         devOpen = TestHttp.routes(routes -> {
-            RouterAuth.install(routes, new RouterAuth.Settings(true, "NONE", "", "", PREFIX, ""));
+            RouterAuth.install(routes, new RouterAuth.Settings(true, "NONE", "", "", PREFIX, "", ""));
             RouterApi.register(routes, state);
             RouterApi.registerDevRoutes(routes, state);
         });
@@ -182,5 +182,62 @@ class PlatformTokenFilterTest {
     @DisplayName("dev mode keeps §9.7: AUTH_MODE=NONE is open")
     void devModeKeepsBasicAuthSemantics() {
         assertThat(devOpen.get(PREFIX + "/monitoring/pools").statusCode()).isEqualTo(200);
+    }
+
+    // ── dashboard sign-in (rule 6) ───────────────────────────────────────
+
+    @Test
+    @DisplayName("auth-config names the platform's external authorize URL, the public client and only the router scope")
+    void authConfigPointsTheBrowserAtThePlatform() throws Exception {
+        var r = guarded.get(PREFIX + "/dashboard/auth-config");
+        assertThat(r.statusCode()).isEqualTo(200);
+        var body = io.flowcatalyst.platform.shared.json.Json.MAPPER.readTree(r.body());
+        assertThat(body.get("enabled").asBoolean()).isTrue();
+        assertThat(body.get("authorizationEndpoint").asString()).isEqualTo(jwks.discoveryIssuer + "/oauth/authorize");
+        assertThat(body.get("clientId").asString()).isEqualTo("oac_dashboard");
+        assertThat(body.get("scope").asString()).isEqualTo(VIEW + " " + OPERATE);
+    }
+
+    @Test
+    @DisplayName("sign-in is off with no platform, and in dev mode")
+    void authConfigIsOffWithoutAPlatformOrInDevMode() {
+        assertThat(unverifiable.get(PREFIX + "/dashboard/auth-config").body()).contains("\"enabled\":false");
+        assertThat(devOpen.get(PREFIX + "/dashboard/auth-config").body()).contains("\"enabled\":false");
+        var noClient = new io.flowcatalyst.router.api.dashboard.DashboardSignIn(
+                java.util.Optional.of(new io.flowcatalyst.platform.shared.auth.jwks.JwksKeySource(
+                        java.net.http.HttpClient.newHttpClient(), jwks.issuer)),
+                jwks.issuer, " ", java.net.http.HttpClient.newHttpClient());
+        assertThat(noClient.config().enabled()).as("a platform but no dashboard client id").isFalse();
+    }
+
+    @Test
+    @DisplayName("the code exchange goes to the platform as the public client and answers only the access token")
+    void tokenExchangeReturnsOnlyTheAccessToken() throws Exception {
+        jwks.answerTokenRequests(form -> new TestJwks.TokenAnswer(200,
+                "{\"access_token\":\"at-123\",\"expires_in\":3600,\"refresh_token\":\"rt-secret\",\"id_token\":\"it-secret\"}"));
+        var r = guarded.post(PREFIX + "/dashboard/token",
+                "{\"code\":\"c-1\",\"codeVerifier\":\"v-1\",\"redirectUri\":\"https://router.example/router/dashboard.html\"}");
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        var body = io.flowcatalyst.platform.shared.json.Json.MAPPER.readTree(r.body());
+        assertThat(body.get("accessToken").asString()).isEqualTo("at-123");
+        assertThat(body.get("expiresIn").asLong()).isEqualTo(3600);
+        assertThat(r.body()).doesNotContain("rt-secret").doesNotContain("it-secret");
+        assertThat(jwks.lastTokenRequest()).contains("grant_type=authorization_code", "code=c-1", "code_verifier=v-1",
+                "client_id=oac_dashboard", "redirect_uri=https%3A%2F%2Frouter.example%2Frouter%2Fdashboard.html")
+                .doesNotContain("client_secret");
+    }
+
+    @Test
+    @DisplayName("a refused exchange passes on the OAuth error code; a malformed request is 400")
+    void tokenExchangeFailures() {
+        jwks.answerTokenRequests(form -> new TestJwks.TokenAnswer(400,
+                "{\"error\":\"invalid_grant\",\"error_description\":\"code expired\"}"));
+        var refused = guarded.post(PREFIX + "/dashboard/token",
+                "{\"code\":\"c-1\",\"codeVerifier\":\"v-1\",\"redirectUri\":\"https://router.example/x\"}");
+        assertThat(refused.statusCode()).isEqualTo(400);
+        assertThat(refused.body()).contains("invalid_grant").doesNotContain("code expired");
+        assertThat(guarded.post(PREFIX + "/dashboard/token", "{\"code\":\"c-1\"}").statusCode()).isEqualTo(400);
+        assertThat(unverifiable.post(PREFIX + "/dashboard/token",
+                "{\"code\":\"c-1\",\"codeVerifier\":\"v-1\",\"redirectUri\":\"https://r/x\"}").statusCode()).isEqualTo(404);
     }
 }

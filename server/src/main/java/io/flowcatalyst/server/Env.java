@@ -302,6 +302,10 @@ public record Env(
         String routerClientId,
         // `FC_ROUTER_CLIENT_SECRET`, default `""`. See [#routerClientId].
         String routerClientSecret,
+        // `FC_ROUTER_DASHBOARD_CLIENT_ID`, default `""` (`docs/spec/router-api-auth.md` rule 6):
+        // the PUBLIC OAuth client the router dashboard signs in through (authorization code +
+        // PKCE). Blank leaves dashboard sign-in off; the API still takes bearer tokens.
+        String routerDashboardClientId,
 
         // ── ALB self-registration ──────────────────────────────────────────
         // `FC_ALB_ENABLED`, default false.
@@ -563,6 +567,7 @@ public record Env(
                 e.get("FC_ROUTER_PLATFORM_URL"),
                 e.get("FC_ROUTER_CLIENT_ID"),
                 e.get("FC_ROUTER_CLIENT_SECRET"),
+                e.get("FC_ROUTER_DASHBOARD_CLIENT_ID"),
 
                 e.bool("FC_ALB_ENABLED", false),
                 e.get("FC_ALB_TARGET_GROUP_ARN"),

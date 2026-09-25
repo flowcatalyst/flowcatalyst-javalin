@@ -767,7 +767,8 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 io.flowcatalyst.router.api.auth.RouterAuth.install(routerRoutes,
                         new io.flowcatalyst.router.api.auth.RouterAuth.Settings(
                                 env.routerDevMode(), env.routerAuthMode(), env.routerAuthUser(),
-                                env.routerAuthPass(), env.routerHttpPrefix(), routerTokenPlatformUrl()));
+                                env.routerAuthPass(), env.routerHttpPrefix(), routerTokenPlatformUrl(),
+                                env.routerDashboardClientId()));
                 var routerState = new io.flowcatalyst.router.api.RouterApi.State(
                         router.manager(), router.tracker(), router.warnings(), router.breakers(),
                         router.election(), router.electionConfig(), Version.current(),

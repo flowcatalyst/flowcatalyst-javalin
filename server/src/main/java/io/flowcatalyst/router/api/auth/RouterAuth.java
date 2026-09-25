@@ -3,6 +3,7 @@ package io.flowcatalyst.router.api.auth;
 import io.flowcatalyst.http.Routes;
 import io.flowcatalyst.platform.shared.auth.jwks.BearerAuthenticator;
 import io.flowcatalyst.platform.shared.auth.jwks.JwksKeySource;
+import io.flowcatalyst.router.api.dashboard.DashboardSignIn;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,8 +38,10 @@ public final class RouterAuth {
     /// @param prefix      the router's mount prefix
     /// @param platformUrl where to verify tokens: `FC_ROUTER_PLATFORM_URL`, or the
     ///                    in-process platform's loopback address; blank when neither
+    /// @param dashboardClientId `FC_ROUTER_DASHBOARD_CLIENT_ID`: the public OAuth client the
+    ///                    dashboard signs in through (rule 6); blank leaves sign-in off
     public record Settings(boolean devMode, String authMode, String user, String password, String prefix,
-                           String platformUrl) {
+                           String platformUrl, String dashboardClientId) {
     }
 
     /// The guard that was installed, for the caller's log and for tests.
@@ -53,10 +56,17 @@ public final class RouterAuth {
         }
     }
 
+    /// Installs the guard and the dashboard's sign-in helpers.
     public static Installed install(Routes routes, Settings s) {
+        HttpClient http = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(5))
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build();
         if (s.devMode()) {
             var basic = new BasicAuthFilter(s.authMode(), s.user(), s.password(), s.prefix());
             BasicAuthFilter.register(routes, basic);
+            // Dev mode signs in with Basic (or not at all): the PKCE helpers answer "off".
+            DashboardSignIn.register(routes, s.prefix(), new DashboardSignIn(Optional.empty(), "", "", http));
             return new Installed.Basic(basic.enabled());
         }
         List<String> ignored = new ArrayList<>();
@@ -69,20 +79,20 @@ public final class RouterAuth {
                     .addKeyValue("setting", name)
                     .log();
         }
-        Optional<BearerAuthenticator> authenticator = Optional.empty();
+        Optional<JwksKeySource> keys = Optional.empty();
         if (notBlank(s.platformUrl())) {
-            HttpClient http = HttpClient.newBuilder()
-                    .connectTimeout(Duration.ofSeconds(5))
-                    .followRedirects(HttpClient.Redirect.NEVER)
-                    .build();
-            authenticator = Optional.of(new BearerAuthenticator(new JwksKeySource(http, s.platformUrl().strip())));
+            keys = Optional.of(new JwksKeySource(http, s.platformUrl().strip()));
         } else {
             LOG.atWarn().setMessage("router API auth: no platform to verify tokens against "
                             + "(FC_ROUTER_PLATFORM_URL unset and no platform in this process); "
                             + "every router API call except health, metrics and the dashboard page will answer 401")
                     .log();
         }
+        Optional<BearerAuthenticator> authenticator = keys.map(BearerAuthenticator::new);
         PlatformTokenFilter.register(routes, new PlatformTokenFilter(authenticator, s.prefix()));
+        // One discovery shared with the filter: the dashboard's authorize URL is in the same
+        // document the issuer comes from.
+        DashboardSignIn.register(routes, s.prefix(), new DashboardSignIn(keys, s.platformUrl(), s.dashboardClientId(), http));
         return new Installed.PlatformTokens(authenticator.isPresent(), List.copyOf(ignored));
     }
 

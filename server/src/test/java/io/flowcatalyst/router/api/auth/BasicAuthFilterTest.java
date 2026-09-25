@@ -78,6 +78,7 @@ class BasicAuthFilterTest {
     @DisplayName("the 401 names the realm in WWW-Authenticate")
     void unauthorizedHeaderNamesRealm() {
         var r = enabledApp.get(PREFIX + "/monitoring/health");
+        assertThat(r.headers().firstValue("X-Auth-Mode")).as("the dashboard shows its login modal on BASIC").hasValue("BASIC");
         assertThat(r.headers().firstValue("WWW-Authenticate"))
                 .contains("Basic realm=\"FlowCatalyst Router\", charset=\"UTF-8\"");
     }

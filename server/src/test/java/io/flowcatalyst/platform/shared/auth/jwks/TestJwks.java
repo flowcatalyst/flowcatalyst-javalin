@@ -69,6 +69,7 @@ public final class TestJwks implements AutoCloseable {
         this.server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         this.server.createContext("/.well-known/jwks.json", this::serveJwks);
         this.server.createContext("/.well-known/openid-configuration", this::serveDiscovery);
+        this.server.createContext("/oauth/token", this::serveToken);
         this.server.start();
         this.issuer = "http://127.0.0.1:" + server.getAddress().getPort();
         // Deliberately not equal to `issuer` above — see the class doc.
@@ -225,6 +226,34 @@ public final class TestJwks implements AutoCloseable {
         }
     }
 
+    /// What `/oauth/token` answers: a status and a JSON body.
+    public record TokenAnswer(int status, String body) {
+    }
+
+    /// `/oauth/token`'s behaviour (default 404): given the form body, the answer.
+    private volatile java.util.function.Function<String, TokenAnswer> tokenHandler = form -> new TokenAnswer(404, "{}");
+    private volatile String lastTokenRequest;
+
+    public void answerTokenRequests(java.util.function.Function<String, TokenAnswer> handler) {
+        this.tokenHandler = handler;
+    }
+
+    /// The last `/oauth/token` request's form body, or `null`.
+    public String lastTokenRequest() {
+        return lastTokenRequest;
+    }
+
+    private void serveToken(com.sun.net.httpserver.HttpExchange exchange) throws IOException {
+        String form = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        lastTokenRequest = form;
+        TokenAnswer answer = tokenHandler.apply(form);
+        byte[] bytes = answer.body().getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().add("Content-Type", "application/json");
+        exchange.sendResponseHeaders(answer.status(), bytes.length);
+        exchange.getResponseBody().write(bytes);
+        exchange.close();
+    }
+
     private void serveDiscovery(com.sun.net.httpserver.HttpExchange exchange) throws IOException {
         discoveryRequestCount.incrementAndGet();
         if (discoveryDown) {
@@ -233,7 +262,8 @@ public final class TestJwks implements AutoCloseable {
             return;
         }
         String jwksUri = jwksUriOverride != null ? jwksUriOverride : issuer + "/.well-known/jwks.json";
-        String body = "{\"issuer\":\"" + discoveryIssuer + "\",\"jwks_uri\":\"" + jwksUri + "\"}";
+        String body = "{\"issuer\":\"" + discoveryIssuer + "\",\"jwks_uri\":\"" + jwksUri
+                + "\",\"authorization_endpoint\":\"" + discoveryIssuer + "/oauth/authorize\"}";
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().add("Content-Type", "application/json");
         exchange.sendResponseHeaders(200, bytes.length);
