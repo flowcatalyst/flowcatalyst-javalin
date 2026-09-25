@@ -2,7 +2,7 @@ package io.flowcatalyst.example.hello;
 
 import io.flowcatalyst.function.Caller;
 import io.flowcatalyst.function.Event;
-import io.flowcatalyst.function.EventEmitException;
+import io.flowcatalyst.function.EmitResult;
 import io.flowcatalyst.function.Function;
 import io.flowcatalyst.function.FunctionContext;
 import io.flowcatalyst.function.OutboundEvent;
@@ -123,21 +123,17 @@ public final class HelloFunction implements Function {
                 event.messageGroup(),
                 UUID.randomUUID().toString());
 
-        try {
-            ctx.events().emit(outbound);
-        } catch (EventEmitException e) {
-            if (e.status() / 100 == 5) {
-                // A transport/availability problem on the platform's side — worth
-                // asking the delivery to come back (function-api's Result doc:
-                // honoured by a subscription/direct dispatch job; a scheduled job
-                // ignores the delay, per that same table).
-                return Result.retry(Duration.ofSeconds(5));
-            }
+        return switch (ctx.events().emit(outbound)) {
+            case EmitResult.Emitted emitted -> Result.ack();
+            // A transport/availability problem on the platform's side — worth
+            // asking the delivery to come back (function-api's Result doc:
+            // honoured by a subscription/direct dispatch job; a scheduled job
+            // ignores the delay, per that same table).
+            case EmitResult.Refused refused when refused.retryable() -> Result.retry(Duration.ofSeconds(5));
             // A genuine rejection (e.g. EVENT_TYPE_NOT_OWNED) — retrying would
             // never succeed, so this is reported, not retried.
-            return Result.fail("event emit refused: " + e.code());
-        }
-        return Result.ack();
+            case EmitResult.Refused refused -> Result.fail("event emit refused: " + refused.code());
+        };
     }
 
     private static String extractName(String dataJson) {

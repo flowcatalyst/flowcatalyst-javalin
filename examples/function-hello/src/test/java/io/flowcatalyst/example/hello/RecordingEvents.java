@@ -1,6 +1,6 @@
 package io.flowcatalyst.example.hello;
 
-import io.flowcatalyst.function.EventEmitException;
+import io.flowcatalyst.function.EmitResult;
 import io.flowcatalyst.function.Events;
 import io.flowcatalyst.function.OutboundEvent;
 
@@ -8,25 +8,26 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /// An [Events] test double: records every emitted event, and can be told to
-/// throw a specific [EventEmitException] on the NEXT [#emit] call only — so a
-/// test can pin `HelloFunction`'s branch on the exception's status (5xx ⇒
-/// retry, everything else ⇒ fail) one condition at a time.
+/// refuse the NEXT [#emit] call only — so a test can pin `HelloFunction`'s
+/// branch on the refusal's status (5xx ⇒ retry, everything else ⇒ fail) one
+/// condition at a time.
 final class RecordingEvents implements Events {
 
     final List<OutboundEvent> emitted = new CopyOnWriteArrayList<>();
-    private volatile EventEmitException nextFailure;
+    private volatile EmitResult.Refused nextRefusal;
 
-    void throwNext(EventEmitException e) {
-        this.nextFailure = e;
+    void refuseNext(EmitResult.Refused refusal) {
+        this.nextRefusal = refusal;
     }
 
     @Override
-    public void emit(OutboundEvent event) {
-        EventEmitException pending = nextFailure;
+    public EmitResult emit(OutboundEvent event) {
+        EmitResult.Refused pending = nextRefusal;
         if (pending != null) {
-            nextFailure = null;
-            throw pending;
+            nextRefusal = null;
+            return pending;
         }
         emitted.add(event);
+        return new EmitResult.Emitted("evt_recorded_" + emitted.size());
     }
 }

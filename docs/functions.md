@@ -325,7 +325,7 @@ application owns** — an attempt to emit someone else's type is refused (`EVENT
 not silently dropped.
 
 ```java
-ctx.events().emit(new OutboundEvent(
+EmitResult emitted = ctx.events().emit(new OutboundEvent(
         "hello:greeting:greeting:sent",                 // type — must be owned by your function's application
         "function:" + ctx.address().render(),  // source
         event.subject(),                       // subject, carried through from the inbound delivery
@@ -335,12 +335,26 @@ ctx.events().emit(new OutboundEvent(
         UUID.randomUUID().toString()));         // dedupId — required
 ```
 
-`emit` throws `EventEmitException` (unchecked) on any refusal — `.code()` is the platform's error
-code, `.status()` its HTTP status (or 503 for a transport failure). **Branch on the status, not on
-"catch and ignore"**: a 5xx means the platform itself had a problem — worth asking your caller to
-retry (`Result.retry(...)`, see §8); anything else (most commonly `EVENT_TYPE_NOT_OWNED`) is a
-genuine rejection retrying will never fix (`Result.fail(...)`). `examples/function-hello`'s
-`HelloFunction#handleGreetingRequested` does exactly this.
+`emit` never throws for a refusal; it returns an `EmitResult` you switch on:
+
+- `EmitResult.Emitted(eventId)` — the platform accepted the event. A repeated `dedupId` is an
+  idempotent success too (the ingest routes' rule), and then `eventId` is the id the platform
+  answered, not necessarily the one the first emit stored.
+- `EmitResult.Refused(code, status, message)` — `code` is the platform's error code, `status` its
+  HTTP status (`UNAVAILABLE`/503 when the platform could not be reached). **Branch on
+  `retryable()`** (a 5xx): the platform itself had a problem, worth asking your caller to retry
+  (`Result.retry(...)`, see §8); anything else (most commonly `EVENT_TYPE_NOT_OWNED`) is a genuine
+  rejection retrying will never fix (`Result.fail(...)`).
+
+```java
+return switch (emitted) {
+    case EmitResult.Emitted e -> Result.ack();
+    case EmitResult.Refused r when r.retryable() -> Result.retry(Duration.ofSeconds(5));
+    case EmitResult.Refused r -> Result.fail(r.code());
+};
+```
+
+`examples/function-hello`'s `HelloFunction#handleGreetingRequested` does exactly this.
 
 ## 8. Honest limits
 
@@ -765,7 +779,7 @@ two forms, or a two-part address, is a usage error (exit 2).
 - invokes all three endpoints and asserts their responses, including that the emitted event carries
   the inbound delivery's correlation id;
 - asserts a secret's value is in **no** captured log line, only its presence;
-- asserts `EventEmitException` with a 5xx status maps to `Result.retry` and anything else maps to
+- asserts an `EmitResult.Refused` with a 5xx status maps to `Result.retry` and anything else maps to
   `Result.fail` — two mutants, two conditions, not one test covering both by accident.
 
 ## 11. The platform API surface
@@ -840,7 +854,7 @@ merged) covers most of the same ground with a browser instead:
   `function-host/src/main/java/io/flowcatalyst/fnhost/http/{FnHttpServer,CorsPolicy}.java`,
   `function-host/src/main/java/io/flowcatalyst/fnhost/route/{PublicRouteTable,TrustedProxies}.java`;
   `fcdev/src/main/java/io/flowcatalyst/fcdev/fn/DomainCommand.java`
-- §7 — `function-api/src/main/java/io/flowcatalyst/function/{Events,OutboundEvent,EventEmitException}.java`;
+- §7 — `function-api/src/main/java/io/flowcatalyst/function/{Events,OutboundEvent,EmitResult}.java`;
   `docs/spec/function-context.md` §3
 - §8 — `Result`'s own class doc (`function-api/src/main/java/io/flowcatalyst/function/Result.java`);
   `function-host/src/main/java/io/flowcatalyst/fnhost/load/{JvmFunctionLoader,Reason}.java`;

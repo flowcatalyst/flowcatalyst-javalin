@@ -1,6 +1,7 @@
 package io.flowcatalyst.fnhost.context;
 
 import io.flowcatalyst.fnhost.reconcile.ControlPlane;
+import io.flowcatalyst.function.EmitResult;
 import io.flowcatalyst.function.Events;
 import io.flowcatalyst.function.OutboundEvent;
 import io.flowcatalyst.platform.function.FunctionAddress;
@@ -32,7 +33,7 @@ final class ControlPlaneEvents implements Events {
     }
 
     @Override
-    public void emit(OutboundEvent event) {
+    public EmitResult emit(OutboundEvent event) {
         Objects.requireNonNull(event, "event");
         InvocationEmitDefaults.Defaults defaults = InvocationEmitDefaults.current();
         String correlationId = event.correlationId() != null ? event.correlationId() : defaults.correlationId();
@@ -40,6 +41,6 @@ final class ControlPlaneEvents implements Events {
         String dataJson = new String(event.data(), StandardCharsets.UTF_8);
         ControlPlane.EmitItem item = new ControlPlane.EmitItem(event.type(), event.subject(), event.dedupId(),
                 dataJson, correlationId, causationId, event.messageGroup());
-        controlPlane.emit(new ControlPlane.EmitRequest(hostId, address, version, List.of(item)));
+        return controlPlane.emit(new ControlPlane.EmitRequest(hostId, address, version, List.of(item)));
     }
 }

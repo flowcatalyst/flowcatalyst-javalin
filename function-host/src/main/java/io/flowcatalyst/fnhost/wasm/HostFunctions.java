@@ -1,6 +1,6 @@
 package io.flowcatalyst.fnhost.wasm;
 
-import io.flowcatalyst.function.EventEmitException;
+import io.flowcatalyst.function.EmitResult;
 import io.flowcatalyst.function.Events;
 import io.flowcatalyst.function.OutboundEvent;
 import io.flowcatalyst.function.Secrets;
@@ -30,7 +30,7 @@ import java.util.Set;
 /// | Name | In | Out |
 /// |---|---|---|
 /// | `fc_secret_get` | the key | the value, or empty (offset `0`) when the key is not one the manifest declares or has no value |
-/// | `fc_emit_event` | [OutboundEvent]'s shape as JSON | `{"ok":true}` or `{"ok":false,"error":"<code or why>"}` |
+/// | `fc_emit_event` | [OutboundEvent]'s shape as JSON | `{"ok":true,"eventId":"<id>"}` or `{"ok":false,"error":"<code or why>"}` |
 /// | `fc_db_query` | `{"db","sql","params":[…],"tx"?}` | `{"rows":[{col:value}],"truncated":bool}` |
 /// | `fc_db_execute` | `{"db","sql","params":[…],"tx"?}` | `{"updated":n}` |
 /// | `fc_db_begin` | `{"db"}` | `{"tx":"<opaque id>"}` |
@@ -139,29 +139,29 @@ final class HostFunctions {
                                   Events events) {
         byte[] json = plugin.memory().readBytes(args.getLong(0));
         ObjectNode answer = Json.MAPPER.createObjectNode();
-        String error = emit(json, events);
-        answer.put("ok", error == null);
-        if (error != null) {
-            answer.put("error", error);
+        switch (emit(json, events)) {
+            case EmitResult.Emitted emitted -> answer.put("ok", true).put("eventId", emitted.eventId());
+            case EmitResult.Refused refused -> answer.put("ok", false).put("error", refused.code());
         }
         returns.setLong(0, plugin.memory().writeBytes(Json.MAPPER.writeValueAsBytes(answer)));
     }
 
-    /// `null` on success, else what the guest is told.
-    private static String emit(byte[] json, Events events) {
+    /// The platform's answer, or a refusal made here before the event reached it
+    /// (its `code` is what the guest is told).
+    private static EmitResult emit(byte[] json, Events events) {
         OutboundEvent event;
         try {
             JsonNode node = Json.MAPPER.readTree(json);
             if (!node.isObject()) {
-                return "INVALID_EVENT: not a JSON object";
+                return refusedHere("INVALID_EVENT: not a JSON object");
             }
             String type = text(node, "type");
             String dedupId = text(node, "dedupId");
             if (type == null || type.isBlank()) {
-                return "INVALID_EVENT: type is required";
+                return refusedHere("INVALID_EVENT: type is required");
             }
             if (dedupId == null || dedupId.isBlank()) {
-                return "DEDUP_ID_REQUIRED";
+                return refusedHere("DEDUP_ID_REQUIRED");
             }
             JsonNode data = node.path("data");
             byte[] dataBytes = data.isMissingNode() || data.isNull()
@@ -171,19 +171,18 @@ final class HostFunctions {
                     text(node, "dataContentType"), dataBytes, text(node, "correlationId"),
                     text(node, "causationId"), text(node, "messageGroup"), dedupId);
         } catch (JacksonException e) {
-            return "INVALID_EVENT: not JSON";
+            return refusedHere("INVALID_EVENT: not JSON");
         }
         try {
-            events.emit(event);
-            return null;
-        } catch (EventEmitException e) {
-            return e.code();
-        } catch (Exception e) {
-            if (e instanceof InterruptedException) {
-                Thread.currentThread().interrupt();
-            }
-            return "EMIT_FAILED";
+            return events.emit(event);
+        } catch (RuntimeException e) {
+            return new EmitResult.Refused("EMIT_FAILED", 500, "EMIT_FAILED");
         }
+    }
+
+    /// A refusal the host makes itself; only its `code` reaches the guest.
+    private static EmitResult.Refused refusedHere(String code) {
+        return new EmitResult.Refused(code, 400, code);
     }
 
     private static String text(JsonNode node, String field) {

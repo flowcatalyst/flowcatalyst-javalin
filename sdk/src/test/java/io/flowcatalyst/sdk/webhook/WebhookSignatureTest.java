@@ -100,4 +100,25 @@ class WebhookSignatureTest {
     private static ErrorCode code(Runnable runnable) {
         return assertThrows(WebhookSignatureException.class, runnable::run).code();
     }
+
+    /// Owner ruling 2026-09-25 (item 11): check() returns the outcome; verify() is its
+    /// throwing form, so the two can never disagree.
+    @Test
+    void checkReturnsTheOutcomeVerifyThrows() {
+        String ts = now();
+        String sig = WebhookSignature.hmacHex(SECRET, ts, BODY);
+        assertEquals(new WebhookSignature.Valid(), WebhookSignature.check(BODY, sig, ts, SECRET));
+
+        var tampered = WebhookSignature.check("{}".getBytes(StandardCharsets.UTF_8), sig, ts, SECRET);
+        assertEquals(ErrorCode.INVALID_SIGNATURE, ((WebhookSignature.Invalid) tampered).code());
+        var badTs = WebhookSignature.check(BODY, sig, "not-a-time", SECRET);
+        assertEquals(ErrorCode.INVALID_TIMESTAMP, ((WebhookSignature.Invalid) badTs).code());
+        var noSecret = WebhookSignature.check(BODY, sig, ts, "");
+        assertEquals(ErrorCode.MISSING_SECRET, ((WebhookSignature.Invalid) noSecret).code());
+        var badBearer = WebhookSignature.check(BODY, sig, ts, SECRET, 300, "expected", "Bearer other");
+        assertEquals(ErrorCode.INVALID_BEARER, ((WebhookSignature.Invalid) badBearer).code());
+
+        assertEquals(ErrorCode.INVALID_SIGNATURE,
+                code(() -> WebhookSignature.verify("{}".getBytes(StandardCharsets.UTF_8), sig, ts, SECRET)));
+    }
 }

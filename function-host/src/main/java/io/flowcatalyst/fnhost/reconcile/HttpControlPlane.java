@@ -1,6 +1,6 @@
 package io.flowcatalyst.fnhost.reconcile;
 
-import io.flowcatalyst.function.EventEmitException;
+import io.flowcatalyst.function.EmitResult;
 import io.flowcatalyst.platform.function.DnsLabel;
 import io.flowcatalyst.platform.shared.Failures;
 import io.flowcatalyst.platform.shared.LogThrottle;
@@ -104,38 +104,46 @@ public final class HttpControlPlane implements ControlPlane {
     /// Same 401-refresh-once handling as [#desiredState]/[#heartbeat] (a
     /// stale HOST bearer token, orthogonal to the platform's own business
     /// outcome for the emit itself) — but every OTHER non-2xx, and any
-    /// transport failure, becomes an [EventEmitException] rather than a
+    /// transport failure, is an [EmitResult.Refused] rather than a
     /// [ControlPlaneException], per this method's own contract.
     @Override
-    public void emit(ControlPlane.EmitRequest request) {
+    public EmitResult emit(ControlPlane.EmitRequest request) {
         Objects.requireNonNull(request, "request");
         String body = Json.write(toWire(request));
         String token;
         try {
             token = tokenSource.token();
         } catch (ControlPlaneException e) {
-            throw unavailable("minting a control-plane token failed", e);
+            return unavailable("minting a control-plane token failed", e);
         }
-        HttpResponse<String> response = sendEmit(token, body);
-        if (response.statusCode() == 401) {
+        Sent sent = sendEmit(token, body);
+        if (sent instanceof Sent.Answered(HttpResponse<String> first) && first.statusCode() == 401) {
             LOG.atDebug().setMessage("control plane rejected the bearer token on emit; refreshing and retrying once").log();
             try {
                 token = tokenSource.refresh();
             } catch (ControlPlaneException e) {
-                throw unavailable("refreshing a control-plane token failed", e);
+                return unavailable("refreshing a control-plane token failed", e);
             }
-            response = sendEmit(token, body);
+            sent = sendEmit(token, body);
         }
-        if (response.statusCode() / 100 != 2) {
-            throw errorFrom(response);
-        }
-        // Spec §3: the response body is the ingest routes' `{results: […]}` shape, per-item —
-        // this host always sends a batch of one and [io.flowcatalyst.function.Events#emit] is
-        // `void`, so nothing here needs to read it back; a non-2xx status is the only outcome
-        // a caller distinguishes.
+        return switch (sent) {
+            case Sent.Failed(EmitResult.Refused refused) -> refused;
+            case Sent.Answered(HttpResponse<String> response) when response.statusCode() / 100 != 2 -> errorFrom(response);
+            case Sent.Answered(HttpResponse<String> response) -> emittedFrom(response);
+        };
     }
 
-    private HttpResponse<String> sendEmit(String token, String body) {
+    /// What one POST came to: an HTTP answer, or a transport failure already
+    /// turned into its refusal.
+    private sealed interface Sent {
+        record Answered(HttpResponse<String> response) implements Sent {
+        }
+
+        record Failed(EmitResult.Refused refused) implements Sent {
+        }
+    }
+
+    private Sent sendEmit(String token, String body) {
         HttpRequest request = HttpRequest.newBuilder(URI.create(platformUrl + "/control/functions/events"))
                 .timeout(REQUEST_TIMEOUT)
                 .header("Authorization", "Bearer " + token)
@@ -143,20 +151,35 @@ public final class HttpControlPlane implements ControlPlane {
                 .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                 .build();
         try {
-            return client.send(request, HttpResponse.BodyHandlers.ofString());
+            return new Sent.Answered(client.send(request, HttpResponse.BodyHandlers.ofString()));
         } catch (IOException e) {
-            throw unavailable("control plane request failed: POST /control/functions/events", e);
+            return new Sent.Failed(unavailable("control plane request failed: POST /control/functions/events", e));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new EventEmitException("UNAVAILABLE", 503, "control plane request was interrupted");
+            return new Sent.Failed(new EmitResult.Refused("UNAVAILABLE", 503, "control plane request was interrupted"));
         }
     }
 
+    /// Spec §3: a 2xx body is the ingest routes' `{results: [{id, status}]}`,
+    /// one item per event, and this host always sends a batch of one. An
+    /// unreadable body still means the platform accepted the event, so the id
+    /// falls back to `""` rather than turning an accepted emit into a refusal
+    /// the function might retry into a duplicate.
+    private static EmitResult emittedFrom(HttpResponse<String> response) {
+        String id = "";
+        try {
+            id = Json.MAPPER.readTree(response.body()).path("results").path(0).path("id").asString("");
+        } catch (RuntimeException ignored) {
+            // Not JSON — accepted all the same.
+        }
+        return new EmitResult.Emitted(id);
+    }
+
     /// The platform's own `{error, message, details}` envelope (`HttpError`)
-    /// read back into an [EventEmitException] naming its code and this
+    /// read back into an [EmitResult.Refused] naming its code and this
     /// response's status — an unreadable/absent body still carries a real
     /// status, so the code falls back to `"UNKNOWN"` rather than losing it.
-    private static EventEmitException errorFrom(HttpResponse<String> response) {
+    private static EmitResult.Refused errorFrom(HttpResponse<String> response) {
         String code = "UNKNOWN";
         String message = null;
         try {
@@ -171,24 +194,23 @@ public final class HttpControlPlane implements ControlPlane {
         }
         // The platform's own reason (which check refused the emit) rides in the message: the
         // function author, and the log line the function may write, see why.
-        return message == null || message.isBlank()
-                ? new EventEmitException(code, response.statusCode())
-                : new EventEmitException(code, response.statusCode(),
-                        "emit refused: " + code + " (" + response.statusCode() + "): " + message);
+        String prefix = "emit refused: " + code + " (" + response.statusCode() + ")";
+        return new EmitResult.Refused(code, response.statusCode(),
+                message == null || message.isBlank() ? prefix : prefix + ": " + message);
     }
 
     /// A transport or token failure: the function gets the `UNAVAILABLE` code it
-    /// branches on, and the host operator gets the cause — [EventEmitException]
+    /// branches on, and the host operator gets the cause — [EmitResult.Refused]
     /// (function-api, a published contract) carries none, so it is logged here,
     /// throttled (a platform outage fails every emit).
-    private static EventEmitException unavailable(String what, Exception cause) {
+    private static EmitResult.Refused unavailable(String what, Exception cause) {
         EMIT_FAILURE_LOG.admit().ifPresent(suppressed -> LOG.atWarn()
                 .setMessage("a function's event emit could not reach the platform")
                 .addKeyValue("what", what)
                 .addKeyValue("suppressed_since_last", suppressed)
                 .setCause(cause)
                 .log());
-        return new EventEmitException("UNAVAILABLE", 503, what + ": " + Failures.describe(cause));
+        return new EmitResult.Refused("UNAVAILABLE", 503, what + ": " + Failures.describe(cause));
     }
 
     private static Object toWire(ControlPlane.EmitRequest request) {

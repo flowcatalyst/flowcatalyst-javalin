@@ -3,7 +3,7 @@ package io.flowcatalyst.fnhost.reconcile;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.sun.net.httpserver.HttpServer;
-import io.flowcatalyst.function.EventEmitException;
+import io.flowcatalyst.function.EmitResult;
 import io.flowcatalyst.platform.function.DnsLabel;
 import io.flowcatalyst.platform.function.FunctionAddress;
 import org.junit.jupiter.api.AfterEach;
@@ -172,14 +172,15 @@ class HttpControlPlaneTest {
         HttpControlPlane cp = new HttpControlPlane(baseUrl(server),
                 new TokenSource(HttpClient.newHttpClient(), baseUrl(server), "client-1", "secret-1"));
 
-        cp.emit(emitRequest("dedup-refresh"));
-
+        assertThat(cp.emit(emitRequest("dedup-refresh")))
+                .as("mutant: the retried 2xx not read back, or the first 401 reported")
+                .isEqualTo(new EmitResult.Emitted("evt_1"));
         assertThat(emitCalls.get()).as("mutant: retry more than once, or never retry after a 401").isEqualTo(2);
         assertThat(mints.get()).as("a 401 on emit must trigger exactly one refresh mint").isEqualTo(2);
     }
 
     @Test
-    void aNon2xxEmitResponseBecomesAnEventEmitExceptionCarryingItsCodeAndStatus() throws Exception {
+    void aNon2xxEmitResponseIsARefusalCarryingItsCodeAndStatus() throws Exception {
         HttpServer server = startServer();
         server.createContext("/oauth/token", exchange ->
                 respondJson(exchange, 200, "{\"access_token\":\"tok\",\"expires_in\":3600}"));
@@ -189,14 +190,30 @@ class HttpControlPlaneTest {
         HttpControlPlane cp = new HttpControlPlane(baseUrl(server),
                 new TokenSource(HttpClient.newHttpClient(), baseUrl(server), "client-1", "secret-1"));
 
-        assertThatThrownBy(() -> cp.emit(emitRequest("dedup-403")))
-                .isInstanceOf(EventEmitException.class)
-                .satisfies(e -> assertThat(((EventEmitException) e).code())
-                        .as("mutant: a fixed/wrong code instead of the platform's own").isEqualTo("EVENT_TYPE_NOT_OWNED"))
-                .satisfies(e -> assertThat(((EventEmitException) e).status())
-                        .as("mutant: a fixed status instead of the response's own").isEqualTo(403))
-                .satisfies(e -> assertThat(e.getMessage())
-                        .as("mutant: the platform's own reason dropped").contains("nope"));
+        EmitResult result = cp.emit(emitRequest("dedup-403"));
+        assertThat(result).isInstanceOf(EmitResult.Refused.class);
+        EmitResult.Refused refused = (EmitResult.Refused) result;
+        assertThat(refused.code()).as("mutant: a fixed/wrong code instead of the platform's own").isEqualTo("EVENT_TYPE_NOT_OWNED");
+        assertThat(refused.status()).as("mutant: a fixed status instead of the response's own").isEqualTo(403);
+        assertThat(refused.message()).as("mutant: the platform's own reason dropped").contains("nope");
+        assertThat(refused.retryable()).as("a 4xx refusal is not worth retrying").isFalse();
+    }
+
+    @Test
+    void anAcceptedEmitWithAnUnreadableBodyIsStillEmitted() throws Exception {
+        // Accepted is accepted: turning it into a refusal would invite a function to retry
+        // an event the platform already stored.
+        HttpServer server = startServer();
+        server.createContext("/oauth/token", exchange ->
+                respondJson(exchange, 200, "{\"access_token\":\"tok\",\"expires_in\":3600}"));
+        server.createContext("/control/functions/events", exchange -> respondJson(exchange, 201, "not json"));
+
+        HttpControlPlane cp = new HttpControlPlane(baseUrl(server),
+                new TokenSource(HttpClient.newHttpClient(), baseUrl(server), "client-1", "secret-1"));
+
+        assertThat(cp.emit(emitRequest("dedup-unreadable")))
+                .as("mutant: an unreadable 2xx body reported as a refusal")
+                .isEqualTo(new EmitResult.Emitted(""));
     }
 
     @Test
@@ -211,12 +228,12 @@ class HttpControlPlaneTest {
         HttpControlPlane cp = new HttpControlPlane("http://localhost:1",
                 new TokenSource(HttpClient.newHttpClient(), baseUrl(tokenServer), "client-1", "secret-1"));
 
-        assertThatThrownBy(() -> cp.emit(emitRequest("dedup-unavailable")))
-                .isInstanceOf(EventEmitException.class)
-                .satisfies(e -> assertThat(((EventEmitException) e).code())
-                        .as("mutant: some other code for a transport failure").isEqualTo("UNAVAILABLE"))
-                .satisfies(e -> assertThat(((EventEmitException) e).status())
-                        .as("mutant: some other status for a transport failure").isEqualTo(503));
+        EmitResult result = cp.emit(emitRequest("dedup-unavailable"));
+        assertThat(result).isInstanceOf(EmitResult.Refused.class);
+        EmitResult.Refused refused = (EmitResult.Refused) result;
+        assertThat(refused.code()).as("mutant: some other code for a transport failure").isEqualTo("UNAVAILABLE");
+        assertThat(refused.status()).as("mutant: some other status for a transport failure").isEqualTo(503);
+        assertThat(refused.retryable()).as("a transport failure is worth retrying").isTrue();
     }
 
     // ── R9: the secret and every minted token appear in no log line, no exception message ──

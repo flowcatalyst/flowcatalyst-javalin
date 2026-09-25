@@ -1,6 +1,6 @@
 package io.flowcatalyst.fnhost.reconcile;
 
-import io.flowcatalyst.function.EventEmitException;
+import io.flowcatalyst.function.EmitResult;
 import io.flowcatalyst.platform.function.DnsLabel;
 import io.flowcatalyst.platform.function.FunctionAddress;
 
@@ -33,10 +33,11 @@ public interface ControlPlane {
     /// `POST /control/functions/events` (spec §3): emits one function's
     /// batch of events, on its behalf, over this host's own credential.
     ///
-    /// @throws EventEmitException a non-2xx from the platform (carrying its
-    ///                             code and status verbatim) or a transport
-    ///                             failure (`UNAVAILABLE`, 503)
-    void emit(EmitRequest request);
+    /// Answers [EmitResult.Emitted] with the first result's id on a 2xx, else
+    /// [EmitResult.Refused]: a non-2xx from the platform carries its code and
+    /// status verbatim, a transport failure is `UNAVAILABLE`/503. Never throws
+    /// for either (owner ruling 2026-09-25, backlog item 11).
+    EmitResult emit(EmitRequest request);
 
     /// One `POST /control/functions/events` call (spec §3): `version` is
     /// the loaded version this host is speaking for.

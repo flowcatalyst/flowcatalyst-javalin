@@ -320,13 +320,13 @@ class FunctionHostListenerIntegrationTest {
     /// own id (no `X-Correlation-Id` header reaches this delivery — the
     /// dispatch job carries no `correlationId`, `DeliveryPayload` never sets
     /// the header), `causation_id` = the inbound webhook event's id (the
-    /// dispatch job's own id, [Event#id]). The not-owned emit throws
-    /// [EventEmitException] with `EVENT_TYPE_NOT_OWNED`/403, caught by the
-    /// fixture and reported through evidence rather than the response (the
+    /// dispatch job's own id, [Event#id]). The not-owned emit answers
+    /// [io.flowcatalyst.function.EmitResult.Refused] with `EVENT_TYPE_NOT_OWNED`/403,
+    /// seen by the fixture and reported through evidence rather than the response (the
     /// dispatch/webhook plumbing does not hand the response body back to
     /// this test) — and writes NO row.
     @Test
-    void emitEventsThroughTheHostOwnedSucceedsAndNotOwnedThrows(@TempDir Path dir) throws Exception {
+    void emitEventsThroughTheHostOwnedSucceedsAndNotOwnedIsRefused(@TempDir Path dir) throws Exception {
         DnsLabel pool = new DnsLabel("emitpool" + RUN);
         FunctionAddress address = FunctionAddress.of(new DnsLabel("em" + RUN), new DnsLabel("svc"), new DnsLabel("fn"));
 
@@ -411,17 +411,20 @@ class FunctionHostListenerIntegrationTest {
             assertThat(seen.caller()).as("mutant: the function saw something other than Caller.Platform")
                     .isEqualTo("Platform");
             assertThat(seen.ownedOk()).as("mutant: the owned emit did not succeed: " + seen.ownedError()).isTrue();
-            assertThat(seen.notOwnedThrew())
-                    .as("mutant: emitting a type owned by another application did not throw").isTrue();
+            assertThat(seen.notOwnedRefused())
+                    .as("mutant: emitting a type owned by another application was not refused").isTrue();
             assertThat(seen.notOwnedCode())
-                    .as("mutant: EventEmitException carries the wrong code").isEqualTo("EVENT_TYPE_NOT_OWNED");
+                    .as("mutant: the refusal carries the wrong code").isEqualTo("EVENT_TYPE_NOT_OWNED");
             assertThat(seen.notOwnedStatus())
-                    .as("mutant: EventEmitException carries the wrong status").isEqualTo("403");
+                    .as("mutant: the refusal carries the wrong status").isEqualTo("403");
 
             DSLContext db = DSL.using(DS, SQLDialect.POSTGRES);
             Record ownedRow = db.selectFrom(MSG_EVENTS)
                     .where(MSG_EVENTS.DEDUPLICATION_ID.eq("dedup-owned-" + jobId)).fetchOne();
             assertThat(ownedRow).as("mutant: the owned event was never written").isNotNull();
+            assertThat(seen.ownedEventId())
+                    .as("mutant: Emitted does not carry the id the event was stored under")
+                    .isEqualTo(ownedRow.get(MSG_EVENTS.ID));
             assertThat(ownedRow.get(MSG_EVENTS.CORRELATION_ID))
                     .as("mutant: correlationId does not default to this invocation's own id")
                     .isEqualTo(seen.invocationId());
@@ -563,35 +566,30 @@ class FunctionHostListenerIntegrationTest {
                         String caller = in.caller().getClass().getSimpleName();
                         String invocationId = in.invocationId();
 
-                        boolean ownedOk;
+                        boolean ownedOk = false;
                         String ownedError = "";
-                        try {
-                            ctx.events().emit(new OutboundEvent("%s", "h15emit-test", "subj-" + event.id(),
-                                    "application/json", "{}".getBytes(StandardCharsets.UTF_8), null, null, null,
-                                    "dedup-owned-" + event.id()));
-                            ownedOk = true;
-                        } catch (Exception e) {
-                            ownedOk = false;
-                            ownedError = String.valueOf(e.getMessage());
+                        String ownedEventId = "";
+                        switch (ctx.events().emit(new OutboundEvent("%s", "h15emit-test", "subj-" + event.id(),
+                                "application/json", "{}".getBytes(StandardCharsets.UTF_8), null, null, null,
+                                "dedup-owned-" + event.id()))) {
+                            case EmitResult.Emitted e -> { ownedOk = true; ownedEventId = e.eventId(); }
+                            case EmitResult.Refused r -> ownedError = r.message();
                         }
 
-                        boolean notOwnedThrew;
+                        boolean notOwnedRefused = false;
                         String notOwnedCode = "";
                         int notOwnedStatus = 0;
-                        try {
-                            ctx.events().emit(new OutboundEvent("%s", "h15emit-test", "subj-not-owned",
-                                    "application/json", "{}".getBytes(StandardCharsets.UTF_8), null, null, null,
-                                    "dedup-notowned-" + event.id()));
-                            notOwnedThrew = false;
-                        } catch (EventEmitException e) {
-                            notOwnedThrew = true;
-                            notOwnedCode = e.code();
-                            notOwnedStatus = e.status();
+                        if (ctx.events().emit(new OutboundEvent("%s", "h15emit-test", "subj-not-owned",
+                                "application/json", "{}".getBytes(StandardCharsets.UTF_8), null, null, null,
+                                "dedup-notowned-" + event.id())) instanceof EmitResult.Refused r) {
+                            notOwnedRefused = true;
+                            notOwnedCode = r.code();
+                            notOwnedStatus = r.status();
                         }
 
                         String line = b64(caller) + "|" + b64(invocationId) + "|" + b64(String.valueOf(ownedOk)) + "|"
-                                + b64(ownedError) + "|" + b64(String.valueOf(notOwnedThrew)) + "|" + b64(notOwnedCode)
-                                + "|" + b64(String.valueOf(notOwnedStatus)) + System.lineSeparator();
+                                + b64(ownedError) + "|" + b64(String.valueOf(notOwnedRefused)) + "|" + b64(notOwnedCode)
+                                + "|" + b64(String.valueOf(notOwnedStatus)) + "|" + b64(ownedEventId) + System.lineSeparator();
                         Files.writeString(Path.of("%s"), line, StandardCharsets.UTF_8,
                                 java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
                         return Result.ack();
@@ -607,14 +605,15 @@ class FunctionHostListenerIntegrationTest {
     /// The wire shape [#emitFnSource]'s fixture writes: pipe-delimited, each
     /// field Base64-encoded.
     private record EmitEvidenceLine(String caller, String invocationId, boolean ownedOk, String ownedError,
-                                     boolean notOwnedThrew, String notOwnedCode, String notOwnedStatus) {
+                                     boolean notOwnedRefused, String notOwnedCode, String notOwnedStatus,
+                                     String ownedEventId) {
     }
 
     private static EmitEvidenceLine lastEmitEvidenceLine(Path evidence) throws Exception {
         List<String> lines = Files.readAllLines(evidence);
         String[] fields = lines.get(lines.size() - 1).split("\\|", -1);
         return new EmitEvidenceLine(b64(fields[0]), b64(fields[1]), Boolean.parseBoolean(b64(fields[2])), b64(fields[3]),
-                Boolean.parseBoolean(b64(fields[4])), b64(fields[5]), b64(fields[6]));
+                Boolean.parseBoolean(b64(fields[4])), b64(fields[5]), b64(fields[6]), b64(fields[7]));
     }
 
     // ── dispatch job creation "the way a matched subscription would" ───────

@@ -1,6 +1,6 @@
 package io.flowcatalyst.fnhost.reconcile;
 
-import io.flowcatalyst.function.EventEmitException;
+import io.flowcatalyst.function.EmitResult;
 import io.flowcatalyst.platform.function.DnsLabel;
 
 import java.util.ArrayList;
@@ -29,16 +29,22 @@ public final class FakeControlPlane implements ControlPlane {
         void apply(HeartbeatReport report) throws ControlPlaneException;
     }
 
+    /// A side effect run on each [#emit], which then answers `Emitted`.
+    @FunctionalInterface
+    public interface EmitAction {
+        void apply(ControlPlane.EmitRequest request);
+    }
+
+    /// The whole answer to each [#emit].
     @FunctionalInterface
     public interface EmitScript {
-        void apply(ControlPlane.EmitRequest request) throws EventEmitException;
+        EmitResult apply(ControlPlane.EmitRequest request);
     }
 
     private volatile DesiredStateScript desiredStateScript = (pool, etag) -> new Fetched.NotModified();
     private volatile HeartbeatScript heartbeatScript = report -> {
     };
-    private volatile EmitScript emitScript = request -> {
-    };
+    private volatile EmitScript emitScript = request -> emitted();
 
     private final List<HeartbeatReport> heartbeats = Collections.synchronizedList(new ArrayList<>());
     private final List<ControlPlane.EmitRequest> emits = Collections.synchronizedList(new ArrayList<>());
@@ -54,10 +60,23 @@ public final class FakeControlPlane implements ControlPlane {
         this.heartbeatScript = script;
     }
 
-    /// Scripts [#emit] (`docs/spec/function-context.md` §3, D4c) — e.g. throw
-    /// [EventEmitException] to simulate the platform refusing an event.
-    public void emitDoes(EmitScript script) {
+    /// Runs `action` on each [#emit] (`docs/spec/function-context.md` §3, D4c),
+    /// which then answers `Emitted`.
+    public void emitDoes(EmitAction action) {
+        this.emitScript = request -> {
+            action.apply(request);
+            return emitted();
+        };
+    }
+
+    /// Scripts [#emit]'s whole answer — e.g. a [EmitResult.Refused] to simulate
+    /// the platform refusing an event.
+    public void emitAnswers(EmitScript script) {
         this.emitScript = script;
+    }
+
+    private EmitResult emitted() {
+        return new EmitResult.Emitted("evt_fake_" + emitCalls.get());
     }
 
     public List<HeartbeatReport> heartbeats() {
@@ -106,9 +125,9 @@ public final class FakeControlPlane implements ControlPlane {
     }
 
     @Override
-    public void emit(ControlPlane.EmitRequest request) {
+    public EmitResult emit(ControlPlane.EmitRequest request) {
         emitCalls.incrementAndGet();
         emits.add(request);
-        emitScript.apply(request);
+        return emitScript.apply(request);
     }
 }

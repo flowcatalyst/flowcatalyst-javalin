@@ -7,7 +7,7 @@ import com.sun.net.httpserver.HttpServer;
 import io.flowcatalyst.fnhost.reconcile.ControlPlane;
 import io.flowcatalyst.fnhost.reconcile.DesiredDocument;
 import io.flowcatalyst.fnhost.wasm.WasmFixtures;
-import io.flowcatalyst.function.EventEmitException;
+import io.flowcatalyst.function.EmitResult;
 import io.flowcatalyst.platform.function.FunctionAddress;
 import io.flowcatalyst.platform.function.Manifest;
 import io.flowcatalyst.server.Logging;
@@ -334,6 +334,8 @@ class WasmFunctionListenerTest {
         try (var h = FnHttpTestSupport.start(dir, FnHttpTestSupport.oneFunction(entry))) {
             JsonNode ok = guestBody(h, "/x?dedupId=d-1");
             assertThat(ok.path("result").path("ok").asBoolean()).as(ok.toString()).isTrue();
+            assertThat(ok.path("result").path("eventId").asString())
+                    .as("mutant: the platform's event id not handed to the guest").isEqualTo("evt_fake_1");
             assertThat(h.controlPlane.emits()).as("mutant: never call the control plane").hasSize(1);
             ControlPlane.EmitRequest sent = h.controlPlane.emits().getFirst();
             assertThat(sent.address()).isEqualTo(ADDR);
@@ -346,9 +348,7 @@ class WasmFunctionListenerTest {
             assertThat(FnHttpTestSupport.json(item.data().getBytes(StandardCharsets.UTF_8)).path("from").asString())
                     .isEqualTo("wasm");
 
-            h.controlPlane.emitDoes(request -> {
-                throw new EventEmitException("EVENT_TYPE_NOT_OWNED", 403);
-            });
+            h.controlPlane.emitAnswers(request -> new EmitResult.Refused("EVENT_TYPE_NOT_OWNED", 403, "not owned"));
             JsonNode refused = guestBody(h, "/x?dedupId=d-2");
             assertThat(refused.path("result").path("ok").asBoolean())
                     .as("mutant: report ok regardless of the platform's answer").isFalse();

@@ -7,6 +7,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.HexFormat;
+import java.util.OptionalLong;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
@@ -63,14 +64,29 @@ public final class WebhookSignature {
 
     private WebhookSignature() {}
 
-    /** Verify with the default 300s replay tolerance and no bearer gate. */
-    public static void verify(byte[] rawBody, String signature, String timestamp, String secret) {
-        verify(rawBody, signature, timestamp, secret, DEFAULT_TOLERANCE_SECONDS, null, null);
+    /**
+     * The outcome of {@link #check}: a returned result, so a handler branches on it
+     * rather than catching (owner ruling 2026-09-25, backlog "Overnight review" item
+     * 11). {@link #verify} is the throwing form of the same check.
+     */
+    public sealed interface Verification permits Valid, Invalid {
+    }
+
+    /** The delivery is genuine. */
+    public record Valid() implements Verification {
+    }
+
+    /** The delivery failed; {@code code} says exactly what to fix. */
+    public record Invalid(ErrorCode code, String message) implements Verification {
+    }
+
+    /** Check with the default 300s replay tolerance and no bearer gate. */
+    public static Verification check(byte[] rawBody, String signature, String timestamp, String secret) {
+        return check(rawBody, signature, timestamp, secret, DEFAULT_TOLERANCE_SECONDS, null, null);
     }
 
     /**
-     * Verify a signed delivery; throws {@link WebhookSignatureException} on
-     * any failure (fail-closed — an empty secret is an error, not a bypass).
+     * Check a signed delivery (fail-closed: an empty secret is {@link Invalid}, not a bypass).
      *
      * @param rawBody             raw request body, exactly as received
      * @param signature           value of the X-FlowCatalyst-Signature header
@@ -84,7 +100,7 @@ public final class WebhookSignature {
      * @param authorization       value of the Authorization header (required
      *                            when {@code expectedBearerToken} is set)
      */
-    public static void verify(
+    public static Verification check(
             byte[] rawBody,
             String signature,
             String timestamp,
@@ -93,27 +109,27 @@ public final class WebhookSignature {
             String expectedBearerToken,
             String authorization) {
         if (secret == null || secret.isEmpty()) {
-            throw new WebhookSignatureException(
-                    ErrorCode.MISSING_SECRET, "Webhook signing secret is not configured.");
+            return new Invalid(ErrorCode.MISSING_SECRET, "Webhook signing secret is not configured.");
         }
         if (signature == null || signature.isEmpty()) {
-            throw new WebhookSignatureException(
-                    ErrorCode.MISSING_SIGNATURE, "Missing X-FlowCatalyst-Signature header.");
+            return new Invalid(ErrorCode.MISSING_SIGNATURE, "Missing X-FlowCatalyst-Signature header.");
         }
         if (timestamp == null || timestamp.isEmpty()) {
-            throw new WebhookSignatureException(
-                    ErrorCode.MISSING_TIMESTAMP, "Missing X-FlowCatalyst-Timestamp header.");
+            return new Invalid(ErrorCode.MISSING_TIMESTAMP, "Missing X-FlowCatalyst-Timestamp header.");
         }
 
-        long webhookSeconds = parseTimestamp(timestamp);
+        OptionalLong parsed = parseTimestamp(timestamp);
+        if (parsed.isEmpty()) {
+            return new Invalid(ErrorCode.INVALID_TIMESTAMP, "Unparseable X-FlowCatalyst-Timestamp '" + timestamp + "'.");
+        }
+        long webhookSeconds = parsed.getAsLong();
         long nowSeconds = System.currentTimeMillis() / 1000;
         if (webhookSeconds < nowSeconds - toleranceSeconds) {
-            throw new WebhookSignatureException(ErrorCode.TIMESTAMP_EXPIRED,
+            return new Invalid(ErrorCode.TIMESTAMP_EXPIRED,
                     "Delivery timestamp older than " + toleranceSeconds + "s — replay rejected.");
         }
         if (webhookSeconds > nowSeconds + FUTURE_GRACE_SECONDS) {
-            throw new WebhookSignatureException(ErrorCode.TIMESTAMP_IN_FUTURE,
-                    "Delivery timestamp is in the future — check clock sync.");
+            return new Invalid(ErrorCode.TIMESTAMP_IN_FUTURE, "Delivery timestamp is in the future — check clock sync.");
         }
 
         // HMAC over the raw timestamp header string + raw body bytes.
@@ -121,7 +137,7 @@ public final class WebhookSignature {
         byte[] a = expected.getBytes(StandardCharsets.UTF_8);
         byte[] b = signature.toLowerCase(java.util.Locale.ROOT).getBytes(StandardCharsets.UTF_8);
         if (a.length != b.length || !MessageDigest.isEqual(a, b)) {
-            throw new WebhookSignatureException(ErrorCode.INVALID_SIGNATURE, "Signature mismatch.");
+            return new Invalid(ErrorCode.INVALID_SIGNATURE, "Signature mismatch.");
         }
 
         // Layered bearer gate (opt-in). Runs AFTER the signature so the strong
@@ -129,16 +145,37 @@ public final class WebhookSignature {
         if (expectedBearerToken != null && !expectedBearerToken.isEmpty()) {
             String prefix = "Bearer ";
             if (authorization == null || !authorization.startsWith(prefix)) {
-                throw new WebhookSignatureException(
-                        ErrorCode.MISSING_BEARER, "Missing Authorization bearer token.");
+                return new Invalid(ErrorCode.MISSING_BEARER, "Missing Authorization bearer token.");
             }
-            byte[] presented = authorization.substring(prefix.length())
-                    .getBytes(StandardCharsets.UTF_8);
+            byte[] presented = authorization.substring(prefix.length()).getBytes(StandardCharsets.UTF_8);
             byte[] want = expectedBearerToken.getBytes(StandardCharsets.UTF_8);
             if (presented.length != want.length || !MessageDigest.isEqual(presented, want)) {
-                throw new WebhookSignatureException(
-                        ErrorCode.INVALID_BEARER, "Invalid bearer token.");
+                return new Invalid(ErrorCode.INVALID_BEARER, "Invalid bearer token.");
             }
+        }
+        return new Valid();
+    }
+
+    /** Verify with the default 300s replay tolerance and no bearer gate. */
+    public static void verify(byte[] rawBody, String signature, String timestamp, String secret) {
+        verify(rawBody, signature, timestamp, secret, DEFAULT_TOLERANCE_SECONDS, null, null);
+    }
+
+    /**
+     * {@link #check}, throwing {@link WebhookSignatureException} on any failure —
+     * for handlers whose framework turns an exception into a 401.
+     */
+    public static void verify(
+            byte[] rawBody,
+            String signature,
+            String timestamp,
+            String secret,
+            int toleranceSeconds,
+            String expectedBearerToken,
+            String authorization) {
+        if (check(rawBody, signature, timestamp, secret, toleranceSeconds, expectedBearerToken, authorization)
+                instanceof Invalid(ErrorCode code, String message)) {
+            throw new WebhookSignatureException(code, message);
         }
     }
 
@@ -160,20 +197,18 @@ public final class WebhookSignature {
      * is accepted for backward compatibility. The HMAC always covers the raw
      * header string — parsing only feeds the replay-window check.
      */
-    private static long parseTimestamp(String timestamp) {
+    private static OptionalLong parseTimestamp(String timestamp) {
         if (timestamp.chars().allMatch(Character::isDigit)) {
             try {
-                return Long.parseLong(timestamp);
+                return OptionalLong.of(Long.parseLong(timestamp));
             } catch (NumberFormatException e) {
-                throw new WebhookSignatureException(ErrorCode.INVALID_TIMESTAMP,
-                        "Unparseable X-FlowCatalyst-Timestamp '" + timestamp + "'.");
+                return OptionalLong.empty();
             }
         }
         try {
-            return Instant.parse(timestamp).getEpochSecond();
+            return OptionalLong.of(Instant.parse(timestamp).getEpochSecond());
         } catch (DateTimeParseException e) {
-            throw new WebhookSignatureException(ErrorCode.INVALID_TIMESTAMP,
-                    "Unparseable X-FlowCatalyst-Timestamp '" + timestamp + "'.");
+            return OptionalLong.empty();
         }
     }
 }

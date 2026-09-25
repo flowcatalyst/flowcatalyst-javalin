@@ -6,7 +6,7 @@ import io.flowcatalyst.fnhost.load.LoadOutcome;
 import io.flowcatalyst.fnhost.load.LoadedFunction;
 import io.flowcatalyst.fnhost.load.Refused;
 import io.flowcatalyst.function.Caller;
-import io.flowcatalyst.function.EventEmitException;
+import io.flowcatalyst.function.EmitResult;
 import io.flowcatalyst.function.OutboundEvent;
 import io.flowcatalyst.function.Request;
 import io.flowcatalyst.function.Result;
@@ -221,7 +221,7 @@ class ShrunkJarTest {
                     Map.of("GREETING", "Hi"), Map.of("API_KEY", "k"), events);
             fn.init(ctx);
 
-            events.throwNext(new EventEmitException("UNAVAILABLE", 503));
+            events.refuseNext(new EmitResult.Refused("UNAVAILABLE", 503, "platform unreachable"));
             Result retry = fn.invoke(
                     request("POST", "/events/greeting-requested", Caller.Platform.INSTANCE,
                             eventEnvelope("x", "corr-2"), Map.of()),
@@ -244,7 +244,7 @@ class ShrunkJarTest {
                     Map.of("GREETING", "Hi"), Map.of("API_KEY", "k"), events);
             fn.init(ctx);
 
-            events.throwNext(new EventEmitException("EVENT_TYPE_NOT_OWNED", 403));
+            events.refuseNext(new EmitResult.Refused("EVENT_TYPE_NOT_OWNED", 403, "not owned"));
             Result fail = fn.invoke(
                     request("POST", "/events/greeting-requested", Caller.Platform.INSTANCE,
                             eventEnvelope("x", "corr-3"), Map.of()),

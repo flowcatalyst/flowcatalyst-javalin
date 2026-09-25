@@ -151,7 +151,7 @@ Response `{results: [...]}` in the ingest routes' shape.
 Host: `Events.emit(OutboundEvent)` ⇒ one POST (batch of one) with the host's own token;
 `dedupId` is required by the API type; `correlationId` defaults to the inbound event's own `correlationId` when the request was a
 webhook delivery that carries one (the emitted event belongs to that flow), else `X-Correlation-Id`,
-else the invocation id; `causationId` defaults to the inbound event's id; non-2xx ⇒ `EventEmitException` (API-jar type) carrying the platform's error code, so a
+else the invocation id; `causationId` defaults to the inbound event's id; a 2xx ⇒ `EmitResult.Emitted` carrying `results[0].id`; non-2xx ⇒ `EmitResult.Refused` (API-jar type) carrying the platform's error code and status, a transport failure `UNAVAILABLE`/503 — returned, never thrown (owner ruling 2026-09-25, backlog item 11) — so a
 function can `Result.retry` on a 5xx and fail loudly on `EVENT_TYPE_NOT_OWNED`.
 
 ### 3.1 The same gap on the ordinary ingest path — not fixed here, written down
@@ -177,4 +177,4 @@ not touch the ingest routes.
 | X7 | `dataSource`: undeclared name throws; two functions with one DSN share one pool (assert one Hikari pool, size = the larger `poolSize`); the pool closes when the last user unloads and not before; limit ⇒ `DB_POOL_LIMIT`; `close()` on the handed-out `DataSource` does not close the pool; the DSN's password is in no log line or exception (real queries against `TestPg`) | one pool per function; close on first unload; pass Hikari through |
 | X8 | `http`: exact host allowed; `*.suffix` allows `a.suffix` and not `suffix` nor `evilsuffix`; `http://` refused except loopback; a 302 is returned, not followed; the timeout is cut to the remaining deadline | `endsWith` without the dot; follow redirects |
 | X9 | emit: each of the four checks in §3 in isolation, **and nothing is written when one event of a batch fails ownership** (assert no `msg_events` row for the good ones); a repeated `dedupId` is idempotent; `source`/`clientId` as specified | skip ownership; write the passing ones; unknown type ⇒ 404 |
-| X10 | emit end to end in process (extends D3's H15): the function handles a webhook, emits an owned event ⇒ the event row exists with correlation = the inbound delivery's; emits a not-owned type ⇒ `EventEmitException` with `EVENT_TYPE_NOT_OWNED` and no row | — (integration pin) |
+| X10 | emit end to end in process (extends D3's H15): the function handles a webhook, emits an owned event ⇒ the event row exists with correlation = the inbound delivery's; emits a not-owned type ⇒ `EmitResult.Refused` with `EVENT_TYPE_NOT_OWNED` and no row | — (integration pin) |
