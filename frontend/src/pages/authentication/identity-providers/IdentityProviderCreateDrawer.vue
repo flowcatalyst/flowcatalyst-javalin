@@ -31,6 +31,7 @@ const form = ref({
 	oidcClientSecretRef: "",
 	oidcMultiTenant: false,
 	oidcIssuerPattern: "",
+	allowedTenantIds: [] as string[],
 	allowedEmailDomains: [] as string[],
 	primaryClientId: null as string | null,
 	mappingScope: null as MappingScope | null,
@@ -38,6 +39,7 @@ const form = ref({
 });
 
 const newAllowedDomain = ref("");
+const newAllowedTenantId = ref("");
 
 // Error codes the server returns for a missing/invalid domain-mapping scope
 // choice (400s) — surfaced inline near the scope field, not a generic toast.
@@ -193,6 +195,20 @@ function removeAllowedDomain(domain: string) {
 	);
 }
 
+function addAllowedTenantId() {
+	const tenantId = newAllowedTenantId.value.trim();
+	if (tenantId && !form.value.allowedTenantIds.includes(tenantId)) {
+		form.value.allowedTenantIds.push(tenantId);
+		newAllowedTenantId.value = "";
+	}
+}
+
+function removeAllowedTenantId(tenantId: string) {
+	form.value.allowedTenantIds = form.value.allowedTenantIds.filter(
+		(t) => t !== tenantId,
+	);
+}
+
 async function createProvider() {
 	if (!isValid.value) return;
 
@@ -235,6 +251,11 @@ async function createProvider() {
 						oidcMultiTenant: form.value.oidcMultiTenant,
 						oidcIssuerPattern:
 							form.value.oidcIssuerPattern.trim() || undefined,
+						allowedTenantIds:
+							form.value.oidcMultiTenant &&
+							form.value.allowedTenantIds.length > 0
+								? form.value.allowedTenantIds
+								: undefined,
 					}
 				: {}),
 		};
@@ -373,6 +394,37 @@ async function createProvider() {
           <small class="field-help">
             Pattern for validating token issuer. Use {tenantId} as placeholder. Leave empty to
             auto-derive from Issuer URL.
+          </small>
+        </div>
+
+        <div v-if="form.oidcMultiTenant" class="field">
+          <label for="allowedTenantId">Allowed Tenant IDs</label>
+          <div class="domain-input">
+            <InputText
+              id="allowedTenantId"
+              v-model="newAllowedTenantId"
+              placeholder="e.g., 72f988bf-86f1-41af-91ab-2d7cd011db47"
+              class="flex-grow"
+              @keyup.enter="addAllowedTenantId"
+            />
+            <Button
+              icon="pi pi-plus"
+              :disabled="!newAllowedTenantId.trim()"
+              @click="addAllowedTenantId"
+            />
+          </div>
+          <div v-if="form.allowedTenantIds.length > 0" class="domain-list">
+            <Chip
+              v-for="tenantId in form.allowedTenantIds"
+              :key="tenantId"
+              :label="tenantId"
+              removable
+              @remove="removeAllowedTenantId(tenantId)"
+            />
+          </div>
+          <small class="field-help">
+            Entra tenant IDs (tid) this provider accepts. A multi-tenant provider must pin
+            tenants here, or on each email domain mapping.
           </small>
         </div>
 

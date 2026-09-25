@@ -37,6 +37,7 @@ const editForm = ref({
 	oidcClientSecretRef: "",
 	oidcMultiTenant: false,
 	oidcIssuerPattern: "",
+	allowedTenantIds: [] as string[],
 	allowedEmailDomains: [] as string[],
 	syncRolesFromIdp: false,
 	// The provider does not store a scope — every edit starts unselected
@@ -45,6 +46,7 @@ const editForm = ref({
 	primaryClientId: null as string | null,
 });
 const newAllowedDomain = ref("");
+const newAllowedTenantId = ref("");
 
 // Error codes the server returns for a missing/invalid domain-mapping scope
 // choice (400s) — surfaced inline near the scope field, not a generic toast.
@@ -193,6 +195,7 @@ async function loadProvider(providerId: string) {
 	resetDirty();
 	showDeleteDialog.value = false;
 	newAllowedDomain.value = "";
+	newAllowedTenantId.value = "";
 	try {
 		const [providerData, rolesResponse, clientsResponse] = await Promise.all([
 			identityProvidersApi.get(providerId),
@@ -221,6 +224,7 @@ function resetEditForm() {
 			oidcClientSecretRef: "",
 			oidcMultiTenant: provider.value.oidcMultiTenant,
 			oidcIssuerPattern: provider.value.oidcIssuerPattern || "",
+			allowedTenantIds: [...(provider.value.allowedTenantIds || [])],
 			allowedEmailDomains: [...(provider.value.allowedEmailDomains || [])],
 			syncRolesFromIdp: provider.value.syncRolesFromIdp ?? false,
 			// The provider doesn't store a scope, so every (re)edit starts
@@ -277,6 +281,20 @@ function removeAllowedDomain(domain: string) {
 		editForm.value.allowedEmailDomains.filter((d) => d !== domain);
 }
 
+function addAllowedTenantId() {
+	const tenantId = newAllowedTenantId.value.trim();
+	if (tenantId && !editForm.value.allowedTenantIds.includes(tenantId)) {
+		editForm.value.allowedTenantIds.push(tenantId);
+		newAllowedTenantId.value = "";
+	}
+}
+
+function removeAllowedTenantId(tenantId: string) {
+	editForm.value.allowedTenantIds = editForm.value.allowedTenantIds.filter(
+		(t) => t !== tenantId,
+	);
+}
+
 function saveChanges() {
 	if (!provider.value || !isValid.value) return;
 	// Removing a domain flips its users back to password auth — confirm.
@@ -313,6 +331,11 @@ async function applyChanges() {
 			updateData["oidcMultiTenant"] = editForm.value.oidcMultiTenant;
 			updateData["oidcIssuerPattern"] =
 				editForm.value.oidcIssuerPattern.trim() || null;
+			// Tenants pin a multi-tenant provider only; switching it off clears them, or a
+			// single-tenant provider would keep enforcing a stale list at login.
+			updateData["allowedTenantIds"] = editForm.value.oidcMultiTenant
+				? editForm.value.allowedTenantIds
+				: [];
 			if (editForm.value.oidcClientSecretRef.trim()) {
 				updateData["oidcClientSecretRef"] =
 					editForm.value.oidcClientSecretRef.trim();
@@ -460,6 +483,20 @@ function getTypeSeverity(type: string) {
             <small class="text-muted">Auto-derived from Issuer URL if not set</small>
           </div>
 
+          <div class="field-group" v-if="provider.oidcMultiTenant">
+            <label>Allowed Tenant IDs</label>
+            <div v-if="provider.allowedTenantIds?.length > 0" class="domain-list">
+              <Chip
+                v-for="tenantId in provider.allowedTenantIds"
+                :key="tenantId"
+                :label="tenantId"
+              />
+            </div>
+            <span v-else class="field-value text-muted"
+              >None — each email domain mapping must pin its tenant</span
+            >
+          </div>
+
           <div class="field-group">
             <label>Client ID</label>
             <span class="field-value">
@@ -521,6 +558,37 @@ function getTypeSeverity(type: string) {
             <small class="field-help">
               Optional. Pattern for validating token issuer. Use {tenantId} as placeholder.
               Leave empty to auto-derive from Issuer URL.
+            </small>
+          </div>
+
+          <div v-if="editForm.oidcMultiTenant" class="field">
+            <label for="editAllowedTenantId">Allowed Tenant IDs</label>
+            <div class="domain-input">
+              <InputText
+                id="editAllowedTenantId"
+                v-model="newAllowedTenantId"
+                placeholder="e.g., 72f988bf-86f1-41af-91ab-2d7cd011db47"
+                class="flex-grow"
+                @keyup.enter="addAllowedTenantId"
+              />
+              <Button
+                icon="pi pi-plus"
+                :disabled="!newAllowedTenantId.trim()"
+                @click="addAllowedTenantId"
+              />
+            </div>
+            <div v-if="editForm.allowedTenantIds.length > 0" class="domain-list">
+              <Chip
+                v-for="tenantId in editForm.allowedTenantIds"
+                :key="tenantId"
+                :label="tenantId"
+                removable
+                @remove="removeAllowedTenantId(tenantId)"
+              />
+            </div>
+            <small class="field-help">
+              Entra tenant IDs (tid) this provider accepts. A multi-tenant provider must pin
+              tenants here, or on each email domain mapping.
             </small>
           </div>
 

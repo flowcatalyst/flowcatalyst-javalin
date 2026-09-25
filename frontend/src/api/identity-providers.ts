@@ -30,6 +30,10 @@ export interface CreateIdentityProviderRequest {
 	oidcClientSecretRef?: string;
 	oidcMultiTenant?: boolean;
 	oidcIssuerPattern?: string;
+	// Entra tenant ids (tid) a multi-tenant provider accepts. A multi-tenant
+	// provider must pin tenants here or on each email-domain mapping, or the
+	// server refuses the save with 400 TENANT_PIN_REQUIRED.
+	allowedTenantIds?: string[];
 	// Domains listed here are materialized as email-domain mappings: created
 	// when unknown, re-pointed (claimed) when already mapped elsewhere.
 	allowedEmailDomains?: string[];
@@ -50,6 +54,10 @@ export interface UpdateIdentityProviderRequest {
 	oidcClientSecretRef?: string;
 	oidcMultiTenant?: boolean;
 	oidcIssuerPattern?: string;
+	// Entra tenant ids (tid) a multi-tenant provider accepts. Omitted =
+	// unchanged; [] clears the pinned tenants (400 TENANT_PIN_REQUIRED if
+	// no email-domain mapping pins one either).
+	allowedTenantIds?: string[];
 	// Desired set of domains routed to this provider. Additions are
 	// mapped/claimed; removals fall back to internal auth (password).
 	allowedEmailDomains?: string[];
