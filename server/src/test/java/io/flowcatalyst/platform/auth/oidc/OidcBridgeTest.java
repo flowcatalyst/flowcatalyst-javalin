@@ -273,9 +273,10 @@ class OidcBridgeTest {
         assertThat(internal.statusCode()).isEqualTo(400);
         assertThat(json(internal).get("error").asString()).isEqualTo("OIDC_NOT_CONFIGURED");
 
+        // Owner ruling 2026-09-25 (backlog item 8): a user's typo, not a server fault.
         var unmapped = http.get("/auth/oidc/login?domain=nobody-" + RUN + ".example");
-        assertThat(unmapped.statusCode()).isEqualTo(500);
-        assertThat(json(unmapped).get("error").asString()).isEqualTo("OIDC_RESOLVE_FAILED");
+        assertThat(unmapped.statusCode()).isEqualTo(404);
+        assertThat(json(unmapped).get("error").asString()).isEqualTo("EMAIL_DOMAIN_NOT_MAPPED");
     }
 
     @Test

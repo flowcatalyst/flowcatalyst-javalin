@@ -163,6 +163,12 @@ public final class OidcBridgeApi {
             OidcClients.Resolution r;
             try {
                 r = s.clients().resolveForEmail("x@" + domain);
+            } catch (OidcClients.DomainNotMappedException e) {
+                LOG.atInfo().setMessage("oidc login for an email domain with no mapping")
+                        .addKeyValue("domain", domain)
+                        .log();
+                HttpError.write(ctx, 404, "EMAIL_DOMAIN_NOT_MAPPED", "this email domain does not sign in with SSO", Map.of());
+                return;
             } catch (OidcClients.ResolutionException e) {
                 LOG.atWarn().setMessage("oidc resolve by domain failed")
                         .addKeyValue("domain", domain)

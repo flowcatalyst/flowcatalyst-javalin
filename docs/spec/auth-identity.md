@@ -354,6 +354,7 @@ non-empty, `:349-355, 612-618`).
 | neither `domain` nor `provider_id` | 400 `DOMAIN_REQUIRED` | `domain or provider_id query param is required` |
 | `provider_id` given and `ResolveByProviderID` fails | 500 `OIDC_RESOLVE_FAILED` | `OIDC could not be initialised for this provider` |
 | `domain` path, `ResolveForEmail("x@"+domain)` errors | 500 `OIDC_RESOLVE_FAILED` | `OIDC could not be initialised for this domain` |
+| **Java, owner ruling 2026-09-25:** the domain has no mapping | 404 `EMAIL_DOMAIN_NOT_MAPPED` (logged at INFO) | `this email domain does not sign in with SSO` |
 | `domain` path, IdP is `INTERNAL` | 400 `OIDC_NOT_CONFIGURED` | `OIDC is not configured for this domain` |
 | state insert fails | 500 `OIDC_STATE` | `persist state failed` |
 | ok | **302** to `<authorize endpoint>?client_id&redirect_uri&response_type=code&scope=openid profile email&state=<s>&nonce=<n>&code_challenge=<S256(verifier)>&code_challenge_method=S256` (`:361-366`, `oidc.go:258-262`) |

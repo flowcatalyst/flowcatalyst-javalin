@@ -48,13 +48,22 @@ public final class OidcClients {
     public record Resolution(Optional<OidcProvider> provider, IdentityProvider identityProvider, EmailDomainMapping mapping) {
     }
 
-    public static final class ResolutionException extends Exception {
+    public static class ResolutionException extends Exception {
         public ResolutionException(String message) {
             super(message);
         }
 
         public ResolutionException(String message, Throwable cause) {
             super(message, cause);
+        }
+    }
+
+    /// The email's domain has no mapping: a user's typo or a stale link, not a
+    /// server fault (owner ruling 2026-09-25, backlog item 8), so the login route
+    /// answers 404 rather than the 500 a broken provider still gets.
+    public static final class DomainNotMappedException extends ResolutionException {
+        public DomainNotMappedException(String domain) {
+            super("no email-domain mapping for " + domain);
         }
     }
 
@@ -107,7 +116,7 @@ public final class OidcClients {
             throw new ResolutionException("invalid email: no domain");
         }
         EmailDomainMapping mapping = mappings.findByEmailDomain(domain)
-                .orElseThrow(() -> new ResolutionException("no email-domain mapping for " + domain));
+                .orElseThrow(() -> new DomainNotMappedException(domain));
         IdentityProvider idp = identityProviders.findById(mapping.identityProviderId())
                 .orElseThrow(() -> new ResolutionException("identity provider " + mapping.identityProviderId() + " not found"));
         if (idp.type() != IdentityProviderType.OIDC) {
