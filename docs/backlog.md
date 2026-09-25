@@ -1940,3 +1940,12 @@ What is left needs a ruling or was judged not worth changing:
   validation-error remaps at the envelope boundary, not control flow.
 - `QueueMetrics` / `ProcessingTimeMetrics` positional `long`s (the duplication review): every call
   site agrees today; low value.
+
+## fcdev fork hang in a full reactor run (2026-09-25 02:22, once)
+
+A full `mvn clean test` timed out the fcdev fork (40 min) after 65 tests, silent from an fcdev boot
+at embedded-Postgres start. Not reproduced: fcdev alone 273/273, and the next full reactor green
+(fcdev 274). Two real defects in that path were fixed (`d75fb9fd`): the Postgres download had no
+whole-exchange deadline (a stalled body hung for ever), and every test boot re-downloaded the 33 MB
+jar. If it recurs: run the reactor without `-q` (the log then names each class) and `jstack` the
+surefire fork while it is silent.
