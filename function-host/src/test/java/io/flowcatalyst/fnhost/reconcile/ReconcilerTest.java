@@ -211,6 +211,36 @@ class ReconcilerTest {
         loaded.close();
     }
 
+    /// Owner ruling 2026-09-25 (backlog item 12): a versioned call to a version that is
+    /// still being prepared answers 503, one refused for good 404. isPreparing is the
+    /// distinction: desired, not yet prepared, and no failure recorded. (The host's HTTP
+    /// mapping on top of it is a two-line branch: a desired-but-unprepared entry exists
+    /// only mid-reconcile, which this harness does not stop in.)
+    @Test
+    void aVersionIsPreparingOnlyUntilItIsPreparedOrRefused(@TempDir Path dir) {
+        Path jar = TestFixtures.functionJar(dir, "preparing-v2", "preparing-2");
+        FakeControlPlane fake = new FakeControlPlane();
+        Reconciler r = offReconciler(fake, dir, new FunctionRegistry(50));
+        DesiredDocument.Entry good = new DesiredDocument.Entry(TestFixtures.ADDR_A, "fnc_a", "v2", 2,
+                DesiredDocument.Role.CANDIDATE, DesiredDocument.Mode.LAZY, TestFixtures.digestOf(jar),
+                TestFixtures.fileRef(jar), null, null, TestFixtures.jvmManifest(POOL.value(), false), null, null,
+                null, Map.of(), Map.of(), List.of(), List.of());
+        DesiredDocument.Entry bad = new DesiredDocument.Entry(TestFixtures.ADDR_B, "fnc_b", "v9", 9,
+                DesiredDocument.Role.CANDIDATE, DesiredDocument.Mode.LAZY, Digest.parse("sha256:" + "0".repeat(64)),
+                TestFixtures.fileRef(jar), null, null, TestFixtures.jvmManifest(POOL.value(), false), null, null,
+                null, Map.of(), Map.of(), List.of(), List.of());
+
+        assertThat(r.isPreparing(good)).as("not prepared, nothing failed: still preparing").isTrue();
+        assertThat(r.isPreparing(bad)).isTrue();
+
+        fake.desiredStateReturns((pool, etag) -> new ControlPlane.Fetched.Changed("etag1",
+                new DesiredDocument(List.of(good, bad), List.of(), List.of())));
+        r.reconcileOnce(Instant.now());
+
+        assertThat(r.isPreparing(good)).as("prepared").isFalse();
+        assertThat(r.isPreparing(bad)).as("refused (digest mismatch recorded)").isFalse();
+    }
+
     // ── R1b: live (lazy) + candidate, same address — ensureLoaded must never
     //         serve the candidate; a warm live entry must never be displaced by one ──
 

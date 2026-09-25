@@ -1119,6 +1119,18 @@ public final class Reconciler {
         };
     }
 
+    /// Whether `entry`'s version is still being prepared: in desired state, not
+    /// yet prepared, and no failure recorded for it (owner ruling 2026-09-25,
+    /// backlog item 12). A versioned call to such a version answers 503 with
+    /// Retry-After; a refused one answers 404. It can change between the call
+    /// that loaded nothing and this one; the worst case is one 503 as
+    /// preparation completes, which a retry resolves.
+    public boolean isPreparing(DesiredDocument.Entry entry) {
+        Objects.requireNonNull(entry, "entry");
+        return !prepared.containsKey(entry.versionId())
+                && !failures.containsKey(new Key(entry.address(), entry.version()));
+    }
+
     // ── step 5: heartbeat ────────────────────────────────────────────────
 
     private void sendHeartbeat(DesiredDocument doc) {

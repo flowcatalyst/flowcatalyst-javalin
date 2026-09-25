@@ -216,8 +216,10 @@ public final class FnHttpServer implements AutoCloseable {
                 .setHost(options.host())
                 .setPort(options.port())
                 .setHttp2ClearTextEnabled(true);
-        HttpServer server = vertx.createHttpServer(serverOptions)
-                .requestHandler(req -> holder[0].handle(req));
+        // A connection with no request in flight closes after 75 s (KeepAliveIdle, backlog item 10);
+        // a long invocation keeps its connection busy, so it is never cut.
+        HttpServer server = vertx.createHttpServer(serverOptions);
+        server.requestHandler(io.flowcatalyst.http.vertx.KeepAliveIdle.install(vertx, server, req -> holder[0].handle(req)));
 
         // Spec `function-public-routes.md` §3: a SECOND entry, same Vert.x instance, sharing
         // permits/registry/reconciler/observer — bound only when a public port was configured
@@ -228,8 +230,9 @@ public final class FnHttpServer implements AutoCloseable {
                     .setHost(options.host())
                     .setPort(options.publicPort())
                     .setHttp2ClearTextEnabled(true);
-            publicServer = vertx.createHttpServer(publicServerOptions)
-                    .requestHandler(req -> holder[0].handlePublic(req));
+            publicServer = vertx.createHttpServer(publicServerOptions);
+            publicServer.requestHandler(io.flowcatalyst.http.vertx.KeepAliveIdle.install(vertx, publicServer,
+                    req -> holder[0].handlePublic(req)));
         }
 
         FnHttpServer instance = new FnHttpServer(vertx, server, publicServer, reconciler, permits, pinnedVersions,
@@ -721,7 +724,14 @@ public final class FnHttpServer implements AutoCloseable {
             if (fn == null) {
                 permits.release(grant);
                 if (versioned) {
-                    // address = null, same anti-leak reasoning as the entry/reach check above.
+                    // Past the token, permission and reach checks, so saying the version exists
+                    // leaks nothing. Still preparing: 503 with Retry-After (owner ruling
+                    // 2026-09-25, item 12); refused for good: 404. address = null, as above.
+                    if (reconciler.isPreparing(entry)) {
+                        observer.refused("unavailable", null, entryKind);
+                        return HttpAnswer.of(503, Map.of("Retry-After", List.of("5")), "VERSION_NOT_READY",
+                                "the version is still being prepared");
+                    }
                     observer.refused("not_found", null, entryKind);
                     return HttpAnswer.of(404, Map.of(), "VERSION_NOT_AVAILABLE", "version is not loadable");
                 }
