@@ -115,7 +115,7 @@ class SeederTest {
                 .fetch().stream()
                 .map(r -> line("perm", r.value1(), r.value2()))
                 .toList();
-        assertThat(actual).hasSize(196).containsExactlyInAnyOrderElementsOf(expected.get("perm"));
+        assertThat(actual).hasSize(208).containsExactlyInAnyOrderElementsOf(expected.get("perm"));
     }
 
     @Test
@@ -260,7 +260,7 @@ class SeederTest {
     void secondRunChangesNothing() {
         assertThat(secondRun).isEqualTo(firstRun);
         assertThat(firstRun.get("iam_roles")).hasSize(18);
-        assertThat(firstRun.get("iam_role_permissions")).hasSize(196);
+        assertThat(firstRun.get("iam_role_permissions")).hasSize(208);
         assertThat(firstRun.get("msg_event_types")).hasSize(73);
         assertThat(firstRun.get("msg_event_type_spec_versions")).hasSize(73);
         assertThat(firstRun.get("app_applications")).hasSize(1);

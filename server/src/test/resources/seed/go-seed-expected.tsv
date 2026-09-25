@@ -18,6 +18,8 @@
 # a live Go database — the exact strings/JSON are read verbatim from Go
 # `internal/platform/seed/{permissions,roles,event_types,event_schemas}.go` at the hand-off's
 # reference commit (`07184da`+), which the K2 report cites; a live-DB re-dump was not run for this unit.
+# Owner ruling 2026-09-25 (backlog item 13): service-account permissions on admin/iam-admin (5 each)
+# and :view on iam-readonly/viewer — Java-first.
 # router-api-auth.md (2026-09-25): platform:router-operator (role + 2 perm rows) and router:view on
 # platform:viewer and platform:application-service are Java-first; Go has no router API auth.
 # code-first-connections.md slice K3 (2026-09-21): the `platform:admin:subscription:synced` `schema`
@@ -238,6 +240,18 @@ perm	platform:viewer	platform:messaging:router:view
 perm	platform:application-service	platform:messaging:router:view
 perm	platform:router-operator	platform:messaging:router:view
 perm	platform:router-operator	platform:messaging:router:operate
+perm	platform:admin	platform:iam:service-account:view
+perm	platform:admin	platform:iam:service-account:create
+perm	platform:admin	platform:iam:service-account:update
+perm	platform:admin	platform:iam:service-account:delete
+perm	platform:admin	platform:iam:service-account:manage
+perm	platform:iam-admin	platform:iam:service-account:view
+perm	platform:iam-admin	platform:iam:service-account:create
+perm	platform:iam-admin	platform:iam:service-account:update
+perm	platform:iam-admin	platform:iam:service-account:delete
+perm	platform:iam-admin	platform:iam:service-account:manage
+perm	platform:iam-readonly	platform:iam:service-account:view
+perm	platform:viewer	platform:iam:service-account:view
 eventtype	platform:iam:user:created	User Created	CURRENT	UI	false	platform	iam	user
 eventtype	platform:iam:user:updated	User Updated	CURRENT	UI	false	platform	iam	user
 eventtype	platform:iam:user:activated	User Activated	CURRENT	UI	false	platform	iam	user

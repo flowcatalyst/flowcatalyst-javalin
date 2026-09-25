@@ -1937,7 +1937,7 @@ What is left needs a ruling or was judged not worth changing:
 12. ~~**Versioned call to a not-yet-prepared candidate**~~ **RULED 2026-09-25:** still preparing is 503 `VERSION_NOT_READY` with `Retry-After`; refused for good stays 404 `VERSION_NOT_AVAILABLE`. It applies only after the token, permission and reach checks, so the pre-reach 404 is unchanged. The pinned-version loader must say which case it hit. The original question: it answers 404 `VERSION_NOT_AVAILABLE` like a
     refused one; a 503 + Retry-After would tell a caller to wait.
 
-13. ~~**Seed roles lost provisioning**~~ **RULED 2026-09-25:** `platform:iam-admin` **and** `platform:admin` get `service-account` view/create/update/delete/manage; `platform:iam-readonly` and `platform:viewer` get `service-account:view`. The ceiling in item 14 bounds what either can hand out. The original question follows. (S1) — provisioning a service account, its roles and its
+13. ~~**Seed roles lost provisioning**~~ **RULED and BUILT 2026-09-25:** `platform:iam-admin` **and** `platform:admin` get `service-account` view/create/update/delete/manage; `platform:iam-readonly` and `platform:viewer` get `service-account:view`. The ceiling in item 14 bounds what either can hand out. The original question follows. (S1) — provisioning a service account, its roles and its
     token now need `SERVICE_ACCOUNT_CREATE`/`UPDATE`, which no seed role but super-admin holds.
     Give them to `platform:admin` / `iam-admin`?
 14. ~~**No ceiling on role assignment**~~ **RULED 2026-09-25: specific gate + ceiling.** Setting roles requires

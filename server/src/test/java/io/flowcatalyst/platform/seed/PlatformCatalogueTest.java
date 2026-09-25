@@ -93,7 +93,7 @@ class PlatformCatalogueTest {
             assertThat(r.permissions()).isNotEmpty().doesNotHaveDuplicates();
             total += r.permissions().size();
         }
-        assertThat(total).isEqualTo(196);
+        assertThat(total).isEqualTo(208);
         assertThat(roles.get(0).permissions()).containsExactly(Permissions.ADMIN_ALL);
         // router-api-auth.md rule 3: the application-service permissions, then router:view for
         // the SDK's in-flight check — and nothing that operates the router.
@@ -101,6 +101,18 @@ class PlatformCatalogueTest {
                 .endsWith(Permissions.ROUTER_VIEW).hasSize(Permissions.APPLICATION_SERVICE.size() + 1);
         assertThat(roles.get(17).name()).isEqualTo("platform:router-operator");
         assertThat(roles.get(17).permissions()).containsExactly(Permissions.ROUTER_VIEW, Permissions.ROUTER_OPERATE);
+        // Owner ruling 2026-09-25 (item 13): admin and iam-admin provision service accounts;
+        // iam-readonly (4) and viewer (10) only read them.
+        for (int i : new int[] {1, 3}) {
+            assertThat(roles.get(i).permissions()).as(roles.get(i).name()).contains(
+                    Permissions.ADMIN_SERVICE_ACCOUNT_READ, Permissions.ADMIN_SERVICE_ACCOUNT_CREATE,
+                    Permissions.ADMIN_SERVICE_ACCOUNT_UPDATE, Permissions.ADMIN_SERVICE_ACCOUNT_DELETE,
+                    Permissions.ADMIN_SERVICE_ACCOUNT_MANAGE);
+        }
+        for (int i : new int[] {4, 10}) {
+            assertThat(roles.get(i).permissions()).as(roles.get(i).name()).contains(Permissions.ADMIN_SERVICE_ACCOUNT_READ)
+                    .doesNotContain(Permissions.ADMIN_SERVICE_ACCOUNT_CREATE, Permissions.ADMIN_SERVICE_ACCOUNT_UPDATE);
+        }
         assertThat(roles.get(10).permissions()).as("viewer reads the router, never operates it")
                 .contains(Permissions.ROUTER_VIEW).doesNotContain(Permissions.ROUTER_OPERATE);
         // R3′ (`docs/spec/router-config-auth.md`): exactly the one permission

@@ -40,7 +40,11 @@ public final class PlatformRoles {
                             // docs/spec/config-permissions.md §A.4: platform:admin holds
                             // view + manage (manage replaces the old update code).
                             ADMIN_CONFIG_READ, ADMIN_CONFIG_MANAGE,
-                            ADMIN_CORS_ORIGIN_READ, ADMIN_CORS_ORIGIN_CREATE, ADMIN_CORS_ORIGIN_DELETE)),
+                            ADMIN_CORS_ORIGIN_READ, ADMIN_CORS_ORIGIN_CREATE, ADMIN_CORS_ORIGIN_DELETE,
+                            // Owner ruling 2026-09-25 (backlog "Overnight review" item 13): S1 made service
+                            // accounts need these, and no seed role but super-admin held them.
+                            ADMIN_SERVICE_ACCOUNT_READ, ADMIN_SERVICE_ACCOUNT_CREATE, ADMIN_SERVICE_ACCOUNT_UPDATE,
+                            ADMIN_SERVICE_ACCOUNT_DELETE, ADMIN_SERVICE_ACCOUNT_MANAGE)),
 
             // platform:admin-readonly
             mk("admin-readonly", "Platform Admin Read-Only",
@@ -70,7 +74,11 @@ public final class PlatformRoles {
                             ADMIN_IDENTITY_PROVIDER_READ, ADMIN_IDENTITY_PROVIDER_CREATE,
                             ADMIN_IDENTITY_PROVIDER_UPDATE, ADMIN_IDENTITY_PROVIDER_DELETE,
                             ADMIN_EMAIL_DOMAIN_MAPPING_READ, ADMIN_EMAIL_DOMAIN_MAPPING_CREATE,
-                            ADMIN_EMAIL_DOMAIN_MAPPING_UPDATE, ADMIN_EMAIL_DOMAIN_MAPPING_DELETE)),
+                            ADMIN_EMAIL_DOMAIN_MAPPING_UPDATE, ADMIN_EMAIL_DOMAIN_MAPPING_DELETE,
+                            // Owner ruling 2026-09-25 (backlog "Overnight review" item 13): S1 made service
+                            // accounts need these, and no seed role but super-admin held them.
+                            ADMIN_SERVICE_ACCOUNT_READ, ADMIN_SERVICE_ACCOUNT_CREATE, ADMIN_SERVICE_ACCOUNT_UPDATE,
+                            ADMIN_SERVICE_ACCOUNT_DELETE, ADMIN_SERVICE_ACCOUNT_MANAGE)),
 
             // platform:iam-readonly
             mk("iam-readonly", "Platform IAM Read-Only",
@@ -81,7 +89,9 @@ public final class PlatformRoles {
                             IAM_CLIENT_ACCESS_READ,
                             // docs/spec/reach-only-routes.md §2.
                             ADMIN_IDENTITY_PROVIDER_READ,
-                            ADMIN_EMAIL_DOMAIN_MAPPING_READ)),
+                            ADMIN_EMAIL_DOMAIN_MAPPING_READ,
+                            // Owner ruling 2026-09-25, item 13.
+                            ADMIN_SERVICE_ACCOUNT_READ)),
 
             // platform:client-admin — delegated user management scoped to the
             // administrator's own client(s). Same user permissions as iam-admin
@@ -174,7 +184,9 @@ public final class PlatformRoles {
                             ADMIN_CONFIG_READ,
                             ADMIN_CORS_ORIGIN_READ,
                             // docs/spec/router-api-auth.md rule 3.
-                            ROUTER_VIEW)),
+                            ROUTER_VIEW,
+                            // Owner ruling 2026-09-25, item 13.
+                            ADMIN_SERVICE_ACCOUNT_READ)),
 
             // platform:portal-administrator — CLIENT-delegable: assign to a
             // client administrator (manage their client's portal users in the
