@@ -1959,7 +1959,7 @@ What is left needs a ruling or was judged not worth changing:
     role, `platform:super-admin` included (and `SERVICE_ACCOUNT_UPDATE` may grant an SA super-admin
     and mint for it). Only assign authority you hold? And should `USER_ASSIGN_ROLES`, not the
     user-write any-of, gate role routes?
-15. ~~**Cross-application role permissions refused**~~ **RULED 2026-09-25:** the SDK sync, and every caller
+15. ~~**Cross-application role permissions refused**~~ **RULED and BUILT 2026-09-25:** the SDK sync, and every caller
     other than a super-admin, is refused with `PERMISSION_OUTSIDE_APPLICATION`. A super-admin acting
     through the admin API may put another application's permissions on a role, and the audit names the
     cross-application permission. **Before deploying**, list the roles that would be refused:

@@ -28,7 +28,7 @@ public final class GrantPermission {
                 .authorize(Operation.Authorize.publicAccess())
                 .execute((cmd, ec) -> {
                     Role before = Access.byName(repo, cmd.roleName());
-                    Role role = before.grant(cmd.permission());
+                    Role role = before.grant(cmd.permission(), Access.crossApplication());
                     // Owner ruling 2026-09-25: only a permission the caller holds.
                     RoleCeiling.requirePermissions(Auth.current(), RoleCeiling.changed(before.permissions(), role.permissions()));
                     return Plan.save(role, repo, RolePermissionGranted.of(ec, role, cmd.permission()));

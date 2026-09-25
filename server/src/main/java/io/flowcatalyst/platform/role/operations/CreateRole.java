@@ -33,7 +33,7 @@ public final class CreateRole {
                     Role role = Role.create(cmd.applicationCode(), cmd.roleName(), cmd.displayName())
                             .withDescription(cmd.description())
                             .withClientManaged(cmd.clientManaged())
-                            .withPermissions(cmd.permissions());
+                            .withPermissions(cmd.permissions(), Access.crossApplication());
                     // Owner ruling 2026-09-25: only permissions the caller holds.
                     RoleCeiling.requirePermissions(Auth.current(), role.permissions());
                     return Plan.save(role, repo, RoleCreated.of(ec, role));

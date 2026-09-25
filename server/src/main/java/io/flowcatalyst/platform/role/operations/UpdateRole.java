@@ -29,7 +29,8 @@ public final class UpdateRole {
                 .authorize(Operation.Authorize.publicAccess())
                 .execute((cmd, ec) -> {
                     Role before = Access.byId(repo, cmd.id());
-                    Role role = before.update(new Role.Changes(cmd.displayName(), cmd.description(), cmd.permissions(), cmd.clientManaged()));
+                    Role role = before.update(new Role.Changes(cmd.displayName(), cmd.description(), cmd.permissions(), cmd.clientManaged()),
+                            Access.crossApplication());
                     // Owner ruling 2026-09-25: only permissions the caller holds may be added or removed.
                     RoleCeiling.requirePermissions(Auth.current(), RoleCeiling.changed(before.permissions(), role.permissions()));
                     return Plan.save(role, repo, RoleUpdated.of(ec, role));

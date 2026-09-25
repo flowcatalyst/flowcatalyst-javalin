@@ -191,25 +191,36 @@ class RolesBffTest {
         assertThat(http.delete("/bff/roles/" + fullName, anchorRoleWriter).statusCode()).isEqualTo(204);
     }
 
-    /// Security-fixes S1.5 through the BFF: an application role may not be
-    /// created or updated with a `platform:` permission (the super-admin
-    /// wildcard) — 400 `PERMISSION_OUTSIDE_APPLICATION`, nothing stored.
+    /// Security-fixes S1.5 through the BFF, as ruled 2026-09-25 (backlog item 15): an
+    /// application role may not be created or updated with another application's
+    /// permission (here the super-admin wildcard) by anyone but a super-admin, 400
+    /// `PERMISSION_OUTSIDE_APPLICATION` with nothing stored. A super-admin may.
     @Test
-    void anApplicationRoleCannotCarryAPlatformPermission() {
+    void onlyASuperAdminPutsAnotherApplicationsPermissionOnARole() {
+        String[] roleWriter = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:iam:role:view,platform:iam:role:create,platform:iam:role:update,"
+                        + "platform:iam:role:delete,platform:iam:user:create"};
         String name = roleName("s15");
         String fullName = "rbffapp" + RUN + ":" + name;
         var create = http.post("/bff/roles", "{\"applicationCode\":\"rbffapp" + RUN + "\",\"roleName\":\"" + name
-                + "\",\"displayName\":\"D\",\"permissions\":[\"platform:*:*:*\"]}", ANCHOR);
+                + "\",\"displayName\":\"D\",\"permissions\":[\"platform:iam:user:create\"]}", roleWriter);
         assertThat(create.statusCode()).as(create.body()).isEqualTo(400);
         assertThat(json(create).get("error").asText()).isEqualTo("PERMISSION_OUTSIDE_APPLICATION");
         assertThat(http.get("/bff/roles/" + fullName, ANCHOR).statusCode()).isEqualTo(404);
 
         http.post("/bff/roles", "{\"applicationCode\":\"rbffapp" + RUN + "\",\"roleName\":\"" + name
                 + "\",\"displayName\":\"D\",\"permissions\":[\"rbffapp" + RUN + ":a:b:c\"]}", ANCHOR);
-        var update = http.put("/bff/roles/" + fullName, "{\"permissions\":[\"platform:iam:user:create\"]}", ANCHOR);
+        var update = http.put("/bff/roles/" + fullName, "{\"permissions\":[\"platform:iam:user:create\"]}", roleWriter);
         assertThat(update.statusCode()).as(update.body()).isEqualTo(400);
         assertThat(json(http.get("/bff/roles/" + fullName, ANCHOR)).get("permissions").valueStream()
                 .map(JsonNode::asText).toList()).containsExactly("rbffapp" + RUN + ":a:b:c");
+
+        var bySuperAdmin = http.put("/bff/roles/" + fullName, "{\"permissions\":[\"rbffapp" + RUN + ":a:b:c\","
+                + "\"platform:iam:user:create\"]}", ANCHOR);
+        assertThat(bySuperAdmin.statusCode()).as(bySuperAdmin.body()).isEqualTo(204);
+        assertThat(json(http.get("/bff/roles/" + fullName, ANCHOR)).get("permissions").valueStream()
+                .map(JsonNode::asText).toList()).contains("platform:iam:user:create");
     }
 
     @Test

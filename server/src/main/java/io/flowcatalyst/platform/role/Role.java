@@ -107,11 +107,26 @@ public record Role(
         return colon < 0 ? name : name.substring(0, colon);
     }
 
+    /// Whether a change may put another application's permissions on this
+    /// role. Owner ruling 2026-09-25 (backlog "Overnight review" item 15): only
+    /// a super-admin, through the admin API; the SDK sync and the catalogue
+    /// sync never.
+    public enum CrossApplication {
+        REFUSED, ALLOWED
+    }
+
     /// The confinement rule (security-fixes S1.5): every code's first
     /// segment is this role's application.
     ///
     /// @throws UseCaseException validation `PERMISSION_OUTSIDE_APPLICATION`
     private List<String> confined(List<String> codes) {
+        return confined(codes, CrossApplication.REFUSED);
+    }
+
+    private List<String> confined(List<String> codes, CrossApplication crossApplication) {
+        if (crossApplication == CrossApplication.ALLOWED) {
+            return codes;
+        }
         String app = owningApplicationCode();
         for (String code : codes) {
             String first = code == null ? "" : code.split(":", 2)[0];
@@ -137,6 +152,11 @@ public record Role(
     ///
     /// @throws UseCaseException conflict `CODE_ROLE_IMMUTABLE` for a catalogue role
     public Role update(Changes changes) {
+        return update(changes, CrossApplication.REFUSED);
+    }
+
+    /// [#update(Changes)], with another application's permissions allowed or not.
+    public Role update(Changes changes, CrossApplication crossApplication) {
         if (isCode()) {
             throw UseCaseException.conflict("CODE_ROLE_IMMUTABLE", "Roles with source=CODE cannot be modified");
         }
@@ -144,7 +164,7 @@ public record Role(
                 changes.displayName() == null ? displayName : changes.displayName().strip(),
                 changes.description() == null ? description : changes.description(),
                 applicationCode,
-                changes.permissions() == null ? permissions : confined(changes.permissions()),
+                changes.permissions() == null ? permissions : confined(changes.permissions(), crossApplication),
                 source,
                 changes.clientManaged() == null ? clientManaged : changes.clientManaged(),
                 createdAt, Instant.now());
@@ -173,7 +193,12 @@ public record Role(
     ///
     /// @throws UseCaseException validation `PERMISSION_OUTSIDE_APPLICATION` (confinement)
     public Role grant(String permission) {
-        confined(List.of(permission));
+        return grant(permission, CrossApplication.REFUSED);
+    }
+
+    /// [#grant(String)], with another application's permission allowed or not.
+    public Role grant(String permission, CrossApplication crossApplication) {
+        confined(List.of(permission), crossApplication);
         if (permissions.contains(permission)) {
             return this;
         }
@@ -216,7 +241,12 @@ public record Role(
 
     /// @throws UseCaseException validation `PERMISSION_OUTSIDE_APPLICATION` (confinement)
     public Role withPermissions(List<String> newPermissions) {
-        return replacePermissions(newPermissions == null ? null : confined(newPermissions));
+        return withPermissions(newPermissions, CrossApplication.REFUSED);
+    }
+
+    /// [#withPermissions(List)], with another application's permissions allowed or not.
+    public Role withPermissions(List<String> newPermissions, CrossApplication crossApplication) {
+        return replacePermissions(newPermissions == null ? null : confined(newPermissions, crossApplication));
     }
 
     private Role replacePermissions(List<String> newPermissions) {

@@ -2,6 +2,8 @@ package io.flowcatalyst.platform.role.operations;
 
 import io.flowcatalyst.platform.role.Role;
 import io.flowcatalyst.platform.role.RoleRepository;
+import io.flowcatalyst.platform.shared.auth.Auth;
+import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 
 /// Load-or-404 — the opening of every by-id / by-name write operation's
@@ -25,5 +27,15 @@ final class Access {
     /// @throws UseCaseException not-found `Role_NOT_FOUND`
     static Role byName(RoleRepository repo, String name) {
         return repo.findByName(name).orElseThrow(() -> UseCaseException.resourceNotFound("Role", name));
+    }
+
+    /// Owner ruling 2026-09-25 (backlog "Overnight review" item 15): through
+    /// the admin API a super-admin may put another application's permissions
+    /// on a role; everyone else is confined to the role's own application
+    /// (S1.5). The role's event and audit row name the permission, so the
+    /// cross-application grant is on record.
+    static Role.CrossApplication crossApplication() {
+        AuthContext ac = Auth.current();
+        return ac != null && ac.isSuperAdmin() ? Role.CrossApplication.ALLOWED : Role.CrossApplication.REFUSED;
     }
 }
