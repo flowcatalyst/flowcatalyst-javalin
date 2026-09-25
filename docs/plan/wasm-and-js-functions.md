@@ -109,8 +109,9 @@ section above. **Done.**
 
 *Status (2026-09-25): **W1–W5 all landed** — W1+W2 `3b44ecc7` (runtime), W3 `4de4a51c` (JS guest,
 sample, `fn init --lang js`), W4 `d7cb3bef` (`fc_db_*`), W5 (SPA create/publish, `fn validate`
-test, docs, an e2e step publishing and calling the JS sample — e2e 55/55 on Java). Remaining from
-this plan: "Later" (Rust guest sample + template, TinyGo). The note below is from the W1+W2 review:*
+test, docs, an e2e step publishing and calling the JS sample — e2e 55/55 on Java). W6 (Rust: the `flowcatalyst-function`
+crate, `function-hello-rust`, `fn init --lang rust`, host integration test) landed 2026-09-25.
+Remaining from this plan: TinyGo. The note below is from the W1+W2 review:*
 
 *Status (2026-09-24): W1 + W2 implemented per `docs/spec/function-wasm-runtime.md`, reviewed and merged. One W0 finding did not hold for the SDK as ported: `CompiledPlugin.instantiate()`
 re-parses the module and builds a fresh `CachedAotMachineFactory` per instance, so every instance
