@@ -535,7 +535,90 @@ a bug in your own code must never take down every future call on that instance).
 package works only once bundled into your single output file by `esbuild` — packages depending on
 Node built-ins or the DOM will not bundle cleanly. Steady-state call overhead is on the order of
 **~0.3 ms** — fine behind an HTTP endpoint for glue code, webhook handlers and thin API calls; not
-for heavy compute, which belongs in a Rust guest (§8a) or a JVM function instead.
+for heavy compute, which belongs in a Rust guest (§8c) or a JVM function instead.
+
+## 8c. Rust functions
+
+Rust compiles straight to Wasm (`runtime: wasm`, same as §8a) with the Extism Rust PDK
+(`extism-pdk`) — no interpreter in the loop, unlike §8b's JS-via-QuickJS. Spec:
+`docs/spec/function-rust-guest.md`.
+
+**Scaffold.** `fcdev fn init --lang rust <dir>` writes a starter project: `Cargo.toml` (depending
+on `flowcatalyst-function` via `path = "lib/flowcatalyst-function"` — the crate ships with the
+scaffold, the same reasoning as `@flowcatalyst/function` and the JVM function API; it is not on
+crates.io), `src/lib.rs`, `manifest.json` (`runtime: wasm`, `entrypoint: handle`) and a README with
+the build steps. `examples/function-hello-rust` is the worked example, the Rust twin of
+`examples/function-hello`.
+
+**Toolchain.** Rust (`rustup`) with the `wasm32-unknown-unknown` target
+(`rustup target add wasm32-unknown-unknown`); `cargo`. No separate compiler step like `extism-js` —
+`cargo build` produces the Wasm module directly:
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo build --release --target wasm32-unknown-unknown
+fcdev fn publish target/wasm32-unknown-unknown/release/<crate>.wasm --manifest manifest.json
+```
+
+**Writing the handler** — `flowcatalyst-function` mirrors `function-api`'s and
+`@flowcatalyst/function`'s shapes under the same names, adapted to Rust idiom: `FunctionRequest`
+(with `body()`/`text()`/`json::<T>()` helpers over the wire's base64 body), a `Caller` enum
+(`Platform | Anonymous | Principal(PrincipalCaller)` — `PrincipalCaller` has the same
+`has_permission`/`has_any_permission`/`has_all_permissions`/`has_role`/`is_anchor`/
+`can_access_client`/`can_access_application`/`client_id` helpers as Java's `Caller.Principal`,
+tested against the same wildcard-match cases), `FunctionResult` built through
+`FunctionResult::ok()/::json()/::text()/::status()/::fail()/::retry(seconds)`, and a `Context`
+(`config`, `secrets`, `http`, `events`, `db(name)`, `logger`, `now()`) your handler reads through:
+
+```rust
+use extism_pdk::plugin_fn;
+use flowcatalyst_function::{handler, FunctionResult};
+
+#[plugin_fn]
+pub fn handle(_input: String) -> extism_pdk::FnResult<String> {
+    handler(|req, ctx| -> Result<FunctionResult, String> {
+        if req.path == "/healthz" {
+            return FunctionResult::json(200, &serde_json::json!({"status": "ok"}))
+                .map_err(|e| e.to_string());
+        }
+        let greeting = ctx.config.get("GREETING").unwrap_or_else(|| "Hello".to_string());
+        FunctionResult::json(200, &serde_json::json!({"message": greeting}))
+            .map_err(|e| e.to_string())
+    })
+}
+```
+
+**One deliberate difference from JS.** `@flowcatalyst/function`'s builders throw, caught by its
+`handler()` — the instance survives. On `wasm32-unknown-unknown`, a Rust panic cannot be caught:
+`catch_unwind` compiles but does not actually intercept a panic on this target (verified against
+the toolchain), so panicking would trap the whole instance for what should be a one-call mistake —
+worse than JS, not equivalent to it. So `flowcatalyst-function`'s handler closure returns
+`Result<FunctionResult, E>` instead of returning `FunctionResult` directly and throwing on trouble:
+an `Err` (or the `?` of a builder like `FunctionResult::fail(...)`, which itself returns `Result`
+rather than panicking on bad input) becomes the fixed reason "the function failed" — a controlled
+`500`, logged with the real detail, never leaking it into the response body — exactly section 8a's
+rule, just reached through `Result` instead of a caught exception. A genuine Rust panic
+(`unwrap()` on `None`, an index out of bounds, ...) still traps the instance —
+`flowcatalyst-function` cannot protect against that the way the JS library can; write fallible
+operations to return `Result` and propagate with `?` rather than `.unwrap()`.
+
+`ctx.http.request(...)` calls through Extism's own `http::request` (section 8a's allowlist and
+deadline apply identically); a host outside `manifest.httpAllow`, or an unreachable one, is
+`Err(HttpDenied)` rather than a reply you have to remember to check the status of. `ctx.db(name)`
+wraps the five `fc_db_*` host functions section 8a describes: `.query(sql, params)` /
+`.execute(sql, params)` for an autocommit statement, `.transaction(|tx| { ... })` to borrow one
+connection for a closure — commits on `Ok`, rolls back on `Err` (the invocation's own end-of-call
+cleanup still force-releases it either way).
+
+**What works, what doesn't.** No heap-allocating standard library gaps that matter for typical glue
+code — this is real, compiled Rust, not an interpreter — but `wasm32-unknown-unknown`'s `std` has no
+OS clock or filesystem of its own; `flowcatalyst-function` reads the host's WASI clock for `now()`
+rather than `std::time::SystemTime`, and there is no `std::fs` to reach for regardless (the guest
+has no filesystem, section 8a). Keep the crate's own dependency tree small: everything compiles into
+the one Wasm module, and `[profile.release]` with `opt-level = "z"`, `lto = true`,
+`panic = "abort"` (the example's and the scaffold's default) keeps it small. Good for compute the
+interpreter-based JS guest is not (section 8b), with the panic caveat above the one thing to design
+around.
 
 ## 9. Building, shrinking and testing (the pipeline)
 

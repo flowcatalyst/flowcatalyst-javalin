@@ -58,6 +58,8 @@ WASM_GUEST_DIR := function-host/src/test/wasm-guests/fc-test-guest
 WASM_FIXTURE_DIR := function-host/src/test/resources/wasm
 WASM_JS_EXAMPLE_DIR := examples/function-hello-js
 WASM_JS_FIXTURE_DIR := function-host/src/test/resources/wasm/js
+WASM_RUST_EXAMPLE_DIR := examples/function-hello-rust
+WASM_RUST_FIXTURE_DIR := function-host/src/test/resources/wasm/rust
 
 wasm-fixtures: ## Rebuild the committed Wasm test guest and its sha256 record (docs/spec/function-wasm-runtime.md §5)
 	cargo build --release --locked --target wasm32-unknown-unknown --manifest-path $(WASM_GUEST_DIR)/Cargo.toml --target-dir function-host/target/wasm-guests
@@ -66,6 +68,9 @@ wasm-fixtures: ## Rebuild the committed Wasm test guest and its sha256 record (d
 	cd $(WASM_JS_EXAMPLE_DIR) && npm install && npm run build
 	cp $(WASM_JS_EXAMPLE_DIR)/dist/function.wasm $(WASM_JS_FIXTURE_DIR)/function_hello_js.wasm
 	cd $(WASM_JS_FIXTURE_DIR) && shasum -a 256 *.wasm > SHA256SUMS
+	cargo build --release --locked --target wasm32-unknown-unknown --manifest-path $(WASM_RUST_EXAMPLE_DIR)/Cargo.toml --target-dir $(WASM_RUST_EXAMPLE_DIR)/target
+	cp $(WASM_RUST_EXAMPLE_DIR)/target/wasm32-unknown-unknown/release/function_hello_rust.wasm $(WASM_RUST_FIXTURE_DIR)/function_hello_rust.wasm
+	cd $(WASM_RUST_FIXTURE_DIR) && shasum -a 256 *.wasm > SHA256SUMS
 
 examples: ## Build, shrink and test the sample functions (examples/function-hello, examples/function-subscription-test)
 	$(MVN) -q -B -Pexamples -pl examples/function-hello,examples/function-subscription-test -am verify -Dtest='ShrunkJarTest' -Dsurefire.failIfNoSpecifiedTests=false

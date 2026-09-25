@@ -1,0 +1,31 @@
+{
+  "$schema": "../../server/src/main/resources/schemas/function-manifest.schema.json",
+  "runtime": "wasm",
+  "entrypoint": "handle",
+  "pool": "default",
+  "warm": false,
+  "limits": {
+    "maxDurationMs": 10000,
+    "maxConcurrency": 8,
+    "wasmMemoryMb": 64
+  },
+  "endpoints": [
+    { "path": "/events/greeting-requested", "auth": "webhook" },
+    { "path": "/api/hello/{name}", "auth": "platform", "methods": ["GET"] },
+    { "path": "/healthz", "auth": "none", "methods": ["GET"] },
+    { "path": "/api/proxy", "auth": "none", "methods": ["GET"] }
+  ],
+  "subscriptions": [
+    {
+      "eventType": "hello:greeting:greeting:requested",
+      "path": "/events/greeting-requested",
+      "mode": "IMMEDIATE",
+      "maxRetries": 3,
+      "timeoutSeconds": 30,
+      "dataOnly": false
+    }
+  ],
+  "config": ["GREETING"],
+  "secrets": ["API_KEY"],
+  "httpAllow": ["127.0.0.1"]
+}

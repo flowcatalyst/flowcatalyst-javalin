@@ -253,6 +253,108 @@ class InitCommandTest {
         assertThat(dir.resolve("dist/function.wasm")).exists();
     }
 
+    // ── --lang rust (docs/spec/function-rust-guest.md §3) ──────────────────────────────────────
+
+    /// The full Rust scaffold: `Cargo.toml` depends on `flowcatalyst-function` via
+    /// `path = "lib/flowcatalyst-function"` (never crates.io — the crate is not published there),
+    /// the manifest declares `runtime: wasm`, and the library itself is present under
+    /// `lib/flowcatalyst-function`.
+    @Test
+    void langRustWritesTheScaffoldWithTheLibraryDependencyAndWasmManifest(@TempDir Path projectDir)
+            throws IOException {
+        Path dir = projectDir.resolve("myfn");
+        var r = FnCliTestSupport.run(env(), "fn", "init", dir.toString(), "--lang", "rust");
+        assertThat(r.exit()).as(r.err()).isZero();
+
+        assertThat(Files.exists(dir.resolve("pom.xml"))).as("no Java scaffold alongside it").isFalse();
+        assertThat(Files.exists(dir.resolve("package.json"))).as("no JS scaffold alongside it").isFalse();
+        assertThat(Files.isRegularFile(dir.resolve("Cargo.toml"))).isTrue();
+        assertThat(Files.isRegularFile(dir.resolve("src/lib.rs"))).isTrue();
+        assertThat(Files.isRegularFile(dir.resolve("README.md"))).isTrue();
+
+        String cargoToml = Files.readString(dir.resolve("Cargo.toml"));
+        assertThat(cargoToml)
+                .as("mutant: point at crates.io instead of the shipped local copy")
+                .contains("flowcatalyst-function = { path = \"lib/flowcatalyst-function\" }");
+
+        JsonNode manifest = readManifest(dir);
+        assertThat(manifest.path("runtime").asString()).isEqualTo("wasm");
+        assertThat(manifest.path("entrypoint").asString()).isEqualTo("handle");
+        FunctionLimits defaults = FunctionLimits.defaults();
+        assertThat(Manifest.parseStrict(manifest, Runtime.WASM, defaults, ClientCeilings.of(defaults)).runtime())
+                .isEqualTo(Runtime.WASM);
+
+        assertThat(Files.isRegularFile(dir.resolve("lib/flowcatalyst-function/Cargo.toml")))
+                .as("mutant: the library never gets extracted").isTrue();
+        assertThat(Files.isRegularFile(dir.resolve("lib/flowcatalyst-function/src/lib.rs"))).isTrue();
+        assertThat(Files.isRegularFile(dir.resolve("lib/flowcatalyst-function/src/handler.rs"))).isTrue();
+        assertThat(Files.isRegularFile(dir.resolve("lib/flowcatalyst-function/src/db.rs"))).isTrue();
+    }
+
+    /// The shipped crate is the REAL `clients/function-rust` source, byte for byte — not some
+    /// separately hand-maintained copy that could silently drift from it.
+    @Test
+    void langRustLibraryMatchesTheRealSourceByteForByte(@TempDir Path projectDir) throws IOException {
+        Path dir = projectDir.resolve("myfn");
+        var r = FnCliTestSupport.run(env(), "fn", "init", dir.toString(), "--lang", "rust");
+        assertThat(r.exit()).as(r.err()).isZero();
+
+        Path realSource = Path.of("..", "clients", "function-rust", "src", "handler.rs");
+        org.junit.jupiter.api.Assumptions.assumeTrue(Files.isRegularFile(realSource),
+                "clients/function-rust not checked out beside fcdev");
+        assertThat(Files.readString(dir.resolve("lib/flowcatalyst-function/src/handler.rs")))
+                .isEqualTo(Files.readString(realSource));
+    }
+
+    /// `runtime: wasm` is not optional for `--lang rust`, mirroring `--lang js`: an explicit,
+    /// CONFLICTING `--runtime jvm` is refused rather than silently overridden.
+    @Test
+    void langRustRefusesAnExplicitConflictingRuntime(@TempDir Path projectDir) throws IOException {
+        Path dir = projectDir.resolve("myfn");
+        var r = FnCliTestSupport.run(env(), "fn", "init", dir.toString(), "--lang", "rust", "--runtime", "jvm");
+        assertThat(r.exit()).isEqualTo(1);
+        assertThat(r.err()).contains("--lang rust");
+        assertThat(Files.exists(dir)).as("nothing written on refusal").isFalse();
+    }
+
+    /// `--lang rust --runtime wasm` (the only non-conflicting explicit combination) behaves
+    /// exactly like `--lang rust` alone.
+    @Test
+    void langRustAcceptsAnExplicitNonConflictingRuntime(@TempDir Path projectDir) throws IOException {
+        Path dir = projectDir.resolve("myfn");
+        var r = FnCliTestSupport.run(env(), "fn", "init", dir.toString(), "--lang", "rust", "--runtime", "wasm");
+        assertThat(r.exit()).as(r.err()).isZero();
+        assertThat(Files.isRegularFile(dir.resolve("Cargo.toml"))).isTrue();
+    }
+
+    /// The whole point, Rust's own version of [#aFreshScaffoldBuildsWithPlainMavenPackage] and
+    /// [#aFreshJsScaffoldBuildsToARealWasmModule]: a freshly scaffolded Rust project actually
+    /// compiles to a real Wasm module with nothing but what `fn init` wrote. Skipped when the
+    /// wasm32-unknown-unknown target is not installed.
+    @Test
+    void aFreshRustScaffoldBuildsToARealWasmModule(@TempDir Path projectDir) throws Exception {
+        Path dir = projectDir.resolve("myfn");
+        var r = FnCliTestSupport.run(env(), "fn", "init", dir.toString(), "--lang", "rust", "--name", "myfn");
+        assertThat(r.exit()).as(r.err()).isZero();
+
+        java.util.function.Predicate<String> onPath = bin -> java.util.Arrays.stream(
+                        System.getenv().getOrDefault("PATH", "").split(java.io.File.pathSeparator))
+                .anyMatch(p -> Files.isExecutable(Path.of(p, bin)));
+        org.junit.jupiter.api.Assumptions.assumeTrue(onPath.test("cargo"), "no cargo on PATH");
+
+        Path log = projectDir.resolve("cargo.log");
+        Process build = new ProcessBuilder("cargo", "build", "--release", "--target", "wasm32-unknown-unknown")
+                .directory(dir.toFile()).redirectErrorStream(true).redirectOutput(log.toFile()).start();
+        boolean finished = build.waitFor(180, java.util.concurrent.TimeUnit.SECONDS);
+        String logText = Files.readString(log);
+        org.junit.jupiter.api.Assumptions.assumeTrue(!logText.contains("error[E0463]")
+                        && !logText.contains("may not be installed"),
+                "wasm32-unknown-unknown target not installed: " + logText);
+        assertThat(finished).as("cargo build finished").isTrue();
+        assertThat(build.exitValue()).as(logText).isZero();
+        assertThat(dir.resolve("target/wasm32-unknown-unknown/release/myfn.wasm")).exists();
+    }
+
     // ── the generated handler compiles, and its class name equals the manifest's entrypoint ────
 
     @Test

@@ -268,6 +268,37 @@
               </target>
             </configuration>
           </execution>
+          <!--
+            `fn init`'s rust language option ships `flowcatalyst-function` (`docs/spec/function-rust-guest.md`
+            §3) the same way: its own source (`clients/function-rust`'s Cargo.toml + src/**, no
+            build step — an author's own cargo build to the wasm32 target compiles it
+            as a path dependency) zipped here (same technique as fn-init-function-js above) so
+            fcdev carries it as a resource and writes it into the generated project's own
+            lib/flowcatalyst-function. target/ and tests/ are excluded — neither is needed to
+            build the library into a guest.
+          -->
+          <execution>
+            <id>fn-init-function-rust</id>
+            <phase>process-resources</phase>
+            <goals>
+              <goal>run</goal>
+            </goals>
+            <configuration>
+              <target>
+                <fail message="clients/function-rust is missing at ${project.basedir}/../clients/function-rust">
+                  <condition>
+                    <not><available file="${project.basedir}/../clients/function-rust/Cargo.toml"/></not>
+                  </condition>
+                </fail>
+                <zip destfile="${project.build.outputDirectory}/fn-init/flowcatalyst-function-rust.zip">
+                  <fileset dir="${project.basedir}/../clients/function-rust">
+                    <include name="Cargo.toml"/>
+                    <include name="src/**"/>
+                  </fileset>
+                </zip>
+              </target>
+            </configuration>
+          </execution>
         </executions>
       </plugin>
       <!--

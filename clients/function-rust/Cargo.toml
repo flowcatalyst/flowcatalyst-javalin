@@ -1,0 +1,23 @@
+# The guest library for FlowCatalyst Rust functions (docs/spec/function-rust-guest.md) — the Rust
+# twin of clients/function-js. No dependencies beyond extism-pdk (pinned to the version the host's
+# own test guest uses, function-host/src/test/wasm-guests/fc-test-guest/Cargo.toml), serde and
+# serde_json.
+#
+# crate-type carries both "cdylib" (a function's own build compiles this crate as part of a Wasm
+# module) and "rlib" (so `cargo test` can link and run the pure parts on the host target — see
+# src/lib.rs's module doc for which parts those are and why).
+[package]
+name = "flowcatalyst-function"
+version = "0.1.0"
+edition = "2021"
+description = "The guest library for FlowCatalyst Rust functions"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+extism-pdk = "=1.4.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -46,6 +46,12 @@ public final class InitCommand implements Callable<Integer> {
     /// [#JS_LIBRARY_DIR].
     static final String FUNCTION_JS_ZIP_RESOURCE = "/fn-init/flowcatalyst-function-js.zip";
     static final String JS_LIBRARY_DIR = "lib/flowcatalyst-function";
+    /// `--lang rust` (`docs/spec/function-rust-guest.md` §3): `flowcatalyst-function`'s
+    /// (Rust) source, zipped the same way, extracted into [#RUST_LIBRARY_DIR] — the
+    /// same directory name as [#JS_LIBRARY_DIR] since exactly one of the two is ever
+    /// written into a given scaffold.
+    static final String FUNCTION_RUST_ZIP_RESOURCE = "/fn-init/flowcatalyst-function-rust.zip";
+    static final String RUST_LIBRARY_DIR = "lib/flowcatalyst-function";
     private static final String DEFAULT_PLATFORM_URL = "http://localhost:8080";
     private static final String DEFAULT_PACKAGE = "com.example.fn";
     private static final String HANDLER_CLASS_NAME = "Handler";
@@ -58,13 +64,16 @@ public final class InitCommand implements Callable<Integer> {
 
     @Option(names = "--runtime", paramLabel = "<runtime>", defaultValue = "jvm",
             description = "jvm or wasm (default: ${DEFAULT-VALUE}). wasm has no project template — "
-                    + "writes manifest.json only, same as --manifest-only, UNLESS --lang js names one")
+                    + "writes manifest.json only, same as --manifest-only, UNLESS --lang js/rust names one")
     String runtime;
 
     @Option(names = "--lang", paramLabel = "<lang>", defaultValue = "java",
-            description = "java or js (default: ${DEFAULT-VALUE}). js scaffolds a JavaScript "
+            description = "java, js or rust (default: ${DEFAULT-VALUE}). js scaffolds a JavaScript "
                     + "project (runtime: wasm) — package.json, tsconfig.json, src/index.ts and "
-                    + "the @flowcatalyst/function library, ready for `npm install && npm run build`")
+                    + "the @flowcatalyst/function library, ready for `npm install && npm run build`. "
+                    + "rust scaffolds a Rust project (runtime: wasm) — Cargo.toml, src/lib.rs and "
+                    + "the flowcatalyst-function crate, ready for `cargo build --release --target "
+                    + "wasm32-unknown-unknown`")
     String lang;
 
     @Option(names = "--package", paramLabel = "<java.package>",
@@ -88,20 +97,21 @@ public final class InitCommand implements Callable<Integer> {
         PrintWriter err = spec.commandLine().getErr();
 
         String langValue = (lang == null || lang.isBlank()) ? "java" : lang.toLowerCase(Locale.ROOT);
-        if (!langValue.equals("java") && !langValue.equals("js")) {
-            err.println("--lang must be java or js");
+        if (!langValue.equals("java") && !langValue.equals("js") && !langValue.equals("rust")) {
+            err.println("--lang must be java, js or rust");
             return 1;
         }
 
         String runtimeValue;
-        if (langValue.equals("js")) {
-            // A JS function declares runtime: wasm — build concern, not an author choice
-            // (docs/spec/function-js-guest.md §3's plan ruling D4). --runtime defaults to
-            // "jvm" (its own @Option default), so only an EXPLICIT, conflicting --runtime is
-            // refused — --lang js alone, or --lang js --runtime wasm, both proceed.
+        if (langValue.equals("js") || langValue.equals("rust")) {
+            // A JS or Rust function declares runtime: wasm — build concern, not an author choice
+            // (docs/spec/function-js-guest.md §3's plan ruling D4, mirrored for Rust by
+            // docs/spec/function-rust-guest.md §3). --runtime defaults to "jvm" (its own @Option
+            // default), so only an EXPLICIT, conflicting --runtime is refused — --lang js/rust
+            // alone, or --lang js/rust --runtime wasm, both proceed.
             boolean runtimeExplicit = spec.commandLine().getParseResult().hasMatchedOption("--runtime");
             if (runtimeExplicit && !"wasm".equalsIgnoreCase(runtime)) {
-                err.println("--lang js scaffolds a wasm function — omit --runtime or pass --runtime wasm");
+                err.println("--lang " + langValue + " scaffolds a wasm function — omit --runtime or pass --runtime wasm");
                 return 1;
             }
             runtimeValue = "wasm";
@@ -114,8 +124,8 @@ public final class InitCommand implements Callable<Integer> {
         }
         // --lang java (the default) keeps today's behaviour exactly: --runtime wasm without
         // --lang writes manifest.json only, same as --manifest-only. This flag is never
-        // consulted below when langValue is "js" — that branch always writes its own project
-        // template — so it needs no js exception of its own.
+        // consulted below when langValue is "js" or "rust" — those branches always write their
+        // own project template — so it needs no js/rust exception of its own.
         boolean manifestOnlyEffective = manifestOnly || runtimeValue.equals("wasm");
 
         Path targetDir = Path.of(dir);
@@ -135,6 +145,13 @@ public final class InitCommand implements Callable<Integer> {
             // @flowcatalyst/function ships with the scaffold, the same reasoning as the JVM
             // function API below: the package is not on npm.
             files.putAll(functionJsLibraryFiles(targetDir));
+        } else if (langValue.equals("rust")) {
+            files.put(targetDir.resolve("Cargo.toml"), cargoTomlRust(artifactId).getBytes(StandardCharsets.UTF_8));
+            files.put(targetDir.resolve("src/lib.rs"), libRs(artifactId).getBytes(StandardCharsets.UTF_8));
+            files.put(targetDir.resolve("README.md"), README_RUST.getBytes(StandardCharsets.UTF_8));
+            // flowcatalyst-function ships with the scaffold, the same reasoning as
+            // @flowcatalyst/function above: the crate is not on crates.io.
+            files.putAll(functionRustLibraryFiles(targetDir));
         } else if (!manifestOnlyEffective) {
             files.put(targetDir.resolve("pom.xml"),
                     pomXml(packageName, artifactId, Version.current()).getBytes(StandardCharsets.UTF_8));
@@ -349,6 +366,16 @@ public final class InitCommand implements Callable<Integer> {
             out.println("  fcdev fn publish dist/function.wasm --manifest manifest.json");
             return;
         }
+        if (langValue.equals("rust")) {
+            out.println("wrote Cargo.toml, manifest.json, src/lib.rs, README.md, and "
+                    + "flowcatalyst-function under " + RUST_LIBRARY_DIR);
+            out.println("next steps (needs the wasm32-unknown-unknown target — docs/functions.md):");
+            out.println("  rustup target add wasm32-unknown-unknown");
+            out.println("  cargo build --release --target wasm32-unknown-unknown");
+            out.println("  fcdev fn publish target/wasm32-unknown-unknown/release/" + cargoCrateName(artifactId)
+                    + ".wasm --manifest manifest.json");
+            return;
+        }
         if (manifestOnlyEffective) {
             out.println("wrote manifest.json");
             return;
@@ -469,6 +496,125 @@ public final class InitCommand implements Callable<Integer> {
                     ByteArrayOutputStream buffer = new ByteArrayOutputStream();
                     zip.transferTo(buffer);
                     out.put(targetDir.resolve(JS_LIBRARY_DIR).resolve(entry.getName()), buffer.toByteArray());
+                }
+            }
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+        return out;
+    }
+
+    // ── --lang rust (docs/spec/function-rust-guest.md §3) ──────────────────────────────────────
+
+    private static final String README_RUST = """
+            # A FlowCatalyst Rust function
+
+            Generated by `fcdev fn init --lang rust` (`docs/spec/function-rust-guest.md` §3). Rust
+            functions run **through Wasm** (compiled straight to `wasm32-unknown-unknown` with the
+            Extism Rust PDK); `manifest.json` declares `"runtime": "wasm"`.
+
+            ## Toolchain
+
+            - Rust (`rustup`) with the `wasm32-unknown-unknown` target:
+              `rustup target add wasm32-unknown-unknown`
+            - `cargo`
+
+            ## Build
+
+            ```bash
+            cargo build --release --target wasm32-unknown-unknown
+            ```
+
+            The built module lands under `target/wasm32-unknown-unknown/release/`.
+
+            ## Publish
+
+            ```bash
+            fcdev fn publish target/wasm32-unknown-unknown/release/<crate>.wasm --manifest manifest.json
+            ```
+
+            See `docs/functions.md` "Rust functions" for what the `flowcatalyst-function` crate
+            offers and its limits.
+            """;
+
+    /// A valid Cargo package name from an arbitrary `--name`/directory-derived `artifactId`:
+    /// lowercase, `[a-z0-9_-]` only, never starting with something other than a letter (Cargo
+    /// itself is stricter than an npm package name, which `--lang js` did not need to sanitise).
+    private static String cargoPackageName(String artifactId) {
+        String sanitized = artifactId.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "-");
+        if (sanitized.isEmpty() || !Character.isLetter(sanitized.charAt(0))) {
+            sanitized = "fn-" + sanitized;
+        }
+        return sanitized;
+    }
+
+    /// The `.wasm` filename `cargo build` writes for [#cargoPackageName]'s crate name — Cargo
+    /// replaces `-` with `_` in the compiled artifact's file name.
+    private static String cargoCrateName(String artifactId) {
+        return cargoPackageName(artifactId).replace('-', '_');
+    }
+
+    private static String cargoTomlRust(String artifactId) {
+        return """
+                [package]
+                name = "%s"
+                version = "0.1.0"
+                edition = "2021"
+                publish = false
+
+                [lib]
+                crate-type = ["cdylib"]
+                path = "src/lib.rs"
+
+                [dependencies]
+                flowcatalyst-function = { path = "%s" }
+                extism-pdk = "=1.4.1"
+                serde_json = "1"
+
+                [profile.release]
+                opt-level = "z"
+                lto = true
+                codegen-units = 1
+                panic = "abort"
+                """.formatted(cargoPackageName(artifactId), RUST_LIBRARY_DIR);
+    }
+
+    private static String libRs(String artifactId) {
+        return """
+                use extism_pdk::plugin_fn;
+                use flowcatalyst_function::{handler, FunctionResult};
+
+                // Generated by `fcdev fn init --lang rust` — replace this with your own logic.
+                // Declared in manifest.json as a `platform`-authenticated endpoint at `/hello`.
+                #[plugin_fn]
+                pub fn handle(_input: String) -> extism_pdk::FnResult<String> {
+                    handler(|_req, _ctx| -> Result<FunctionResult, String> {
+                        FunctionResult::json(200, &serde_json::json!({"message": "hello from %s"}))
+                            .map_err(|e| e.to_string())
+                    })
+                }
+                """.formatted(artifactId);
+    }
+
+    /// `flowcatalyst-function`'s (Rust) source, zipped by `fcdev/pom.xml`'s `fn-init-function-rust`
+    /// execution (the same technique as [#functionJsLibraryFiles]) and extracted here into
+    /// [#RUST_LIBRARY_DIR] — fcdev ships the crate with the scaffold (the crate is not on
+    /// crates.io), matching the JS library's and the JVM function API's own local-copy treatment.
+    private static Map<Path, byte[]> functionRustLibraryFiles(Path targetDir) {
+        Map<Path, byte[]> out = new LinkedHashMap<>();
+        try (InputStream in = InitCommand.class.getResourceAsStream(FUNCTION_RUST_ZIP_RESOURCE)) {
+            if (in == null) {
+                throw new IllegalStateException("fcdev was built without " + FUNCTION_RUST_ZIP_RESOURCE);
+            }
+            try (ZipInputStream zip = new ZipInputStream(in)) {
+                ZipEntry entry;
+                while ((entry = zip.getNextEntry()) != null) {
+                    if (entry.isDirectory()) {
+                        continue;
+                    }
+                    ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+                    zip.transferTo(buffer);
+                    out.put(targetDir.resolve(RUST_LIBRARY_DIR).resolve(entry.getName()), buffer.toByteArray());
                 }
             }
         } catch (IOException e) {

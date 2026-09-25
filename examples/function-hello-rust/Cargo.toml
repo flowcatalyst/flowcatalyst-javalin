@@ -1,0 +1,26 @@
+# The Rust twin of examples/function-hello-js (docs/spec/function-rust-guest.md §2). Built with
+# `cargo build --release --locked --target wasm32-unknown-unknown`; the built module is committed
+# at function-host/src/test/resources/wasm/rust/function_hello_rust.wasm and rebuilt only by
+# `make wasm-fixtures` (CI has no Rust-to-Wasm toolchain check beyond what's already installed for
+# the fc-test-guest fixture).
+[package]
+name = "function-hello-rust"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+flowcatalyst-function = { path = "../../clients/function-rust" }
+extism-pdk = "=1.4.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

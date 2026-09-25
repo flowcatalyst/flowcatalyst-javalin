@@ -245,7 +245,7 @@ credentials, defaults the artifact store to its state directory, and runs with s
 
 Full detail: `docs/deployments.md` §4.
 
-## 12. Wasm and JavaScript functions
+## 12. Wasm, JavaScript and Rust functions
 
 A function's `runtime` may be `wasm` instead of `jvm`: a WebAssembly module run by the host on
 Endive (pure Java) through the Extism ABI, sandboxed the same way — its own instance per call,
@@ -267,13 +267,21 @@ lifecycle as §3–§8 describe. What differs:
   request/result/context). QuickJS has no Node event loop and no Node built-ins beyond what
   bundles cleanly with `esbuild` — fine for glue code and webhook handlers, not heavy compute.
   Toolchain and worked example: `docs/functions.md` §8b, `examples/function-hello-js`.
+- **Rust** — compiles straight to Wasm with the Extism Rust PDK (`extism-pdk`), no interpreter in
+  the loop. `fcdev fn init --lang rust` scaffolds a project against `flowcatalyst-function`, a
+  crate mirroring the same request/result/context shapes under Rust names
+  (`FunctionRequest`/`FunctionResult`/`Context`), adapted to Rust idiom: the handler closure
+  returns `Result<FunctionResult, E>` rather than throwing, because a Rust panic on
+  `wasm32-unknown-unknown` traps the whole instance and cannot be caught the way a JS exception
+  can. Toolchain and worked example: `docs/functions.md` §8c, `examples/function-hello-rust`.
 - **Limits** — `limits.wasmMemoryMb` (default 64) caps each instance's linear memory; a module
   declaring more as its minimum is refused at load (`LOAD:WASM_MEMORY_OVER_CAP`). The module
   compiles once per version (≈0.2 s, ≈4–6 MB of metaspace) — counted by the same `MetaspaceGuard`
   a JVM function's classes are.
-- **Building it** — a Rust guest uses the Extism Rust PDK directly; a JavaScript guest's build is
-  plain npm (`fcdev` never drives it — there is no `fn build` for JS): `npm run build` bundles
-  with `esbuild` then compiles with `extism-js`, and `fcdev fn publish`/`fn deploy` upload the
+- **Building it** — a Rust guest's build is `cargo build --release --target
+  wasm32-unknown-unknown`, nothing else; a JavaScript guest's build is plain npm (`fcdev` never
+  drives either — there is no `fn build` for Wasm languages): `npm run build` bundles with
+  `esbuild` then compiles with `extism-js`. Either way, `fcdev fn publish`/`fn deploy` upload the
   resulting `.wasm` exactly as they upload a jar. The admin SPA's create drawer and publish drawer
   both offer `wasm` (`docs/functions.md` §12).
 
