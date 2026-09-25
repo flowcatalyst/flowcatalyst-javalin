@@ -178,10 +178,17 @@ public final class EventTypesBff {
     private static void syncPlatform(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         Checks.require(Auth.current(), EVENT_TYPE_SYNC); // security-fixes S1.2: the tier is reach, the permission authority
+        // Owner ruling 2026-09-25 (backlog "Overnight review" item 16): the platform's own
+        // definitions belong to `platform` only. The body used to name any application,
+        // and removeUnlisted then replaced that application's event types with these.
         String applicationCode = "platform";
         if (!ctx.body().isBlank()) {
             var body = ctx.bodyAsClass(SyncPlatformRequest.class);
-            if (body.applicationCode() != null && !body.applicationCode().isBlank()) applicationCode = body.applicationCode();
+            if (body.applicationCode() != null && !body.applicationCode().isBlank()
+                    && !body.applicationCode().strip().equals(applicationCode)) {
+                throw HttpError.badRequest("PLATFORM_SYNC_ONLY",
+                        "sync-platform syncs the platform's own event types into 'platform' only");
+            }
         }
         var defs = PlatformEventTypes.all();
         var inputs = defs.stream().map(d -> new SyncEventTypeInput(d.code(), d.name(), null, d.schema())).toList();

@@ -200,6 +200,21 @@ class EventTypesBffTest {
         assertThat(body.get("total").asInt()).isGreaterThan(0);
     }
 
+    /// Owner ruling 2026-09-25 (backlog "Overnight review" item 16): the body may not
+    /// aim the platform catalogue (with removeUnlisted) at another application. That
+    /// would replace the application's event types, so its own survive the attempt.
+    @Test
+    void syncPlatformTargetsThePlatformOnly() {
+        String own = create(code("keepme"), "", ANCHOR);
+        var aimed = http.post("/bff/event-types/sync-platform", "{\"applicationCode\":\"etbff" + RUN + "\"}", ANCHOR);
+        assertThat(aimed.statusCode()).as(aimed.body()).isEqualTo(400);
+        assertThat(json(aimed).get("error").asText()).isEqualTo("PLATFORM_SYNC_ONLY");
+        assertThat(http.get("/bff/event-types/" + own, ANCHOR).statusCode()).as("the application's type survives").isEqualTo(200);
+
+        assertThat(http.post("/bff/event-types/sync-platform", "{\"applicationCode\":\"platform\"}", ANCHOR).statusCode())
+                .as("naming the platform itself is fine").isEqualTo(200);
+    }
+
     /// Security-fixes S1.2: sync-platform needs `EVENT_TYPE_SYNC` at the
     /// anchor tier too — an anchor holding every other event-type code is
     /// refused `PERMISSION_REQUIRED`; the sync code alone (not the wildcard)
