@@ -14,6 +14,15 @@ duplication/builders) → fixes, each with a test that fails on the old code (mu
 orchestrator, or by the agent and spot-checked). Spec `docs/spec/security-fixes-2026-09-24.md`
 (S0–S3); owner questions and deliberate deferrals in `docs/backlog.md` §"Overnight review".
 
+- **Parity pass (2026-09-25, vs Go `73a6918`):** 171 bad steps → 59, and each of the 59 has a
+  cause, in `docs/backlog.md` §"Parity corpus against Go 73a6918". The owner decides between
+  allow-listing them and retiring the job.
+  - The sync routes' long-standing 500 `AUDIT_WRITE`, in both Java and Go, was
+    `aud_logs.entity_id` varchar(17). V18 widens it (`f4611623`). V18 was first left out of
+    `db/migration.index`, so native images would have skipped it; that is fixed.
+  - Go `a8ff165` is ported: a new service account starts with no application access unless the
+    create asks for `allApplications`, and only a caller that itself holds all-applications access
+    may ask. The create drawer's application access is now a three-way choice: none, all, or one.
 - **W6 landed (2026-09-25): Rust functions** — `clients/function-rust` (`flowcatalyst-function`
   crate: ABI types, caller helpers on the shared case table, `handler` whose author function returns
   `Result` — a panic cannot be caught on `wasm32-unknown-unknown` and traps the instance, so

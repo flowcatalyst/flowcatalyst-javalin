@@ -1949,3 +1949,31 @@ at embedded-Postgres start. Not reproduced: fcdev alone 273/273, and the next fu
 whole-exchange deadline (a stalled body hung for ever), and every test boot re-downloaded the 33 MB
 jar. If it recurs: run the reactor without `-q` (the log then names each class) and `jstack` the
 surefire fork while it is silent.
+
+## Parity corpus against Go `73a6918` (2026-09-25) — every remaining difference has a cause
+
+1,363 steps. Before this pass, 171 were bad. Two harness fixes brought that to 59:
+- the login capture now accepts the ruled `__Host-fc_session` rename (`340fbd14`), and the
+  normaliser maps that name and the `WWW-Authenticate` realm back to Go's;
+- the two connection scenarios now create real service accounts, because a connection's signer
+  must be an account the caller can reach (S3).
+
+The sync `AUDIT_WRITE` 500 that ran through the corpus for weeks was a real defect on both sides,
+now fixed in Java (V18, `f4611623`). One more of the 59 was a Go commit Java did not yet have:
+`a8ff165`, "a new service account starts with no application access", ported the same night. What
+is left falls into these groups; none is a Java regression.
+
+| Cause | Steps | What differs |
+|---|---|---|
+| **Go's sync `AUDIT_WRITE` bug** (`aud_logs.entity_id` varchar(17); fixed in Java by V18, not in Go) | 11 `applications sync-*`, 3 `code-first-connections` ERRORs | Go 500, Java 200 |
+| …and what Java's successful syncs left behind | ~20 list reads across `bff`, `clients`, `docs`, `roles`, `principals`, `profile-only`, `dispatch-pools`, `connections`, `subscriptions`, `me-public-config` | Java has the synced app's rows (a pool, a user, application links). The synced app's code is also masked as `«auto:entityId»` in Java only, because Java's audit rows captured it as an entity id; that reorders the sorted lists. |
+| **Java-only function service** | 11 `login-as-b` / `confinement-*` permission lists; `bff dashboard-stats` (18 roles vs 16) and `bff-sync-platform-roles` (17 vs 15) | `platform:function:*` permissions; the `function-host` and `function-publisher` roles |
+| **`config:update` → `config:manage`** (V17, `docs/spec/config-permissions.md`) | 3 `confinement-login` | permission name |
+| **Refresh replay leeway** (S2; owner question 5 above) | `refresh-reuse-rotated-token`, `refresh-after-family-revoked` | Go 400, Java 200 inside the 10 s leeway |
+| **Cross-application role permissions refused** (S1.5; owner question 15 above) | `roles grant-on-code-sourced-role-is-allowed` | Go 200, Java 400 `PERMISSION_OUTSIDE_APPLICATION` |
+| **Audit facets** | `audit-logs entity-types-facet…`, `operations-facet…` | Java has the sync commands' audit rows; Go's syncs never wrote them |
+
+**Owner decision:** these are not in `parity/expected-diffs.json`, which needs a ruling id per
+entry. Go is being retired, so the choice is to allow-list them under the rulings above (V17, S1.5,
+S2, function service, "Go's sync defect") or to retire the parity job. Everything except the two
+open questions (5 and 15) already has its ruling.

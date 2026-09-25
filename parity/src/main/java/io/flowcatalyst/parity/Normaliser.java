@@ -64,9 +64,13 @@ public final class Normaliser {
     /// `Set-Cookie` is masked outright (rule 5); `Retry-After` collapses to
     /// presence (spec §4: "presence only"); everything else goes through
     /// rules 1–3 as a plain string.
-    private static String normaliseHeader(String name, String value, Vars vars, String baseUrl) {
+    static String normaliseHeader(String name, String value, Vars vars, String baseUrl) {
         if (ComparedHeaders.SET_COOKIE.equals(name)) return maskCookie(value);
         if (ComparedHeaders.RETRY_AFTER.equals(name)) return "«present»";
+        // The realm names the session cookie — the same ruled rename as maskCookie's.
+        if ("WWW-Authenticate".equalsIgnoreCase(name)) {
+            value = value.replace("realm=\"" + HARDENED_SESSION_COOKIE + "\"", "realm=\"" + SESSION_COOKIE + "\"");
+        }
         return normaliseString(value, vars, baseUrl).asString();
     }
 

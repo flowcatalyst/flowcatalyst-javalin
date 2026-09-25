@@ -1,7 +1,7 @@
 {
   "name": "code-first-connections: connection sync then subscription sync by connectionCode, and the no-fallback refusal",
   "why": "the driver for this whole unit (docs/go-mirror/2026-09-21-code-first-connections-handoff.md): an application syncs its own connection, then defines a subscription against it by CODE (never an id, which differs per environment) for one client — and a bare connectionCode must resolve ONLY this application's own namespace, never silently falling back to a shared connection of the same code (code-first-connections.md §3). Java-first until the owner runs this against Go (K2/K3 have no Go reference commit fixed at the time of writing).",
-  "covers": ["createApplication", "provisionApplicationServiceAccount", "createClient", "syncConnections",
+  "covers": ["createServiceAccount", "createApplication", "provisionApplicationServiceAccount", "createClient", "syncConnections",
              "syncSubscriptions", "createConnection"],
   "steps": [
     { "id": "login",
@@ -41,9 +41,15 @@
                              ] } },
       "expect": { "status": 200 } },
 
+    { "id": "create-shared-signer",
+      "request": { "method": "POST", "path": "/api/service-accounts",
+                   "body": { "code": "cfc-signer-${run}", "name": "CFC shared signer", "clientIds": [] } },
+      "expect": { "status": 201 },
+      "capture": { "sharedSaId": "/serviceAccount/id" } },
+
     { "id": "create-shared-connection",
       "request": { "method": "POST", "path": "/api/connections",
-                   "body": { "code": "cfc-shared-${run}", "name": "CFC Shared", "serviceAccountId": "svc_${run}" } },
+                   "body": { "code": "cfc-shared-${run}", "name": "CFC Shared", "serviceAccountId": "${sharedSaId}" } },
       "expect": { "status": 201 } },
 
     { "id": "sync-subscriptions-shared-connection-not-found-without-flag",

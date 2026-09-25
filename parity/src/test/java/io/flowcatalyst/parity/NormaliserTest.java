@@ -256,6 +256,16 @@ class NormaliserTest {
                 .as("only the session cookie is mapped").startsWith("__Host-fc_td=");
     }
 
+    /// The 401 challenge's realm names the session cookie, so the same ruled
+    /// rename applies to it; any other realm is left alone.
+    @Test
+    void theWwwAuthenticateRealmNamingTheHardenedCookieComparesAsGos() {
+        assertThat(Normaliser.normaliseHeader("WWW-Authenticate", "Bearer realm=\"__Host-fc_session\"", vars(), BASE_URL))
+                .isEqualTo(Normaliser.normaliseHeader("WWW-Authenticate", "Bearer realm=\"fc_session\"", vars(), BASE_URL));
+        assertThat(Normaliser.normaliseHeader("WWW-Authenticate", "Bearer realm=\"__Host-other\"", vars(), BASE_URL))
+                .contains("__Host-other");
+    }
+
     /// Rule 5: attribute order carries no meaning, so two orderings of the
     /// same attributes normalise to the same text.
     @Test

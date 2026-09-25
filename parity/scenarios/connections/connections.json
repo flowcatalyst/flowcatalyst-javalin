@@ -1,7 +1,7 @@
 {
   "name": "connections: CRUD (create/pause/activate re-read the row), filters, idempotent transitions, 4xx, real persisted-clientId confinement",
   "why": "A connection's clientId is genuinely persisted and drives authorization and visibility exactly like subscriptions (docs/spec/connection.md §5) — but create/pause/activate answer the full re-read ConnectionResponse, not just an id or 204, which is its own wire-shape hazard (a Go/Java field-order or omitted-null divergence would only show up on these three routes).",
-  "covers": ["listConnections", "createConnection", "getConnection", "updateConnection", "deleteConnection",
+  "covers": ["createServiceAccount", "listConnections", "createConnection", "getConnection", "updateConnection", "deleteConnection",
              "activateConnection", "pauseConnection", "createClient", "createPrincipal", "assignPrincipalRoles"],
   "steps": [
     { "id": "login",
@@ -9,10 +9,16 @@
                    "body": { "email": "${admin.email}", "password": "${admin.password}" } },
       "expect": { "status": 200 } },
 
+    { "id": "create-service-account",
+      "request": { "method": "POST", "path": "/api/service-accounts",
+                   "body": { "code": "s1ccon-sa-${run}", "name": "Connection signer", "clientIds": [] } },
+      "expect": { "status": 201 },
+      "capture": { "saId": "/serviceAccount/id" } },
+
     { "id": "create",
       "request": { "method": "POST", "path": "/api/connections",
                    "body": { "code": "s1ccon-${run}", "name": "Order Webhook", "description": "parity harness connection",
-                             "serviceAccountId": "svc_${run}" } },
+                             "serviceAccountId": "${saId}" } },
       "expect": { "status": 201 },
       "capture": { "conId": "/id" } },
 
@@ -22,7 +28,7 @@
     { "id": "create-client-scoped",
       "request": { "method": "POST", "path": "/api/connections",
                    "body": { "code": "s1ccon-${run}-scoped", "name": "Scoped Webhook",
-                             "serviceAccountId": "svc_${run}", "clientId": "${client.id}" } },
+                             "serviceAccountId": "${saId}", "clientId": "${client.id}" } },
       "expect": { "status": 201 },
       "capture": { "conScopedId": "/id" } },
 
@@ -61,15 +67,15 @@
 
     { "id": "create-code-required",
       "request": { "method": "POST", "path": "/api/connections",
-                   "body": { "name": "X", "serviceAccountId": "svc_${run}" } } },
+                   "body": { "name": "X", "serviceAccountId": "${saId}" } } },
 
     { "id": "create-invalid-code-format",
       "request": { "method": "POST", "path": "/api/connections",
-                   "body": { "code": "Bad Code", "name": "X", "serviceAccountId": "svc_${run}" } } },
+                   "body": { "code": "Bad Code", "name": "X", "serviceAccountId": "${saId}" } } },
 
     { "id": "create-name-required",
       "request": { "method": "POST", "path": "/api/connections",
-                   "body": { "code": "s1ccon-${run}-noname", "serviceAccountId": "svc_${run}" } } },
+                   "body": { "code": "s1ccon-${run}-noname", "serviceAccountId": "${saId}" } } },
 
     { "id": "create-service-account-required",
       "request": { "method": "POST", "path": "/api/connections",
@@ -77,13 +83,13 @@
 
     { "id": "create-duplicate-first",
       "request": { "method": "POST", "path": "/api/connections",
-                   "body": { "code": "s1ccon-${run}-dup", "name": "Dup", "serviceAccountId": "svc_${run}" } },
+                   "body": { "code": "s1ccon-${run}-dup", "name": "Dup", "serviceAccountId": "${saId}" } },
       "expect": { "status": 201 },
       "capture": { "dupConId": "/id" } },
 
     { "id": "create-duplicate-conflict",
       "request": { "method": "POST", "path": "/api/connections",
-                   "body": { "code": "s1ccon-${run}-dup", "name": "Dup Again", "serviceAccountId": "svc_${run}" } } },
+                   "body": { "code": "s1ccon-${run}-dup", "name": "Dup Again", "serviceAccountId": "${saId}" } } },
 
     { "id": "update-missing",
       "request": { "method": "PUT", "path": "/api/connections/con_doesnotexist${run}", "body": { "name": "X" } } },
@@ -96,6 +102,12 @@
                    "body": { "name": "S1C Connections Second Client", "identifier": "s1c-con-b-${run}" } },
       "expect": { "status": 201 },
       "capture": { "clientBId": "/id" } },
+
+    { "id": "create-service-account-b",
+      "request": { "method": "POST", "path": "/api/service-accounts",
+                   "body": { "code": "s1ccon-sab-${run}", "name": "Client B signer", "clientIds": ["${clientBId}"] } },
+      "expect": { "status": 201 },
+      "capture": { "saBId": "/serviceAccount/id" } },
 
     { "id": "create-second-principal",
       "request": { "method": "POST", "path": "/api/principals",
@@ -126,18 +138,18 @@
 
     { "id": "b-can-create-own",
       "request": { "method": "POST", "path": "/api/connections",
-                   "body": { "code": "s1cconb-${run}-own", "name": "X", "serviceAccountId": "svc_${run}",
+                   "body": { "code": "s1cconb-${run}-own", "name": "X", "serviceAccountId": "${saBId}",
                              "clientId": "${clientBId}" } },
       "expect": { "status": 201 },
       "capture": { "ownConId": "/id" } },
 
     { "id": "b-cannot-create-platform-wide",
       "request": { "method": "POST", "path": "/api/connections",
-                   "body": { "code": "s1cconb-${run}-platform", "name": "X", "serviceAccountId": "svc_${run}" } } },
+                   "body": { "code": "s1cconb-${run}-platform", "name": "X", "serviceAccountId": "${saBId}" } } },
 
     { "id": "b-cannot-create-scoped-to-foreign-client",
       "request": { "method": "POST", "path": "/api/connections",
-                   "body": { "code": "s1cconb-${run}-foreign", "name": "X", "serviceAccountId": "svc_${run}",
+                   "body": { "code": "s1cconb-${run}-foreign", "name": "X", "serviceAccountId": "${saBId}",
                              "clientId": "${client.id}" } } }
   ]
 }
