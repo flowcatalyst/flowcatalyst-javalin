@@ -3,6 +3,18 @@
 Decisions and follow-ups that came out of reviews and agent reports. Each
 item names its origin; items marked **owner** need Andrew's call.
 
+## e2e intermittent: the versions-table locator (2026-09-25)
+
+`e2e/tests/functions.spec.ts:246` (`claim a domain, publish, configure, promote, and reach the
+function`) failed once in a 55-flow Java run and passed on the uncontended rerun. The cause is in
+the test: `versionsTable(page)` is `.versions-tab table` `.first()`. Straight after the promote, while
+the versions DataTable re-renders, the first `table` under `.versions-tab` can be the **Aliases**
+table, whose `live` row reads `live LIVE` + `v1`. `getByText("LIVE")` is case-insensitive, so it
+matches two elements (strict-mode violation). The retry then failed on `CODE_EXISTS` (the fixture's
+application create is not idempotent). Fix: give the versions table its own test id (or
+`getByText("LIVE", { exact: true })` inside a stable container), and make the fixture's app create
+tolerate an existing `hello`. Not a product defect.
+
 ## Design smells to fix (from the shared-code audit, 2026-08-22)
 
 - ~~`Checks` is ~73 near-identical static one-liners over `Permissions`
