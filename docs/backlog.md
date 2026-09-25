@@ -1873,55 +1873,101 @@ overnight; fixes landed per `docs/spec/security-fixes-2026-09-24.md` and in the 
 What is left needs a ruling or was judged not worth changing:
 
 **Owner questions**
-1. **SSRF policy for delivery URLs** — subscription endpoints, scheduled-job and ingest target URLs
+1. ~~**SSRF policy for delivery URLs**~~ **RULED 2026-09-25: leave as is.** Tenants deploy no code; subscriptions, scheduled jobs and ingest targets are the operator's own tenant-specific code, so the URLs come from a trusted author (the same trust model as functions). — subscription endpoints, scheduled-job and ingest target URLs
    are only checked as `^https?://.+`; a tenant can target internal addresses (loopback, link-local
    incl. 169.254.169.254, the function host's private listener) and read up to 64 KiB of the
    response back through the attempts API. Block private/link-local/ULA outside dev mode, checked at
    create and against the resolved address at send (DNS rebinding)? Deployed dispatch uses internal
    Service Connect aliases — those would need an explicit allowance.
-2. **Router auth open by default** — with `FC_ROUTER_AUTH_USER` unset, `/messages`, breaker resets
+2. ~~**Router auth open by default**~~ **RULED 2026-09-25: platform-issued bearer tokens + permissions.** Found while asking:
+   the deployed router (`../inhance/iac/compute/fc-router.ts`) sets `AUTH_MODE=NONE` behind the
+   internet-facing ALB, so `/messages` (a caller-chosen mediation target, POSTed from inside the
+   VPC), seeding, breaker resets and the mock routes are open to the internet today. Owner rulings:
+   - the router verifies platform JWTs against the platform's JWKS (`FC_ROUTER_PLATFORM_URL`):
+     issuer, expiry, signature, `token_use=api`. Basic auth and `AUTH_MODE=NONE` apply in dev mode only;
+   - new permissions `platform:messaging:router:view` (monitoring reads) and
+     `platform:messaging:router:operate` (publish, breaker resets, in-flight ack, group-flush clear,
+     pool update, config reload, warning ack), held together by a new role `platform:router-operator`.
+     Super-admin holds them through its wildcard, and `platform:viewer` gets `:view`.
+     `platform:router` stays the router's own identity and does not grant calling it;
+   - the dashboard signs in through the platform (authorization code + PKCE, a public OAuth client
+     registered for it, access token held in memory);
+   - the mock, test and benchmark routes are mounted in dev mode only;
+   - `/health*`, `/q/health` and `/metrics` stay open.
+   Owner IaC notes: once this ships, drop `AUTH_MODE=NONE`. The Teams webhook URL in the same file
+   carries its `sig=` in plain text; move it to SSM. The original question follows. — with `FC_ROUTER_AUTH_USER` unset, `/messages`, breaker resets
    and `/api/test/*` are open on the API port (documented, `Env.java`). Refuse to start outside dev
    mode unless `AUTH_MODE=NONE` is explicit?
-3. **nOAuth on multi-tenant OIDC** — with a multi-tenant Entra IdP and no tenant pin, identity comes
+3. ~~**nOAuth on multi-tenant OIDC**~~ **RULED 2026-09-25: a multi-tenant IdP must pin the tenant.**
+   Go and Java agree today. The pin (`required_oidc_tenant_id`) exists and is enforced when set, but
+   it is optional. An unpinned multi-tenant mapping is bound only by the email domain, and Entra's
+   `email` claim is an unverified attribute any tenant admin can set. Provider-direct multi-tenant
+   logins check `allowedEmailDomains` only. To build:
+   (a) creating or updating a mapping to a multi-tenant OIDC IdP without a pin is refused with 400,
+       and so is switching an IdP to multi-tenant while one of its mappings lacks one;
+   (b) at login an unpinned multi-tenant mapping is refused and logged (covers existing rows);
+   (c) multi-tenant IdPs get an allowed-tenant list for provider-direct logins, enforced like the
+       pin (one additive column).
+   **Before deploying**, find the logins that would stop:
+   `SELECT m.email_domain, p.code FROM tnt_email_domain_mappings m JOIN oauth_identity_providers p
+   ON p.id = m.identity_provider_id WHERE p.oidc_multi_tenant AND coalesce(m.required_oidc_tenant_id,'') = '';`
+   The original question follows. — with a multi-tenant Entra IdP and no tenant pin, identity comes
    from the mutable `email` claim (and `preferred_username` fallback; `email_verified` ignored).
    Require a pinned tenant, and/or `email_verified`? (Entra often omits `email_verified`.)
-4. **Principal sync `passwordHash`** (S1) — applied only on create, and on an existing principal only
+4. ~~**Principal sync `passwordHash`**~~ **RULED 2026-09-25: never applied to an existing principal, for any caller** (the super-admin exception goes); used only when the sync creates the principal, and the result says when it was ignored. The original question follows. (S1) — applied only on create, and on an existing principal only
    for a super-admin caller. Confirm, or drop it for existing principals entirely.
-5. **Refresh replay leeway** (S2 review) — 10 s: a token rotated out moments ago may be presented
+5. ~~**Refresh replay leeway**~~ **RULED 2026-09-25: keep 10 s; make the TS and Laravel SDKs single-flight their refresh**, then revisit dropping the leeway once those ship. The two parity `refresh-*` steps are this ruling. The original question follows. (S2 review) — 10 s: a token rotated out moments ago may be presented
    again (SDK requests racing at expiry, a retry after a lost response) and gets a sibling in the
    same family; after that it is reuse and revokes the family. Strict alternative: every second
    presentation revokes (signs out users of the Laravel/TS SDKs, which refresh without a lock).
-6. **`/oauth/authorize` Bearer fallback** (C-Q25) — kept but narrowed to session tokens. Drop it?
-7. **2FA email-challenge budget** — reuses the password-reset policies (20/h per IP, 5/h per
+6. ~~**`/oauth/authorize` Bearer fallback**~~ **RULED 2026-09-25: drop it, cookie only** (supersedes C-Q25's "keep both orders"). No caller found in the SPA or the SDKs, and the session token is only ever issued as the cookie. The original question follows. (C-Q25) — kept but narrowed to session tokens. Drop it?
+7. ~~**2FA email-challenge budget**~~ **RULED 2026-09-25: keep the shared limits** (separate buckets, same numbers as password reset). The original question follows. — reuses the password-reset policies (20/h per IP, 5/h per
    address). `/auth/password-setup/request` now spends the same budgets under its own keys
    (`dbe3ad9c`) — revisit if the numbers change.
-8. **Unmapped email domain at `/auth/oidc/login`** answers 500 `OIDC_RESOLVE_FAILED` (spec
+8. ~~**Unmapped email domain at `/auth/oidc/login`**~~ **RULED 2026-09-25: 404 `EMAIL_DOMAIN_NOT_MAPPED`, logged at INFO**; a mapped domain whose IdP is broken stays 500. Supersedes auth-identity §4.3. The original question: it answers 500 `OIDC_RESOLVE_FAILED` (spec
    auth-identity §4.3, Go parity) — a user's typo, not a server fault. 400/404 instead?
-9. **Function outbound HTTP response cap** — `AllowlistHttpCaller` reads the whole body; an
+9. ~~**Function outbound HTTP response cap**~~ **RULED 2026-09-25: fixed 16 MiB**: a streamed read, failing with `RESPONSE_TOO_LARGE` to the function past the cap. Not configurable; documented in `functions.md`. The original question follows. — `AllowlistHttpCaller` reads the whole body; an
    allowlisted host returning GBs exhausts the host. A fixed cap changes the author contract.
-10. **Listener idle timeouts** — neither the platform nor the function host sets one; a slow-body
+10. ~~**Listener idle timeouts**~~ **RULED 2026-09-25: phase-aware, fixed values, both listeners.** A keep-alive idle connection closes after 75 s (above the ALB's 60 s). The request (headers and body) must be read within 30 s. No timeout while the handler runs or a response streams. The original question follows. — neither the platform nor the function host sets one; a slow-body
     client holds a connection indefinitely. A plain idle timeout would cut long invocations that
     are working silently, so it needs a request-phase-aware design.
-11. **Public API shapes** — `EventEmitException` (function-api: an expected outcome as an unchecked
+11. ~~**Public API shapes**~~ **RULED 2026-09-25:** function-api `Events.emit` returns a sealed `EmitResult` (`Emitted(id)` / `Refused(code, status, message)`) and `EventEmitException` goes. This breaks only the operator's own functions, and the API ships with fcdev. The SDKs gain a result-returning webhook `check()` (`Valid` / `Invalid(reason)`) in Java, TS and Laravel, and `verify()` stays as the throwing wrapper (additive, minor bump). The original question follows. — `EventEmitException` (function-api: an expected outcome as an unchecked
     exception) and the SDK's `WebhookSignature.verify` (void + throw) contradict CONVENTIONS §8 but
     are published contracts mirrored in the TS/Laravel SDKs.
-12. **Versioned call to a not-yet-prepared candidate** answers 404 `VERSION_NOT_AVAILABLE` like a
+12. ~~**Versioned call to a not-yet-prepared candidate**~~ **RULED 2026-09-25:** still preparing is 503 `VERSION_NOT_READY` with `Retry-After`; refused for good stays 404 `VERSION_NOT_AVAILABLE`. It applies only after the token, permission and reach checks, so the pre-reach 404 is unchanged. The pinned-version loader must say which case it hit. The original question: it answers 404 `VERSION_NOT_AVAILABLE` like a
     refused one; a 503 + Retry-After would tell a caller to wait.
 
-13. **Seed roles lost provisioning** (S1) — provisioning a service account, its roles and its
+13. ~~**Seed roles lost provisioning**~~ **RULED 2026-09-25:** `platform:iam-admin` **and** `platform:admin` get `service-account` view/create/update/delete/manage; `platform:iam-readonly` and `platform:viewer` get `service-account:view`. The ceiling in item 14 bounds what either can hand out. The original question follows. (S1) — provisioning a service account, its roles and its
     token now need `SERVICE_ACCOUNT_CREATE`/`UPDATE`, which no seed role but super-admin holds.
     Give them to `platform:admin` / `iam-admin`?
-14. **No ceiling on role assignment** (S1) — anyone with a user-write permission may assign any
+14. ~~**No ceiling on role assignment**~~ **RULED 2026-09-25: specific gate + ceiling.** Setting roles requires
+    `IAM_USER_ASSIGN_ROLES` for users and `SERVICE_ACCOUNT_UPDATE` for service accounts. A caller may
+    add or remove only roles whose every permission they hold, with wildcards honoured. The rule applies
+    to the change: kept roles are untouched, and removal counts. A refusal is 403 `ROLE_ABOVE_CALLER`
+    naming the roles. The same ceiling applies to IdP role mappings and email-domain `allowedRoles`.
+    The original question follows. (S1) — anyone with a user-write permission may assign any
     role, `platform:super-admin` included (and `SERVICE_ACCOUNT_UPDATE` may grant an SA super-admin
     and mint for it). Only assign authority you hold? And should `USER_ASSIGN_ROLES`, not the
     user-write any-of, gate role routes?
-15. **Cross-application role permissions refused** (S1.5) — a role may hold only its own
+15. ~~**Cross-application role permissions refused**~~ **RULED 2026-09-25:** the SDK sync, and every caller
+    other than a super-admin, is refused with `PERMISSION_OUTSIDE_APPLICATION`. A super-admin acting
+    through the admin API may put another application's permissions on a role, and the audit names the
+    cross-application permission. **Before deploying**, list the roles that would be refused:
+    `SELECT r.name, p.permission FROM iam_roles r JOIN iam_role_permissions p ON p.role_id = r.id WHERE split_part(p.permission, ':', 1) <> r.application_code;`
+    The original question follows. (S1.5) — a role may hold only its own
     application's permissions; an existing SDK role that grants another application's permissions
     will fail its next sync. Check live roles before deploying.
-16. **`/bff/event-types/sync-platform` takes `applicationCode` from the body** and syncs the
+16. ~~**`/bff/event-types/sync-platform` takes `applicationCode` from the body**~~ **RULED 2026-09-25: always `platform`; a body naming any other application is 400 `PLATFORM_SYNC_ONLY`.** The original question: and syncs the
     platform definitions into it with `removeUnlisted` — anyone with `EVENT_TYPE_SYNC` (in practice
     super-admins) can wipe an application's event types. Restrict to `platform`?
-17. **S3 owner notes** — fan-out jobs to a subscription with no account/connection are still signed
+17. ~~**S3 owner notes**~~ **RULED 2026-09-25:**
+    (a) event ingest is gated like dispatch-job ingest: a caller may ingest an event of application
+        X's type only if it may sign as X (`SigningReach.mayUseApplication`); platform events are
+        unaffected;
+    (b) keep the single-client default for an absent `clientId`;
+    (c) keep the whole-batch 409 for duplicate dispatch-job ids, checked against the live table only;
+    (d) `/sign` answering 403 out of reach is noted; the specs are already swept.
+    The original notes follow. — fan-out jobs to a subscription with no account/connection are still signed
     via the event type's application prefix (a client admin can ingest an event of another app's
     type and receive it signed); the single-client default for an absent `clientId` on ingest;
     `/sign` now 403 when the signer is out of reach; duplicate-id 409 vs a per-item result; the
@@ -1929,7 +1975,7 @@ What is left needs a ruling or was judged not worth changing:
     "not validated" for the account reference.
 18. ~~**Spec docs stale after S1**~~ — swept 2026-09-25 (`0ec420b9`, `dd8089b4`): principal,
     bff, application, serviceaccount, auth-core §9, subscription, connection.
-19. **Go**: the service-principal-id-as-account-id defect exists in Go's connection sync too (no
+19. ~~**Go**~~ **RULED 2026-09-25: no hand-off, Go is retiring.** The service-principal-id-as-account-id defect exists in Go's connection sync too (no
     hand-off written — Go is being retired).
 
 **Reviewed and deliberately left**
@@ -1975,7 +2021,9 @@ groups. None is a Java regression.
 | **Cross-application role permissions refused** (S1.5; owner question 15 above) | `roles grant-on-code-sourced-role-is-allowed` | Go 200, Java 400 `PERMISSION_OUTSIDE_APPLICATION` |
 | **Audit facets** | `audit-logs entity-types-facet…`, `operations-facet…` | Java has the sync commands' audit rows; Go's syncs never wrote them |
 
-**Owner decision:** these are not in `parity/expected-diffs.json`, which needs a ruling id per
+**RULED 2026-09-25: allow-list them under their rulings and keep the job running until cutover, then
+retire it.** Once item 15's super-admin exception lands, `roles grant-on-code-sourced-role-is-allowed`
+matches Go again. The original question: these are not in `parity/expected-diffs.json`, which needs a ruling id per
 entry. Go is being retired, so the choice is to allow-list them under the rulings above (V17, S1.5,
 S2, function service, "Go's sync defect") or to retire the parity job. Everything except the two
 open questions (5 and 15) already has its ruling.
