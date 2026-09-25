@@ -88,7 +88,10 @@ class FunctionHostReconcilerIntegrationTest {
                     // security-fixes S1.2: provisioning a service account and assigning its roles
                     // need these at the anchor tier too (the tier is reach, never authority).
                     "platform:admin:application:update", "platform:iam:service-account:create", "platform:iam:service-account:update",
-                    "platform:iam:service-account:view")
+                    "platform:iam:service-account:view",
+                    // The role ceiling (owner ruling 2026-09-25): assigning the host account
+                    // platform:application-service and platform:function-host needs their permissions.
+                    "platform:application-service:*:*", "platform:function:host:control", "platform:messaging:router:view")
     };
 
     @BeforeAll
