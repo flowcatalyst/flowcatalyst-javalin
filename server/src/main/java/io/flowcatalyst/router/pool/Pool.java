@@ -449,98 +449,157 @@ public final class Pool implements AutoCloseable {
     /// owner ruling 2026-09-17, `docs/spec/router-deferral-handback.md` R1 —
     /// a deferral naming a delay, which goes straight to the broker with
     /// that exact delay rather than being retried in memory.
+    ///
+    /// ### A worker that throws
+    ///
+    /// Only the mediator call is guarded inside [#deliverOnce]; a throw
+    /// anywhere else (a metrics sink, a broker call breaking its never-throws
+    /// contract, an invariant check) used to kill the worker with the message
+    /// neither acked nor nacked. Its tracker entry then held ownership, so the
+    /// broker's own redelivery was dropped as a duplicate until the reaper
+    /// freed it. The loop is guarded like the drainer's
+    /// ([#runDrainer]): the throwable is logged with its stack and the message
+    /// is nacked back with the backoff an unexpected failure earns
+    /// ([#returnAfterWorkerFailure]).
     private void runImmediate(QueuedMessage initial) {
         var message = initial;
-        while (true) {
-            var semaphore = slots;
-            try {
-                semaphore.acquire();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                immediateWaiting.decrementAndGet();
-                capacityChanged();
-                broker.nack(message, REJECTED_NACK_DELAY);
-                return;
-            }
-            Attempt attempt;
-            try {
-                immediateWaiting.decrementAndGet();
-                capacityChanged();
-                attempt = deliverOnce(message);
-            } finally {
-                semaphore.release();
-            }
-            if (attempt instanceof Attempt.Settled) {
-                return;
-            }
-            if (attempt instanceof Attempt.Rejected rejected) {
-                // R-57: the app ran the message and answered with a
-                // permanent application failure. Terminal on this one
-                // attempt — no bounded retry — so it is ACKed straight to
-                // the platform's review flow rather than looping.
-                broker.ack(message, "rejected");
-                return;
-            }
-            var failure = (Attempt.Failed) attempt;
+        // Whether `message` is currently counted in immediateWaiting — so the
+        // guard below can undo exactly what the loop had not yet undone.
+        boolean waiting = true;
+        try {
+            while (true) {
+                var semaphore = slots;
+                try {
+                    semaphore.acquire();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    immediateWaiting.decrementAndGet();
+                    waiting = false;
+                    capacityChanged();
+                    broker.nack(message, REJECTED_NACK_DELAY);
+                    return;
+                }
+                Attempt attempt;
+                try {
+                    immediateWaiting.decrementAndGet();
+                    waiting = false;
+                    capacityChanged();
+                    attempt = deliverOnce(message);
+                } finally {
+                    semaphore.release();
+                }
+                if (attempt instanceof Attempt.Settled) {
+                    return;
+                }
+                if (attempt instanceof Attempt.Rejected rejected) {
+                    // R-57: the app ran the message and answered with a
+                    // permanent application failure. Terminal on this one
+                    // attempt — no bounded retry — so it is ACKed straight to
+                    // the platform's review flow rather than looping.
+                    broker.ack(message, "rejected");
+                    return;
+                }
+                var failure = (Attempt.Failed) attempt;
 
-            // R1 (owner ruling 2026-09-17, docs/spec/router-deferral-handback.md):
-            // a deferral that named a delay goes straight back to the broker on
-            // its first occurrence — the exact delay asked for, no RetryPolicy
-            // curve, no 60 s cap. A deferral with no delay (delaySeconds == 0)
-            // falls through unchanged to the existing in-memory DEFERRED curve
-            // below: the target didn't ask for anything specific, so there is
-            // nothing here to hand back early. R5 (same doc, second unit):
-            // handing back is only correct when the broker that delivered this
-            // message actually honours the delay (SQS/Postgres) — NATS does
-            // not, so a delay-bearing deferral on NATS also falls through to
-            // the in-memory curve, the pre-R1 behaviour.
-            if (failure.outcome() instanceof MediationOutcome.Deferred deferred && deferred.delaySeconds() > 0
-                    && broker.honoursDelayedReturn(message)) {
-                broker.nack(message, Duration.ofSeconds(deferred.delaySeconds()), "deferred");
-                return;
-            }
-            var delay = backoffFor(message, failure.outcome());
+                // R1 (owner ruling 2026-09-17, docs/spec/router-deferral-handback.md):
+                // a deferral that named a delay goes straight back to the broker on
+                // its first occurrence — the exact delay asked for, no RetryPolicy
+                // curve, no 60 s cap. A deferral with no delay (delaySeconds == 0)
+                // falls through unchanged to the existing in-memory DEFERRED curve
+                // below: the target didn't ask for anything specific, so there is
+                // nothing here to hand back early. R5 (same doc, second unit):
+                // handing back is only correct when the broker that delivered this
+                // message actually honours the delay (SQS/Postgres) — NATS does
+                // not, so a delay-bearing deferral on NATS also falls through to
+                // the in-memory curve, the pre-R1 behaviour.
+                if (failure.outcome() instanceof MediationOutcome.Deferred deferred && deferred.delaySeconds() > 0
+                        && broker.honoursDelayedReturn(message)) {
+                    broker.nack(message, Duration.ofSeconds(deferred.delaySeconds()), "deferred");
+                    return;
+                }
+                var delay = backoffFor(message, failure.outcome());
 
-            // Nothing was learned about the message — the target could not be
-            // reached, or the breaker refused the call. Retrying it here just
-            // holds it in this process while the outage runs; the broker is
-            // where it belongs, and the backoff becomes its redelivery delay
-            // so it does not come straight back to the pool that gave up.
-            if (!failure.ourFault()
-                    && failure.outcome().disposition() == MediationOutcome.Disposition.RETURN_TO_BROKER) {
-                broker.nack(message, delay, "target-unavailable");
-                return;
+                // Nothing was learned about the message — the target could not be
+                // reached, or the breaker refused the call. Retrying it here just
+                // holds it in this process while the outage runs; the broker is
+                // where it belongs, and the backoff becomes its redelivery delay
+                // so it does not come straight back to the pool that gave up.
+                if (!failure.ourFault()
+                        && failure.outcome().disposition() == MediationOutcome.Disposition.RETURN_TO_BROKER) {
+                    broker.nack(message, delay, "target-unavailable");
+                    return;
+                }
+                // An in-place retry never returns the message, so while it loops
+                // the broker's expiry, redelivery count and dead-letter queue can
+                // never act on it — and the stall detector deliberately leaves
+                // retrying entries alone, so nothing warns either. Unbounded, a
+                // target answering 429 or ack:false for ever pins the message and
+                // its tracker entry for the life of the process, invisibly.
+                if (message.attempts() + 1 >= MAX_IN_PIPELINE_ATTEMPTS) {
+                    broker.nack(message, delay, "retry-budget-exhausted");
+                    return;
+                }
+                broker.retrying(message);
+                message = message.retrying();
+                immediateWaiting.incrementAndGet();
+                waiting = true;
+                capacityChanged();
+                try {
+                    Thread.sleep(delay);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    immediateWaiting.decrementAndGet();
+                    waiting = false;
+                    capacityChanged();
+                    // No broker action: the message was never acknowledged, so
+                    // the broker's own redelivery brings it back. Nacking here
+                    // would race that redelivery with our own.
+                    //
+                    // Ownership MUST be released, though. Holding it means the
+                    // redelivery we are relying on is classified as a duplicate
+                    // and dropped, so the message waits for the reaper instead —
+                    // fifteen minutes of nothing happening, on the shutdown path.
+                    broker.release(message);
+                    return;
+                }
             }
-            // An in-place retry never returns the message, so while it loops
-            // the broker's expiry, redelivery count and dead-letter queue can
-            // never act on it — and the stall detector deliberately leaves
-            // retrying entries alone, so nothing warns either. Unbounded, a
-            // target answering 429 or ack:false for ever pins the message and
-            // its tracker entry for the life of the process, invisibly.
-            if (message.attempts() + 1 >= MAX_IN_PIPELINE_ATTEMPTS) {
-                broker.nack(message, delay, "retry-budget-exhausted");
-                return;
-            }
-            broker.retrying(message);
-            message = message.retrying();
-            immediateWaiting.incrementAndGet();
-            capacityChanged();
-            try {
-                Thread.sleep(delay);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        } catch (RuntimeException | Error failure) {
+            log.atError().setMessage("worker failed; returning the message to the broker")
+                    .addKeyValue("pool", config.code())
+                    .addKeyValue("message_id", message.id())
+                    .setCause(failure)
+                    .log();
+            if (waiting) {
                 immediateWaiting.decrementAndGet();
                 capacityChanged();
-                // No broker action: the message was never acknowledged, so
-                // the broker's own redelivery brings it back. Nacking here
-                // would race that redelivery with our own.
-                //
-                // Ownership MUST be released, though. Holding it means the
-                // redelivery we are relying on is classified as a duplicate
-                // and dropped, so the message waits for the reaper instead —
-                // fifteen minutes of nothing happening, on the shutdown path.
+            }
+            returnAfterWorkerFailure(message);
+            if (failure instanceof VirtualMachineError fatal) {
+                throw fatal;
+            }
+        }
+    }
+
+    /// Hands a failed IMMEDIATE worker's message back to the broker with the
+    /// backoff an unexpected failure earns at its attempt count — the same
+    /// delay the in-place retry of a thrown mediator would have waited. If
+    /// even the nack throws, ownership is released instead, so the broker's
+    /// own redelivery is not dropped as a duplicate.
+    private void returnAfterWorkerFailure(QueuedMessage message) {
+        var outcome = new MediationOutcome.ErrorConnection(
+                (int) UNEXPECTED_FAILURE_DELAY.toSeconds(), "worker failed");
+        try {
+            broker.nack(message, backoffFor(message, outcome), "worker-failed");
+        } catch (RuntimeException | Error handBackFailure) {
+            log.atError().setMessage("could not hand a failed worker's message back; releasing it for redelivery")
+                    .addKeyValue("pool", config.code())
+                    .addKeyValue("message_id", message.id())
+                    .setCause(handBackFailure)
+                    .log();
+            try {
                 broker.release(message);
-                return;
+            } catch (RuntimeException | Error ignored) {
+                // Nothing further to do: the reaper frees the entry eventually.
             }
         }
     }

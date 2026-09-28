@@ -560,6 +560,58 @@ class PoolTest {
         assertThat(mediator.attempts("m0")).isOne();
     }
 
+    // ── an IMMEDIATE worker that throws (review 2026-09-28) ─────────────────
+
+    @Test
+    @DisplayName("an IMMEDIATE worker that throws outside the mediator nacks its message back, logged with the stack")
+    void throwingWorkerNacksItsMessage() {
+        // Only the mediator call was guarded; a throw anywhere else killed the
+        // worker with the message neither acked nor nacked, its tracker entry
+        // still holding ownership so the broker's redelivery was dropped too.
+        metrics.throwOnNextSuccess = new IllegalStateException("metrics sink exploded");
+        var log = (Logger) LoggerFactory.getLogger(Pool.class);
+        var captured = new ListAppender<ILoggingEvent>();
+        captured.start();
+        log.addAppender(captured);
+        try {
+            var p = pool(2, 0);
+            var message = immediate("w1");
+            broker.tracker.register(inFlight(message));
+
+            p.submit(message);
+
+            await(() -> broker.nacked.containsKey("w1"));
+            assertThat(broker.nackReasons).as("mutant: no guard — the message is simply lost")
+                    .containsEntry("w1", "worker-failed");
+            assertThat(broker.nacked.get("w1")).as("with a backoff, not an immediate hot loop").isPositive();
+            assertThat(broker.acked).doesNotContain("w1");
+            assertThat(broker.tracker.size()).as("ownership released with the nack").isZero();
+            await(() -> p.queueSize() == 0);
+            assertThat(captured.list).anySatisfy(event -> {
+                assertThat(event.getLevel()).isEqualTo(Level.ERROR);
+                assertThat(event.getThrowableProxy().getMessage()).isEqualTo("metrics sink exploded");
+            });
+        } finally {
+            log.detachAppender(captured);
+        }
+    }
+
+    @Test
+    @DisplayName("if even the nack throws, the failed worker releases ownership so the redelivery is not dropped")
+    void throwingWorkerWhoseNackFailsReleasesOwnership() {
+        metrics.throwOnNextSuccess = new IllegalStateException("metrics sink exploded");
+        broker.failNextNacks.set(1);
+        var p = pool(2, 0);
+        var message = immediate("w2");
+        broker.tracker.register(inFlight(message));
+
+        p.submit(message);
+
+        await(() -> broker.released.contains("w2"));
+        assertThat(broker.tracker.size()).isZero();
+        assertThat(p.queueSize()).isZero();
+    }
+
     // ── a drainer that throws; the parked-group sweep (review 2026-09-28) ──
 
     @Test
@@ -1388,6 +1440,7 @@ class PoolTest {
         /// "never throws" contract, which a drainer must survive.
         final AtomicInteger failNextNacks = new AtomicInteger();
         final List<String> nackOrder = new CopyOnWriteArrayList<>();
+        final List<String> released = new CopyOnWriteArrayList<>();
         final List<String> acked = new CopyOnWriteArrayList<>();
         final Map<String, String> ackReasons = new ConcurrentHashMap<>();
         final Map<String, Duration> nacked = new ConcurrentHashMap<>();
@@ -1447,6 +1500,7 @@ class PoolTest {
 
         @Override
         public void release(QueuedMessage message) {
+            released.add(message.id());
             tracker.remove(message.id());
         }
 
