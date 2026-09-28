@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /// Boots and stops the router as a whole.
 ///
@@ -119,6 +120,19 @@ public final class RouterServer implements AutoCloseable {
     }
 
     private volatile boolean running;
+
+    /// Bumped by every [#gainLeadership], so an [#apply] that started under
+    /// one leadership can tell, once its broker I/O is done, that leadership
+    /// was lost and regained meanwhile.
+    private long leadershipEpoch;
+
+    /// Serialises [#apply]'s broker I/O ([RouterManager#reconfigure]) — two
+    /// applies (the periodic poll and `/config/reload`) must not build
+    /// consumers for the same queue at once. Deliberately **not** this
+    /// object's monitor: the monitor guards leadership transitions and the
+    /// loop registry, and a leadership loss must never wait behind a broker
+    /// that is slow to answer (review 2026-09-28).
+    private final ReentrantLock applying = new ReentrantLock();
 
     /// The thread running the initial-apply loop (R-B) between leadership
     /// gain and the first successful [#applyConfiguration] — `null` before
@@ -281,6 +295,7 @@ public final class RouterServer implements AutoCloseable {
         }
         log.info("leadership gained; starting consumers");
         running = true;
+        leadershipEpoch++;
         initialApply = Thread.ofVirtual().name("router-initial-apply").start(this::runInitialApply);
     }
 
@@ -388,12 +403,51 @@ public final class RouterServer implements AutoCloseable {
 
     /// The part of [#applyConfiguration] that actually touches [#manager]
     /// and [#loops] — see that method's doc for why the fetch itself is not
-    /// inside this lock.
-    private synchronized Optional<RouterManager.ReconfigureResult> apply(RouterConfig config) {
+    /// inside any lock.
+    ///
+    /// The broker I/O is not inside this object's monitor either (review
+    /// 2026-09-28). [RouterManager#reconfigure] opens a connection per new
+    /// queue, bounded only by its build timeout, and [#loseLeadership] takes
+    /// the monitor: held across the reconfigure, a leadership loss waited
+    /// out every slow broker before it could pause polling. So the
+    /// reconfigure runs under [#applying] alone, and only the loop sync —
+    /// quick, no I/O — takes the monitor, re-checking that the leadership
+    /// this apply started under is still the current one.
+    private Optional<RouterManager.ReconfigureResult> apply(RouterConfig config) {
+        applying.lock();
+        try {
+            long epoch;
+            synchronized (this) {
+                if (!running) {
+                    return Optional.empty();
+                }
+                epoch = leadershipEpoch;
+            }
+            var result = manager.reconfigure(config, consumerFactory);
+            return syncAfterReconfigure(config, result, epoch);
+        } finally {
+            applying.unlock();
+        }
+    }
+
+    private synchronized Optional<RouterManager.ReconfigureResult> syncAfterReconfigure(
+            RouterConfig config, RouterManager.ReconfigureResult result, long epoch) {
         if (!running) {
+            // Leadership was lost while the consumers were being built.
+            // stopSources has already stood down and forgotten what existed
+            // then; anything this reconfigure registered since is closed
+            // here, never polled, so a follower neither consumes nor leaks a
+            // broker connection.
+            manager.forgetConsumers();
             return Optional.empty();
         }
-        var result = manager.reconfigure(config, consumerFactory);
+        if (epoch != leadershipEpoch) {
+            // Lost and regained meanwhile: the new leadership's own initial
+            // apply (queued on #applying behind this one) owns the loops.
+            // What this built is still wanted — the same configuration
+            // source — so it stays registered for that apply to adopt.
+            return Optional.empty();
+        }
         // Logged on every apply — the first one included — so a router that is
         // running reads differently in the logs from one still waiting on its
         // sources (a successful apply used to log nothing at all).

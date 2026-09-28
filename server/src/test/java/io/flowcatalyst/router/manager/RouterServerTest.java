@@ -573,6 +573,64 @@ class RouterServerTest {
     }
 
     @Test
+    @DisplayName("a leadership loss does not wait for a reconfigure that is still building consumers")
+    void leadershipLossDoesNotWaitOnBrokerIo() throws InterruptedException {
+        // The defect this pins (review 2026-09-28): apply() held the monitor
+        // across RouterManager.reconfigure, which opens a broker connection per
+        // new queue. loseLeadership() takes the same monitor, so a leadership
+        // loss waited out every slow broker before it could pause polling.
+        var configRef = new AtomicReference<>(config("q://1"));
+        election = new LeaderElection(LeaderElection.Config.of("fc:leader"), store, clock);
+        var buildStarted = new CountDownLatch(1);
+        var buildGate = new CountDownLatch(1);
+        var slowBuilds = new AtomicBoolean();
+        RouterManager.ConsumerFactory factory = queue -> {
+            if (slowBuilds.get()) {
+                buildStarted.countDown();
+                try {
+                    buildGate.await(); // a broker that is slow to accept the connection
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            return build(queue);
+        };
+        server = new RouterServer(manager(), tracker, election, factory, () -> Optional.of(configRef.get()),
+                warnings, clock, Duration.ofSeconds(1));
+        server.start();
+        await(() -> server.activeLoops() == 1);
+
+        slowBuilds.set(true);
+        configRef.set(config("q://1", "q://2"));
+        var applyThread = Thread.ofVirtual().start(server::applyConfiguration);
+        try {
+            assertThat(buildStarted.await(2, java.util.concurrent.TimeUnit.SECONDS))
+                    .as("the reconfigure is inside broker I/O").isTrue();
+
+            var loseThread = Thread.ofVirtual().start(() -> {
+                store.holder = "someone-else";
+                election.contendNow();
+            });
+            loseThread.join(Duration.ofSeconds(3));
+
+            assertThat(loseThread.isAlive())
+                    .as("mutant: apply holds the monitor across reconfigure — the loss waits on the broker")
+                    .isFalse();
+            assertThat(server.running()).isFalse();
+            assertThat(server.activeLoops()).isZero();
+        } finally {
+            buildGate.countDown();
+            applyThread.join(Duration.ofSeconds(5));
+        }
+
+        // The consumer the stale reconfigure finished building is closed, never polled.
+        var late = built.stream().filter(c -> c.identifier().equals("q://2")).findFirst().orElseThrow();
+        assertThat(late.closed).as("a follower does not keep a broker connection open").isTrue();
+        assertThat(late.polls.get()).isZero();
+        assertThat(server.activeLoops()).as("nothing restarted from the stale apply").isZero();
+    }
+
+    @Test
     @DisplayName("E: a consumer paused for capacity beyond the stall threshold is not reported stalled")
     void capacityPausedConsumerIsNotStalled() throws InterruptedException {
         // Same shape as RouterApiTest's "a consumer that keeps polling stays
