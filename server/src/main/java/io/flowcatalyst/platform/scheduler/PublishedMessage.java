@@ -11,10 +11,9 @@ import java.util.Objects;
 /// publish time by [PendingJobPoller].
 ///
 /// @param jobId          the claimed row's id — [Message#id()] verbatim
-/// @param createdAt      the row's own `created_at`, carried alongside so a
-///                       publish failure's revert (spec §3, step 6) can bound
-///                       the partition-pruned `UPDATE` the same way
-///                       mark-QUEUED did
+/// @param createdAt      the row's own `created_at`, carried alongside the
+///                       claim so partition-pruned updates of the row can be
+///                       bounded the way mark-QUEUED is
 /// @param clientId       the claimed row's `client_id` (`null` for a
 ///                       platform-wide job) — carried so [SqsDispatchPublisher]
 ///                       can resolve the job's tenant

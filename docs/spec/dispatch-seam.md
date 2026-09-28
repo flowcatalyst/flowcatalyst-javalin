@@ -256,6 +256,41 @@ inside one transaction:
    (`dispatcher.go:62-73`) — the status guard leaves alone any row the
    processing endpoint has already advanced past `QUEUED`.
 
+**Java since 2026-09-28: publish inside the claim transaction, steps 4-6
+reordered.** Go's order has a window: a process death between the commit
+(step 5) and the publish leaves rows `QUEUED` that never reached the broker,
+and since the stale-`QUEUED` sweep was removed (owner ruling 2026-09-22, "a
+broker-held job is the broker's") nothing ever recovers them. Java instead
+runs, in the one transaction: claim → filter → **publish** → mark `QUEUED`
+exactly the jobs the publisher reports accepted (ruling O2's unpublished ids
+simply stay `PENDING`; no revert statement exists any more) → commit.
+
+- `QUEUED` now means "the broker accepted it", which is what the ruling
+  assumes. No row is ever `QUEUED` without a message, so there is still no
+  sweep, and a broker-held job is still never re-sent because of its status.
+- Go's first objection — a commit failure (or death) after the publish
+  re-claims an already-published job — is accepted: the rows roll back to
+  `PENDING` and the next tick publishes a second copy. The copy is harmless
+  because `/process` delivers only after winning `claimForDelivery`, a
+  status-guarded `PENDING`/`QUEUED` → `PROCESSING` update (§5); whichever copy
+  arrives second finds the job `PROCESSING` or terminal and is acked without
+  a subscriber call. One residual: if the first copy's attempt failed
+  retryably (`PENDING` with a future `scheduled_for`), the second copy's claim
+  does not check `scheduled_for`, so it can make the next attempt early —
+  an extra attempt, never a duplicate success.
+- Go's second objection — a revert that no-ops against an uncommitted
+  `QUEUED` — no longer applies: nothing is reverted.
+- A copy can reach `/process` before the claim commits. Its guarded
+  `UPDATE` waits on the claim's row lock and, at commit, re-reads the row
+  (`QUEUED`), so it wins as usual.
+- The claim's row locks are now held across the broker round-trips (SQS: up
+  to ten `SendMessageBatch` calls per full batch). Only the leader claims,
+  and every other writer of these rows is short and status-guarded.
+
+Pinned by `PendingJobPollerTest` (`whenThePublisherRunsTheJobIsNotYetCommittedQueued`,
+`aDeathBetweenPublishAndCommitLeavesTheJobPendingAndTheNextTickPublishesItAgain`,
+`theDuplicateCopyAPublishThenDeathLeavesIsDiscardedByTheDeliveryClaim`).
+
 ### The claim-time `GroupHolding` hold-back — `filterByDispatchMode`
 
 `poller.go:415-426`, keyed by the shared `GroupHoldingStatusSQL`

@@ -22,8 +22,46 @@ import java.util.function.BooleanSupplier;
 
 /// One poll tick = one transaction (dispatch-seam spec §3): claim `PENDING`
 /// rows `FOR UPDATE SKIP LOCKED`, filter (paused subscription, then the
-/// positional `BLOCK_ON_ERROR` hold-back), mark the survivors `QUEUED`,
-/// commit, THEN publish — a publish failure reverts the whole batch.
+/// positional `BLOCK_ON_ERROR` hold-back), **publish while the claim's row
+/// locks are held, mark `QUEUED` exactly the jobs the broker accepted, then
+/// commit**.
+///
+/// ### Why publish before commit (review 2026-09-28)
+///
+/// The previous order — mark `QUEUED`, commit, then publish — had a window:
+/// a process death between the commit and the publish left jobs `QUEUED`
+/// that never reached the broker. Nothing recovers a `QUEUED` row (owner
+/// ruling 2026-09-22 removed the stale sweep: a broker-held job is the
+/// broker's), so they stayed that way for ever.
+///
+/// Publishing first makes `QUEUED` mean what the ruling assumes it means:
+/// **the broker accepted this job**. There is no window in which a row is
+/// `QUEUED` without a message, so there is still nothing to sweep, and a job
+/// the broker holds is still never re-sent because of its status.
+///
+/// The price is the case Go's order was avoiding: the publish succeeds and
+/// the commit then fails (or the process dies before it). The rows roll back
+/// to `PENDING` with a copy already at the broker, and the next tick
+/// publishes them again. That second copy is harmless: `/api/dispatch/process`
+/// owns a delivery only by winning the status-guarded
+/// [DispatchJobRepository#claimForDelivery] (`PENDING`/`QUEUED` →
+/// `PROCESSING`), so whichever copy arrives second finds the job
+/// `PROCESSING` or terminal and is acked without calling the subscriber. A
+/// duplicate publish costs one extra queue message; a stranded row cost the
+/// job.
+///
+/// Two consequences worth knowing:
+/// - A copy can reach `/process` before this transaction commits. Its
+///   status-guarded `UPDATE` waits on the claim's row lock and, at commit,
+///   re-reads the row (`QUEUED` → it wins the claim, as usual).
+/// - The claim's row locks are held across the broker round-trips (for SQS,
+///   ten `SendMessageBatch` calls for a full batch). Only the leader claims,
+///   and every other writer of these rows is status-guarded and short, so
+///   the cost is a brief wait, not contention.
+///
+/// A partial publish failure (ruling O2) needs no revert any more: the jobs
+/// the publisher reports unpublished are simply not marked, and stay
+/// `PENDING` for the next tick.
 ///
 /// Simplification versus Go's `pollOnce` (`poller.go:147-309`), not a
 /// behavioural change: Go batches the hold-back check into one
@@ -93,68 +131,63 @@ public final class PendingJobPoller {
             return;
         }
         Set<String> paused = pausedCache.pausedSubscriptionIds();
-        Claimed claimed = claimAndMark(paused);
-        recordBatch(claimed);
-        if (claimed.toPublish().isEmpty()) {
-            return;
-        }
-        List<PublishedMessage> batch = claimed.toPublish().stream().map(this::buildMessage).toList();
-        try {
-            publisher.publish(batch);
-        } catch (DispatchPublisher.PublishException e) {
-            // Ruling O2: revert exactly the jobs the publisher reports as
-            // unpublished — not the whole claimed batch. A job the publisher
-            // omits from this list was accepted by the broker and is
-            // legitimately QUEUED; reverting it too would republish (and
-            // duplicate) a message that already went out.
-            List<String> ids = e.unpublishedJobIds();
-            LOG.atWarn().setMessage("batch publish failed; reverting job(s) QUEUED→PENDING")
-                    .addKeyValue("count", ids.size())
-                    .addKeyValue("claimed", batch.size())
-                    .setCause(e)
-                    .log();
-            repository.revertQueuedToPending(ids);
-        }
-    }
-
-    /// The result of one claim+filter+mark-QUEUED transaction.
-    private record Claimed(int claimedCount, List<DispatchJobRepository.ClaimRow> toPublish, int heldBack) {
-        private static final Claimed EMPTY = new Claimed(0, List.of(), 0);
-    }
-
-    /// Claims, filters and marks QUEUED inside one JDBC transaction (spec §3,
-    /// steps 2-4), committing before returning. [DbTx#wrapForBootstrap] is
-    /// the sanctioned escape hatch for exactly this shape: an externally
-    /// managed, multi-statement transaction outside the use-case envelope —
-    /// this is router-driven infrastructure, not a human-initiated command,
-    /// so it has no `Operation`/`UnitOfWork` to run inside (mirroring the
-    /// repository's own "infra writes" section, which bypasses the envelope
-    /// for the same reason).
-    private Claimed claimAndMark(Set<String> paused) {
         try (Connection conn = dataSource.getConnection()) {
             conn.setAutoCommit(false);
+            List<String> queued;
             try {
-                Claimed result = claimAndMarkInTx(DbTx.wrapForBootstrap(conn), paused);
-                conn.commit();
-                return result;
+                DbTx tx = DbTx.wrapForBootstrap(conn);
+                Claimed claimed = claim(tx, paused);
+                recordBatch(claimed);
+                queued = publishAndMark(tx, claimed.toPublish());
             } catch (RuntimeException e) {
+                // Anything published before this point redelivers as a
+                // harmless duplicate once the rows are claimed again (class
+                // doc); nothing is left QUEUED without a message.
                 rollbackQuietly(conn);
                 throw e;
             }
+            commit(conn, queued);
         } catch (SQLException e) {
             throw new PollFailedException(e);
         }
     }
 
-    private Claimed claimAndMarkInTx(DbTx tx, Set<String> paused) {
+    /// The claim's transaction is [DbTx#wrapForBootstrap] — the sanctioned
+    /// escape hatch for exactly this shape: an externally managed,
+    /// multi-statement transaction outside the use-case envelope. This is
+    /// router-driven infrastructure, not a human-initiated command, so it has
+    /// no `Operation`/`UnitOfWork` to run inside (mirroring the repository's
+    /// own "infra writes" section, which bypasses the envelope for the same
+    /// reason).
+    private void commit(Connection conn, List<String> queued) throws SQLException {
+        try {
+            conn.commit();
+        } catch (SQLException e) {
+            rollbackQuietly(conn);
+            if (!queued.isEmpty()) {
+                LOG.atWarn().setMessage("claim commit failed after publishing; the jobs stay PENDING and will be "
+                                + "published again, and /process discards whichever copy arrives second")
+                        .addKeyValue("count", queued.size())
+                        .setCause(e)
+                        .log();
+            }
+            throw e;
+        }
+    }
+
+    /// The result of one claim+filter step.
+    private record Claimed(int claimedCount, List<DispatchJobRepository.ClaimRow> toPublish, int heldBack) {
+        private static final Claimed EMPTY = new Claimed(0, List.of(), 0);
+    }
+
+    /// Claims and filters inside the caller's transaction (spec §3, steps
+    /// 2-3). Marks nothing: `QUEUED` waits for the broker ([#publishAndMark]).
+    private Claimed claim(DbTx tx, Set<String> paused) {
         List<DispatchJobRepository.ClaimRow> claims = repository.claimPending(tx, batchSize);
         if (claims.isEmpty()) {
             return Claimed.EMPTY;
         }
         List<DispatchJobRepository.ClaimRow> toPublish = new ArrayList<>(claims.size());
-        List<String> ids = new ArrayList<>(claims.size());
-        Instant minCreated = null;
-        Instant maxCreated = null;
         int heldBack = 0;
         for (DispatchJobRepository.ClaimRow c : claims) {
             if (c.subscriptionId() != null && paused.contains(c.subscriptionId())) {
@@ -166,6 +199,41 @@ public final class PendingJobPoller {
                 continue; // positional hold-back — left PENDING, spec §3 "GroupHolding"
             }
             toPublish.add(c);
+        }
+        return new Claimed(claims.size(), toPublish, heldBack);
+    }
+
+    /// Publishes the survivors and marks `QUEUED` exactly those the broker
+    /// accepted, in the claim's transaction.
+    ///
+    /// @return the ids marked `QUEUED`
+    private List<String> publishAndMark(DbTx tx, List<DispatchJobRepository.ClaimRow> toPublish) {
+        if (toPublish.isEmpty()) {
+            return List.of();
+        }
+        List<PublishedMessage> batch = toPublish.stream().map(this::buildMessage).toList();
+        Set<String> unpublished = Set.of();
+        try {
+            publisher.publish(batch);
+        } catch (DispatchPublisher.PublishException e) {
+            // Ruling O2: exactly the jobs the publisher reports unpublished
+            // stay PENDING. A job it omits was accepted by the broker and is
+            // legitimately QUEUED; leaving that one PENDING too would publish
+            // it again next tick.
+            unpublished = Set.copyOf(e.unpublishedJobIds());
+            LOG.atWarn().setMessage("batch publish failed; the unpublished job(s) stay PENDING for the next tick")
+                    .addKeyValue("count", unpublished.size())
+                    .addKeyValue("claimed", batch.size())
+                    .setCause(e)
+                    .log();
+        }
+        List<String> ids = new ArrayList<>(toPublish.size());
+        Instant minCreated = null;
+        Instant maxCreated = null;
+        for (DispatchJobRepository.ClaimRow c : toPublish) {
+            if (unpublished.contains(c.id())) {
+                continue;
+            }
             ids.add(c.id());
             if (minCreated == null || c.createdAt().isBefore(minCreated)) minCreated = c.createdAt();
             if (maxCreated == null || c.createdAt().isAfter(maxCreated)) maxCreated = c.createdAt();
@@ -173,7 +241,7 @@ public final class PendingJobPoller {
         if (!ids.isEmpty()) {
             repository.markQueued(tx, ids, minCreated, maxCreated);
         }
-        return new Claimed(claims.size(), toPublish, heldBack);
+        return ids;
     }
 
     private static void rollbackQuietly(Connection conn) {
@@ -212,8 +280,9 @@ public final class PendingJobPoller {
         return new PublishedMessage(c.id(), c.createdAt(), c.clientId(), c.subscriptionId(), c.queue(), message);
     }
 
-    /// Wraps a claim-transaction JDBC failure — connection acquisition,
-    /// commit, or the claim/mark-QUEUED statements themselves. Unchecked:
+    /// Wraps a claim-transaction JDBC failure — connection acquisition or
+    /// commit (the claim/mark-QUEUED statements throw jOOQ's own unchecked
+    /// exception). Unchecked:
     /// [DispatchScheduler]'s tick loop catches `RuntimeException` and retries
     /// on the next tick, exactly like [io.flowcatalyst.platform.dispatchjob.DispatchJobReaper].
     static final class PollFailedException extends RuntimeException {

@@ -5,10 +5,13 @@ import java.util.Objects;
 
 /// Hands a claimed batch of dispatch jobs to the message queue the router
 /// consumes from (dispatch-seam spec §3, step 5). `PendingJobPoller` calls
-/// this exactly once per poll tick, AFTER the claim transaction has
-/// committed — never inside it (spec §3: a commit failure after publishing
-/// would re-claim an already-published job; a publish failure's revert would
-/// no-op if the `QUEUED` status it guards on had not committed yet).
+/// this exactly once per poll tick, **inside** the claim transaction, and
+/// marks `QUEUED` only what this call reports published (review 2026-09-28;
+/// this used to run after the commit, which stranded jobs `QUEUED` with no
+/// message whenever the process died in between — see `PendingJobPoller`'s
+/// class doc for the trade and why the duplicate it accepts is harmless).
+/// An implementation therefore runs while the claimed rows are locked, and
+/// must not itself wait on anything that needs those rows.
 ///
 /// **Publishing is no longer all-or-nothing (ruling O2,
 /// `docs/go-mirror/2026-09-12-dispatch-rulings.md`) — superseding this
@@ -20,7 +23,7 @@ import java.util.Objects;
 /// — reverting them too would republish them and create duplicates. [#publish]
 /// now either returns having published every message in `batch`, or throws
 /// [PublishException] carrying exactly the job ids that were NOT published;
-/// the caller reverts only those, QUEUED → PENDING. [NoopPublisher] (never
+/// the caller leaves only those `PENDING`. [NoopPublisher] (never
 /// fails) and [PostgresQueuePublisher] (one statement, one Postgres
 /// transaction) are still effectively all-or-nothing in practice — a
 /// [PostgresQueuePublisher] failure reports its whole batch as unpublished —
@@ -60,8 +63,8 @@ public interface DispatchPublisher {
     /// the underlying cause (when there is a single one to attach; `null` is
     /// permitted — see [#cause()]) and — the part [PendingJobPoller] actually
     /// acts on — exactly the ids of the jobs in the batch that were NOT
-    /// published, so the caller can revert precisely those and leave every
-    /// successfully published job `QUEUED`. Never thrown for an empty batch
+    /// published, so the caller can leave precisely those `PENDING` and mark
+    /// every successfully published job `QUEUED`. Never thrown for an empty batch
     /// (callers should not call [#publish] with one, but an implementation
     /// that receives one publishes nothing and succeeds trivially).
     final class PublishException extends Exception {

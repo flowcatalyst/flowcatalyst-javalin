@@ -512,25 +512,6 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 .execute();
     }
 
-    /// Publish failure recovery (spec §3, step 6): reverts a claimed batch
-    /// `QUEUED` → `PENDING` in one statement, guarded `status = 'QUEUED'` so
-    /// a row the processing endpoint already advanced past `QUEUED` (or that
-    /// a concurrent stale-recovery/settled/reaper sweep already reset) is
-    /// left untouched. Runs AFTER the claim transaction has committed (spec
-    /// §3, step 5) — auto-commit, like every other infra write in this file.
-    /// Returns the ids actually reverted.
-    public List<String> revertQueuedToPending(List<String> ids) {
-        if (ids.isEmpty()) return List.of();
-        return dsl.update(T)
-                .set(T.STATUS, DispatchJobStatus.PENDING.name())
-                .set(T.UPDATED_AT, utc(Instant.now()))
-                .where(T.ID.in(ids))
-                .and(T.STATUS.eq(DispatchJobStatus.QUEUED.name()))
-                .returning(T.ID)
-                .fetch(T.ID);
-    }
-
-
     /// Atomically claims a job for one delivery (dispatch-seam spec §5): the
     /// same `PROCESSING` flip [#markInProgress] used to do, but guarded on the
     /// status it is flipping FROM, so the row count answers "did I win this

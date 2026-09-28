@@ -32,8 +32,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// [PendingJobPoller] against a real embedded Postgres (dispatch-seam spec
 /// §2, §3): every field of the published message and its round trip through
 /// the router's own [Message] parser, the claim-time `BLOCK_ON_ERROR`
-/// hold-back's positional semantics, publish-failure's whole-batch revert
-/// (and the guard that leaves an already-advanced row alone), the
+/// hold-back's positional semantics, publish failure leaving the batch
+/// `PENDING`, the publish-before-commit order that leaves no row `QUEUED`
+/// without a message, the
 /// paused-connection filter, leader-gating, and the claim query's total
 /// order. A large test-only batch size (see [#poller]) keeps these robust
 /// against the `PENDING` rows other test classes leave behind — CONVENTIONS
@@ -174,14 +175,14 @@ class PendingJobPollerTest {
     // ── (d) publish failure reverts the whole batch; the QUEUED guard ──────
 
     @Test
-    void publishFailureRevertsTheWholeClaimedBatchToPending() {
+    void publishFailureLeavesTheWholeClaimedBatchPending() {
         String jobA = seedWriteRow(Seed.of(code("reverta")));
         String jobB = seedWriteRow(Seed.of(code("revertb")));
 
         poller(FakeDispatchPublisher.failing(), () -> true).pollOnce();
 
         assertThat(REPO.findById(jobA).orElseThrow().status())
-                .as("publish failed; the whole claimed batch reverts QUEUED→PENDING")
+                .as("publish failed; nothing in the claimed batch is marked QUEUED")
                 .isEqualTo(DispatchJobStatus.PENDING);
         assertThat(REPO.findById(jobB).orElseThrow().status()).isEqualTo(DispatchJobStatus.PENDING);
     }
@@ -208,18 +209,76 @@ class PendingJobPollerTest {
                 .isEqualTo(DispatchJobStatus.PENDING);
     }
 
+    // ── (d2) no QUEUED row without a message (review 2026-09-28) ──────────
+    //
+    // The old order committed QUEUED and then published, so a process death in
+    // between stranded the jobs QUEUED for ever (the stale sweep is gone by
+    // ruling 2026-09-22). QUEUED is now marked in the claim transaction after
+    // the broker has accepted the job.
+
     @Test
-    void theRevertGuardLeavesARowTheProcessingEndpointAlreadyAdvancedPastQueuedAlone() {
-        String stillQueued = seedWriteRow(Seed.of(code("guardqueued")).withStatus("QUEUED"));
-        String alreadyProcessing = seedWriteRow(Seed.of(code("guardprocessing")).withStatus("PROCESSING"));
+    void whenThePublisherRunsTheJobIsNotYetCommittedQueued() {
+        String job = seedWriteRow(Seed.of(code("orderpending")));
+        var seenAtPublish = new java.util.concurrent.atomic.AtomicReference<DispatchJobStatus>();
+        DispatchPublisher observing = batch -> {
+            // Read on another connection: what a restarted process would see
+            // if this one died right now.
+            seenAtPublish.set(REPO.findById(job).orElseThrow().status());
+        };
 
-        List<String> reverted = REPO.revertQueuedToPending(List.of(stillQueued, alreadyProcessing));
+        poller(observing, () -> true).pollOnce();
 
-        assertThat(reverted).containsExactly(stillQueued);
-        assertThat(REPO.findById(stillQueued).orElseThrow().status()).isEqualTo(DispatchJobStatus.PENDING);
-        assertThat(REPO.findById(alreadyProcessing).orElseThrow().status())
-                .as("status='QUEUED' guard leaves a row the processing endpoint already advanced untouched")
-                .isEqualTo(DispatchJobStatus.PROCESSING);
+        assertThat(seenAtPublish.get())
+                .as("mutant: commit QUEUED before publishing — a death here strands the job")
+                .isEqualTo(DispatchJobStatus.PENDING);
+        assertThat(REPO.findById(job).orElseThrow().status()).isEqualTo(DispatchJobStatus.QUEUED);
+    }
+
+    @Test
+    void aDeathBetweenPublishAndCommitLeavesTheJobPendingAndTheNextTickPublishesItAgain() {
+        String job = seedWriteRow(Seed.of(code("crashwindow")));
+        var published = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        DispatchPublisher publishesThenDies = batch -> {
+            batch.forEach(m -> published.add(m.jobId()));
+            throw new IllegalStateException("simulated process death after the broker accepted the batch");
+        };
+
+        try {
+            poller(publishesThenDies, () -> true).pollOnce();
+        } catch (IllegalStateException expected) {
+            // the death
+        }
+
+        assertThat(published).contains(job);
+        assertThat(REPO.findById(job).orElseThrow().status())
+                .as("mutant: commit QUEUED before publishing — the job is stranded QUEUED")
+                .isEqualTo(DispatchJobStatus.PENDING);
+
+        // Recovery is the next ordinary tick, not a sweep.
+        var republish = FakeDispatchPublisher.succeeding();
+        poller(republish, () -> true).pollOnce();
+
+        assertThat(republish.batches().stream().flatMap(List::stream).map(PublishedMessage::jobId))
+                .as("the next tick publishes it again").contains(job);
+        assertThat(REPO.findById(job).orElseThrow().status()).isEqualTo(DispatchJobStatus.QUEUED);
+    }
+
+    @Test
+    void theDuplicateCopyAPublishThenDeathLeavesIsDiscardedByTheDeliveryClaim() {
+        // Two copies of the job reached the broker (the dying tick's and the
+        // recovering one's). /process owns a delivery only by winning the
+        // status-guarded claim, so the second copy never reaches the subscriber.
+        String job = seedWriteRow(Seed.of(code("dupcopy")));
+        poller(FakeDispatchPublisher.succeeding(), () -> true).pollOnce();
+        var row = REPO.findById(job).orElseThrow();
+
+        boolean firstCopy = REPO.claimForDelivery(job, row.createdAt());
+        REPO.markCompleted(job, row.createdAt(), Instant.now(), 5L);
+        boolean secondCopy = REPO.claimForDelivery(job, row.createdAt());
+
+        assertThat(firstCopy).isTrue();
+        assertThat(secondCopy).as("the second copy is acked without a delivery").isFalse();
+        assertThat(REPO.findById(job).orElseThrow().status()).isEqualTo(DispatchJobStatus.COMPLETED);
     }
 
     // ── (e) paused connection ───────────────────────────────────────────────
