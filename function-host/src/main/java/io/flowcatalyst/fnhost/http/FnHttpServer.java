@@ -1,5 +1,7 @@
 package io.flowcatalyst.fnhost.http;
 
+import io.flowcatalyst.eventloop.OffEventLoop;
+
 import io.flowcatalyst.platform.shared.auth.jwks.BearerAuthenticator;
 import io.flowcatalyst.platform.shared.auth.jwks.JwksKeySource;
 import io.flowcatalyst.fnhost.FunctionInvocationEvent;
@@ -493,7 +495,7 @@ public final class FnHttpServer implements AutoCloseable {
     /// rejected BEFORE any body byte is read; a chunked body is cut off the
     /// moment it crosses `cap` (spec §2 step 5, H9).
     private void readBodyThenRun(HttpServerRequest req, io.vertx.core.Context requestContext, long cap,
-                                  BodyContinuation continuation) {
+                                  @OffEventLoop BodyContinuation continuation) {
         String declaredLength = req.getHeader("Content-Length");
         if (declaredLength != null) {
             try {

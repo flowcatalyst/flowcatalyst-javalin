@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.flowcatalyst</groupId>
+    <artifactId>flowcatalyst-parent</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>flowcatalyst-eventloop-check</artifactId>
+  <packaging>jar</packaging>
+
+  <name>FlowCatalyst event-loop check (javac plugin)</name>
+  <description>
+    A javac plugin that fails the compilation when code running on a Vert.x event loop makes a
+    blocking call (docs/spec/eventloop-check.md). Modules that run Vert.x add it as a `provided`
+    dependency and pass -Xplugin:EventLoopCheck -XDcompilePolicy=simple to their main compile.
+    Zero dependencies beyond the JDK's own jdk.compiler module.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- The plugin runs INSIDE javac, in Maven's own JVM, which does not run with
+           enable-preview: a preview class file would fail to load there. So this module
+           drops the parent's enable-preview flag (combine.self="override" replaces the arg list). -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <failOnWarning>${maven.compiler.failOnWarning}</failOnWarning>
+          <compilerArgs combine.self="override">
+            <arg>-Xlint:all</arg>
+            <arg>-parameters</arg>
+            <!-- javac looks for plugins at EVERY compile (for auto-start ones), on the processor
+                 path or, when none is set, the class path, which includes target/classes. An
+                 incremental rebuild deletes the old classes but leaves META-INF/services behind,
+                 and javac then fails on a registration naming a missing class. A processor path
+                 of the source directory (no services in it) keeps this module's own build away
+                 from its own registration. -->
+            <arg>-processorpath</arg>
+            <arg>${project.build.sourceDirectory}</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine combine.self="override"></argLine>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

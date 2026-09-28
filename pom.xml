@@ -16,6 +16,7 @@
     <module>usecase</module>
     <module>sdk</module>
     <module>function-api</module>
+    <module>eventloop-check</module>
     <module>server</module>
     <module>extism-endive</module>
     <module>function-host</module>

@@ -73,16 +73,17 @@ public final class TrustedProxies {
     /// peer or socket address always hands this an IP literal, never a
     /// hostname, so this NEVER performs a DNS lookup: a syntactic pre-check
     /// (never network I/O) rejects anything that is not textually an IPv4 or
-    /// IPv6 literal before [InetAddress#getByName] ever runs (which would
-    /// otherwise fall through to actual name resolution for a string that
-    /// merely looks address-ish, e.g. `999.999.999.999`).
+    /// IPv6 literal, and [InetAddress#ofLiteral] then parses without ever
+    /// resolving (`999.999.999.999` is refused, not looked up).
     public boolean isTrusted(String hostAddress) {
         if (hostAddress == null || !isIpLiteral(hostAddress)) {
             return false;
         }
         try {
-            return isTrusted(InetAddress.getByName(hostAddress));
-        } catch (UnknownHostException e) {
+            // ofLiteral parses and never resolves, so no DNS lookup is possible even if the
+            // pre-check above ever let a non-literal through (this runs on the event loop).
+            return isTrusted(InetAddress.ofLiteral(hostAddress));
+        } catch (IllegalArgumentException e) {
             return false;
         }
     }
