@@ -61,6 +61,15 @@ public final class ClientRepository implements Persist<Client> {
         return findMany(DSL.noCondition());
     }
 
+    /// Every non-blank client identifier, sorted — the shallow read the
+    /// router-config document needs (one column, no notes, no hydration).
+    public List<String> findAllIdentifiers() {
+        return dsl.select(T.IDENTIFIER).from(T)
+                .where(T.IDENTIFIER.isNotNull().and(T.IDENTIFIER.ne("")))
+                .orderBy(T.IDENTIFIER)
+                .fetch(T.IDENTIFIER);
+    }
+
     /// Case-insensitive *contains* match on name or identifier, by
     /// identifier, at most [#SEARCH_LIMIT] rows (spec §3). A `null` or
     /// empty term matches everything.

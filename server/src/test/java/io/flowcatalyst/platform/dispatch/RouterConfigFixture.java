@@ -12,6 +12,7 @@ import java.util.UUID;
 
 import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_POOLS;
 import static io.flowcatalyst.db.generated.Tables.MSG_SUBSCRIPTIONS;
+import static io.flowcatalyst.db.generated.Tables.TNT_CLIENTS;
 
 /// Seeds `msg_dispatch_pools` / `msg_subscriptions` rows directly for
 /// [RouterConfigDocumentBuilderTest] — neither table has a foreign key to
@@ -46,6 +47,17 @@ final class RouterConfigFixture {
                 .set(MSG_DISPATCH_POOLS.STATUS, status)
                 .set(MSG_DISPATCH_POOLS.CONCURRENCY, concurrency)
                 .set(MSG_DISPATCH_POOLS.RATE_LIMIT, rateLimit)
+                .execute();
+        return id;
+    }
+
+    /// A client with nothing else — no pool, no subscription.
+    static String client(String identifier) {
+        String id = Tsid.generate();
+        DB.insertInto(TNT_CLIENTS)
+                .set(TNT_CLIENTS.ID, id)
+                .set(TNT_CLIENTS.NAME, identifier)
+                .set(TNT_CLIENTS.IDENTIFIER, identifier)
                 .execute();
         return id;
     }

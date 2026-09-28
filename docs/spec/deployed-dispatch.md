@@ -121,7 +121,17 @@ in.
 - Serve the router config document — the existing `{processingPools, queues}`
   shape — listing, per client with dispatch work: its queues (one per
   priority in use) and its pools from `msg_dispatch_pools` (code, concurrency,
-  rate limit). Queue type and address come from the platform's own settings:
+  rate limit).
+  **Amended 2026-09-28 (review; as the Rust port does):** the queue list is
+  every queue the scheduler can publish to — `platform`, then the tenants of
+  pools and active subscriptions, then **every client** in `tnt_clients`, each
+  with **both** `DEFAULT` and `HIGH_PRIORITY`. "Per client with dispatch
+  work" and "per priority in use" missed two jobs the publisher really sends:
+  a job for a client with no pool or subscription of its own (the tenant is
+  the job's client), and a job whose own `queue` claims `HIGH_PRIORITY`
+  (dispatch-job-priority R4) for a client none of whose subscriptions does.
+  Both landed on a queue no router consumed. Unused queues cost nothing
+  (item 3: created lazily; the router tolerates a missing one). Queue type and address come from the platform's own settings:
   `DISPATCH_QUEUE_TYPE` (`SQS` deployed, `postgres` in dev) and the account
   and region from `DISPATCH_QUEUE_URL` / `DISPATCH_QUEUE_REGION`, with names
   built as above. **One new setting is unavoidable**: the `FC-{env}` prefix,

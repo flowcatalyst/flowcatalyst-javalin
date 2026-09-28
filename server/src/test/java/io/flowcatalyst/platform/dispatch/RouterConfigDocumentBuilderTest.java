@@ -76,42 +76,42 @@ class RouterConfigDocumentBuilderTest {
         assertThat(queues).anySatisfy(q -> assertThat(q.queueName()).isEqualTo("FC-" + RUN + "-" + identifier + "-DEFAULT.fifo"));
     }
 
-    /// Pins R6 read leniency at the document-building boundary: a `PAUSED`
-    /// (inactive) subscription's `HIGH_PRIORITY` value must never surface a
-    /// `HIGH_PRIORITY` queue — only `ACTIVE` subscriptions count. A mutant
-    /// that read every subscription regardless of status would add a
-    /// `HIGH_PRIORITY` queue here that this test forbids.
+    /// Review 2026-09-28 (as the Rust port does): a client with no pool and no
+    /// subscription of its own still gets its queues. The scheduler publishes a
+    /// client-scoped job to its client's tenant queue whatever that client's
+    /// pools and subscriptions say; before this, such a job landed on a queue no
+    /// router consumed and sat QUEUED for ever. The mutant — tenants from pools
+    /// and active subscriptions only — leaves this client out.
     @Test
-    void aPausedHighPrioritySubscriptionDoesNotProduceAHighPriorityQueue() {
-        String identifier = "hotel" + RUN;
-        RouterConfigFixture.pool("dpx-ht-" + RUN, Tsid.generate(), identifier, "ACTIVE", 1, null);
-        RouterConfigFixture.subscription(Tsid.generate(), identifier, "HIGH_PRIORITY", "PAUSED");
+    void aClientWithNoPoolOrSubscriptionStillGetsItsQueues() {
+        String identifier = "kilo" + RUN;
+        RouterConfigFixture.client(identifier);
+
+        long before = queuesForTenant(builder(SQS).build(), identifier);
+
+        assertThat(before).as("mutant: tenants only from pools and active subscriptions").isEqualTo(2);
+        assertThat(builder(SQS).build().queues()).extracting(QueueConfig::queueName)
+                .contains("FC-" + RUN + "-" + identifier + "-DEFAULT.fifo",
+                        "FC-" + RUN + "-" + identifier + "-HIGH_PRIORITY.fifo");
+    }
+
+    /// Review 2026-09-28: every tenant gets a HIGH_PRIORITY queue, not only one
+    /// with a HIGH_PRIORITY active subscription. A job carries its own `queue`
+    /// claim and it wins over the subscription's (dispatch-job-priority R4), so
+    /// `queue: HIGH_PRIORITY` on a job whose subscription says DEFAULT publishes
+    /// to the HIGH_PRIORITY queue — which the old rule never listed. Supersedes
+    /// the "one queue per priority in use" pins.
+    @Test
+    void everyTenantGetsAHighPriorityQueueEvenWithOnlyDefaultSubscriptions() {
+        String identifier = "india" + RUN;
+        RouterConfigFixture.subscription(Tsid.generate(), identifier, "DEFAULT", "ACTIVE");
 
         var queues = builder(SQS).build().queues();
 
-        assertThat(queues).noneMatch(q -> q.queueName().equals("FC-" + RUN + "-" + identifier + "-HIGH_PRIORITY.fifo"));
-        assertThat(queues).anyMatch(q -> q.queueName().equals("FC-" + RUN + "-" + identifier + "-DEFAULT.fifo"));
-    }
-
-    /// The counter that must change (CLAUDE.md testing policy): a client
-    /// with only a `DEFAULT` active subscription advertises exactly one
-    /// queue; adding a second, `HIGH_PRIORITY` active subscription for the
-    /// SAME tenant grows that to two. Asserting 1 then 2 — not merely "2 at
-    /// the end" — is what a mutant that always emits both queues (or never
-    /// adds the second) cannot pass.
-    @Test
-    void addingAHighPriorityActiveSubscriptionGrowsTheTenantsQueueCountFromOneToTwo() {
-        String identifier = "india" + RUN;
-        String clientId = Tsid.generate();
-        RouterConfigFixture.subscription(clientId, identifier, "DEFAULT", "ACTIVE");
-
-        long before = queuesForTenant(builder(SQS).build(), identifier);
-        assertThat(before).as("DEFAULT-only: one queue").isEqualTo(1);
-
-        RouterConfigFixture.subscription(clientId, identifier, "HIGH_PRIORITY", "ACTIVE");
-
-        long after = queuesForTenant(builder(SQS).build(), identifier);
-        assertThat(after).as("DEFAULT + HIGH_PRIORITY: two queues").isEqualTo(2);
+        assertThat(queues).extracting(QueueConfig::queueName)
+                .as("mutant: HIGH_PRIORITY only where an active subscription asks")
+                .contains("FC-" + RUN + "-" + identifier + "-HIGH_PRIORITY.fifo");
+        assertThat(queuesForTenant(builder(SQS).build(), identifier)).isEqualTo(2);
     }
 
     private static long queuesForTenant(RouterConfig config, String identifier) {
@@ -141,13 +141,14 @@ class RouterConfigDocumentBuilderTest {
                 .anyMatch(q -> q.queueName().equals("FC-" + RUN + "-platform-DEFAULT.fifo"));
     }
 
-    /// Pins R5: the `platform` tenant's `DEFAULT` queue is always present,
+    /// Pins R5: the `platform` tenant's queues are always present,
     /// independent of any seeded row.
     @Test
-    void platformTenantAlwaysHasADefaultQueue() {
+    void platformTenantAlwaysHasItsQueues() {
         RouterConfig config = builder(SQS).build();
 
         assertThat(config.queues()).anyMatch(q -> q.queueName().equals("FC-" + RUN + "-platform-DEFAULT.fifo"));
+        assertThat(config.queues()).anyMatch(q -> q.queueName().equals("FC-" + RUN + "-platform-HIGH_PRIORITY.fifo"));
     }
 
     /// Postgres-backed queues in one document all share the database URL as
