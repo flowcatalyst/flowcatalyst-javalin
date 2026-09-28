@@ -40,6 +40,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.StructuredTaskScope;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /// Desired state → fetch → verify → load → heartbeat, one cycle at a time
@@ -220,10 +221,47 @@ public final class Reconciler {
         this.metaspaceGuard = Objects.requireNonNull(metaspaceGuard, "metaspaceGuard");
     }
 
+    /// How long [#drain] waits for its `DRAINING` heartbeat before carrying
+    /// on with the shutdown regardless.
+    static final Duration DRAIN_HEARTBEAT_TIMEOUT = Duration.ofSeconds(5);
+
+    /// Set by the first [#drain], so only that call announces.
+    private final AtomicBoolean drainAnnounced = new AtomicBoolean();
+
     /// Reported as `DRAINING` in every heartbeat from now on (spec §1.2
     /// step 5). One-way: a drained host is never un-drained.
+    ///
+    /// The first call also sends one `DRAINING` heartbeat at once, waiting
+    /// at most [#DRAIN_HEARTBEAT_TIMEOUT] for it. Setting the flag alone
+    /// told the platform nothing unless a reconcile happened to run before
+    /// the process exited, so on SIGTERM the host row stayed `ACTIVE` until
+    /// it went stale, and the platform kept routing to a host on its way
+    /// out.
     public void drain() {
+        drain(DRAIN_HEARTBEAT_TIMEOUT);
+    }
+
+    /// [#drain] with an explicit wait, so a test need not sit out the
+    /// production bound.
+    void drain(Duration heartbeatTimeout) {
         draining = true;
+        if (!drainAnnounced.compareAndSet(false, true)) {
+            return;
+        }
+        Thread announcer = Thread.ofVirtual().name("fn-host-drain-heartbeat")
+                .start(() -> sendHeartbeat(document));
+        try {
+            if (!announcer.join(heartbeatTimeout)) {
+                announcer.interrupt();
+                LOG.atWarn().setMessage("DRAINING heartbeat did not complete in time; shutting down regardless")
+                        .addKeyValue("host_id", hostId)
+                        .addKeyValue("timeout", heartbeatTimeout)
+                        .log();
+            }
+        } catch (InterruptedException e) {
+            announcer.interrupt();
+            Thread.currentThread().interrupt();
+        }
     }
 
     /// `/ready`'s own vocabulary (`function-host-process.md` §2 P1, extended
@@ -1133,8 +1171,23 @@ public final class Reconciler {
 
     // ── step 5: heartbeat ────────────────────────────────────────────────
 
+    /// `doc` is `null` only for [#drain]'s announcement on a host that has
+    /// never fetched desired state; it then reports nothing loaded, which is
+    /// the truth.
     private void sendHeartbeat(DesiredDocument doc) {
         List<HeartbeatReport.LoadedEntry> loaded = new ArrayList<>();
+        if (doc != null) {
+            collectLoaded(doc, loaded);
+        }
+        HeartbeatReport.HostState hostState = draining ? HeartbeatReport.HostState.DRAINING : HeartbeatReport.HostState.ACTIVE;
+        try {
+            controlPlane.heartbeat(new HeartbeatReport(hostId, pool, hostState, loaded));
+        } catch (ControlPlaneException e) {
+            LOG.atWarn().setMessage("heartbeat failed").addKeyValue("host_id", hostId).setCause(e).log();
+        }
+    }
+
+    private void collectLoaded(DesiredDocument doc, List<HeartbeatReport.LoadedEntry> loaded) {
         for (DesiredDocument.Entry entry : doc.functions()) {
             Key key = new Key(entry.address(), entry.version());
             String failureReason = failures.get(key);
@@ -1156,13 +1209,6 @@ public final class Reconciler {
         for (DesiredDocument.UnreadableEntry u : doc.unreadable()) {
             loaded.add(new HeartbeatReport.LoadedEntry(u.address(), u.version(),
                     new HeartbeatReport.LoadState.Failed(u.reason())));
-        }
-
-        HeartbeatReport.HostState hostState = draining ? HeartbeatReport.HostState.DRAINING : HeartbeatReport.HostState.ACTIVE;
-        try {
-            controlPlane.heartbeat(new HeartbeatReport(hostId, pool, hostState, loaded));
-        } catch (ControlPlaneException e) {
-            LOG.atWarn().setMessage("heartbeat failed").addKeyValue("host_id", hostId).setCause(e).log();
         }
     }
 }

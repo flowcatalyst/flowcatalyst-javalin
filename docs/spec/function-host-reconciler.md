@@ -88,6 +88,10 @@ every version fetched and verified; `failures` — `(address, version) → error
 5. **Heartbeat**: for every entry of the document — loaded ⇒ `LOADED`; prepared (lazy live, or
    candidate) ⇒ `REGISTERED`; in `failures` ⇒ `FAILED` + error. Host state `ACTIVE`, or `DRAINING`
    once `drain()` was called. A failed heartbeat is a WARN, never an exception out of the loop.
+   Every heartbeat carries `"runtimes": ["jvm"]` — never `wasm`, which to the platform means a WASI
+   component the Extism loader cannot run (2026-09-28). The first `drain()` also sends one
+   `DRAINING` heartbeat at once, waiting at most 5 s (`DRAIN_HEARTBEAT_TIMEOUT`), so SIGTERM is
+   announced even when no reconcile runs before exit (2026-09-28).
 
 The order matters and is pinned: **new before old** (step 3 before 4), so an address is never without
 a version during a promote; and a version that fails to prepare or load **leaves the old one

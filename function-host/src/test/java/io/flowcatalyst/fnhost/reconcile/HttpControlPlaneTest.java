@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpServer;
 import io.flowcatalyst.function.EmitResult;
 import io.flowcatalyst.platform.function.DnsLabel;
 import io.flowcatalyst.platform.function.FunctionAddress;
+import io.flowcatalyst.platform.shared.json.Json;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -142,6 +143,12 @@ class HttpControlPlaneTest {
 
         assertThat(receivedAuth).containsExactly("Bearer heartbeat-tok");
         assertThat(receivedBody.toString()).contains("\"hostId\":\"host-1\"").contains("\"state\":\"ACTIVE\"");
+        // The platform checks a pool's runtimes against each function's; without
+        // the field it warns POOL_RUNTIME_UNKNOWN and cannot refuse a wasm function
+        // sent here. `jvm` only: Extism cannot run the WASI components `wasm` names.
+        assertThat(String.valueOf(Json.MAPPER.readTree(receivedBody.toString()).get("runtimes")))
+                .as("mutant: no runtimes, or wasm claimed")
+                .isEqualTo("[\"jvm\"]");
     }
 
     // ── emit (spec function-context.md §3, D4c) ─────────────────────────────

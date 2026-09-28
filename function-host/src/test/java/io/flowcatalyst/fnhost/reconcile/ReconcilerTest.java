@@ -744,6 +744,54 @@ class ReconcilerTest {
                 .isGreaterThan(heartbeatsBefore);
     }
 
+    // ── drain announces itself ────────────────────────────────────────────
+
+    @Test
+    void drainSendsOneDrainingHeartbeatAtOnceWithWhatIsLoaded(@TempDir Path dir) {
+        // Setting the flag alone reached the platform only if a reconcile ran
+        // before exit, so on SIGTERM the host row stayed ACTIVE until stale.
+        Path jar = TestFixtures.functionJar(dir, "drain-v1", "drain-1");
+        FakeControlPlane fake = new FakeControlPlane();
+        FunctionRegistry registry = new FunctionRegistry(50);
+        Reconciler r = offReconciler(fake, dir, registry);
+        fake.desiredStateReturns((p, etag) -> new ControlPlane.Fetched.Changed("etag1", docWithOneWarmLive(1, jar)));
+        r.reconcileOnce(Instant.now());
+        int heartbeatsBefore = fake.heartbeatCallCount();
+
+        r.drain();
+
+        assertThat(fake.heartbeatCallCount()).as("mutant: drain only sets the flag").isEqualTo(heartbeatsBefore + 1);
+        HeartbeatReport announced = fake.heartbeats().getLast();
+        assertThat(announced.state()).isEqualTo(HeartbeatReport.HostState.DRAINING);
+        assertThat(announced.loaded()).extracting(HeartbeatReport.LoadedEntry::state)
+                .as("the announcement still reports what is loaded")
+                .singleElement().isInstanceOf(HeartbeatReport.LoadState.Loaded.class);
+
+        r.drain();
+        assertThat(fake.heartbeatCallCount()).as("only the first drain announces").isEqualTo(heartbeatsBefore + 1);
+    }
+
+    @Test
+    void drainDoesNotWaitOutAHungControlPlane(@TempDir Path dir) {
+        FakeControlPlane fake = new FakeControlPlane();
+        Reconciler r = offReconciler(fake, dir, new FunctionRegistry(50));
+        fake.heartbeatDoes(report -> {
+            try {
+                Thread.sleep(Duration.ofMinutes(1));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+
+        long started = System.nanoTime();
+        r.drain(Duration.ofMillis(200));
+        Duration elapsed = Duration.ofNanos(System.nanoTime() - started);
+
+        assertThat(fake.heartbeatCallCount()).as("the announcement was attempted").isOne();
+        assertThat(elapsed).as("mutant: join without a bound").isLessThan(Duration.ofSeconds(5));
+        assertThat(r.readiness(true, true)).isEqualTo(Reconciler.Readiness.DRAINING);
+    }
+
     // ── R7: unload clauses ────────────────────────────────────────────────
 
     /// Deliberately does NOT also promote the address to a new version: a

@@ -274,6 +274,11 @@ public final class HttpControlPlane implements ControlPlane {
         node.put("hostId", report.hostId());
         node.put("pool", report.pool().value());
         node.put("state", report.state().name());
+        // What this host can run, so the platform can warn about (or refuse) a
+        // function sent to a pool whose hosts cannot load it. `jvm` only: to
+        // the platform `wasm` means a WASI component, which the Extism loader
+        // here cannot run, so claiming it would invite functions that fail.
+        node.putArray("runtimes").add("jvm");
         ArrayNode loaded = node.putArray("loaded");
         for (HeartbeatReport.LoadedEntry entry : report.loaded()) {
             ObjectNode e = Json.MAPPER.createObjectNode();
