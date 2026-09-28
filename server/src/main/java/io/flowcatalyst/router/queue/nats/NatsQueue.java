@@ -146,9 +146,16 @@ public final class NatsQueue implements Consumer {
     /// seams, no mocking library).
     final Map<String, io.nats.client.Message> pending = new ConcurrentHashMap<>();
 
-    /// Set by [#close]; checked at the top of every [#poll] (CONVENTIONS §5:
-    /// an explicit stop signal, never a silently-closed resource).
+    /// Intake has ended — set by [#stopPolling] (and so by [#close]); checked
+    /// at the top of every [#poll] and by the standing listener's handler
+    /// (CONVENTIONS §5: an explicit stop signal, never a silently-closed
+    /// resource). Distinct from [#closed]: between the two, [#pending] still
+    /// settles, which is what lets a shutdown drain ack what finishes.
     private final AtomicBoolean stopped = new AtomicBoolean(false);
+
+    /// Terminal — set by [#close] alone. After it [#pending] is gone and the
+    /// connection is closed.
+    private final AtomicBoolean closed = new AtomicBoolean(false);
 
     /// The thread currently parked in [#poll]'s [BlockingQueue#take], or
     /// `null` — set immediately on entry to [#poll], cleared in its
@@ -297,12 +304,15 @@ public final class NatsQueue implements Consumer {
                     // does not delay the timestamp behind the back-pressure
                     // wait.
                     lastActivity.set(clock.instant());
-                    // Dropped rather than risking an indefinite block on the
-                    // client library's own delivery thread once this queue
-                    // is closing: nothing will ever poll() it again, and an
-                    // un-acked message simply redelivers once ack-wait
-                    // lapses, same as any other abandoned delivery.
-                    if (!stopped.get()) {
+                    // Handed straight back rather than risking an indefinite
+                    // block on the client library's own delivery thread once
+                    // intake has stopped: nothing will ever poll() it again.
+                    // A nak returns it now; if even that fails it simply
+                    // redelivers once ack-wait lapses, like any other
+                    // abandoned delivery.
+                    if (stopped.get()) {
+                        handBack(msg, config.identifier());
+                    } else {
                         buffer.put(msg);
                     }
                 });
@@ -643,21 +653,69 @@ public final class NatsQueue implements Consumer {
         return Optional.ofNullable(lastActivity.get());
     }
 
-    /// Terminal. Clears [#pending] and [#buffer], stops the standing
-    /// [#consumer] and unblocks a [#poll] parked waiting on it, and closes
-    /// the connection — subsequent deliveries redeliver once their ack-wait
-    /// lapses, same as Go.
+    /// Ends intake but keeps [#pending] and the connection, so a delivery
+    /// the router is still working on can be acked or nacked during the
+    /// shutdown drain ([Consumer#stopPolling]).
+    ///
+    /// Stops the standing [#consumer] asking the server for more
+    /// (`MessageConsumer#stop`: pull requests already out finish, no new one
+    /// is issued), unblocks a [#poll] parked waiting on [#buffer], and naks
+    /// whatever [#buffer] still holds. Those messages never reached the
+    /// router, so handing them back now lets another instance take them at
+    /// once rather than after ack-wait.
+    ///
+    /// Before this existed, [#close] was the only way to stop intake, and it
+    /// cleared [#pending] — so every delivery that finished during the drain
+    /// found no pending entry to ack and was delivered again.
     @Override
-    public void close() {
+    public void stopPolling() {
         if (!stopped.compareAndSet(false, true)) {
             return;
         }
-        pending.clear();
-        buffer.clear();
         var blocked = waitingThread.get();
         if (blocked != null) {
             blocked.interrupt();
         }
+        if (consumer != null) {
+            try {
+                consumer.stop();
+            } catch (Exception e) {
+                log.atWarn().setMessage("nats: error stopping consumer")
+                        .addKeyValue("queue", identifier)
+                        .setCause(e)
+                        .log();
+            }
+        }
+        List<io.nats.client.Message> unpolled = new ArrayList<>();
+        buffer.drainTo(unpolled);
+        unpolled.forEach(msg -> handBack(msg, identifier));
+    }
+
+    /// Naks a message the router never took. Best-effort: a failure is
+    /// logged, and the message redelivers once its ack-wait lapses.
+    private static void handBack(io.nats.client.Message msg, String identifier) {
+        try {
+            msg.nak();
+        } catch (Exception e) {
+            log.atDebug().setMessage("nats: nak of an unpolled message failed; it redelivers after ack-wait")
+                    .addKeyValue("queue", identifier)
+                    .setCause(e)
+                    .log();
+        }
+    }
+
+    /// Terminal. Stops intake ([#stopPolling]) if that has not happened yet,
+    /// clears [#pending], closes the standing [#consumer] and the connection
+    /// — a delivery still unsettled redelivers once its ack-wait lapses,
+    /// same as Go. Shutdown calls this only after the drain.
+    @Override
+    public void close() {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
+        stopPolling();
+        pending.clear();
+        buffer.clear();
         if (consumer != null) {
             try {
                 consumer.close();

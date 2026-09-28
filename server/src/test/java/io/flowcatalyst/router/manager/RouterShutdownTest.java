@@ -62,6 +62,79 @@ class RouterShutdownTest {
     }
 
     @Test
+    @DisplayName("a delivery that finishes during the drain is acked through a consumer that is still open")
+    void drainSettlesBeforeConsumersClose() throws Exception {
+        // The NATS drain bug (review 2026-09-28): consumers were closed before
+        // the drain, NATS clears its pending map on close, and every delivery
+        // finishing during the drain failed its ack and was delivered again.
+        // The order that fixes it: stop polling, drain, hand back, close.
+        var consumer = new FakeConsumer("q://1");
+        tracker.register(inFlight("m1"));
+        var settled = new CountDownLatch(1);
+        Thread.ofVirtual().start(() -> {
+            sleepQuietly(Duration.ofMillis(300));
+            // What a pool worker does when its delivery succeeds.
+            consumer.ack(ordered("g", "m1"));
+            tracker.remove("m1");
+            settled.countDown();
+        });
+
+        var result = shutdown(Duration.ofSeconds(10)).shutdown(List.of(), List.of(consumer), List.of());
+
+        assertThat(settled.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(result.drained()).isTrue();
+        assertThat(consumer.ackedWhileClosed).as("no ack reached a closed consumer").isEmpty();
+        assertThat(consumer.stoppedPollingBeforeDrainEnded).as("intake stopped before the drain").isTrue();
+        assertThat(consumer.acked).containsExactly("m1");
+        assertThat(consumer.closed).as("closed once the drain is over").isTrue();
+    }
+
+    @Test
+    @DisplayName("buffered messages are handed back through a consumer that is still open")
+    void poolHandsBackBeforeConsumersClose() {
+        var consumer = new FakeConsumer("q://1");
+        var pool = new Pool(new Pool.Config("A", 1, 0),
+                (message, recordFailure) -> {
+                    sleepQuietly(Duration.ofMinutes(1)); // never completes
+                    return MediationOutcome.Success.of(200);
+                },
+                new Broker() {
+                    @Override
+                    public void ack(QueuedMessage message) {
+                        consumer.ack(message);
+                    }
+
+                    @Override
+                    public void defer(QueuedMessage message, Duration delay) {
+                        consumer.defer(message, delay);
+                    }
+
+                    @Override
+                    public void nack(QueuedMessage message, Duration delay) {
+                        consumer.nack(message, delay);
+                    }
+
+                    @Override
+                    public void release(QueuedMessage message) {
+                    }
+
+                    @Override
+                    public boolean honoursDelayedReturn(QueuedMessage message) {
+                        return true;
+                    }
+                },
+                PoolMetrics.NO_OP, clock);
+        IntStream.range(0, 5).forEach(i -> pool.submit(ordered("g", "m" + i)));
+        awaitBuffered(pool, 4);
+
+        new RouterShutdown(tracker, Duration.ofMillis(100)).standDown(List.of(), List.of(consumer), List.of(pool));
+
+        assertThat(consumer.nackedWhileClosed).as("none of them through a closed consumer").isEmpty();
+        assertThat(consumer.nacked).as("the buffered messages went back").hasSizeGreaterThanOrEqualTo(4);
+        pool.close();
+    }
+
+    @Test
     @DisplayName("a drain that cannot finish times out and reports the redeliveries")
     void drainTimesOutAndReports() {
         // Nothing releases these entries, so the drain can only expire.
@@ -190,10 +263,15 @@ class RouterShutdownTest {
         }
     }
 
-    private static class FakeConsumer implements Consumer {
+    private class FakeConsumer implements Consumer {
         private final String id;
         volatile boolean closed;
+        volatile boolean stoppedPolling;
+        volatile boolean stoppedPollingBeforeDrainEnded;
         final List<String> acked = new java.util.concurrent.CopyOnWriteArrayList<>();
+        final List<String> ackedWhileClosed = new java.util.concurrent.CopyOnWriteArrayList<>();
+        final List<String> nacked = new java.util.concurrent.CopyOnWriteArrayList<>();
+        final List<String> nackedWhileClosed = new java.util.concurrent.CopyOnWriteArrayList<>();
 
         FakeConsumer(String id) {
             this.id = id;
@@ -211,6 +289,11 @@ class RouterShutdownTest {
 
         @Override
         public boolean ack(QueuedMessage message) {
+            if (closed) {
+                // What NATS does: close cleared pending, so the ack is lost.
+                ackedWhileClosed.add(message.id());
+                return false;
+            }
             acked.add(message.id());
             return true;
         }
@@ -222,6 +305,13 @@ class RouterShutdownTest {
 
         @Override
         public void nack(QueuedMessage message, Duration delay) {
+            (closed ? nackedWhileClosed : nacked).add(message.id());
+        }
+
+        @Override
+        public void stopPolling() {
+            stoppedPolling = true;
+            stoppedPollingBeforeDrainEnded = tracker.size() > 0 || stoppedPollingBeforeDrainEnded;
         }
 
         @Override

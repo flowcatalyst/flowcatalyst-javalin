@@ -1854,6 +1854,18 @@ once).
 Not shut down: the mediator's host-pool sweep goroutine (`HTTPMediator.Close`
 has no caller) — harmless at process exit.
 
+**Java's order (review 2026-09-28, the order Go now uses in
+`internal/router/server.go` `Run`).** `RouterShutdown` runs, for shutdown and
+for leadership loss alike: (1) interrupt the poll loops and
+`Consumer#stopPolling` every consumer — intake ends, deliveries already
+handed out stay settleable; (2) drain; (3) stop or release the pools, which
+nack their buffers through the consumers; (4) only then `Consumer#close`.
+Closing first (the earlier Java order) broke NATS: `NatsQueue.close` clears
+its pending map, so every delivery finishing in the drain failed its ack
+and was delivered again. `NatsQueue#stopPolling` stops the standing
+listener (`MessageConsumer#stop`) and naks whatever it buffered that the
+router never took.
+
 ---
 
 ## 12. Edge cases & invariants mined from tests

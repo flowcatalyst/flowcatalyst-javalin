@@ -12,6 +12,7 @@ import io.nats.client.api.ConsumerInfo;
 final class FakeMessageConsumer implements MessageConsumer {
 
     int closeCalls;
+    int stopCalls;
 
     @Override
     public void close() {
@@ -35,7 +36,7 @@ final class FakeMessageConsumer implements MessageConsumer {
 
     @Override
     public void stop() {
-        throw new UnsupportedOperationException("not exercised by NatsQueue");
+        stopCalls++;
     }
 
     @Override

@@ -23,7 +23,8 @@ import java.util.Optional;
 /// - [#ack] and [#nack] are **best-effort and must not throw**. A broker
 ///   that is briefly unreachable cannot be allowed to fail a delivery that
 ///   already succeeded, nor to kill the worker holding the message.
-/// - After [#close] every [#poll] answers [PollResult.Stopped].
+/// - After [#stopPolling] or [#close] every [#poll] answers
+///   [PollResult.Stopped]; only [#close] stops acks and nacks working.
 public interface Consumer extends Acknowledger, AutoCloseable {
 
     /// Stable name for this queue, used as `QueueIdentifier` on every polled
@@ -87,7 +88,24 @@ public interface Consumer extends Acknowledger, AutoCloseable {
         return Optional.empty();
     }
 
-    /// Terminal. Subsequent polls answer [PollResult.Stopped].
+    /// Ends intake **without** giving up the deliveries already handed out:
+    /// after this, [#poll] answers [PollResult.Stopped], but [#ack], [#nack]
+    /// and [#defer] on a message polled earlier still reach the broker.
+    ///
+    /// Shutdown and leadership loss call this first and [#close] only after
+    /// the drain (`docs/spec/router.md` §11, `RouterShutdown`): a delivery
+    /// that finishes during the drain must still be able to settle, or it is
+    /// delivered a second time for nothing. The default is a no-op, which is
+    /// right for a request/response backend (Postgres, SQS): interrupting the
+    /// poll loop already stops it asking. A backend that receives on its own
+    /// thread (NATS's standing listener) must override it to stop that
+    /// thread asking the broker for more. Idempotent; never throws.
+    default void stopPolling() {
+    }
+
+    /// Terminal. Subsequent polls answer [PollResult.Stopped], and a delivery
+    /// not yet settled can no longer be — call [#stopPolling] and drain
+    /// first.
     @Override
     void close();
 

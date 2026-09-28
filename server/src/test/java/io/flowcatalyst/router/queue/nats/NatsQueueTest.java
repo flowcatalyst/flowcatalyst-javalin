@@ -365,6 +365,60 @@ class NatsQueueTest {
         }
     }
 
+    // --- stopPolling: intake ends, settlement does not -------------------
+    //
+    // Shutdown stops polling, drains, and only then closes (RouterShutdown).
+    // Before stopPolling existed, close was the only stop, and it cleared
+    // `pending` — so every delivery finishing during the drain failed its
+    // ack and was delivered again (review 2026-09-28, Rust H8).
+
+    @Test
+    @DisplayName("after stopPolling a delivery polled earlier can still be acked")
+    void stopPollingKeepsPendingAckable() throws InterruptedException {
+        var consumer = new FakeMessageConsumer();
+        var queue = new NatsQueue("nats-test", NatsQueueUri.parse("nats://localhost:4222?stream=S&consumer=C"),
+                consumer);
+        var fake = new FakeJetStreamMessage(VALID_PAYLOAD);
+        queue.pending.put("STREAM:1", fake);
+
+        queue.stopPolling();
+
+        assertThat(queue.poll(10)).as("intake has ended").isEqualTo(PollResult.STOPPED);
+        assertThat(consumer.stopCalls).as("the standing listener stops asking the server").isOne();
+        assertThat(consumer.closeCalls).as("but is not closed yet").isZero();
+        assertThat(queue.ack(QueuedMessage.of(minimalMessage(), "1", "STREAM:1", "nats-test")))
+                .as("the ack still reaches the broker").isTrue();
+        assertThat(fake.ackCalls).isOne();
+    }
+
+    @Test
+    @DisplayName("stopPolling hands back what the listener buffered but the router never took")
+    void stopPollingNaksUnpolledBuffer() {
+        var queue = queueWithMaxMessages(10);
+        var unpolled = new FakeJetStreamMessage(VALID_PAYLOAD);
+        queue.buffer.add(unpolled);
+
+        queue.stopPolling();
+
+        assertThat(queue.buffer).isEmpty();
+        assertThat(unpolled.nakCalls).as("returned now, not after ack-wait").isOne();
+    }
+
+    @Test
+    @DisplayName("close after stopPolling still closes the listener, once")
+    void closeAfterStopPollingCloses() {
+        var consumer = new FakeMessageConsumer();
+        var queue = new NatsQueue("nats-test", NatsQueueUri.parse("nats://localhost:4222?stream=S&consumer=C"),
+                consumer);
+
+        queue.stopPolling();
+        queue.close();
+        queue.close();
+
+        assertThat(consumer.stopCalls).isOne();
+        assertThat(consumer.closeCalls).isOne();
+    }
+
     @Test
     @DisplayName("close clears pending deliveries")
     void closeClearsPending() {

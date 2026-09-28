@@ -27,11 +27,20 @@ import java.util.function.Supplier;
 ///
 /// ### Why the order is what it is
 ///
-/// Stopping consumers first is the whole trick. Once no queue is feeding the
-/// pools, the in-flight set can only shrink, so the drain has a definite end
-/// rather than racing new arrivals. Reversing it — draining before stopping
-/// the sources — would mean draining against a queue still handing out work,
-/// which finishes only when the timeout says so.
+/// Stop polling, drain, hand back, then close — the order Go uses
+/// (`internal/router/server.go` `Run`: `StopPolling`, drain, `Manager.Shutdown`).
+///
+/// **Stopping intake first** is what gives the drain an end. Once no queue is
+/// feeding the pools, the in-flight set can only shrink, so the drain has a
+/// definite end rather than racing new arrivals.
+///
+/// **Closing the consumers last** is what lets the drain count. A delivery
+/// that finishes during the drain settles through its consumer, and the
+/// pools hand their buffered messages back through it too. Closed first, a
+/// consumer can do neither: NATS clears its pending map on close, so every
+/// ack during the drain found nothing to ack and the message was delivered
+/// a second time (review 2026-09-28, the Rust port's H8). Stopping intake is
+/// therefore [Consumer#stopPolling], not [Consumer#close].
 public final class RouterShutdown {
 
     private static final Logger log = LoggerFactory.getLogger(RouterShutdown.class);
@@ -74,7 +83,7 @@ public final class RouterShutdown {
     /// the drain ended.
     ///
     /// @param loops     the poll-loop threads to interrupt
-    /// @param consumers the queues to close
+    /// @param consumers the queues to stop, and after the drain close
     /// @param pools     the pools to stop
     /// Terminal: the process is exiting, so pools are **closed** — their
     /// worker executors released along with their buffers.
@@ -99,16 +108,18 @@ public final class RouterShutdown {
                 .addKeyValue("count", inFlightAtStart)
                 .log();
 
-        // 1. Stop the sources. Interruption unwinds every poll loop and every
-        //    blocking point beneath it; from here the in-flight set can only
-        //    shrink, which is what makes the drain terminate.
+        // 1. Stop intake. Interruption unwinds every poll loop and every
+        //    blocking point beneath it, and stopPolling stops a backend that
+        //    receives on its own thread (NATS) asking for more; from here the
+        //    in-flight set can only shrink, which is what makes the drain
+        //    terminate. The consumers stay open: step 2 settles through them.
         //
-        //    Interrupting is instant, so it stays sequential. Closing is not
-        //    — a consumer close talks to its broker — so it runs concurrently:
-        //    one unreachable broker would otherwise spend the whole budget
-        //    while every healthy queue waited behind it.
+        //    Interrupting is instant, so it stays sequential. stopPolling may
+        //    talk to its broker, so it runs concurrently: one unreachable
+        //    broker would otherwise spend the whole budget while every
+        //    healthy queue waited behind it.
         loops.forEach(Thread::interrupt);
-        Concurrently.forEach(consumers, RouterShutdown::closeQuietly, stepTimeout, "consumer close");
+        Concurrently.forEach(consumers, RouterShutdown::stopPollingQuietly, stepTimeout, "consumer stop polling");
 
         // 2. Let what is already delivering finish.
         boolean drained = awaitDrain();
@@ -123,6 +134,10 @@ public final class RouterShutdown {
         //    nacks every message it still holds, one broker round-trip each,
         //    and a slow pool must not eat the budget of the others.
         Concurrently.forEach(pools, poolAction, stepTimeout, poolActionName);
+
+        // 4. Only now close the consumers: nothing will settle through them
+        //    again. Concurrent for the same reason as step 1.
+        Concurrently.forEach(consumers, RouterShutdown::closeQuietly, stepTimeout, "consumer close");
 
         int remaining = tracker.size();
         if (!drained) {
@@ -153,6 +168,19 @@ public final class RouterShutdown {
             }
         }
         return true;
+    }
+
+    private static void stopPollingQuietly(Consumer consumer) {
+        try {
+            consumer.stopPolling();
+        } catch (RuntimeException e) {
+            // The contract says it never throws; one backend breaking that
+            // must still not stop the others.
+            log.atWarn().setMessage("failed to stop consumer polling")
+                    .addKeyValue("consumer", consumer.identifier())
+                    .setCause(e)
+                    .log();
+        }
     }
 
     private static void closeQuietly(Consumer consumer) {
