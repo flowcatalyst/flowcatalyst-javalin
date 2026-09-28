@@ -68,11 +68,16 @@ public final class LifecycleLoops implements AutoCloseable {
 
     private final List<Thread> threads = new CopyOnWriteArrayList<>();
 
+    /// What [#start] was given, in order — read-only, for the composition
+    /// root's own wiring tests.
+    private final List<Task> tasks = new CopyOnWriteArrayList<>();
+
     /// Starts every task on its own virtual thread.
     ///
     /// Interruption is the stop signal, as everywhere else — [#close]
     /// interrupts them and they unwind at their next sleep.
     public void start(List<Task> tasks) {
+        this.tasks.addAll(tasks);
         tasks.forEach(task -> threads.add(
                 Thread.ofVirtual().name("router-" + task.name()).start(() -> run(task))));
         log.atInfo().setMessage("router housekeeping started")
@@ -155,6 +160,11 @@ public final class LifecycleLoops implements AutoCloseable {
             warnings.raise(Warnings.Severity.ERROR, "RESOURCE",
                     "in-flight tracker holds " + size + " messages");
         }
+    }
+
+    /// The tasks started so far.
+    public List<Task> tasks() {
+        return List.copyOf(tasks);
     }
 
     @Override

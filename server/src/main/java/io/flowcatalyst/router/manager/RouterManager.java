@@ -441,6 +441,10 @@ public final class RouterManager implements AutoCloseable {
     /// submit or redelivery well inside this.
     public static final Duration DEFAULT_PARKED_GROUP_MAX_AGE = Duration.ofMinutes(2);
 
+    /// How often the router's housekeeping runs [#releaseParkedGroups] —
+    /// the same cadence as the other "has this finished yet" sweeps.
+    public static final Duration PARKED_GROUP_RELEASE_INTERVAL = Duration.ofSeconds(60);
+
     /// Hands back to the broker every ordered group parked longer than
     /// `minAge`, in every pool including those still draining after removal
     /// — a group parked inside a draining pool would otherwise hold that pool

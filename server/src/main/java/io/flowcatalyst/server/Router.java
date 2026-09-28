@@ -44,6 +44,7 @@ import javax.sql.DataSource;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -129,6 +130,16 @@ public final class Router implements AutoCloseable {
         this.brokerStats = brokerStats;
         this.poolMetrics = Objects.requireNonNull(metrics, "metrics");
         this.vertxMediationClient = vertxMediationClient;
+    }
+
+    /// The housekeeping task that hands parked ordered groups back to the
+    /// broker (`RouterManager#releaseParkedGroups`).
+    static final String PARKED_GROUP_RELEASE_TASK = "parked-group-release";
+
+    /// The housekeeping tasks this router started, for a test to prove what
+    /// is actually wired rather than what a helper would wire.
+    List<LifecycleLoops.Task> housekeepingTasks() {
+        return housekeeping.tasks();
     }
 
     public RouterManager manager() {
@@ -317,7 +328,8 @@ public final class Router implements AutoCloseable {
         // redelivery, and neither comes while its pool is full — which the
         // parked buffer itself may be causing. This sweep hands such a group
         // back to the broker (Go's ReleaseParkedGroups, review 2026-09-28).
-        housekeepingTasks.add(new LifecycleLoops.Task("parked-group-release", LifecycleLoops.DRAIN_CHECK,
+        housekeepingTasks.add(new LifecycleLoops.Task(PARKED_GROUP_RELEASE_TASK,
+                RouterManager.PARKED_GROUP_RELEASE_INTERVAL,
                 () -> manager.releaseParkedGroups(RouterManager.DEFAULT_PARKED_GROUP_MAX_AGE)));
         housekeepingTasks.add(new LifecycleLoops.Task("config-poll",
                 RouterServer.parseConfigPollInterval(env.routerConfigIntervalRaw()),
