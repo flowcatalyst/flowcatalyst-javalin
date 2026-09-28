@@ -476,6 +476,69 @@ class OrderedGroupsTest {
         assertThat(groups.buffered()).isEqualTo(threads);
     }
 
+    /// The parked-group sweep (review 2026-09-28) races a redelivery resuming
+    /// the same group: [OrderedGroups#takeIfParked] against
+    /// [OrderedGroups#claimDrainer] + [OrderedGroups#pollHead]. Whoever wins,
+    /// every message must end up in exactly one hand — taken by the sweep or
+    /// polled by the drainer — never both (a duplicate delivery) and never
+    /// neither (a loss), and the group goes wholly one way: the sweep never
+    /// takes from a group a drainer has claimed. A plain-JDK stress loop, not a model checker
+    /// (`docs/spec/router.md` §12 note on lincheck/jcstress). Mutant: drop
+    /// takeIfParked's re-check of "still parked" under the lock, and the two
+    /// hands overlap.
+    @Test
+    @DisplayName("a sweep racing a resume hands every parked message to exactly one of them")
+    void sweepRacingAResumeNeverLosesOrDuplicates() throws Exception {
+        for (int round = 0; round < 500; round++) {
+            var g = new OrderedGroups();
+            var group = "g" + round;
+            for (int i = 0; i < 5; i++) {
+                g.offer(message(group, round + "-" + i, DispatchMode.BLOCK_ON_ERROR));
+            }
+            g.releaseDrainer(group); // parked: holds work, no drainer
+
+            var start = new CountDownLatch(1);
+            var swept = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            var drained = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            var sweeper = Thread.ofVirtual().start(() -> {
+                awaitQuietly(start);
+                g.takeIfParked(group).forEach(m -> swept.add(m.id()));
+            });
+            var drainer = Thread.ofVirtual().start(() -> {
+                awaitQuietly(start);
+                if (g.claimDrainer(group)) {
+                    for (var head = g.pollHead(group); head.isPresent(); head = g.pollHead(group)) {
+                        drained.add(head.get().id());
+                    }
+                }
+            });
+            start.countDown();
+            sweeper.join();
+            drainer.join();
+
+            var all = new java.util.ArrayList<>(swept);
+            all.addAll(drained);
+            assertThat(all).as("round %d: swept %s, drained %s", round, swept, drained)
+                    .containsExactlyInAnyOrder(round + "-0", round + "-1", round + "-2", round + "-3", round + "-4");
+            // The load-bearing half: the whole group goes one way. A sweep that
+            // took the tail from under a drainer already delivering the head
+            // would hand siblings back to the broker while their head is in
+            // flight — on a broker with no group lock, delivered out of order.
+            assertThat(swept.isEmpty() || drained.isEmpty())
+                    .as("round %d: the sweep robbed a live drainer (swept %s, drained %s)", round, swept, drained)
+                    .isTrue();
+            assertThat(g.buffered()).isZero();
+        }
+    }
+
+    private static void awaitQuietly(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private void offerAll(String group, String... ids) {
         offerAll(group, DispatchMode.BLOCK_ON_ERROR, ids);
     }

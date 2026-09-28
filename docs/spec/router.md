@@ -1939,6 +1939,26 @@ Each line: behaviour → pinning test (file in `router/` unless noted).
 
 ---
 
+
+### Why no lincheck or jcstress (review 2026-09-28)
+
+Assessed for `CapacityGate`, `OrderedGroups` and `PoolAdmission` and not
+added. Each of the three keeps all of its mutable state under one lock (a
+monitor, or one `ReentrantLock`), so each is linearizable by construction. A
+linearizability checker would be proving the property the lock already
+gives, at the price of a new dependency (lincheck brings a Kotlin runtime and
+bytecode instrumentation; jcstress needs its own harness and a separate
+module) and a slower build. The races that have actually shipped here were
+between objects: a drainer, its group bookkeeping and the broker (the
+dead-drainer wedge, the sweep that must not rob a live drainer). A model
+checker scoped to one class does not see those. They are pinned instead by
+targeted plain-JDK stress tests, with a mutant each:
+`OrderedGroupsTest.concurrentSubmitsElectOneDrainer` and
+`sweepRacingAResumeNeverLosesOrDuplicates` (the sweep takes a whole group or
+none of it, never the tail from under a drainer). If a class ever grows
+lock-free state (CAS loops, lazy publication), that is the point to add
+jcstress for it.
+
 ## 13. Open questions for the owner
 
 Each is a yes/no (or pick-one) decision. "Today" = what the Go does.
