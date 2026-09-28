@@ -313,6 +313,12 @@ public final class Router implements AutoCloseable {
                 () -> brokerStats.refresh(manager.queueMetricSources()), warnings::cleanup,
                 () -> manager.evictIdleSynthesisedPools(synthPoolIdleTtl),
                 manager::closeDrainedPools, manager::retireLingeringConsumers));
+        // A group parked with no drainer resumes only on a submit or a
+        // redelivery, and neither comes while its pool is full — which the
+        // parked buffer itself may be causing. This sweep hands such a group
+        // back to the broker (Go's ReleaseParkedGroups, review 2026-09-28).
+        housekeepingTasks.add(new LifecycleLoops.Task("parked-group-release", LifecycleLoops.DRAIN_CHECK,
+                () -> manager.releaseParkedGroups(RouterManager.DEFAULT_PARKED_GROUP_MAX_AGE)));
         housekeepingTasks.add(new LifecycleLoops.Task("config-poll",
                 RouterServer.parseConfigPollInterval(env.routerConfigIntervalRaw()),
                 server::pollConfiguration));

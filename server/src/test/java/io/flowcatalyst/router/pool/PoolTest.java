@@ -560,6 +560,88 @@ class PoolTest {
         assertThat(mediator.attempts("m0")).isOne();
     }
 
+    // ── a drainer that throws; the parked-group sweep (review 2026-09-28) ──
+
+    @Test
+    @DisplayName("a drainer that throws returns its group to the broker, in order, and the group keeps working")
+    void throwingDrainerReturnsTheGroupAndDoesNotWedgeIt() {
+        // Only the mediator call was guarded; a throw anywhere else in the
+        // drainer killed it with the group still marked as being drained, so
+        // every later message for the group sat behind a drainer that no
+        // longer existed.
+        metrics.throwOnNextSuccess = new IllegalStateException("metrics sink exploded");
+        var log = (Logger) LoggerFactory.getLogger(Pool.class);
+        var captured = new ListAppender<ILoggingEvent>();
+        captured.start();
+        log.addAppender(captured);
+        try {
+            var p = pool(2, 0);
+            mediator.block();
+            IntStream.range(0, 3).forEach(i -> p.submit(ordered("g", "m" + i, DispatchMode.BLOCK_ON_ERROR)));
+            mediator.unblock();
+
+            await(() -> broker.nacked.size() == 3);
+            assertThat(broker.nackOrder).as("head first, then the siblings in order").containsExactly("m0", "m1", "m2");
+            assertThat(broker.nackReasons).containsEntry("m0", "drainer-failed");
+            assertThat(broker.nacked.get("m1")).as("a sibling never comes back before its head")
+                    .isGreaterThanOrEqualTo(broker.nacked.get("m0"));
+            await(() -> p.queueSize() == 0 && p.messageGroupCount() == 0);
+            assertThat(captured.list).as("logged with its stack")
+                    .anySatisfy(event -> {
+                        assertThat(event.getLevel()).isEqualTo(Level.ERROR);
+                        assertThat(event.getThrowableProxy()).isNotNull();
+                        assertThat(event.getThrowableProxy().getMessage()).isEqualTo("metrics sink exploded");
+                    });
+
+            p.submit(ordered("g", "m3", DispatchMode.BLOCK_ON_ERROR));
+            await(() -> broker.acked.contains("m3"));
+        } finally {
+            log.detachAppender(captured);
+        }
+    }
+
+    @Test
+    @DisplayName("a failed drainer that cannot hand its group back parks it, and the sweep releases it once old enough")
+    void unreturnableGroupIsParkedAndTheSweepReleasesIt() {
+        var now = new java.util.concurrent.atomic.AtomicReference<>(Instant.parse("2026-09-28T10:00:00Z"));
+        var clock = new Clock() {
+            @Override
+            public java.time.ZoneId getZone() {
+                return java.time.ZoneOffset.UTC;
+            }
+
+            @Override
+            public Clock withZone(java.time.ZoneId zone) {
+                return this;
+            }
+
+            @Override
+            public Instant instant() {
+                return now.get();
+            }
+        };
+        pool = new Pool(new Pool.Config("POOL-A", 2, 0), FAST, mediator, broker, metrics, clock);
+        var p = pool;
+        metrics.throwOnNextSuccess = new IllegalStateException("metrics sink exploded");
+        broker.failNextNacks.set(1);
+        mediator.block();
+        IntStream.range(0, 3).forEach(i -> p.submit(ordered("g", "m" + i, DispatchMode.BLOCK_ON_ERROR)));
+        mediator.unblock();
+
+        await(() -> p.queueSize() == 3 && p.groupSnapshot().stream().noneMatch(Pool.GroupSnapshot::draining));
+        assertThat(broker.nacked).as("nothing overtook the head whose hand-back failed").isEmpty();
+
+        assertThat(p.releaseParkedGroups(Duration.ofMinutes(2)))
+                .as("mutant: ignore minAge — a fresh park is left for a redelivery to resume").isZero();
+        now.set(now.get().plus(Duration.ofMinutes(3)));
+        assertThat(p.releaseParkedGroups(Duration.ofMinutes(2))).as("mutant: no sweep").isEqualTo(3);
+
+        assertThat(broker.nackOrder).containsExactly("m0", "m1", "m2");
+        assertThat(broker.nackReasons).containsEntry("m0", "group-parked");
+        assertThat(p.queueSize()).isZero();
+        assertThat(p.messageGroupCount()).isZero();
+    }
+
     @Test
     @DisplayName("T5: an ordered ReturnGroup for an unavailable target uses the backoff delay, not the fixed 10s")
     void orderedReturnGroupUsesBackoffDelay() {
@@ -1291,6 +1373,10 @@ class PoolTest {
         /// that is the ordinary case this suite otherwise exercises. T12/T13
         /// flip this to simulate NATS, which does not.
         volatile boolean honoursDelayedReturn = true;
+        /// The next this-many nacks throw — a broker breaking the
+        /// "never throws" contract, which a drainer must survive.
+        final AtomicInteger failNextNacks = new AtomicInteger();
+        final List<String> nackOrder = new CopyOnWriteArrayList<>();
         final List<String> acked = new CopyOnWriteArrayList<>();
         final Map<String, String> ackReasons = new ConcurrentHashMap<>();
         final Map<String, Duration> nacked = new ConcurrentHashMap<>();
@@ -1326,6 +1412,9 @@ class PoolTest {
 
         @Override
         public void nack(QueuedMessage message, Duration delay) {
+            if (failNextNacks.getAndUpdate(n -> Math.max(0, n - 1)) > 0) {
+                throw new IllegalStateException("broker broke its never-throws contract");
+            }
             if (hangOnNack) {
                 try {
                     Thread.sleep(Duration.ofMinutes(5));
@@ -1335,6 +1424,7 @@ class PoolTest {
                 }
             }
             nacked.put(message.id(), delay);
+            nackOrder.add(message.id());
             tracker.remove(message.id());
         }
 
@@ -1374,8 +1464,17 @@ class PoolTest {
         final AtomicInteger rateLimited = new AtomicInteger();
         final AtomicInteger suppressed = new AtomicInteger();
 
+        /// Thrown once from the next [#recordSuccess] — a failure outside
+        /// the mediator call, which is the part of a drainer nothing guarded.
+        volatile RuntimeException throwOnNextSuccess;
+
         @Override
         public void recordSuccess(Duration took) {
+            var thrown = throwOnNextSuccess;
+            if (thrown != null) {
+                throwOnNextSuccess = null;
+                throw thrown;
+            }
             successes.incrementAndGet();
         }
 

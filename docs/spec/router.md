@@ -1911,6 +1911,14 @@ Each line: behaviour → pinning test (file in `router/` unless noted).
 35. Route ACK-drops an external requeue without mediating it → `TestManagerRouteExternalRequeueAcks`.
 36. A requeue of a *buffered* ordered message is ACKed and the buffer keeps one copy; a redelivery of a buffered message is dropped (not acked), keeps one copy, and the owner adopts the fresher handle → `TestManagerRouteRequeueOfBufferedMessageAcked, TestManagerRouteRedeliveryOfBufferedMessageDropped`.
 37. A redelivery resumes a parked group; the message is delivered once and acked with the redelivery's handle → `TestManagerRouteRedeliveryResumesParkedGroup`.
+37a. (Java, review 2026-09-28) A group parked with no drainer for longer than 2 min
+    (`RouterManager.DEFAULT_PARKED_GROUP_MAX_AGE`, Go's `ParkedGroupMaxAge`) is handed back to the
+    broker, head first, by the `parked-group-release` housekeeping task (every 60 s, all pools
+    including draining ones) — `Pool.releaseParkedGroups`, Go's `ReleaseParkedGroups`. A drainer that
+    throws outside the mediator call logs the stack and returns its group to the broker
+    (`drainer-failed`); if that hand-back itself throws, the rest of the group is parked for the
+    sweep rather than let siblings overtake the head → `PoolTest.throwingDrainerReturnsTheGroupAndDoesNotWedgeIt`,
+    `unreturnableGroupIsParkedAndTheSweepReleasesIt`.
 38. A stopped pool nacks and releases the tracker entry; a redelivery registers as new → `TestPoolStoppedNackReleasesTrackerEntry`.
 39. Stopping a pool flushes buffered messages and releases their entries (the in-hand retrying head stays tracked) → `TestPoolStopFlushesBufferedTrackerEntries`.
 40. `Lookup` returns a copy by exact id → `TestInFlightTrackerLookup`.

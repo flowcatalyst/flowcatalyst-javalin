@@ -22,6 +22,7 @@ import org.slf4j.LoggerFactory;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -147,7 +148,7 @@ public final class Pool implements AutoCloseable {
     private final PoolMetrics metrics;
     private final GroupFlushRegistry flushes;
     private final RateLimiter limiter;
-    private final OrderedGroups groups = new OrderedGroups();
+    private final OrderedGroups groups;
     private final Clock clock;
     private final Warnings warnings;
 
@@ -266,6 +267,7 @@ public final class Pool implements AutoCloseable {
         this.broker = broker;
         this.metrics = metrics;
         this.clock = clock;
+        this.groups = new OrderedGroups(clock);
         this.warnings = warnings;
         this.siblingPolicy = siblingPolicy;
         this.flushes = new GroupFlushRegistry(clock);
@@ -544,52 +546,161 @@ public final class Pool implements AutoCloseable {
     }
 
     /// Delivers one group in order, for as long as it holds work.
+    ///
+    /// ### A drainer that throws
+    ///
+    /// The mediator call is guarded inside [#deliverOnce]; nothing else here
+    /// is expected to throw — broker calls are best-effort by contract
+    /// ([io.flowcatalyst.router.queue.Acknowledger]). But "must not throw" is
+    /// a rule, not a guarantee, and a drainer that dies without letting go
+    /// leaves its group marked as drained by nobody: every later submit to
+    /// the group is buffered behind it, and only a redelivery could revive
+    /// it. So the whole loop is guarded: a throwable is logged with its
+    /// stack, and the group goes back to the broker
+    /// ([#returnAfterDrainerFailure]), or, if even that fails, is parked for
+    /// [#releaseParkedGroups].
     private void runDrainer(String group) {
-        while (true) {
-            var head = groups.pollHead(group);
-            capacityChanged();
-            if (head.isEmpty()) {
-                return;
-            }
-            var message = head.get();
-            var semaphore = slots;
-            try {
-                semaphore.acquire();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                // Undelivered: put it back at the front and let go of the
-                // group, so a later submit or redelivery resumes in order.
-                groups.reFront(message);
+        QueuedMessage inHand = null;
+        try {
+            while (true) {
+                var head = groups.pollHead(group);
                 capacityChanged();
-                groups.releaseDrainer(group);
-                return;
+                if (head.isEmpty()) {
+                    return;
+                }
+                var message = head.get();
+                inHand = message;
+                var semaphore = slots;
+                try {
+                    semaphore.acquire();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    // Undelivered: put it back at the front and let go of the
+                    // group, so a later submit or redelivery resumes in order.
+                    groups.reFront(message);
+                    inHand = null;
+                    capacityChanged();
+                    groups.releaseDrainer(group);
+                    return;
+                }
+                Attempt attempt;
+                try {
+                    attempt = deliverOnce(message);
+                } finally {
+                    semaphore.release();
+                }
+                boolean carryOn = switch (attempt) {
+                    case Attempt.Settled ignored -> true;
+                    case Attempt.Failed failed -> handleHeadFailure(group, message, failed.outcome());
+                    // R-57: the app ran and rejected the message. Same per-mode
+                    // decision as any other head failure — the drainer does not
+                    // need to know REJECTED is terminal on the first attempt,
+                    // only that OrderedGroups has already decided what happens
+                    // to the group.
+                    case Attempt.Rejected rejected -> handleHeadFailure(group, message, rejected.outcome());
+                };
+                inHand = null;
+                if (!carryOn) {
+                    return;
+                }
             }
-            Attempt attempt;
-            try {
-                attempt = deliverOnce(message);
-            } finally {
-                semaphore.release();
-            }
-            switch (attempt) {
-                case Attempt.Settled ignored -> {
-                }
-                case Attempt.Failed failed -> {
-                    if (!handleHeadFailure(group, message, failed.outcome())) {
-                        return;
-                    }
-                }
-                // R-57: the app ran and rejected the message. Same per-mode
-                // decision as any other head failure — the drainer does not
-                // need to know REJECTED is terminal on the first attempt,
-                // only that OrderedGroups has already decided what happens
-                // to the group.
-                case Attempt.Rejected rejected -> {
-                    if (!handleHeadFailure(group, message, rejected.outcome())) {
-                        return;
-                    }
-                }
+        } catch (RuntimeException | Error failure) {
+            log.atError().setMessage("group drainer failed; returning the group to the broker")
+                    .addKeyValue("pool", config.code())
+                    .addKeyValue("group", group)
+                    .addKeyValue("message_id", inHand == null ? null : inHand.id())
+                    .setCause(failure)
+                    .log();
+            returnAfterDrainerFailure(group, inHand);
+            if (failure instanceof VirtualMachineError fatal) {
+                throw fatal;
             }
         }
+    }
+
+    /// Hands a failed drainer's group back to the broker in FIFO order: the
+    /// message it held first (its state is unknown, so it is returned rather
+    /// than retried here), then everything buffered behind it. Siblings
+    /// never come back before the head ([#siblingDelay]).
+    ///
+    /// Stops at the first hand-back that throws and puts that message and
+    /// everything after it back in the group, **parked**: handing back the
+    /// rest would let them overtake the one that failed, and
+    /// [#releaseParkedGroups] tries again later.
+    private void returnAfterDrainerFailure(String group, QueuedMessage inHand) {
+        var toReturn = new ArrayList<QueuedMessage>();
+        if (inHand != null) {
+            toReturn.add(inHand);
+        }
+        toReturn.addAll(groups.takeAndReleaseGroup(group));
+        var headDelay = UNEXPECTED_FAILURE_DELAY;
+        for (int i = 0; i < toReturn.size(); i++) {
+            var message = toReturn.get(i);
+            try {
+                broker.nack(message, i == 0 ? headDelay : siblingDelay(headDelay), "drainer-failed");
+            } catch (RuntimeException | Error handBackFailure) {
+                log.atError().setMessage("could not hand a failed drainer's group back; parking it for the sweep")
+                        .addKeyValue("pool", config.code())
+                        .addKeyValue("group", group)
+                        .addKeyValue("parked", toReturn.size() - i)
+                        .setCause(handBackFailure)
+                        .log();
+                groups.restore(group, toReturn.subList(i, toReturn.size()));
+                break;
+            }
+        }
+        capacityChanged();
+    }
+
+    /// Hands back every group that has sat **parked** — holding work with no
+    /// drainer — for longer than `minAge`, and returns how many messages it
+    /// released. The router runs it on a housekeeping tick
+    /// ([io.flowcatalyst.router.manager.RouterManager#releaseParkedGroups]),
+    /// the counterpart of Go's `Pool.ReleaseParkedGroups`.
+    ///
+    /// A group parks when its drainer lets go without finishing — an
+    /// interrupted slot wait or backoff, or a failed drainer that could not
+    /// hand its group back. Something must then come back for it: a submit to
+    /// the same group, or a redelivery ([#resumeGroup]). Both need the source
+    /// consumer polling, and a consumer stops polling exactly when this pool
+    /// is at capacity — which this very buffer may be holding it at. Left
+    /// alone, that closes into a deadlock, and on a FIFO queue the un-deleted
+    /// head blocks every message behind it until broker retention.
+    ///
+    /// Releasing rather than resuming needs no live drainer, returns the
+    /// messages to the one authority that redelivers them in order, and frees
+    /// the capacity the consumer is waiting for. `minAge` keeps it off the
+    /// fast path, so a group a redelivery is about to resume is not snatched.
+    public int releaseParkedGroups(Duration minAge) {
+        int released = 0;
+        for (var group : groups.parkedLongerThan(minAge)) {
+            var parked = groups.takeIfParked(group);
+            if (parked.isEmpty()) {
+                continue; // a drainer claimed it since the scan — it is not parked any more
+            }
+            // Head first, then siblings no earlier than it (see #siblingDelay).
+            for (int i = 0; i < parked.size(); i++) {
+                broker.nack(parked.get(i), i == 0 ? REJECTED_NACK_DELAY : siblingDelay(REJECTED_NACK_DELAY),
+                        "group-parked");
+            }
+            capacityChanged();
+            log.atWarn().setMessage("released a parked message group to the broker; nothing had resumed it")
+                    .addKeyValue("pool", config.code())
+                    .addKeyValue("group", group)
+                    .addKeyValue("released", parked.size())
+                    .addKeyValue("parked_for_at_least", minAge)
+                    .log();
+            released += parked.size();
+        }
+        return released;
+    }
+
+    /// The delay for an untried sibling handed back behind a head that went
+    /// back with `headDelay`: never shorter than the head's, so on a broker
+    /// with no group lock a sibling cannot return — and be delivered — before
+    /// its head.
+    static Duration siblingDelay(Duration headDelay) {
+        return headDelay.compareTo(REJECTED_NACK_DELAY) > 0 ? headDelay : REJECTED_NACK_DELAY;
     }
 
     /// Applies the Q1 ruling to a failed head.

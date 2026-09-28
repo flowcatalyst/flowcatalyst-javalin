@@ -435,6 +435,27 @@ public final class RouterManager implements AutoCloseable {
         return Map.copyOf(all);
     }
 
+    /// How long an ordered group may sit parked — holding work with no
+    /// drainer — before [#releaseParkedGroups] hands it back (Go's
+    /// `ParkedGroupMaxAge` default). A park is normally resumed by the next
+    /// submit or redelivery well inside this.
+    public static final Duration DEFAULT_PARKED_GROUP_MAX_AGE = Duration.ofMinutes(2);
+
+    /// Hands back to the broker every ordered group parked longer than
+    /// `minAge`, in every pool including those still draining after removal
+    /// — a group parked inside a draining pool would otherwise hold that pool
+    /// open for ever. See [Pool#releaseParkedGroups] for why a park cannot be
+    /// left to resolve itself. Housekeeping, alongside [#closeDrainedPools].
+    ///
+    /// @return how many messages were released
+    public int releaseParkedGroups(Duration minAge) {
+        int released = 0;
+        for (var pool : allPools().values()) {
+            released += pool.releaseParkedGroups(minAge);
+        }
+        return released;
+    }
+
     /// Closes and forgets every draining pool that has finished emptying
     /// (X-11, `docs/spec/router-completion.md` §2 ruling 6) — housekeeping,
     /// alongside [#retireLingeringConsumers].

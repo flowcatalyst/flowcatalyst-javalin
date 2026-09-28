@@ -2,6 +2,9 @@ package io.flowcatalyst.router.pool;
 
 import io.flowcatalyst.router.wire.MediationOutcome;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -43,11 +46,23 @@ final class OrderedGroups {
     private static final class Group {
         final Deque<QueuedMessage> queue = new ArrayDeque<>();
         boolean draining;
+        /// When the group was last left holding work with no drainer, or
+        /// `null` while a drainer owns it. What [#parkedLongerThan] ages.
+        Instant parkedAt;
     }
 
     private final ReentrantLock lock = new ReentrantLock();
     private final Map<String, Group> groups = new HashMap<>();
+    private final Clock clock;
     private int buffered;
+
+    OrderedGroups() {
+        this(Clock.systemUTC());
+    }
+
+    OrderedGroups(Clock clock) {
+        this.clock = clock;
+    }
 
     /// Appends to the back of `group`'s queue.
     ///
@@ -65,6 +80,7 @@ final class OrderedGroups {
                 return false;
             }
             group.draining = true;
+            group.parkedAt = null;
             return true;
         } finally {
             lock.unlock();
@@ -234,7 +250,7 @@ final class OrderedGroups {
     /// Releasing rather than parking is deliberate: a later submit or
     /// redelivery starts a fresh drainer, which is how both the platform's
     /// re-send and the broker's redelivery get picked back up.
-    private List<QueuedMessage> takeAndReleaseGroup(String group) {
+    List<QueuedMessage> takeAndReleaseGroup(String group) {
         lock.lock();
         try {
             var entry = groups.remove(group);
@@ -271,10 +287,74 @@ final class OrderedGroups {
                 return false;
             }
             entry.draining = false;
+            entry.parkedAt = clock.instant();
             return true;
         } finally {
             lock.unlock();
         }
+    }
+
+    /// Puts `messages` back at the front of `group`, in order, ahead of
+    /// anything a submit added meanwhile — for a drainer that failed and
+    /// could not hand them to the broker. Parks the group unless a drainer
+    /// already owns it again, so [#parkedLongerThan] finds it.
+    void restore(String group, List<QueuedMessage> messages) {
+        if (messages.isEmpty()) {
+            return;
+        }
+        lock.lock();
+        try {
+            var entry = groups.computeIfAbsent(group, ignored -> new Group());
+            for (int i = messages.size() - 1; i >= 0; i--) {
+                entry.queue.addFirst(messages.get(i));
+            }
+            buffered += messages.size();
+            if (!entry.draining) {
+                entry.parkedAt = clock.instant();
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /// Groups holding work with no drainer for longer than `minAge` — a
+    /// park nothing came back for (see [Pool#releaseParkedGroups]).
+    List<String> parkedLongerThan(Duration minAge) {
+        var cutoff = clock.instant().minus(minAge);
+        lock.lock();
+        try {
+            return groups.entrySet().stream()
+                    .filter(e -> isParked(e.getValue()) && e.getValue().parkedAt.isBefore(cutoff))
+                    .map(Map.Entry::getKey)
+                    .toList();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /// Empties and releases `group` only if it is **still** parked — a
+    /// drainer that claimed it since [#parkedLongerThan] looked keeps it.
+    ///
+    /// @return what was queued, in FIFO order; empty when it is no longer
+    ///         parked
+    List<QueuedMessage> takeIfParked(String group) {
+        lock.lock();
+        try {
+            var entry = groups.get(group);
+            if (entry == null || !isParked(entry)) {
+                return List.of();
+            }
+            groups.remove(group);
+            var queued = List.copyOf(entry.queue);
+            buffered -= queued.size();
+            return queued;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private static boolean isParked(Group group) {
+        return !group.draining && !group.queue.isEmpty() && group.parkedAt != null;
     }
 
     /// Claims `group` for a drainer if one is not already running.
@@ -287,6 +367,7 @@ final class OrderedGroups {
                 return false;
             }
             entry.draining = true;
+            entry.parkedAt = null;
             return true;
         } finally {
             lock.unlock();
