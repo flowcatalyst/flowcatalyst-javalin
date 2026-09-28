@@ -38,8 +38,14 @@ RUN mvn -q -B -DskipTests -pl server -am package \
 # there is nothing left that needs it. --strip-debug/--compress halve the modules
 # image; no JIT is removed — this is still HotSpot with full peak performance,
 # just without unused modules.
+# Operator diagnostics (docs/diagnostics.md): jdk.jcmd (jcmd, jstack, jmap, jinfo,
+# jstat — pulls in jdk.attach and jdk.internal.jvmstat) so `docker exec … jcmd 1
+# Thread.dump_to_file` and `JFR.dump` work inside the container, and
+# jdk.management.jfr (FlightRecorderMXBean, for a JMX client such as Mission
+# Control). jdk.jfr itself (the recorder and the `jfr` tool) jdeps already finds.
+# Measured with the same jlink flags: +0.5 MB on a ~54 MB runtime.
 RUN MODS=$(jdeps --ignore-missing-deps --multi-release 25 --print-module-deps /fc-server.jar) \
- && jlink --add-modules "$MODS,jdk.crypto.ec,jdk.unsupported,java.naming,jdk.management,jdk.zipfs" \
+ && jlink --add-modules "$MODS,jdk.crypto.ec,jdk.unsupported,java.naming,jdk.management,jdk.zipfs,jdk.jcmd,jdk.management.jfr" \
           --strip-debug --no-header-files --no-man-pages --compress zip-6 \
           --output /jre \
  && /jre/bin/java -version

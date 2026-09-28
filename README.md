@@ -68,6 +68,7 @@ PEM chain + an unencrypted PKCS#8 key) — set exactly one pair, or neither.
 
 - [`docs/usecase-envelope.md`](docs/usecase-envelope.md) — the intent of the use-case / audit machinery and the Go → Java mapping, with a worked example.
 - [`docs/database.md`](docs/database.md) — Flyway baseline of the Go schema, schema-fingerprint tests, jOOQ codegen.
+- [`docs/diagnostics.md`](docs/diagnostics.md) — production thread dumps and flight recordings: the continuous JFR recording (`FC_JFR_*`), the authenticated `/router/diagnostics/*` routes, `jcmd` in the image, and how to read what they return.
 - The Go repo's `CONVENTIONS.md` still applies (one operation per file, one events file per aggregate, no SQL outside repositories, no business logic in api/).
 
 ## Status

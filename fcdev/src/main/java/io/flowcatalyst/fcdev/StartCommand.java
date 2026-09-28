@@ -8,6 +8,8 @@ import io.flowcatalyst.server.Env;
 import io.flowcatalyst.server.EnvReader;
 import io.flowcatalyst.server.Frontend;
 import io.flowcatalyst.server.Server;
+import io.flowcatalyst.server.diagnostics.ContinuousRecording;
+import io.flowcatalyst.server.diagnostics.JfrSettings;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -193,6 +195,9 @@ public final class StartCommand implements Callable<Integer> {
                 case Server.Spa.Embedded _ -> LOG.info("embedded Vue SPA available");
                 case Server.Spa.None _ -> LOG.warn("frontend not embedded — this flowcatalyst-server build carries no SPA; API only");
             }
+            // docs/diagnostics.md: fcdev records only when asked (FC_JFR_ENABLED=true) — the
+            // production default is on, a laptop's is off.
+            var flightRecording = ContinuousRecording.start(JfrSettings.fromEnv(serverEnv.reader(), false));
             Server.Running running = new Server(serverEnv, new Server.Mode.Platform(pools), spa, registry).start();
 
             // ── the function host ────────────────────────────────────────
@@ -221,7 +226,8 @@ public final class StartCommand implements Callable<Integer> {
                         .log();
             }
 
-            return new Started(running, pools, pg, ownsPid ? pidFile : null, pid, fnHost, fnCliJson);
+            return new Started(running, pools, pg, ownsPid ? pidFile : null, pid, fnHost, fnCliJson,
+                    flightRecording);
         } catch (IOException | RuntimeException e) {
             if (pools != null) pools.close();
             if (pg != null) pg.close();
@@ -442,11 +448,13 @@ public final class StartCommand implements Callable<Integer> {
         private final long pid;
         private final FnHostLauncher.Result fnHost;
         private final Path fnCliJson;
+        private final Optional<ContinuousRecording> flightRecording;
         // Guards the once-only teardown; set by whichever of the hook / call() gets there first.
         private final AtomicBoolean closed = new AtomicBoolean();
 
         Started(Server.Running running, Pools pools, EmbeddedPg pg, Path pidFile, long pid,
-                FnHostLauncher.Result fnHost, Path fnCliJson) {
+                FnHostLauncher.Result fnHost, Path fnCliJson, Optional<ContinuousRecording> flightRecording) {
+            this.flightRecording = flightRecording;
             this.running = running;
             this.pools = pools;
             this.pg = pg;
@@ -515,6 +523,7 @@ public final class StartCommand implements Callable<Integer> {
                             if (pg != null) pg.close();
                         } finally {
                             if (pidFile != null) PidFile.removeIfOwned(pidFile, pid);
+                            flightRecording.ifPresent(ContinuousRecording::close);
                         }
                     }
                 }

@@ -9,6 +9,8 @@ import io.flowcatalyst.server.dbsecret.DbSecretDsn;
 import io.flowcatalyst.server.dbsecret.DbSecretFetcher;
 import io.flowcatalyst.server.dbsecret.DbSecretMode;
 import io.flowcatalyst.server.dbsecret.DbSecretRefresher;
+import io.flowcatalyst.server.diagnostics.ContinuousRecording;
+import io.flowcatalyst.server.diagnostics.JfrSettings;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,6 +47,10 @@ public final class Main {
             System.exit(1);
             return;
         }
+        // docs/diagnostics.md: a bounded, rolling flight recording from boot, so the last
+        // half hour is already on disk when an operator asks. On by default here (production);
+        // FC_JFR_ENABLED=false turns it off. Never fails the boot.
+        var flightRecording = ContinuousRecording.start(JfrSettings.fromEnv(env.reader(), true));
         LOG.atInfo().setMessage("starting fc-server")
                 .addKeyValue("platform", env.platformEnabled())
                 .addKeyValue("router", env.routerEnabled())
@@ -165,6 +171,7 @@ public final class Main {
         // path be exercised in-process from a test.
         if (env.exitAfterStart()) {
             exitAfterStart(env, running, dbSecretRefreshers, pools);
+            flightRecording.ifPresent(ContinuousRecording::close);
             return;
         }
 
@@ -175,6 +182,7 @@ public final class Main {
             running.stop();
             dbSecretRefreshersToClose.forEach(DbSecretRefresher::close);
             if (poolsToClose != null) poolsToClose.close();
+            flightRecording.ifPresent(ContinuousRecording::close);
         }));
         running.awaitStop();
     }

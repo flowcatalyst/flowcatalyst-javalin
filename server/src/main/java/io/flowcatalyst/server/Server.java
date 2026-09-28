@@ -742,6 +742,13 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
         return mode instanceof Mode.Platform ? "http://127.0.0.1:" + env.apiPort() : "";
     }
 
+    private io.flowcatalyst.router.api.auth.RouterAuth.Settings routerAuthSettings() {
+        return new io.flowcatalyst.router.api.auth.RouterAuth.Settings(
+                env.routerDevMode(), env.routerAuthMode(), env.routerAuthUser(),
+                env.routerAuthPass(), env.routerHttpPrefix(), routerTokenPlatformUrl(),
+                env.routerDashboardClientId());
+    }
+
     ApiAndReaper buildApiAndReaper(Router router) {
         DispatchJobReaper[] reaperHolder = new DispatchJobReaper[1];
         Consumer<Routes> configure = routes -> {
@@ -764,11 +771,9 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 // The router's API and dashboard read the router's in-memory state, never
                 // the database: unbounded (Group.NO_DB).
                 var routerRoutes = routes.in(io.flowcatalyst.http.Group.NO_DB);
-                io.flowcatalyst.router.api.auth.RouterAuth.install(routerRoutes,
-                        new io.flowcatalyst.router.api.auth.RouterAuth.Settings(
-                                env.routerDevMode(), env.routerAuthMode(), env.routerAuthUser(),
-                                env.routerAuthPass(), env.routerHttpPrefix(), routerTokenPlatformUrl(),
-                                env.routerDashboardClientId()));
+                var guard = io.flowcatalyst.router.api.auth.RouterAuth.install(routerRoutes, routerAuthSettings());
+                io.flowcatalyst.server.diagnostics.DiagnosticsRoutes.register(routerRoutes, env.routerHttpPrefix(),
+                        guard.authenticates());
                 var routerState = new io.flowcatalyst.router.api.RouterApi.State(
                         router.manager(), router.tracker(), router.warnings(), router.breakers(),
                         router.election(), router.electionConfig(), Version.current(),
@@ -781,6 +786,15 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                 }
                 io.flowcatalyst.router.api.dashboard.DashboardHandler.register(
                         routerRoutes, env.routerHttpPrefix());
+            } else {
+                // No router here, but the operator diagnostics (thread dump, flight
+                // recording) are for every tier: the same routes, under the same prefix,
+                // behind the router API's guard alone (docs/diagnostics.md).
+                var diagnosticsRoutes = routes.in(io.flowcatalyst.http.Group.NO_DB);
+                var guard = io.flowcatalyst.router.api.auth.RouterAuth.installGuard(diagnosticsRoutes,
+                        routerAuthSettings());
+                io.flowcatalyst.server.diagnostics.DiagnosticsRoutes.register(diagnosticsRoutes,
+                        env.routerHttpPrefix(), guard.authenticates());
             }
             switch (spa) {
                 case Spa.Embedded(var frontend) -> frontend.register(routes);

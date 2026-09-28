@@ -22,6 +22,12 @@
 # --enable-native-access: the HTTP/3 connector's quiche binding uses the FFM
 # API (docs/spec/http-transport.md); without the flag the JDK warns that
 # restricted methods "will be blocked in a future release".
+#
+# No -XX:StartFlightRecording here: the server starts its own bounded, rolling
+# recording at boot (docs/diagnostics.md, FC_JFR_ENABLED / FC_JFR_MAX_AGE_MINUTES /
+# FC_JFR_MAX_SIZE_MB / FC_JFR_SETTINGS), because it has to leave the process
+# environment out of it — the JDK's default settings would copy every env var,
+# secrets included, into each recording.
 set -eu
 
 aot_cache=/usr/local/lib/fc-server.aot

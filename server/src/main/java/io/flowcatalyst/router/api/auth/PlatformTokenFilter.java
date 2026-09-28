@@ -18,7 +18,10 @@ import java.util.Set;
 /// - `GET`/`HEAD`, and the in-flight check done over `POST`, need
 ///   [Permission#ROUTER_VIEW] (rule 2: the SDKs' stuck-message recovery calls
 ///   it).
-/// - Every other method needs [Permission#ROUTER_OPERATE].
+/// - Every other method needs [Permission#ROUTER_OPERATE], and so does every
+///   `/diagnostics` path whatever its method: a thread dump or a flight
+///   recording is an operator's act, not a viewer's
+///   (`io.flowcatalyst.server.diagnostics.DiagnosticsRoutes`).
 ///
 /// §9.7's public paths stay open ([BasicAuthFilter#isPublicPath]), and so do
 /// the dashboard page and its two sign-in helpers (rule 4). The page carries
@@ -83,8 +86,15 @@ public final class PlatformTokenFilter implements Handler {
         }
     }
 
-    /// Rule 2: reads need `view`, everything else `operate`.
+    /// Diagnostics, relative to the mount prefix — `operate` even for a `GET`.
+    static final String DIAGNOSTICS = "/diagnostics";
+
+    /// Rule 2: reads need `view`, everything else `operate` — and the
+    /// diagnostics need `operate` however they are read.
     static Permission requiredPermission(String method, String path) {
+        if (path.equals(DIAGNOSTICS) || path.startsWith(DIAGNOSTICS + "/")) {
+            return Permission.ROUTER_OPERATE;
+        }
         boolean read = "GET".equalsIgnoreCase(method) || "HEAD".equalsIgnoreCase(method)
                 || ("POST".equalsIgnoreCase(method) && POST_READS.contains(path));
         return read ? Permission.ROUTER_VIEW : Permission.ROUTER_OPERATE;

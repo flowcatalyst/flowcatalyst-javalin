@@ -46,6 +46,17 @@ public final class RouterAuth {
 
     /// The guard that was installed, for the caller's log and for tests.
     public sealed interface Installed permits Installed.Basic, Installed.PlatformTokens {
+
+        /// Whether the guard authenticates anything. Only dev mode's Basic
+        /// with no user is open; platform tokens always guard, and with no
+        /// platform to verify against they refuse everything (fail closed).
+        default boolean authenticates() {
+            return switch (this) {
+                case Basic basic -> basic.enabled();
+                case PlatformTokens ignored -> true;
+            };
+        }
+
         /// Dev mode: §9.7, `enabled` false when open.
         record Basic(boolean enabled) implements Installed {
         }
@@ -58,6 +69,19 @@ public final class RouterAuth {
 
     /// Installs the guard and the dashboard's sign-in helpers.
     public static Installed install(Routes routes, Settings s) {
+        return install(routes, s, true);
+    }
+
+    /// Installs the guard alone, without the dashboard's sign-in helpers —
+    /// for an instance that runs no router but still serves the operator
+    /// diagnostics under the router prefix
+    /// (`io.flowcatalyst.server.diagnostics.DiagnosticsRoutes`), so every
+    /// tier answers them behind the same token.
+    public static Installed installGuard(Routes routes, Settings s) {
+        return install(routes, s, false);
+    }
+
+    private static Installed install(Routes routes, Settings s, boolean dashboard) {
         HttpClient http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
                 .followRedirects(HttpClient.Redirect.NEVER)
@@ -65,8 +89,10 @@ public final class RouterAuth {
         if (s.devMode()) {
             var basic = new BasicAuthFilter(s.authMode(), s.user(), s.password(), s.prefix());
             BasicAuthFilter.register(routes, basic);
-            // Dev mode signs in with Basic (or not at all): the PKCE helpers answer "off".
-            DashboardSignIn.register(routes, s.prefix(), new DashboardSignIn(Optional.empty(), "", "", http));
+            if (dashboard) {
+                // Dev mode signs in with Basic (or not at all): the PKCE helpers answer "off".
+                DashboardSignIn.register(routes, s.prefix(), new DashboardSignIn(Optional.empty(), "", "", http));
+            }
             return new Installed.Basic(basic.enabled());
         }
         List<String> ignored = new ArrayList<>();
@@ -90,9 +116,12 @@ public final class RouterAuth {
         }
         Optional<BearerAuthenticator> authenticator = keys.map(BearerAuthenticator::new);
         PlatformTokenFilter.register(routes, new PlatformTokenFilter(authenticator, s.prefix()));
-        // One discovery shared with the filter: the dashboard's authorize URL is in the same
-        // document the issuer comes from.
-        DashboardSignIn.register(routes, s.prefix(), new DashboardSignIn(keys, s.platformUrl(), s.dashboardClientId(), http));
+        if (dashboard) {
+            // One discovery shared with the filter: the dashboard's authorize URL is in the same
+            // document the issuer comes from.
+            DashboardSignIn.register(routes, s.prefix(),
+                    new DashboardSignIn(keys, s.platformUrl(), s.dashboardClientId(), http));
+        }
         return new Installed.PlatformTokens(authenticator.isPresent(), List.copyOf(ignored));
     }
 
