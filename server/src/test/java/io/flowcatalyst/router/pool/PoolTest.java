@@ -662,6 +662,13 @@ class PoolTest {
     }
 
     @Test
+    @DisplayName("a sibling handed back behind a head with a short backoff still waits the fixed 10 s")
+    void siblingDelayIsAtLeastTheFixedDelayAndTheHeads() {
+        assertThat(Pool.siblingDelay(Duration.ofMillis(1))).isEqualTo(Pool.REJECTED_NACK_DELAY);
+        assertThat(Pool.siblingDelay(Duration.ofSeconds(600))).isEqualTo(Duration.ofSeconds(600));
+    }
+
+    @Test
     @DisplayName("T4: an ordered head's deferral with a delay returns the whole group with the head's real delay")
     void orderedHeadDeferralReturnsGroupWithRealDelay() {
         // Exactly one mediation call, ever: restoring the old RetryHead path
@@ -677,8 +684,12 @@ class PoolTest {
         assertThat(mediator.attempts("m0")).isOne();
         assertThat(broker.acked).isEmpty();
         assertThat(broker.nacked.get("m0")).isEqualTo(Duration.ofSeconds(600));
-        assertThat(broker.nacked.get("m1")).isEqualTo(Pool.REJECTED_NACK_DELAY);
-        assertThat(broker.nacked.get("m2")).isEqualTo(Pool.REJECTED_NACK_DELAY);
+        // Review 2026-09-28: never before the head. With the old fixed 10 s a
+        // sibling returned 590 s ahead of its head on a broker with no group
+        // lock and was delivered first.
+        assertThat(broker.nacked.get("m1")).as("mutant: siblings keep the fixed 10 s")
+                .isEqualTo(Duration.ofSeconds(600));
+        assertThat(broker.nacked.get("m2")).isEqualTo(Duration.ofSeconds(600));
         assertThat(mediator.delivered).as("siblings are never delivered").containsOnly("m0");
     }
 

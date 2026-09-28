@@ -50,6 +50,13 @@ When `handleHeadFailure` handles `ReturnGroup`, the **head** is nacked with:
 Siblings keep `REJECTED_NACK_DELAY`. On SQS FIFO the delayed head blocks
 them; on Postgres R4 does.
 
+**Amended 2026-09-28 (review):** siblings get `max(REJECTED_NACK_DELAY,
+head delay)` (`Pool.siblingDelay`). On a broker with no group lock — NATS,
+whose `honoursDelayedReturn()` is false, and a standard (non-FIFO) SQS queue
+— a sibling nacked for 10 s behind a head deferred for 600 s came back first
+and was delivered ahead of it. On FIFO/Postgres the longer sibling delay
+costs nothing: the head blocks them anyway.
+
 ### R3 — SQS nack honours the delay
 `SqsQueue.nack(message, delay)` calls
 `ChangeMessageVisibility(queueUrl, message.receiptHandle(), seconds)`:
@@ -154,7 +161,7 @@ differ. Java is the reference implementation — read `git show 5420b516` and
 |---|---|
 | R1 unordered | `internal/router/pool.go`'s dispatch path — the retryable-failure branch that today only nacks when the retry budget is spent (`nackMsg(..., nackDelay(d.RetryAfter), "released to broker")`). A `MediationDeferred` outcome whose `delaySeconds > 0` nacks on its **first** occurrence with exactly that delay, reason `deferred`, and does not enter the in-pipeline retry loop. `delaySeconds == 0` is unchanged. |
 | R1 ordered | the ordered drainer's head-failure decision: a delay-bearing `MediationDeferred` releases the group immediately instead of re-fronting the head. |
-| R2 | when the ordered drainer releases a group, the **head** carries the deferral's exact delay, or the same backoff the unordered path would use for that outcome — never the fixed 10 s. Siblings keep 10 s. |
+| R2 | when the ordered drainer releases a group, the **head** carries the deferral's exact delay, or the same backoff the unordered path would use for that outcome — never the fixed 10 s. Siblings keep 10 s, or the head's delay when that is longer (amended 2026-09-28). |
 | R3 | `internal/queue/sqs/sqs.go` `Nack`: `ChangeMessageVisibility(receipt, seconds)`, seconds floored at 0 and clamped to `43200 − secondsSinceReceived`. Go's SQS queue does not record a per-receipt poll time today (only `pendingDelete` by broker id) — add one, or clamp to the flat 43200 and say which you chose and why. Best-effort: log at WARN, never return an error that fails a hand-back; keep the `nacked` counter. Rewrite the comment block at `sqs.go:250-257`. |
 | R4 | `internal/queue/postgres/postgres.go` claim SQL: a row is not claimable while an **earlier** row of its group (`COALESCE(message_group_id, id)`, by `(created_at, id)`) is `receipt_handle IS NULL AND visible_at > now`. A *claimed* earlier row still does not block. |
 | R5 | `internal/queue/queue.go` `Consumer` gains `HonoursDelayedReturn() bool` (no default — every backend answers): SQS and Postgres `true`, NATS `false`. The pool resolves it through the same consumer lookup `nackMsg` uses; an unregistered queue answers `false`. R1's condition on both paths is `delaySeconds > 0 && honoursDelayedReturn`. |

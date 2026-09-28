@@ -780,7 +780,11 @@ public final class Pool implements AutoCloseable {
                 // for (R1), or the same backoff the unordered path would use
                 // for this outcome — never the fixed REJECTED_NACK_DELAY.
                 // Siblings are untried and carry no information about the
-                // outcome, so they keep the fixed delay regardless.
+                // outcome, so they get the fixed delay — but never LESS than
+                // the head's (review 2026-09-28): on a broker with no group
+                // lock (NATS, a standard SQS queue), a sibling nacked for 10 s
+                // behind a head deferred for 600 s came back first and was
+                // delivered ahead of it.
                 Duration headDelay;
                 String headReason;
                 if (outcome instanceof MediationOutcome.Deferred deferred && deferred.delaySeconds() > 0) {
@@ -793,8 +797,9 @@ public final class Pool implements AutoCloseable {
                     headReason = "target-unavailable";
                 }
                 broker.nack(returned.head(), headDelay, headReason);
+                var siblingDelay = siblingDelay(headDelay);
                 returned.siblings().forEach(sibling ->
-                        broker.nack(sibling, REJECTED_NACK_DELAY, "target-unavailable"));
+                        broker.nack(sibling, siblingDelay, "target-unavailable"));
                 // Go abcd9fa: a group release leaves the router entirely (pool
                 // idle, nothing in flight), and without delay_seconds an instant
                 // hand-back read the same as one parked for minutes. reason is
