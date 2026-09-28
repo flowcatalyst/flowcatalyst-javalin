@@ -133,11 +133,11 @@ public final class PendingJobPoller {
         Set<String> paused = pausedCache.pausedSubscriptionIds();
         try (Connection conn = dataSource.getConnection()) {
             conn.setAutoCommit(false);
+            Claimed claimed;
             List<String> queued;
             try {
                 DbTx tx = DbTx.wrapForBootstrap(conn);
-                Claimed claimed = claim(tx, paused);
-                recordBatch(claimed);
+                claimed = claim(tx, paused);
                 queued = publishAndMark(tx, claimed.toPublish());
             } catch (RuntimeException e) {
                 // Anything published before this point redelivers as a
@@ -147,6 +147,9 @@ public final class PendingJobPoller {
                 throw e;
             }
             commit(conn, queued);
+            // After the commit, never before: an event for a write that then
+            // rolls back is a lie in the recording (docs/spec/jfr-events.md).
+            recordBatch(claimed, queued.size());
         } catch (SQLException e) {
             throw new PollFailedException(e);
         }
@@ -252,7 +255,10 @@ public final class PendingJobPoller {
         }
     }
 
-    private void recordBatch(Claimed claimed) {
+    /// @param published how many the broker accepted — marked `QUEUED` and
+    ///                  committed; a partial publish failure makes it less
+    ///                  than the survivors of the filter
+    private void recordBatch(Claimed claimed, int published) {
         if (claimed.claimedCount() == 0) {
             return;
         }
@@ -261,7 +267,7 @@ public final class PendingJobPoller {
             return;
         }
         event.size = claimed.claimedCount();
-        event.published = claimed.toPublish().size();
+        event.published = published;
         event.heldBack = claimed.heldBack();
         event.commit();
     }

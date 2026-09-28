@@ -187,5 +187,14 @@ GraalVM can add most of this at build time with
 then works in the binary, with a subset of the JDK's events plus
 FlowCatalyst's custom ones, started either by these routes' continuous
 recording or by `-XX:StartFlightRecording`, and `kill -QUIT <pid>` prints a
-thread dump to stdout. It costs binary size and was not turned on for the
-native builds here; see the report of 2026-09-28 for what was measured.
+thread dump to stdout. It costs binary size and build time, and it has not
+been turned on for the native builds.
+
+Observed 2026-09-28 against a native `fc-server` (GraalVM 25.0.4.1, macOS
+arm64, the `-Pnative` flags as they stand, router-only in dev mode with
+Basic auth): the boot logs the "no flight recorder" warning once;
+`/diagnostics` answers `runtime: native-image, jfr.available: false`;
+`/diagnostics/thread-dump` answers 200 with the fallback dump,
+`virtualThreadsIncluded: false`, reason `HotSpotDiagnosticMXBean is not a
+platform management interface`; `/diagnostics/jfr` answers `404
+NO_RECORDING` naming `--enable-monitoring=jfr`.
