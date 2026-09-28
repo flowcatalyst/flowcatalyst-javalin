@@ -219,8 +219,11 @@ public final class ProcessingApi {
         // The claim, not the earlier isTerminal() read, is what decides whether
         // this call owns the delivery: the read is unlocked and a concurrent
         // redelivery can pass it too. A claim that changes no row means another
-        // delivery of this job is in flight (or it finished) — ACK and make no
-        // call, or the subscriber sees the same delivery twice.
+        // delivery of this job is in flight (or it finished), or the job is
+        // not due yet — a stale copy racing a scheduled retry — so ACK and make
+        // no call: the subscriber must not see the same delivery twice, nor a
+        // retry before its backoff. A not-yet-due job is still PENDING, and the
+        // poller publishes it again once it is due.
         boolean claimed;
         try {
             claimed = s.repo().claimForDelivery(job.id(), job.createdAt());

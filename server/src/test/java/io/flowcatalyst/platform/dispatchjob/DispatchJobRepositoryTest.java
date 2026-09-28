@@ -499,6 +499,27 @@ class DispatchJobRepositoryTest {
         assertThat(repo.claimForDelivery(id, before.createdAt())).isTrue();
     }
 
+    /// Review 2026-09-28: not before it is due. A past `scheduled_for` (a
+    /// retry whose backoff has elapsed) is claimable; a future one is not.
+    @Test
+    void claimForDeliveryRefusesAJobThatIsNotYetDue() {
+        String future = seedWriteRow(Seed.of(code("claimfuture")));
+        String past = seedWriteRow(Seed.of(code("claimpast")).withStatus("QUEUED"));
+        DB.update(MSG_DISPATCH_JOBS)
+                .set(MSG_DISPATCH_JOBS.SCHEDULED_FOR,
+                        java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(10))
+                .where(MSG_DISPATCH_JOBS.ID.eq(future)).execute();
+        DB.update(MSG_DISPATCH_JOBS)
+                .set(MSG_DISPATCH_JOBS.SCHEDULED_FOR,
+                        java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC).minusMinutes(1))
+                .where(MSG_DISPATCH_JOBS.ID.eq(past)).execute();
+
+        assertThat(repo.claimForDelivery(future, repo.findById(future).orElseThrow().createdAt()))
+                .as("mutant: no scheduled_for guard").isFalse();
+        assertThat(repo.findById(future).orElseThrow().status()).isEqualTo(DispatchJobStatus.PENDING);
+        assertThat(repo.claimForDelivery(past, repo.findById(past).orElseThrow().createdAt())).isTrue();
+    }
+
     /// The whole point of the guard: the row count, not the caller's earlier
     /// unlocked read, decides who delivers. The second caller here is a
     /// redelivery of a job whose first delivery is still in flight.

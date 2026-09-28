@@ -470,6 +470,7 @@ class ProcessingApiTest {
         assertThat(after1.status()).isEqualTo(DispatchJobStatus.PENDING);
         assertThat(after1.attemptCount()).isEqualTo(1);
         assertThat(after1.scheduledFor()).isCloseTo(before1.plusSeconds(5), within(Duration.ofSeconds(4)));
+        due(id); // the backoff elapses; the poller republishes and this is that copy
 
         Instant before2 = Instant.now();
         var r2 = process(id);
@@ -478,6 +479,7 @@ class ProcessingApiTest {
         assertThat(after2.status()).isEqualTo(DispatchJobStatus.PENDING);
         assertThat(after2.attemptCount()).isEqualTo(2);
         assertThat(after2.scheduledFor()).isCloseTo(before2.plusSeconds(15), within(Duration.ofSeconds(4)));
+        due(id);
 
         var r3 = process(id);
         assertThat(r3.statusCode()).isEqualTo(200);
@@ -488,6 +490,47 @@ class ProcessingApiTest {
         assertThat(after3.lastError()).contains("HTTP 500");
 
         assertThat(hits.get()).isEqualTo(3);
+    }
+
+    /// Review 2026-09-28: the poller publishes before it commits, so a failed
+    /// commit leaves a stale second copy at the broker. If the first copy's
+    /// attempt failed and scheduled a retry, that stale copy must not make the
+    /// retry early: it is acked like any lost claim, and the job waits for its
+    /// backoff. Mutant: drop the `scheduled_for` guard from claimForDelivery —
+    /// the subscriber is hit a second time at once.
+    @Test
+    void aStaleCopyDoesNotMakeAScheduledRetryEarly() {
+        String id = seedJob(Seed.of(code("proc-stale")));
+        status.set(500);
+        process(id);
+        DispatchJob scheduled = reload(id);
+        assertThat(scheduled.status()).isEqualTo(DispatchJobStatus.PENDING);
+        assertThat(scheduled.scheduledFor()).isAfter(Instant.now());
+
+        var stale = process(id);
+
+        assertThat(stale.statusCode()).isEqualTo(200);
+        assertThat(json(stale).get("ack").asBoolean()).as("acked away, never redelivered").isTrue();
+        assertThat(hits.get()).as("mutant: the stale copy retries before the backoff").isOne();
+        DispatchJob after = reload(id);
+        assertThat(after.status()).as("still waiting for its retry").isEqualTo(DispatchJobStatus.PENDING);
+        assertThat(after.attemptCount()).isOne();
+        assertThat(after.scheduledFor()).isEqualTo(scheduled.scheduledFor());
+
+        // Not stranded: once due, the copy the poller publishes is delivered.
+        due(id);
+        status.set(200);
+        process(id);
+        assertThat(hits.get()).isEqualTo(2);
+        assertThat(reload(id).status()).isEqualTo(DispatchJobStatus.COMPLETED);
+    }
+
+    /// Moves a job's `scheduled_for` into the past: its backoff has elapsed.
+    private static void due(String id) {
+        DispatchJobFixture.DB.update(Tables.MSG_DISPATCH_JOBS)
+                .set(Tables.MSG_DISPATCH_JOBS.SCHEDULED_FOR, java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC).minusSeconds(1))
+                .where(Tables.MSG_DISPATCH_JOBS.ID.eq(id))
+                .execute();
     }
 
     // ── (d) cooperative deferral (ack:false) spends no budget ───────────

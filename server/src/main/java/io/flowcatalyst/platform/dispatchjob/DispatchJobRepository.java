@@ -522,6 +522,19 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
     /// rather than an exclusion list: an unrecognised stored value is then
     /// un-claimable rather than deliverable.
     ///
+    /// **Not before it is due** (review 2026-09-28): a row whose
+    /// `scheduled_for` is still in the future is not claimable either. The
+    /// poller publishes a batch before committing it (`PendingJobPoller`), so
+    /// a commit that fails after the publish leaves a second copy at the
+    /// broker; if the first copy's attempt then fails and schedules a retry,
+    /// that stale copy would otherwise claim the `PENDING` row at once and
+    /// make the retry early, skipping its backoff. Refusing it cannot strand
+    /// the job. Only `markQueued` writes `QUEUED`, and only for a row the
+    /// claim query found due — against the same database clock this compares
+    /// with, which only moves forward — so the copy that publish sent is
+    /// always claimable. A row that is `PENDING` and not yet due is exactly
+    /// what the next poller tick publishes once it is due.
+    ///
     /// @return `true` when this call won the claim (exactly one row updated)
     public boolean claimForDelivery(String id, Instant createdAt) {
         Instant now = Instant.now();
@@ -532,6 +545,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 .where(T.ID.eq(id))
                 .and(T.CREATED_AT.eq(utc(createdAt)))
                 .and(T.STATUS.in(DispatchJobStatus.PENDING.name(), DispatchJobStatus.QUEUED.name()))
+                .and(T.SCHEDULED_FOR.isNull().or(T.SCHEDULED_FOR.le(DSL.currentOffsetDateTime())))
                 .execute() == 1;
     }
 

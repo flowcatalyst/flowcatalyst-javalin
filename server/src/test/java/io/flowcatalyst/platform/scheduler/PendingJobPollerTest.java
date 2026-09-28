@@ -281,6 +281,35 @@ class PendingJobPollerTest {
         assertThat(REPO.findById(job).orElseThrow().status()).isEqualTo(DispatchJobStatus.COMPLETED);
     }
 
+    /// Review 2026-09-28: `claimForDelivery` refuses a job that is not yet
+    /// due, so a stale copy cannot retry early. That refusal must not strand
+    /// the job: it stays PENDING, and the next poller tick after it falls due
+    /// publishes a copy that IS claimable. Mutant: a claim guard stricter than
+    /// the claim query's (say, `scheduled_for IS NULL` only) refuses that copy
+    /// too, and the job is published for ever and delivered never.
+    @Test
+    void aJobRefusedAsNotYetDueIsPublishedAndClaimableOnceDue() {
+        String job = seedWithScheduledFor(Seed.of(code("notyetdue")), Instant.now().plusSeconds(600));
+        var row = REPO.findById(job).orElseThrow();
+
+        assertThat(REPO.claimForDelivery(job, row.createdAt())).as("a stale copy before it is due").isFalse();
+        assertThat(REPO.findById(job).orElseThrow().status()).isEqualTo(DispatchJobStatus.PENDING);
+        var early = FakeDispatchPublisher.succeeding();
+        poller(early, () -> true).pollOnce();
+        assertThat(early.batches().stream().flatMap(List::stream).map(PublishedMessage::jobId))
+                .as("not published before it is due either").doesNotContain(job);
+
+        DB.update(MSG_DISPATCH_JOBS)
+                .set(MSG_DISPATCH_JOBS.SCHEDULED_FOR, Instant.now().minusSeconds(1).atOffset(ZoneOffset.UTC))
+                .where(MSG_DISPATCH_JOBS.ID.eq(job)).execute();
+        var due = FakeDispatchPublisher.succeeding();
+        poller(due, () -> true).pollOnce();
+
+        assertThat(due.batches().stream().flatMap(List::stream).map(PublishedMessage::jobId)).contains(job);
+        assertThat(REPO.claimForDelivery(job, row.createdAt())).as("the copy published once due is delivered")
+                .isTrue();
+    }
+
     // ── (e) paused connection ───────────────────────────────────────────────
 
     @Test

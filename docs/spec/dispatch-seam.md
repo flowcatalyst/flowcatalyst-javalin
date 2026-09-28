@@ -274,10 +274,13 @@ simply stay `PENDING`; no revert statement exists any more) → commit.
   because `/process` delivers only after winning `claimForDelivery`, a
   status-guarded `PENDING`/`QUEUED` → `PROCESSING` update (§5); whichever copy
   arrives second finds the job `PROCESSING` or terminal and is acked without
-  a subscriber call. One residual: if the first copy's attempt failed
-  retryably (`PENDING` with a future `scheduled_for`), the second copy's claim
-  does not check `scheduled_for`, so it can make the next attempt early —
-  an extra attempt, never a duplicate success.
+  a subscriber call. `claimForDelivery` also refuses a row whose
+  `scheduled_for` is still in the future (review 2026-09-28), so if the first
+  copy's attempt failed retryably the second copy cannot make the retry
+  early: it is acked like any lost claim, and the job, still `PENDING`, is
+  published again by the tick after it falls due. The legitimate copy is
+  never refused: only `markQueued` writes `QUEUED`, for rows the claim query
+  found due against the same database clock the claim compares with.
 - Go's second objection — a revert that no-ops against an uncommitted
   `QUEUED` — no longer applies: nothing is reverted.
 - A copy can reach `/process` before the claim commits. Its guarded
@@ -289,7 +292,8 @@ simply stay `PENDING`; no revert statement exists any more) → commit.
 
 Pinned by `PendingJobPollerTest` (`whenThePublisherRunsTheJobIsNotYetCommittedQueued`,
 `aDeathBetweenPublishAndCommitLeavesTheJobPendingAndTheNextTickPublishesItAgain`,
-`theDuplicateCopyAPublishThenDeathLeavesIsDiscardedByTheDeliveryClaim`).
+`theDuplicateCopyAPublishThenDeathLeavesIsDiscardedByTheDeliveryClaim`,
+`aJobRefusedAsNotYetDueIsPublishedAndClaimableOnceDue`; `ProcessingApiTest.aStaleCopyDoesNotMakeAScheduledRetryEarly`).
 
 ### The claim-time `GroupHolding` hold-back — `filterByDispatchMode`
 
