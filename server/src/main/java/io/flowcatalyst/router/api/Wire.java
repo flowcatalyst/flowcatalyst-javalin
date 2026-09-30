@@ -42,7 +42,15 @@ public final class Wire {
                                          String degradationReason) {
     }
 
-    public record ConsumerHealthResponse(long currentTimeMs, Instant currentTime, Map<String, Object> consumers) {
+    public record ConsumerHealthResponse(long currentTimeMs, Instant currentTime,
+                                         Map<String, ConsumerHealthDetail> consumers) {
+    }
+
+    /// One stalled consumer (Go `ConsumerHealthDetail`). `lastPollTime` is
+    /// `"never"` and the two time-since fields `-1` until a poll completes.
+    public record ConsumerHealthDetail(String mapKey, String queueIdentifier, String consumerQueueIdentifier,
+                                       boolean isHealthy, long lastPollTimeMs, String lastPollTime,
+                                       long timeSinceLastPollMs, long timeSinceLastPollSeconds, boolean isRunning) {
     }
 
     /// `GET /monitoring`. Snake outer + nested `health_report`/`pool_stats`.

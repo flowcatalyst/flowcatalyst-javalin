@@ -1,5 +1,6 @@
 package io.flowcatalyst.http.vertx;
 
+import io.flowcatalyst.eventloop.OnEventLoop;
 import io.flowcatalyst.http.Admission;
 import io.flowcatalyst.http.ExceptionMappers;
 import io.flowcatalyst.http.Group;
@@ -469,7 +470,15 @@ public final class VertxListener implements AutoCloseable {
         // connection stays reusable (measured 8–12 ms). An interrupt landing on that
         // read instead closes the socket and the pool evicts the connection, so the
         // interrupt is only the fallback if the chain is still running afterwards.
-        for (Connection c : held) cancelQuietly(c);
+        //
+        // cancelQuery() opens a NEW connection to Postgres to send the cancel request:
+        // network I/O, which must never run on this listener's one event loop (a slow or
+        // unreachable database would stall every connection). It gets its own virtual
+        // thread. The fallback timer is still armed here, now, so it stays bounded even
+        // when the cancel itself never completes.
+        Thread.ofVirtual().name("fc-deadline-cancel").start(() -> {
+            for (Connection c : held) cancelQuietly(c);
+        });
         vertx.setTimer(CANCEL_GRACE.toMillis(), id2 -> {
             if (!finished.get()) me.interrupt();
         });
@@ -615,7 +624,7 @@ public final class VertxListener implements AutoCloseable {
     /// Runs `task` on the loop and blocks this virtual thread until it has,
     /// returning `false` (having logged nothing further — the caller just
     /// stops) only if interrupted while waiting.
-    private static boolean awaitOnLoop(Context requestContext, Runnable task) {
+    private static boolean awaitOnLoop(Context requestContext, @OnEventLoop Runnable task) {
         var done = new CompletableFuture<Void>();
         requestContext.runOnContext(v -> {
             task.run();

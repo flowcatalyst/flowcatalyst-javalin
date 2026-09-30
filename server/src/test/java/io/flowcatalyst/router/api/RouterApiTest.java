@@ -279,6 +279,51 @@ class RouterApiTest {
     }
 
     @Test
+    @DisplayName("a stalled consumer shows in /monitoring/consumer-health, the queue counts, the issues and the degradation reason")
+    void stalledConsumerReachesTheMonitoringViews() throws InterruptedException {
+        var mutableClock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        var isolatedTracker = new InFlightTracker(mutableClock);
+        var isolatedManager = new RouterManager(isolatedTracker, Warnings.NO_OP, mutableClock,
+                cfg -> new Pool(cfg, NO_OP_MEDIATOR, NO_OP_BROKER, PoolMetrics.NO_OP, mutableClock));
+        var election = new LeaderElection(LeaderElection.Config.disabled(), new AlwaysAcquireStore(), mutableClock);
+        var routerServer = new RouterServer(isolatedManager, isolatedTracker, election,
+                q -> ConsumerBuild.of(new AlwaysFailingConsumer(q.queueName())),
+                RouterServer.ConfigSource.fixed(new RouterConfig(List.of(), List.of(QueueConfig.of("q://stall")))),
+                Warnings.NO_OP, mutableClock, Duration.ofSeconds(1));
+        routerServer.start();
+        try {
+            await(() -> routerServer.activeLoops() == 1);
+            mutableClock.advance(ConsumerSupervisor.STALL_THRESHOLD.plusSeconds(1));
+
+            var state = new RouterApi.State(isolatedManager, isolatedTracker, new WarningStore(mutableClock), null,
+                    election, LeaderElection.Config.disabled(), "v", "/router", null, null, null, null, routerServer);
+            try (var isolatedHttp = TestHttp.routes(routes -> RouterApi.register(routes, state))) {
+                var consumers = json(isolatedHttp.get("/router/monitoring/consumer-health")).get("consumers");
+                assertThat(consumers.size()).isOne();
+                var c = consumers.get("q://stall");
+                assertThat(c.get("isHealthy").asBoolean()).isFalse();
+                assertThat(c.get("isRunning").asBoolean()).isTrue();
+                assertThat(c.get("lastPollTime").asText()).isEqualTo("never");
+                assertThat(c.get("timeSinceLastPollMs").asLong()).isEqualTo(-1);
+
+                var health = json(isolatedHttp.get("/router/monitoring/health"));
+                assertThat(health.get("status").asText()).as("the only consumer is stalled").isEqualTo("DEGRADED");
+                assertThat(health.get("details").get("totalQueues").asInt()).isOne();
+                assertThat(health.get("details").get("healthyQueues").asInt()).isZero();
+                assertThat(health.get("details").get("degradationReason").asText())
+                        .isEqualTo("Consumer q://stall is stalled");
+
+                var report = json(isolatedHttp.get("/router/monitoring")).get("health_report");
+                assertThat(report.get("consumers_unhealthy").asInt()).isOne();
+                assertThat(report.get("consumers_healthy").asInt()).isZero();
+                assertThat(report.get("issues").get(0).asText()).isEqualTo("Consumer q://stall is stalled");
+            }
+        } finally {
+            routerServer.close();
+        }
+    }
+
+    @Test
     @DisplayName("R-36: a consumer loop younger than the stall threshold does not fail readiness")
     void readinessStaysReadyForAYoungLoop() throws InterruptedException {
         var mutableClock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
@@ -428,7 +473,7 @@ class RouterApiTest {
     }
 
     @Test
-    @DisplayName("GET /monitoring/health reports totalPools from the manager and always-zero totalQueues/healthyQueues")
+    @DisplayName("GET /monitoring/health reports totalPools from the manager and no consumers when none run")
     void monitoringHealth() {
         var body = json(http.get("/router/monitoring/health"));
         assertThat(body.has("timestamp")).isTrue();
@@ -436,14 +481,14 @@ class RouterApiTest {
         var details = body.get("details");
         assertThat(details.get("totalPools").asInt()).as("one pool registered").isEqualTo(1);
         assertThat(details.get("healthyPools").asInt()).isEqualTo(1);
-        // Never-fed consumer model (spec §9.4) -> always 0, deliberately.
+        // This router has no RouterServer, so there are no consumers to count.
         assertThat(details.get("totalQueues").asInt()).isZero();
         assertThat(details.get("healthyQueues").asInt()).isZero();
     }
 
     @Test
-    @DisplayName("GET /monitoring/consumer-health is always the empty-consumers shape")
-    void consumerHealthAlwaysEmpty() {
+    @DisplayName("GET /monitoring/consumer-health is the empty-consumers shape when none is stalled")
+    void consumerHealthEmptyWhenNoneStalled() {
         var body = json(http.get("/router/monitoring/consumer-health"));
         assertThat(body.has("currentTimeMs")).isTrue();
         assertThat(body.has("currentTime")).isTrue();

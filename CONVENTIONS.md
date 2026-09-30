@@ -186,6 +186,10 @@ rules it established (from its audit):
 - Every background loop has an explicit stop signal and is stopped by
   `Server.Running.stop()`; no fire-and-forget threads.
 - Leader-gated subsystems check `isLeader()` exactly where the Go code does.
+- Nothing on a Vert.x event loop blocks. The `EventLoopCheck` javac plugin enforces this at
+  compile time in `server` and `function-host` (`docs/spec/eventloop-check.md`). Move blocking
+  work to a virtual thread and hop back with `runOnContext`. The one rule it cannot check: never
+  block while holding a lock the loop also takes.
 
 ## 6. Testing
 

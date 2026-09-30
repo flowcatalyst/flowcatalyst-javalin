@@ -1,5 +1,6 @@
 package io.flowcatalyst.http;
 
+import io.flowcatalyst.eventloop.OffEventLoop;
 import io.flowcatalyst.platform.shared.database.Pools;
 import io.prometheus.metrics.model.registry.MultiCollector;
 import io.prometheus.metrics.model.snapshots.ClassicHistogramBuckets;
@@ -159,7 +160,7 @@ public final class RequestWorkers implements AutoCloseable {
     /// (FIFO — this instance's own queue for that group, bounded at [#QUEUE_MULTIPLIER] ×
     /// its worker count); `false`, `task` never run, if the queue was already at its
     /// bound — the caller must answer the request itself (§11.7 part B item 4).
-    public boolean submit(Group group, Runnable task) {
+    public boolean submit(Group group, @OffEventLoop Runnable task) {
         if (closed) throw new IllegalStateException("request workers are closed");
         if (group == Group.NO_DB) {
             Thread.ofVirtual().name("fc-nodb").start(task);

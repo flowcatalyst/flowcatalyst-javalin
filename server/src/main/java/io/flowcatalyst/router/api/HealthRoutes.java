@@ -1,6 +1,7 @@
 package io.flowcatalyst.router.api;
 
 import io.flowcatalyst.router.api.RouterApi.State;
+import io.flowcatalyst.router.manager.RouterServer;
 import io.flowcatalyst.router.policy.CircuitBreaker;
 import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Routes;
@@ -51,28 +52,27 @@ final class HealthRoutes {
     private static void monitoringHealth(Exchange ctx, State s) {
         var h = healthSnapshot(s);
         int totalPools = s.manager() == null ? 0 : s.manager().pools().size();
-        // Never-fed consumer model (spec §9.4: SetConsumerRunning/RecordConsumerPoll
-        // are never called in production), so this always reports 0/0.
-        int totalQueues = 0;
-        int healthyQueues = 0;
         int breakersOpen = s.breakers() == null ? 0 : (int) s.breakers().snapshot().values().stream()
                 .filter(st -> st.state() == CircuitBreaker.State.OPEN).count();
-        // Go's HealthReport.Issues only ever gains a "N critical warnings"
-        // entry (health.go:218-221) — the >20-active-warnings Degraded branch
-        // adds nothing to Issues, so degradationReason can be null even when
-        // status is DEGRADED. Reproduced verbatim, not "fixed".
-        String degradationReason = h.critical() > 0 ? h.critical() + " critical warnings" : null;
-        var details = new Wire.DashboardHealthDetails(totalQueues, healthyQueues, totalPools, totalPools,
-                h.active(), h.critical(), breakersOpen, degradationReason);
+        String degradationReason = h.issues().isEmpty() ? null : String.join("; ", h.issues());
+        var details = new Wire.DashboardHealthDetails(h.consumersTotal(), h.consumersTotal() - h.stalled().size(),
+                totalPools, totalPools, h.active(), h.critical(), breakersOpen, degradationReason);
         ctx.json(new Wire.DashboardHealthResponse(h.status(), Instant.now(),
                 Duration.between(STARTED_AT, Instant.now()).toMillis(), details));
     }
 
+    /// Lists only the STALLED consumers (Go `consumerHealth`).
     private static void consumerHealth(Exchange ctx, State s) {
-        // Always {} — lists only STALLED consumers of the never-fed
-        // HealthService (spec §9.1 row, §9.4). No consumer health tracker is
-        // wired in Java at all, so this can never be non-empty.
-        ctx.json(new Wire.ConsumerHealthResponse(Instant.now().toEpochMilli(), Instant.now(), Map.of()));
+        var now = Instant.now();
+        var consumers = new java.util.LinkedHashMap<String, Wire.ConsumerHealthDetail>();
+        for (var c : healthSnapshot(s).stalled()) {
+            long lastMs = c.lastAlive().map(Instant::toEpochMilli).orElse(0L);
+            long sinceMs = c.lastAlive().map(last -> Duration.between(last, now).toMillis()).orElse(-1L);
+            consumers.put(c.queue(), new Wire.ConsumerHealthDetail(c.queue(), c.queue(), c.queue(), false, lastMs,
+                    c.lastAlive().map(Instant::toString).orElse("never"), sinceMs,
+                    sinceMs > 0 ? sinceMs / 1000 : -1, true));
+        }
+        ctx.json(new Wire.ConsumerHealthResponse(now.toEpochMilli(), now, consumers));
     }
 
     /// The composite view (spec §9.1): snake_case outer fields, a nested
@@ -87,9 +87,9 @@ final class HealthRoutes {
     private static void monitoring(Exchange ctx, State s) {
         var h = healthSnapshot(s);
         int poolsHealthy = s.manager() == null ? 0 : s.manager().pools().size();
-        // Same Issues rule as #monitoringHealth: only ever "N critical warnings".
-        List<String> issues = h.critical() > 0 ? List.of(h.critical() + " critical warnings") : List.of();
-        var healthReport = new Wire.WireHealthReport(h.status(), poolsHealthy, 0, 0, 0, h.active(), h.critical(), issues);
+        int consumersUnhealthy = h.stalled().size();
+        var healthReport = new Wire.WireHealthReport(h.status(), poolsHealthy, 0,
+                h.consumersTotal() - consumersUnhealthy, consumersUnhealthy, h.active(), h.critical(), h.issues());
         List<Wire.WirePoolStats> poolStats = s.manager() == null
                 ? List.of()
                 : s.manager().pools().entrySet().stream().map(e -> PoolRoutes.wirePoolStats(e.getKey(), e.getValue(), s)).toList();
@@ -97,41 +97,52 @@ final class HealthRoutes {
                 s.warnings().unacknowledged().size(), h.critical()));
     }
 
-    /// @param stalledReason non-null only when a running router has a queue
-    ///                       whose poll loop has gone quiet (R-36); makes
-    ///                       readiness fail even though `status` — the
-    ///                       warning-driven HEALTHY/WARNING/DEGRADED text —
-    ///                       may still read HEALTHY, since consumer liveness
-    ///                       feeds readiness specifically, not the general
-    ///                       health status (spec §7.2)
-    private record HealthSnapshot(String status, int active, int critical, String stalledReason) {
+    /// @param stalled the queues whose poll loop has gone quiet (R-36); makes
+    ///                readiness fail even though `status` may still read
+    ///                HEALTHY when other consumers are polling
+    /// @param issues  Go's `HealthReport.Issues`: one line per stalled
+    ///                consumer, then the critical-warning count, then the
+    ///                active-warning count once it degrades the status
+    private record HealthSnapshot(String status, int active, int critical, int consumersTotal,
+                                  List<RouterServer.ConsumerStat> stalled, List<String> issues) {
         boolean degraded() {
-            return status.equals("DEGRADED") || stalledReason != null;
+            return status.equals("DEGRADED") || !stalled.isEmpty();
+        }
+
+        String stalledReason() {
+            return stalled.isEmpty() ? null : "consumer " + stalled.getFirst().queue() + " not polling";
         }
     }
 
-    /// The effective status rule (spec §9.4 table): Degraded if any unacked
-    /// CRITICAL or active warnings > 20; Warning if active > 5; else Healthy.
-    /// The pool-success-rate clause never fires and is not modelled at all —
-    /// R-36 rules it out of readiness explicitly, and it was never wired
-    /// into this status text either.
+    /// The status rule (Go `HealthReport`): Degraded if any unacked CRITICAL,
+    /// every consumer stalled, or active warnings > 20; Warning if any
+    /// consumer stalled or active > 5; else Healthy. The pool-success-rate
+    /// clause is not modelled: nothing in Go feeds it either (no production
+    /// caller of `RecordPoolResult`), so it never fires there.
     private static HealthSnapshot healthSnapshot(State s) {
         int active = s.warnings().active(Duration.ofMinutes(30)).size();
         int critical = s.warnings().critical().size();
-        String status = critical > 0 || active > 20 ? "DEGRADED" : active > 5 ? "WARNING" : "HEALTHY";
-        return new HealthSnapshot(status, active, critical, stalledConsumerReason(s));
-    }
+        // A follower (`server` null or not running) has no consumers, so losing
+        // leadership never itself fails readiness on this account.
+        var consumers = s.server() == null || !s.server().running()
+                ? List.<RouterServer.ConsumerStat>of()
+                : s.server().consumerStats();
+        var stalled = consumers.stream().filter(RouterServer.ConsumerStat::stalled).toList();
+        int healthy = consumers.size() - stalled.size();
 
-    /// The first stalled queue's reason, or null when there is none — a
-    /// follower (`server` null or not running) is unaffected by this rule,
-    /// so losing leadership never itself fails readiness on this account.
-    private static String stalledConsumerReason(State s) {
-        if (s.server() == null || !s.server().running()) {
-            return null;
+        var issues = new java.util.ArrayList<String>();
+        stalled.forEach(c -> issues.add("Consumer " + c.queue() + " is stalled"));
+        if (critical > 0) {
+            issues.add(critical + " critical warnings");
         }
-        return s.server().stalledConsumers().stream().findFirst()
-                .map(queue -> "consumer " + queue + " not polling")
-                .orElse(null);
+        // The count is a degradation cause in its own right; without an issue
+        // a router degraded purely by warning volume reported no reason.
+        if (active > 5) {
+            issues.add(active + " active warnings (degrades above 20)");
+        }
+        String status = critical > 0 || (!stalled.isEmpty() && healthy == 0) || active > 20 ? "DEGRADED"
+                : !stalled.isEmpty() || active > 5 ? "WARNING" : "HEALTHY";
+        return new HealthSnapshot(status, active, critical, consumers.size(), stalled, List.copyOf(issues));
     }
 
     private HealthRoutes() {

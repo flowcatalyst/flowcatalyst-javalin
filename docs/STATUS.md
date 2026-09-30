@@ -6,6 +6,14 @@ Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.
 
+## Event-loop check (2026-09-28)
+
+A javac plugin (module `eventloop-check`, spec `docs/spec/eventloop-check.md`) fails the compile of
+`server` and `function-host` when code on a Vert.x event loop makes a blocking call. Its first run
+found a real one: the deadline's `cancelQuery()` ran on the API listener's single loop and opened a
+new Postgres connection there. It now runs on its own virtual thread. `/ready` read cgroup files on
+its loop (now captured once at start), and `TrustedProxies` uses `InetAddress.ofLiteral`.
+
 ## Owner rulings implemented (2026-09-25)
 
 The 19 overnight-review questions were ruled one at a time (`docs/backlog.md` §"Overnight

@@ -226,6 +226,20 @@ public final class RouterServer implements AutoCloseable {
     /// not, regardless of whether the restart watchdog would still call it
     /// too young to judge.
     public List<String> stalledConsumers() {
+        return consumerStats().stream().filter(ConsumerStat::stalled).map(ConsumerStat::queue).toList();
+    }
+
+    /// One queue's liveness as readiness and the monitoring views judge it.
+    ///
+    /// @param lastAlive empty until the loop has completed a poll
+    public record ConsumerStat(String queue, boolean stalled, Optional<Instant> lastAlive) {
+    }
+
+    /// Every queue with an active consumer, sorted by name, each with the
+    /// verdict of [#stalledConsumers]. Read live from the loops the watchdog
+    /// judges — never a copy, so the health views and the restart watchdog
+    /// cannot disagree about one consumer.
+    public List<ConsumerStat> consumerStats() {
         var now = clock.instant();
         return loops.entrySet().stream()
                 // A loop whose consumer is no longer the manager's active one
@@ -237,13 +251,17 @@ public final class RouterServer implements AutoCloseable {
                 // it here would fail readiness over a queue that is not a
                 // health problem at all (`docs/spec/router.md` §7.2).
                 .filter(entry -> manager.activeConsumer(entry.getKey()).isPresent())
-                .filter(entry -> Duration.between(entry.getValue().consumerLoop().startedAt(), now)
-                        .compareTo(ConsumerSupervisor.STALL_THRESHOLD) > 0)
-                .filter(entry -> entry.getValue().consumerLoop().lastAlive()
-                        .map(last -> Duration.between(last, now).compareTo(ConsumerSupervisor.STALL_THRESHOLD) > 0)
-                        .orElse(true))
-                .map(Map.Entry::getKey)
-                .sorted()
+                .map(entry -> {
+                    var loop = entry.getValue().consumerLoop();
+                    var lastAlive = loop.lastAlive();
+                    boolean old = Duration.between(loop.startedAt(), now)
+                            .compareTo(ConsumerSupervisor.STALL_THRESHOLD) > 0;
+                    boolean quiet = lastAlive
+                            .map(last -> Duration.between(last, now).compareTo(ConsumerSupervisor.STALL_THRESHOLD) > 0)
+                            .orElse(true);
+                    return new ConsumerStat(entry.getKey(), old && quiet, lastAlive);
+                })
+                .sorted(java.util.Comparator.comparing(ConsumerStat::queue))
                 .toList();
     }
 

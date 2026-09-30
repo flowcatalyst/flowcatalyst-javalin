@@ -101,9 +101,12 @@ public final class FnObservability implements AutoCloseable {
 
         Vertx vertx = Vertx.vertx(new VertxOptions().setEventLoopPoolSize(options.eventLoopPoolSize()));
         HttpServerOptions serverOptions = new HttpServerOptions().setHost(options.host()).setPort(options.port());
+        // Captured once, here, off the event loop: it reads the cgroup limit file, and every
+        // value in it is fixed for the life of the process (the JVM was fenced at start).
+        FnMemorySnapshot.Info memory = FnMemorySnapshot.capture();
         HttpServer server = vertx.createHttpServer(serverOptions)
                 .requestHandler(req -> handle(req, reconciler, registry, formats, listenerBound, reconcileLoopAlive,
-                        startupComplete));
+                        startupComplete, memory));
         try {
             server.listen().toCompletionStage().toCompletableFuture().get(30, TimeUnit.SECONDS);
         } catch (Exception e) {
@@ -120,14 +123,15 @@ public final class FnObservability implements AutoCloseable {
 
     private static void handle(HttpServerRequest req, Reconciler reconciler, PrometheusRegistry registry,
                                 ExpositionFormats formats, BooleanSupplier listenerBound,
-                                BooleanSupplier reconcileLoopAlive, BooleanSupplier startupComplete) {
+                                BooleanSupplier reconcileLoopAlive, BooleanSupplier startupComplete,
+                                FnMemorySnapshot.Info memory) {
         if (!"GET".equals(req.method().name())) {
             respond(req, 404, "application/json", NOT_FOUND_BODY);
             return;
         }
         switch (req.path()) {
             case "/health" -> health(req, startupComplete, listenerBound, reconcileLoopAlive);
-            case "/ready" -> ready(req, reconciler, listenerBound, reconcileLoopAlive);
+            case "/ready" -> ready(req, reconciler, listenerBound, reconcileLoopAlive, memory);
             case "/metrics" -> scrape(req, registry, formats);
             default -> respond(req, 404, "application/json", NOT_FOUND_BODY);
         }
@@ -140,15 +144,16 @@ public final class FnObservability implements AutoCloseable {
     /// `RECONCILER_DOWN` applies — [Reconciler.Readiness]'s own names.
     /// Either way the body carries a `memory` object (docs/spec/jvm-memory.md
     /// §4) — the split `docker/jvm-opts.sh` actually fenced this process
-    /// into, read live off the running JVM, so an operator never has to
-    /// shell into the container to see it.
+    /// into, read off the running JVM when this listener started (every value is
+    /// fixed for the process's life), so an operator never has to shell into the
+    /// container to see it.
     private static void ready(HttpServerRequest req, Reconciler reconciler, BooleanSupplier listenerBound,
-                               BooleanSupplier reconcileLoopAlive) {
+                               BooleanSupplier reconcileLoopAlive, FnMemorySnapshot.Info memory) {
         Reconciler.Readiness readiness =
                 reconciler.readiness(listenerBound.getAsBoolean(), reconcileLoopAlive.getAsBoolean());
         String status = readiness == Reconciler.Readiness.READY ? "UP" : readiness.name();
         int statusCode = readiness == Reconciler.Readiness.READY ? 200 : 503;
-        respond(req, statusCode, "application/json", readyBody(status, FnMemorySnapshot.capture()));
+        respond(req, statusCode, "application/json", readyBody(status, memory));
     }
 
     /// §3 item 3: liveness, not readiness — a slow first reconcile must

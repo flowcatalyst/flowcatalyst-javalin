@@ -26,6 +26,15 @@
   </description>
 
   <dependencies>
+    <!-- Build-time only: the javac plugin that refuses blocking calls on a Vert.x event loop
+         (docs/spec/eventloop-check.md), and its two marker annotations (CLASS retention, never
+         needed at runtime). -->
+    <dependency>
+      <groupId>io.flowcatalyst</groupId>
+      <artifactId>flowcatalyst-eventloop-check</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
+    </dependency>
     <dependency>
       <groupId>io.flowcatalyst</groupId>
       <artifactId>flowcatalyst-function-api</artifactId>
@@ -151,6 +160,23 @@
 
   <build>
     <plugins>
+      <!-- The event-loop check runs on the main compile only (docs/spec/eventloop-check.md): a
+           blocking call reachable from a Vert.x callback fails the build. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>default-compile</id>
+            <configuration>
+              <compilerArgs combine.children="append">
+                <arg>-Xplugin:EventLoopCheck</arg>
+                <arg>-XDcompilePolicy=simple</arg>
+              </compilerArgs>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
       <!--
         The test-jar (`docs/spec/function-developer-surface.md` §1, E1): fcdev's
         in-process acceptance test reuses `FixtureJars` (builds real fixture
