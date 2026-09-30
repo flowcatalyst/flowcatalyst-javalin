@@ -208,6 +208,18 @@ class StartFunctionsIntegrationTest {
                 .isEqualTo("http://127.0.0.1:" + host.port() + "/functions/" + address + "/events");
 
         // ── invoke the host directly over HTTP ──
+        // triggerReconcile only wakes the loop; the promote's reconcile may
+        // not have routed the alias yet (a 404 under a loaded reactor run),
+        // so wait for it exactly as the probe fixture below does.
+        awaitCondition(() -> {
+            try {
+                var r = HTTP.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + host.port()
+                                + "/functions/" + address + "/hello")).GET().build(), HttpResponse.BodyHandlers.ofString());
+                return r.statusCode() == 200;
+            } catch (Exception e) {
+                return false;
+            }
+        }, "v1 must become invokable", Duration.ofSeconds(10));
         var invoked = HTTP.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + host.port() + "/functions/" + address + "/hello"))
                 .GET().build(), HttpResponse.BodyHandlers.ofString());
         assertThat(invoked.statusCode()).as(invoked.body()).isEqualTo(200);
