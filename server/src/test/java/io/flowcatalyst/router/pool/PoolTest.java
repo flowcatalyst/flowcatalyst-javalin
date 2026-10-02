@@ -1300,6 +1300,93 @@ class PoolTest {
 
     // ── Fakes ───────────────────────────────────────────────────────────
 
+    // ── Waiting unordered messages cost no thread each ──────────────────
+
+    @Test
+    @DisplayName("unordered messages waiting for a slot hold no worker each: tasks started track the slots, not the buffer")
+    void waitingUnorderedMessagesCostNoThreadEach() {
+        // A pool buffers up to concurrency*40 messages; a parked thread per
+        // buffered message put 256,000 threads behind 100 pools of 64.
+        int concurrency = 100;
+        int waiting = 3_000;
+        mediator.block();
+        var p = pool(concurrency, 0);
+        int platformBefore = Thread.activeCount();
+
+        IntStream.range(0, concurrency + waiting).forEach(i -> p.submit(immediate("m" + i)));
+
+        await(() -> mediator.inFlight.get() == concurrency);
+        await(() -> p.queueSize() == waiting);
+        // Let a dispatcher that is (wrongly) starting more work show itself.
+        sleepBriefly();
+        assertThat(p.activeWorkers()).isEqualTo(concurrency);
+        assertThat(p.deliveryTasksStarted.get())
+                .as("delivery tasks started while %d messages wait", waiting)
+                .isEqualTo(concurrency);
+        assertThat(Thread.activeCount() - platformBefore).isLessThan(300);
+
+        mediator.unblock();
+
+        await(() -> broker.acked.size() == concurrency + waiting);
+        await(() -> p.queueSize() == 0);
+        assertThat(p.deliveryTasksStarted.get()).isEqualTo(concurrency + waiting);
+    }
+
+    @Test
+    @DisplayName("waiting unordered messages start oldest first")
+    void waitingUnorderedMessagesStartOldestFirst() {
+        mediator.block();
+        var p = pool(1, 0);
+
+        IntStream.range(0, 20).forEach(i -> p.submit(immediate("m" + i)));
+        await(() -> mediator.inFlight.get() == 1);
+        mediator.unblock();
+
+        await(() -> broker.acked.size() == 20);
+        assertThat(mediator.delivered).containsExactlyElementsOf(
+                IntStream.range(0, 20).mapToObj(i -> "m" + i).toList());
+    }
+
+    @Test
+    @DisplayName("closing while unordered messages wait hands them back and leaves none counted as queued")
+    void closeHandsBackWaitingUnorderedMessages() {
+        mediator.block();
+        var p = pool(1, 0);
+        IntStream.range(0, 21).forEach(i -> p.submit(immediate("m" + i)));
+        await(() -> mediator.inFlight.get() == 1);
+        await(() -> p.queueSize() == 20);
+
+        // The holder never finishes inside close()'s grace, so the dispatcher
+        // is parked on the slot and has to be interrupted.
+        p.close();
+
+        var waitingIds = IntStream.range(1, 21).mapToObj(i -> "m" + i).toList();
+        assertThat(broker.nacked.keySet()).containsAll(waitingIds);
+        assertThat(p.queueSize()).isZero();
+        assertThat(p.deliveryTasksStarted.get()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("closing as the slot frees hands waiting unordered messages back rather than starting them")
+    void closeWhileSlotFreesHandsBackWaiting() {
+        mediator.block();
+        var p = pool(1, 0);
+        IntStream.range(0, 11).forEach(i -> p.submit(immediate("m" + i)));
+        await(() -> mediator.inFlight.get() == 1);
+        await(() -> p.queueSize() == 10);
+
+        Thread.startVirtualThread(() -> {
+            sleepBriefly();
+            mediator.unblock();
+        });
+        p.close();
+
+        assertThat(p.queueSize()).isZero();
+        // Every message is accounted for exactly once: delivered or handed back.
+        assertThat(broker.acked.size() + broker.nacked.size()).isEqualTo(11);
+    }
+
+
     /// How long `await` waits before calling a condition dead.
     ///
     /// This is a **liveness** deadline, not a performance assertion: a healthy

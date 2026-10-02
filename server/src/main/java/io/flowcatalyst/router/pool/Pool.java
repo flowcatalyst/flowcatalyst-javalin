@@ -22,6 +22,7 @@ import org.slf4j.LoggerFactory;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
@@ -33,6 +34,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 
 /// One processing pool: bounded concurrency, a rate limit, and delivery of
@@ -40,8 +43,10 @@ import java.util.function.BiConsumer;
 ///
 /// ### Two dispatch shapes
 ///
-/// `IMMEDIATE` messages each get their own worker and are bounded only by
-/// the semaphore. Ordered messages queue per group, and one **drainer** per
+/// `IMMEDIATE` messages each get their own worker once a slot is free, bounded
+/// only by the semaphore. Until then they wait in a FIFO with no thread each:
+/// one dispatcher starts them as slots free up, so threads track messages in
+/// flight, not messages buffered. Ordered messages queue per group, and one **drainer** per
 /// group delivers them strictly in turn — the group, not the pool, is the
 /// unit of ordering.
 ///
@@ -224,6 +229,27 @@ public final class Pool implements AutoCloseable {
     /// giving up on the broker and letting redelivery do it instead.
     static final Duration HANDBACK_TIMEOUT = Duration.ofSeconds(5);
 
+    /// An unordered message waiting for a concurrency slot. A pool buffers up
+    /// to `concurrency * 40` of them, and a parked thread each put 256,000
+    /// threads behind 100 pools of concurrency 64; as a queue entry each costs
+    /// one small object.
+    private record ImmediateItem(QueuedMessage message) {
+    }
+
+    /// Unordered messages waiting for a slot, oldest first, guarded by
+    /// [#immediateLock]. A waiting message has no thread: one dispatcher
+    /// ([#dispatchImmediate]) starts them as slots free up.
+    private final ArrayDeque<ImmediateItem> immediateQueue = new ArrayDeque<>();
+    private final ReentrantLock immediateLock = new ReentrantLock();
+    /// Whether a dispatcher is alive. Read and written only under
+    /// [#immediateLock], in the same critical section that adds to or empties
+    /// the queue, so an enqueue is never missed by a dispatcher on its way out.
+    private boolean immediateDispatcherRunning;
+
+    /// Delivery tasks started for unordered messages, lifetime. A test hook:
+    /// it tracks messages that got a slot, not messages buffered.
+    final AtomicLong deliveryTasksStarted = new AtomicLong();
+
     private final ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
     private volatile boolean stopped;
 
@@ -391,19 +417,7 @@ public final class Pool implements AutoCloseable {
         } else {
             immediateWaiting.incrementAndGet();
             capacityChanged();
-            if (!start(() -> runImmediate(message))) {
-                // Raced with close(): the executor was already shutting
-                // down when this reached it, so runImmediate never got the
-                // chance to account for the message itself. Left alone, this
-                // was silent loss — neither acked, nacked nor released, and
-                // immediateWaiting never decremented — until the broker's
-                // own visibility eventually lapsed. Reachable in practice:
-                // evictIdleSynthesisedPools and a reconfigure removal both
-                // close a pool a concurrent route() may be mid-submit on.
-                immediateWaiting.decrementAndGet();
-                capacityChanged();
-                broker.nack(message, REJECTED_NACK_DELAY, "pool-closed");
-            }
+            enqueueImmediate(message);
         }
     }
 
@@ -461,29 +475,18 @@ public final class Pool implements AutoCloseable {
     /// ([#runDrainer]): the throwable is logged with its stack and the message
     /// is nacked back with the backoff an unexpected failure earns
     /// ([#returnAfterWorkerFailure]).
-    private void runImmediate(QueuedMessage initial) {
+    private void runImmediate(QueuedMessage initial, ResizableSemaphore semaphore) {
+        // Runs on a worker that already holds a slot of `semaphore` (taken by
+        // [#startImmediate]); released in the finally around the attempt.
         var message = initial;
-        // Whether `message` is currently counted in immediateWaiting — so the
-        // guard below can undo exactly what the loop had not yet undone.
-        boolean waiting = true;
+        // Whether `message` is currently counted in immediateWaiting. The
+        // dispatcher uncounted it when it took the slot, so this is only ever
+        // true across a retry's backoff.
+        boolean waiting = false;
         try {
             while (true) {
-                var semaphore = slots;
-                try {
-                    semaphore.acquire();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    immediateWaiting.decrementAndGet();
-                    waiting = false;
-                    capacityChanged();
-                    broker.nack(message, REJECTED_NACK_DELAY);
-                    return;
-                }
                 Attempt attempt;
                 try {
-                    immediateWaiting.decrementAndGet();
-                    waiting = false;
-                    capacityChanged();
                     attempt = deliverOnce(message);
                 } finally {
                     semaphore.release();
@@ -562,6 +565,12 @@ public final class Pool implements AutoCloseable {
                     broker.release(message);
                     return;
                 }
+                // Backoff over: queue it again behind whatever is waiting. It
+                // held no slot while it slept and takes one only when the
+                // dispatcher reaches it.
+                waiting = false;
+                enqueueImmediate(message);
+                return;
             }
         } catch (RuntimeException | Error failure) {
             log.atError().setMessage("worker failed; returning the message to the broker")
@@ -577,6 +586,151 @@ public final class Pool implements AutoCloseable {
             if (failure instanceof VirtualMachineError fatal) {
                 throw fatal;
             }
+        }
+    }
+
+    /// Files an unordered message behind those already waiting and makes sure
+    /// a dispatcher is running to start them. The caller has already counted
+    /// `message` in [#immediateWaiting].
+    ///
+    /// The dispatcher is not permanent: it exits when the queue is empty and
+    /// the next enqueue starts it again, so an idle pool holds no thread for
+    /// it. Whether to start one is decided under the same lock that adds to
+    /// the queue.
+    private void enqueueImmediate(QueuedMessage message) {
+        boolean startDispatcher;
+        immediateLock.lock();
+        try {
+            immediateQueue.addLast(new ImmediateItem(message));
+            startDispatcher = !immediateDispatcherRunning;
+            if (startDispatcher) {
+                immediateDispatcherRunning = true;
+            }
+        } finally {
+            immediateLock.unlock();
+        }
+        if (startDispatcher && !start(this::dispatchImmediate)) {
+            // Raced with close(): the executor was already shutting down, so
+            // no dispatcher will ever run. Left alone this was silent loss --
+            // neither acked, nacked nor released -- so everything waiting goes
+            // back to the broker. Reachable in practice: evictIdleSynthesisedPools
+            // and a reconfigure removal both close a pool a concurrent route()
+            // may be mid-submit on.
+            returnWaiting(takeAllWaiting(), "pool-closed");
+        }
+    }
+
+    /// Removes and returns every waiting message and marks the dispatcher not
+    /// running, atomically: nothing enqueued afterwards is stranded behind a
+    /// dispatcher that is gone, because the next enqueue starts a new one.
+    private List<QueuedMessage> takeAllWaiting() {
+        immediateLock.lock();
+        try {
+            var taken = new ArrayList<QueuedMessage>(immediateQueue.size());
+            immediateQueue.forEach(item -> taken.add(item.message()));
+            immediateQueue.clear();
+            immediateDispatcherRunning = false;
+            return taken;
+        } finally {
+            immediateLock.unlock();
+        }
+    }
+
+    /// Hands waiting messages that were taken out of [#immediateQueue] back to
+    /// the broker and uncounts them.
+    private void returnWaiting(List<QueuedMessage> messages, String reason) {
+        if (messages.isEmpty()) {
+            return;
+        }
+        immediateWaiting.addAndGet(-messages.size());
+        capacityChanged();
+        Concurrently.forEach(messages, m -> broker.nack(m, REJECTED_NACK_DELAY, reason),
+                HANDBACK_TIMEOUT, "hand-back for pool " + config.code());
+    }
+
+    /// Removes the oldest waiting message, or reports none is left -- marking
+    /// the dispatcher not running under the same lock, so a concurrent
+    /// [#enqueueImmediate] either sees it running (and its item is seen here)
+    /// or starts a new one.
+    private ImmediateItem nextImmediate() {
+        immediateLock.lock();
+        try {
+            var item = immediateQueue.pollFirst();
+            if (item == null) {
+                immediateDispatcherRunning = false;
+            }
+            return item;
+        } finally {
+            immediateLock.unlock();
+        }
+    }
+
+    /// Starts waiting unordered messages one at a time, oldest first, each as
+    /// soon as a concurrency slot is free. It owns the wait for the slot, so
+    /// the number of threads tracks messages in flight, not messages buffered.
+    private void dispatchImmediate() {
+        while (true) {
+            var item = nextImmediate();
+            if (item == null) {
+                return;
+            }
+            if (!startImmediate(item.message())) {
+                return;
+            }
+        }
+    }
+
+    /// Waits for a slot for `message`, then runs it on its own worker.
+    ///
+    /// @return false when the dispatcher must stop: it was interrupted (the
+    ///         pool is closing) or the executor refused the delivery. In both
+    ///         cases everything still waiting has been handed back.
+    private boolean startImmediate(QueuedMessage message) {
+        var semaphore = slots;
+        boolean counted = true; // message still counts in immediateWaiting
+        try {
+            try {
+                semaphore.acquire();
+            } catch (InterruptedException e) {
+                immediateWaiting.decrementAndGet();
+                counted = false;
+                capacityChanged();
+                broker.nack(message, REJECTED_NACK_DELAY);
+                // Closing: nothing left will ever get a slot, so the rest go
+                // back too rather than waiting on a dispatcher that is gone.
+                returnWaiting(takeAllWaiting(), "stood-down");
+                Thread.currentThread().interrupt();
+                return false;
+            }
+            immediateWaiting.decrementAndGet(); // now active, not queued
+            counted = false;
+            capacityChanged();
+            deliveryTasksStarted.incrementAndGet();
+            if (!start(() -> runImmediate(message, semaphore))) {
+                semaphore.release();
+                broker.nack(message, REJECTED_NACK_DELAY, "pool-closed");
+                returnWaiting(takeAllWaiting(), "pool-closed");
+                return false;
+            }
+            return true;
+        } catch (RuntimeException | Error failure) {
+            log.atError().setMessage("dispatcher failed; returning the message to the broker")
+                    .addKeyValue("pool", config.code())
+                    .addKeyValue("message_id", message.id())
+                    .setCause(failure)
+                    .log();
+            if (counted) {
+                immediateWaiting.decrementAndGet();
+                capacityChanged();
+            }
+            returnAfterWorkerFailure(message);
+            if (failure instanceof VirtualMachineError fatal) {
+                // The dispatcher dies; do not leave it marked running over a
+                // queue nobody serves.
+                returnWaiting(takeAllWaiting(), "dispatcher-failed");
+                throw fatal;
+            }
+            return true;
         }
     }
 
