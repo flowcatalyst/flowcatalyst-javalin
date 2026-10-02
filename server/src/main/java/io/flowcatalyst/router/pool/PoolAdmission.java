@@ -46,11 +46,17 @@ final class PoolAdmission {
     /// there is usually a rate.
     static final Duration FALLBACK_WAIT = Duration.ofSeconds(30);
 
-    /// The minimum gap between consecutive reservations on a broker that
-    /// does not itself keep a deferred group in order ([Broker#honoursDelayedReturn]
-    /// false — NATS). Redelivery timers are not sub-second precise, so two
-    /// reservations a few milliseconds apart could come back swapped; a
-    /// second apart they cannot.
+    /// The minimum gap between consecutive reservations for an ORDERED
+    /// message on a broker that does not itself keep a deferred group in
+    /// order ([Broker#honoursDelayedReturn] false — NATS). Redelivery timers
+    /// are not sub-second precise, so two reservations a few milliseconds
+    /// apart could come back swapped; a second apart they cannot.
+    ///
+    /// It applies ONLY to messages that require ordering within a group. An
+    /// unordered message has no order to protect, so it is booked at the
+    /// pool's natural slot: applying the floor to it made N deferred messages
+    /// on a fast pool return over N seconds (5,658 deferrals measured as a
+    /// ~94 minute tail on a pool draining ~19,000 messages/s).
     static final Duration ORDERED_SPACING = Duration.ofSeconds(1);
 
     /// How far back [PoolMetrics#completionRate] looks.
@@ -95,7 +101,7 @@ final class PoolAdmission {
     /// ```
     /// wait = queued / rate            (fallback 30s when no completion in window)
     /// slot = 1 / rate                 (fallback 1s)
-    /// if (!brokerHonoursDelayedReturn) slot = max(slot, 1s)
+    /// if (!brokerHonoursDelayedReturn && ordered) slot = max(slot, 1s)
     /// earliest = max(now + wait, nextReturn)
     /// reserved = earliest + slot
     /// nextReturn = reserved
@@ -107,7 +113,11 @@ final class PoolAdmission {
     /// @param queued                      messages currently buffered ([Pool#queueSize])
     /// @param rate                        [PoolMetrics#completionRate], empty when unmeasurable
     /// @param brokerHonoursDelayedReturn   [Broker#honoursDelayedReturn] for the message being deferred
-    Duration delay(int queued, OptionalDouble rate, boolean brokerHonoursDelayedReturn) {
+    /// @param ordered                      whether the message being deferred must be sequenced within
+    ///                                     a non-empty message group ([QueuedMessage#ordered]); only
+    ///                                     then, on a broker that does not honour delayed returns, is
+    ///                                     the slot floored at [#ORDERED_SPACING]
+    Duration delay(int queued, OptionalDouble rate, boolean brokerHonoursDelayedReturn, boolean ordered) {
         Duration wait = FALLBACK_WAIT;
         Duration slot = ORDERED_SPACING;
         if (rate.isPresent() && rate.getAsDouble() > 0) {
@@ -115,7 +125,7 @@ final class PoolAdmission {
             wait = Duration.ofNanos(Math.round(queued / r * 1_000_000_000.0));
             slot = Duration.ofNanos(Math.round(1_000_000_000.0 / r));
         }
-        if (!brokerHonoursDelayedReturn && slot.compareTo(ORDERED_SPACING) < 0) {
+        if (!brokerHonoursDelayedReturn && ordered && slot.compareTo(ORDERED_SPACING) < 0) {
             slot = ORDERED_SPACING;
         }
 

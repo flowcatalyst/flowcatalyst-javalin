@@ -28,13 +28,13 @@ class PoolAdmissionTest {
         var admission = new PoolAdmission(null, FIXED);
         var rate = OptionalDouble.of(0.2); // 5s per message
 
-        var first = admission.delay(100, rate, true);
+        var first = admission.delay(100, rate, true, true);
         // wait = 100/0.2 = 500s, slot = 1/0.2 = 5s -> ~505s.
         assertThat(first.toSeconds()).isCloseTo(505, org.assertj.core.data.Offset.offset(2L));
 
         var prev = first;
         for (int i = 0; i < 5; i++) {
-            var next = admission.delay(100, rate, true);
+            var next = admission.delay(100, rate, true, true);
             assertThat(next.minus(prev).toSeconds())
                     .as("reservation %d must land one slot (5s) after the previous one", i + 2)
                     .isCloseTo(5, org.assertj.core.data.Offset.offset(1L));
@@ -49,7 +49,7 @@ class PoolAdmissionTest {
     @DisplayName("D2: floored at 5s even with an empty buffer and a fast rate (mutant: the floor constant)")
     void floorsAtFiveSeconds() {
         var admission = new PoolAdmission(null, FIXED);
-        var got = admission.delay(0, OptionalDouble.of(100.0), true);
+        var got = admission.delay(0, OptionalDouble.of(100.0), true, true);
         // Hardcoded, not PoolAdmission.MIN_DELAY: comparing the floor against
         // its own constant would still pass if the constant's VALUE were
         // wrong (e.g. 2s) — the spec pins 5 seconds specifically.
@@ -61,8 +61,8 @@ class PoolAdmissionTest {
             + "(mutant: the fallback/spacing constants)")
     void fallsBackWithoutARate() {
         var admission = new PoolAdmission(null, FIXED);
-        var a = admission.delay(1, OptionalDouble.empty(), true);
-        var b = admission.delay(1, OptionalDouble.empty(), true);
+        var a = admission.delay(1, OptionalDouble.empty(), true, true);
+        var b = admission.delay(1, OptionalDouble.empty(), true, true);
 
         // Hardcoded 30s/1s, not the PoolAdmission constants: pins the actual
         // spec values, not merely "whatever the constants happen to hold".
@@ -82,11 +82,11 @@ class PoolAdmissionTest {
 
         // Push the cursor well past the horizon.
         for (int i = 0; i < 200; i++) {
-            admission.delay(100, rate, true);
+            admission.delay(100, rate, true, true);
         }
 
         for (int i = 0; i < 50; i++) {
-            var d = admission.delay(100, rate, true);
+            var d = admission.delay(100, rate, true, true);
             assertThat(d).as("never past the horizon").isLessThanOrEqualTo(horizon);
             assertThat(d.toNanos()).as("jitter only pulls a clamped reservation BACK, within the jitter fraction")
                     .isGreaterThanOrEqualTo((long) (horizon.toNanos() * 0.75));
@@ -100,14 +100,14 @@ class PoolAdmissionTest {
             + "spread >= 1s apart (mutant: drop max(slot, 1s))")
     void spacesReservationsOnAnUnorderedBroker() {
         var ordered = new PoolAdmission(null, FIXED);
-        var a = ordered.delay(0, OptionalDouble.of(100.0), true);
-        var b = ordered.delay(0, OptionalDouble.of(100.0), true);
+        var a = ordered.delay(0, OptionalDouble.of(100.0), true, true);
+        var b = ordered.delay(0, OptionalDouble.of(100.0), true, true);
         assertThat(a).as("10ms slots both land on the 5s floor").isEqualTo(b).isEqualTo(PoolAdmission.MIN_DELAY);
 
         var unordered = new PoolAdmission(null, FIXED);
-        var prev = unordered.delay(0, OptionalDouble.of(100.0), false);
+        var prev = unordered.delay(0, OptionalDouble.of(100.0), false, true);
         for (int i = 0; i < 10; i++) {
-            var next = unordered.delay(0, OptionalDouble.of(100.0), false);
+            var next = unordered.delay(0, OptionalDouble.of(100.0), false, true);
             if (next.compareTo(PoolAdmission.MIN_DELAY) > 0) { // once past the floor the spacing shows
                 assertThat(next.minus(prev)).isGreaterThanOrEqualTo(PoolAdmission.ORDERED_SPACING);
             }
@@ -115,5 +115,39 @@ class PoolAdmissionTest {
         }
         assertThat(prev).as("eleven reservations on an unordered broker must have spread past the floor")
                 .isGreaterThan(PoolAdmission.MIN_DELAY.plus(PoolAdmission.ORDERED_SPACING.multipliedBy(5)));
+    }
+
+    @Test
+    @DisplayName("D5: an UNORDERED message on a non-honouring broker books the natural slot, not the 1s floor "
+            + "(mutant: apply the floor regardless of ordered)")
+    void unorderedMessagesIgnoreTheOrderedSpacingFloor() {
+        var admission = new PoolAdmission(null, FIXED);
+        var rate = OptionalDouble.of(100.0); // 10ms per message
+
+        var first = admission.delay(0, rate, false, false);
+        var last = first;
+        for (int i = 1; i < 200; i++) {
+            last = admission.delay(0, rate, false, false);
+        }
+        assertThat(last.minus(first))
+                .as("200 reservations at 10ms slots span ~2s, not ~200s")
+                .isLessThan(PoolAdmission.ORDERED_SPACING.multipliedBy(10));
+    }
+
+    @Test
+    @DisplayName("D5: an ORDERED message on a non-honouring broker is still spaced >= 1s once past the 5s floor")
+    void orderedMessagesKeepTheOrderedSpacingFloor() {
+        var admission = new PoolAdmission(null, FIXED);
+        var rate = OptionalDouble.of(100.0);
+
+        var prev = admission.delay(0, rate, false, true);
+        for (int i = 0; i < 20; i++) {
+            var next = admission.delay(0, rate, false, true);
+            if (next.compareTo(PoolAdmission.MIN_DELAY) > 0) {
+                assertThat(next.minus(prev)).isGreaterThanOrEqualTo(PoolAdmission.ORDERED_SPACING);
+            }
+            prev = next;
+        }
+        assertThat(prev).isGreaterThan(PoolAdmission.MIN_DELAY.plus(PoolAdmission.ORDERED_SPACING.multipliedBy(5)));
     }
 }

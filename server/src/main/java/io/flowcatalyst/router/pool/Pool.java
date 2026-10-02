@@ -381,7 +381,7 @@ public final class Pool implements AutoCloseable {
             // stays a nack — a full buffer is the one case that is not a
             // rejection.
             var delay = admission.delay(queueSize(), metrics.completionRate(PoolAdmission.RATE_WINDOW),
-                    broker.honoursDelayedReturn(message));
+                    broker.honoursDelayedReturn(message), message.ordered());
             broker.defer(message, delay);
             deferralObserver.accept(message.queueId(), clock.instant().plus(delay));
             return;
