@@ -29,8 +29,8 @@ class PoolAdmissionTest {
         var rate = OptionalDouble.of(0.2); // 5s per message
 
         var first = admission.delay(100, rate, true, true);
-        // wait = 100/0.2 * 0.5 = 250s, capped at MAX_WAIT (20s); slot = 1/0.2 = 5s -> ~25s.
-        assertThat(first.toSeconds()).isCloseTo(25, org.assertj.core.data.Offset.offset(2L));
+        // wait = 100/0.2 * 0.5 = 250s (no cap: a slow pool's real pace sets the wait); slot = 1/0.2 = 5s -> ~255s.
+        assertThat(first.toSeconds()).isCloseTo(255, org.assertj.core.data.Offset.offset(2L));
 
         var prev = first;
         for (int i = 0; i < 5; i++) {
@@ -44,15 +44,13 @@ class PoolAdmissionTest {
     }
 
     @Test
-    @DisplayName("the wait for the buffer to drain is capped at 20s however slow the pace; below the cap it is "
-            + "half the drain time")
-    void waitIsCappedButNotBelowTheCap() {
+    @DisplayName("a slow pool's wait is its real half-drain time: no cap (1 at a time, 2s each, 100 buffered = 100s)")
+    void aSlowPoolIsNotCapped() {
         var admission = new PoolAdmission(null, FIXED);
-        // 1000 queued at 100/s: half the drain time is 5s, under the cap -> 5s wait + 10ms slot -> floor 5s.
-        assertThat(admission.delay(1000, OptionalDouble.of(100.0), true, false).toSeconds()).isEqualTo(5L);
-        // 100000 queued at 10/s: half the drain time is 5000s, capped to 20s (+100ms slot).
-        var capped = new PoolAdmission(null, FIXED).delay(100_000, OptionalDouble.of(10.0), true, false);
-        assertThat(capped).isEqualTo(Duration.ofMillis(20_100));
+        // 100 queued at 0.5/s: half the drain time is 100s, plus one 2s slot.
+        assertThat(admission.delay(100, OptionalDouble.of(0.5), true, false)).isEqualTo(Duration.ofSeconds(102));
+        // the next reservation is one slot (2s) after the previous one
+        assertThat(admission.delay(100, OptionalDouble.of(0.5), true, false)).isEqualTo(Duration.ofSeconds(104));
     }
 
     @Test
