@@ -32,6 +32,10 @@ import java.util.Optional;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -275,11 +279,28 @@ public final class NatsQueue implements Consumer {
                                       BlockingQueue<io.nats.client.Message> buffer, AtomicBoolean stopped,
                                       Clock clock, AtomicReference<Instant> lastActivity) {
         try {
+            // jnats runs its reader, writer, flusher, connect and callback loops
+            // on threads it creates itself — seven platform threads per
+            // connection by default, 700 for 100 queues. Those threads were ~90%
+            // of the router's context switches at 100 queues and what kept it
+            // throttled on a small CPU quota. Hand the client virtual threads
+            // instead: one executor PER connection (jnats shuts down the
+            // executors it is given when the connection closes, so a shared one
+            // would cut off the other connections), and a one-thread scheduled
+            // executor whose worker is also virtual.
+            ThreadFactory virtualThreads = Thread.ofVirtual().name("nats-" + config.streamName() + "-", 0).factory();
+            ExecutorService clientTasks = Executors.newThreadPerTaskExecutor(virtualThreads);
             Options options = new Options.Builder()
                     .servers(config.servers().toArray(new String[0]))
                     .connectionTimeout(Duration.ofSeconds(10))
                     .reconnectWait(Duration.ofSeconds(2))
                     .maxReconnects(-1)
+                    .executor(clientTasks)
+                    .connectExecutor(clientTasks)
+                    .callbackExecutor(clientTasks)
+                    .readerExecutor(clientTasks)
+                    .writerExecutor(clientTasks)
+                    .scheduledExecutor(new ScheduledThreadPoolExecutor(1, virtualThreads))
                     .build();
             Connection connection = Nats.connect(options);
             // From here the connection is OPEN and nothing owns it yet — see
