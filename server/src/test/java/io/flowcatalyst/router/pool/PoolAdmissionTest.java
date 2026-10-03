@@ -29,8 +29,8 @@ class PoolAdmissionTest {
         var rate = OptionalDouble.of(0.2); // 5s per message
 
         var first = admission.delay(100, rate, true, true);
-        // wait = 100/0.2 = 500s, slot = 1/0.2 = 5s -> ~505s.
-        assertThat(first.toSeconds()).isCloseTo(505, org.assertj.core.data.Offset.offset(2L));
+        // wait = 100/0.2 * 0.5 = 250s, slot = 1/0.2 = 5s -> ~255s.
+        assertThat(first.toSeconds()).isCloseTo(255, org.assertj.core.data.Offset.offset(2L));
 
         var prev = first;
         for (int i = 0; i < 5; i++) {

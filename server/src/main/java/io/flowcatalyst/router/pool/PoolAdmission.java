@@ -59,8 +59,20 @@ final class PoolAdmission {
     /// ~94 minute tail on a pool draining ~19,000 messages/s).
     static final Duration ORDERED_SPACING = Duration.ofSeconds(1);
 
-    /// How far back [PoolMetrics#completionRate] looks.
-    static final Duration RATE_WINDOW = Duration.ofMinutes(5);
+    /// How far back [PoolMetrics#completionRate] looks. Short on purpose: the
+    /// hold-back should follow the pool's CURRENT pace. Over five minutes a
+    /// 40-second stall at start-up divided a pool's few early completions by a
+    /// span that included the stall, read as ~1 message/s, and booked every
+    /// deferral minutes out while the pool then ran at 40-90/s.
+    static final Duration RATE_WINDOW = Duration.ofSeconds(30);
+
+    /// How much of the buffer's drain time a deferred message waits before it
+    /// may return. A returning message joins the BACK of the buffer, so waiting
+    /// for the whole buffer to drain (the old behaviour) lands it just as the
+    /// pool runs dry and leaves the pool idle; waiting for half keeps the buffer
+    /// fed. The reservations still arrive at the pool's own pace (one per
+    /// 1/rate), so a bounce stays rare.
+    static final double HOLDBACK_FRACTION = 0.5;
 
     /// The reservation horizon when none is configured (`FC_ROUTER_DEFERRAL_MAX_DELAY_SECONDS`
     /// unset or non-positive).
@@ -132,7 +144,7 @@ final class PoolAdmission {
         Duration slot = FALLBACK_WAIT.dividedBy(Math.max(queued, 1));
         if (rate.isPresent() && rate.getAsDouble() > 0) {
             double r = rate.getAsDouble();
-            wait = Duration.ofNanos(Math.round(queued / r * 1_000_000_000.0));
+            wait = Duration.ofNanos(Math.round(queued / r * HOLDBACK_FRACTION * 1_000_000_000.0));
             slot = Duration.ofNanos(Math.round(1_000_000_000.0 / r));
         }
         if (!brokerHonoursDelayedReturn && ordered && slot.compareTo(ORDERED_SPACING) < 0) {

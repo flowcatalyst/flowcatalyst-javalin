@@ -38,7 +38,7 @@ pause warning.
 | # | Behaviour | Mutant |
 |---|---|---|
 | D1 | consecutive slots: pool at 0.2/s with 100 buffered ⇒ first reservation ≈ 505 s, each next ≈ +5 s | drop `nextReturn` from the `max` |
-| D2 | floor 5 s; with no trustworthy rate (fewer completions in the window than the pool has workers) fallback is 30 s wait + 30 s / queued spacing — the buffer is assumed to drain within the fallback wait (was a 1 s spacing, which booked a full buffer 43 min out; 2026-10-03, owner sign-off) | each constant; a rate from fewer completions than workers is ignored |
+| D2 | floor 5 s; with no trustworthy rate (fewer completions in the window than the pool has workers) fallback is 30 s wait + 30 s / queued spacing; the rate window is 30 s and a deferred message waits half the buffer's drain time (queued / rate × 0.5) — the buffer is assumed to drain within the fallback wait (was a 1 s spacing, which booked a full buffer 43 min out; 2026-10-03, owner sign-off) | each constant; a rate from fewer completions than workers is ignored |
 | D3 | horizon clamp: never above the horizon, never below 75 % of it (many samples) | jitter forward; jitter over the whole horizon |
 | D4 | NATS spacing: at 100/s an ordered broker's reservations all sit on the 5 s floor; an unordered (`honoursDelayedReturn=false`) broker's are ≥ 1 s apart | drop the `max(slot, 1 s)` |
 | D5 | rate = completions ÷ span since the oldest, not ÷ window: a pool with 10 completions in the last 30 s reports 0.33/s, not 0.033/s | divide by the window |
