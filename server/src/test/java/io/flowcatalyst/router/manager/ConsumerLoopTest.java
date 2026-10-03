@@ -588,6 +588,53 @@ class ConsumerLoopTest {
         }
     }
 
+    @Test
+    @DisplayName("a queue whose batches are mostly deferred is paced (50ms doubling to a 200ms cap), not polled flat out")
+    void mostlyDeferredBatchesPaceThePolls() throws InterruptedException {
+        var slowEntered = new CountDownLatch(1);
+        var slowBlocked = new AtomicBoolean(true);
+        Mediator slowMediator = (msg, recordFailure) -> {
+            slowEntered.countDown();
+            while (slowBlocked.get()) {
+                Thread.sleep(Duration.ofMillis(5));
+            }
+            return MediationOutcome.Success.of(200);
+        };
+        var broker = new RecordingHolBroker(tracker);
+        var slowPool = new Pool(new Pool.Config("SLOW", 1, 0), slowMediator, broker, PoolMetrics.NO_OP, clock);
+        var manager = new RouterManager(tracker, warnings, clock,
+                config -> new Pool(config, slowMediator, broker, PoolMetrics.NO_OP, clock));
+        manager.registerPool("SLOW", slowPool);
+        manager.registerConsumer(consumer);
+        managers.add(manager);
+        try {
+            int capacity = slowPool.config().queueCapacity();
+            slowPool.submit(message("occupy", "SLOW"));
+            assertThat(slowEntered.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            for (int i = 0; i < capacity; i++) {
+                slowPool.submit(message("filler-" + i, "SLOW"));
+            }
+            int batches = 6;
+            for (int b = 0; b < batches; b++) {
+                int base = b * 5;
+                consumer.deliver(IntStream.range(0, 5).mapToObj(i -> message("slow-" + (base + i), "SLOW")).toList());
+            }
+
+            long startedAt = System.nanoTime();
+            start(manager);
+            await(() -> broker.deferredOrder.size() == batches * 5);
+            var elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
+
+            // Back-offs after batches 1..6: 50, 100, 200, 200, 200, 200 ms (the last follows
+            // the final batch, so only the first five gaps precede a poll we wait for).
+            assertThat(elapsed)
+                    .as("six all-deferred batches must be paced, not drained back to back")
+                    .isGreaterThanOrEqualTo(Duration.ofMillis(50 + 100 + 200 + 200));
+        } finally {
+            slowBlocked.set(false);
+        }
+    }
+
     /// Records every ack/defer/nack, for [#fullPoolDefersInsteadOfBlockingTheQueueAcrossTwoBatches].
     private static final class RecordingHolBroker implements io.flowcatalyst.router.pool.Broker {
         final List<String> deferredOrder = new CopyOnWriteArrayList<>();

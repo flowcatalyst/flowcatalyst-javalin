@@ -21,7 +21,16 @@ final class DeferralLedger {
     private final PriorityQueue<Instant> times = new PriorityQueue<>();
 
     /// Records a deferred message due back at `at`.
+    /// Deferrals ever recorded — monotonic, unlike [#outstanding], so a caller can
+    /// count how many a stretch of work produced by taking a difference.
+    private final java.util.concurrent.atomic.AtomicLong added = new java.util.concurrent.atomic.AtomicLong();
+
+    long added() {
+        return added.get();
+    }
+
     void add(Instant at) {
+        added.incrementAndGet();
         lock.lock();
         try {
             times.add(at);

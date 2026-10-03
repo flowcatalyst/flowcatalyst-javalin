@@ -58,6 +58,13 @@ public final class ConsumerLoop implements Runnable {
     /// the NATS default batch, so no backend has to split a request.
     public static final int MAX_POLL = 10;
 
+    /// Pause after a poll whose batch was mostly deferred; see [#pauseIfMostlyDeferred].
+    static final Duration DEFERRED_BACKOFF_MIN = Duration.ofMillis(50);
+    static final Duration DEFERRED_BACKOFF_MAX = Duration.ofMillis(200);
+
+    /// Current deferral back-off; touched only by the loop's own thread.
+    private Duration deferredBackoff = Duration.ZERO;
+
     /// Fallback for the "no pool exists at all" branch only — see the class
     /// doc. Every other pacing pause but this one, [#POLL_ERROR_PAUSE] and
     /// [#EMPTY_POLL_PAUSE] is event-driven.
@@ -381,13 +388,37 @@ public final class ConsumerLoop implements Runnable {
         };
     }
 
+    /// When at least half a batch had to be deferred the queue is filling pools faster than
+    /// they drain — every further poll just turns into another round of deferrals, each a
+    /// broker call that costs as much CPU as the delivery it is postponing. So pace the next
+    /// poll: [#DEFERRED_BACKOFF_MIN] after the first such batch, doubling up to
+    /// [#DEFERRED_BACKOFF_MAX], and back to none after any batch that was mostly admitted. The
+    /// cap keeps the head-of-line ruling's purpose intact: a full pool never stops the queue
+    /// being read, it only slows it to a few polls a second so the messages behind it are
+    /// still found.
+    private void pauseIfMostlyDeferred(int batchSize, long deferred) throws InterruptedException {
+        if (deferred * 2 < batchSize) {
+            deferredBackoff = Duration.ZERO;
+            return;
+        }
+        deferredBackoff = deferredBackoff.isZero()
+                ? DEFERRED_BACKOFF_MIN
+                : deferredBackoff.multipliedBy(2).compareTo(DEFERRED_BACKOFF_MAX) > 0
+                        ? DEFERRED_BACKOFF_MAX
+                        : deferredBackoff.multipliedBy(2);
+        Thread.sleep(deferredBackoff);
+    }
+
     private boolean handleBatch(Consumer.PollResult.Delivered delivered) throws InterruptedException {
         var batch = delivered.messages();
         if (batch.isEmpty()) {
             Thread.sleep(EMPTY_POLL_PAUSE);
             return true;
         }
+        var ledger = manager.deferralLedger(queueId());
+        long deferredBefore = ledger.added();
         lastFedPools = manager.route(batch, consumer);
+        pauseIfMostlyDeferred(batch.size(), ledger.added() - deferredBefore);
         // A partial batch re-polls immediately, exactly like a full one
         // (owner ruling 2026-09-07): pausing here on the theory that the
         // queue was draining cost the same throughput the capacity pause
