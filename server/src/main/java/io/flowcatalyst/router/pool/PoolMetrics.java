@@ -49,6 +49,13 @@ public interface PoolMetrics {
     /// no completion within `window` at all.
     OptionalDouble completionRate(Duration window);
 
+    /// Deliveries completed within `window` — the sample size behind
+    /// [#completionRate]. [PoolAdmission#usableRate] needs it to tell a measured
+    /// pace from a lone early completion.
+    default int completionCount(Duration window) {
+        return 0;
+    }
+
     PoolMetrics NO_OP = new PoolMetrics() {
         @Override
         public void recordSuccess(Duration took) {

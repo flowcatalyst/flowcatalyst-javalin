@@ -57,17 +57,27 @@ class PoolAdmissionTest {
     }
 
     @Test
-    @DisplayName("D2: with no completion in the window, falls back to 30s + 1s spacing "
-            + "(mutant: the fallback/spacing constants)")
+    @DisplayName("D2: with no trustworthy rate, assumes the buffer drains within 30s and spreads "
+            + "reservations across it (30s / queued apart), not a second apart")
     void fallsBackWithoutARate() {
         var admission = new PoolAdmission(null, FIXED);
-        var a = admission.delay(1, OptionalDouble.empty(), true, true);
-        var b = admission.delay(1, OptionalDouble.empty(), true, true);
+        var a = admission.delay(300, OptionalDouble.empty(), true, true);
+        var b = admission.delay(300, OptionalDouble.empty(), true, true);
 
-        // Hardcoded 30s/1s, not the PoolAdmission constants: pins the actual
-        // spec values, not merely "whatever the constants happen to hold".
-        assertThat(a).isEqualTo(Duration.ofSeconds(31));
-        assertThat(b).isEqualTo(Duration.ofSeconds(32));
+        // Hardcoded 30s / 300 = 100ms, not the PoolAdmission constants.
+        assertThat(a).isEqualTo(Duration.ofMillis(30_100));
+        assertThat(b).isEqualTo(Duration.ofMillis(30_200));
+    }
+
+    @Test
+    @DisplayName("D2: a rate from fewer completions than workers is not used (the first wave, or one "
+            + "completion reading as 1/s)")
+    void aRateFromFewerCompletionsThanWorkersIsNotUsed() {
+        assertThat(PoolAdmission.usableRate(1, OptionalDouble.of(1.0), 64)).isEmpty();
+        assertThat(PoolAdmission.usableRate(63, OptionalDouble.of(30.0), 64)).isEmpty();
+        assertThat(PoolAdmission.usableRate(64, OptionalDouble.of(30.0), 64)).hasValue(30.0);
+        assertThat(PoolAdmission.usableRate(0, OptionalDouble.empty(), 0)).isEmpty();
+        assertThat(PoolAdmission.usableRate(1, OptionalDouble.of(2.0), 0)).hasValue(2.0);
     }
 
     // ── D3: horizon clamp ────────────────────────────────────────────────

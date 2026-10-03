@@ -117,9 +117,19 @@ final class PoolAdmission {
     ///                                     a non-empty message group ([QueuedMessage#ordered]); only
     ///                                     then, on a broker that does not honour delayed returns, is
     ///                                     the slot floored at [#ORDERED_SPACING]
+    /// A rate is trustworthy only once the pool has finished at least as many
+    /// deliveries as it has workers: fewer is the first wave, or a lone completion
+    /// that would read as one per second whatever the pool actually does.
+    static OptionalDouble usableRate(int completions, OptionalDouble rate, int workers) {
+        return completions >= Math.max(workers, 1) ? rate : OptionalDouble.empty();
+    }
+
     Duration delay(int queued, OptionalDouble rate, boolean brokerHonoursDelayedReturn, boolean ordered) {
         Duration wait = FALLBACK_WAIT;
-        Duration slot = ORDERED_SPACING;
+        // No trustworthy rate: assume the buffer drains within the fallback wait
+        // (slot = wait / queued), so the reservations spread across it instead of
+        // one a second, which booked a full 2,560-message buffer 43 minutes out.
+        Duration slot = FALLBACK_WAIT.dividedBy(Math.max(queued, 1));
         if (rate.isPresent() && rate.getAsDouble() > 0) {
             double r = rate.getAsDouble();
             wait = Duration.ofNanos(Math.round(queued / r * 1_000_000_000.0));

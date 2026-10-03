@@ -216,6 +216,17 @@ public final class PoolMetricsCollector implements PoolMetrics {
     }
 
     @Override
+    public int completionCount(Duration window) {
+        var cutoff = clock.instant().minus(window);
+        lock.lock();
+        try {
+            return sinceCutoff(new ArrayList<>(samples), cutoff).size();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
     public void recordHttpVersion(HttpVersion version) {
         if (version == HttpVersion.HTTP_2) {
             totalHttpVersion2.incrementAndGet();

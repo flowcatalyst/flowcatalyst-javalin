@@ -356,10 +356,17 @@ public final class Pool implements AutoCloseable {
     /// drained it in a fraction of that, and every poller then sat out the
     /// rest of a 2 s pause with the router mostly idle. Fixed 2026-09-07.
     private void capacityChanged() {
-        boolean atCapacity = queueSize() >= config.queueCapacity();
-        if (full.getAndSet(atCapacity) && !atCapacity) {
-            capacityListener.run();
-        }
+        // Re-read after publishing: two threads that each computed "full" from a
+        // different moment can publish out of order, leaving the flag at "not
+        // full" while the pool is full — and the real full -> not-full crossing
+        // later would then wake nobody. Repeat until the flag matches the pool.
+        boolean atCapacity;
+        do {
+            atCapacity = queueSize() >= config.queueCapacity();
+            if (full.getAndSet(atCapacity) && !atCapacity) {
+                capacityListener.run();
+            }
+        } while (atCapacity != (queueSize() >= config.queueCapacity()));
     }
 
     /// Deliveries in progress right now.
@@ -406,7 +413,9 @@ public final class Pool implements AutoCloseable {
             // above, closed-before-dispatch below, a stood-down hand-back)
             // stays a nack — a full buffer is the one case that is not a
             // rejection.
-            var delay = admission.delay(queueSize(), metrics.completionRate(PoolAdmission.RATE_WINDOW),
+            var rate = PoolAdmission.usableRate(metrics.completionCount(PoolAdmission.RATE_WINDOW),
+                    metrics.completionRate(PoolAdmission.RATE_WINDOW), config.concurrency());
+            var delay = admission.delay(queueSize(), rate,
                     broker.honoursDelayedReturn(message), message.ordered());
             broker.defer(message, delay);
             deferralObserver.accept(message.queueId(), clock.instant().plus(delay));
