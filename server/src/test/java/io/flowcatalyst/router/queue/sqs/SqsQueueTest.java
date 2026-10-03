@@ -43,6 +43,11 @@ class SqsQueueTest {
         return new SqsQueue(client, QUEUE_URL, null, 0, clock);
     }
 
+    /// A queue with batched deletes and the given linger cap.
+    private SqsQueue batching(long lingerNanos) {
+        return new SqsQueue(client, QUEUE_URL, null, 30, clock, true, lingerNanos);
+    }
+
     private static software.amazon.awssdk.services.sqs.model.Message sqsMessage(
             String messageId, String receiptHandle, String body) {
         return software.amazon.awssdk.services.sqs.model.Message.builder()
@@ -204,7 +209,7 @@ class SqsQueueTest {
                         sqsMessage("mid-2", "bad-receipt-2", "{\"id\":\"msg-2\"}"))
                 .build());
         client.failBatchEntriesWithHandlePrefix("bad");
-        SqsQueue sqs = new SqsQueue(client, QUEUE_URL, null, 30, clock, true);
+        SqsQueue sqs = batching(1_000_000L);
         List<QueuedMessage> polled = delivered(sqs.poll(10));
 
         assertThat(sqs.ack(polled.get(0))).isTrue();
@@ -221,7 +226,7 @@ class SqsQueueTest {
     void batchedAckStillWorksAfterClose() throws InterruptedException {
         client.enqueueReceive(ReceiveMessageResponse.builder()
                 .messages(sqsMessage("mid-1", "receipt-1", "{\"id\":\"msg-1\"}")).build());
-        SqsQueue sqs = new SqsQueue(client, QUEUE_URL, null, 30, clock, true);
+        SqsQueue sqs = batching(1_000_000L);
         QueuedMessage qm = delivered(sqs.poll(10)).get(0);
 
         sqs.close();
@@ -236,7 +241,7 @@ class SqsQueueTest {
     void batchedDeferUsesTheBatchApi() throws Exception {
         client.enqueueReceive(ReceiveMessageResponse.builder()
                 .messages(sqsMessage("mid-1", "receipt-1", "{\"id\":\"msg-1\"}")).build());
-        SqsQueue sqs = new SqsQueue(client, QUEUE_URL, null, 30, clock, true);
+        SqsQueue sqs = batching(1_000_000L);
         QueuedMessage qm = delivered(sqs.poll(10)).get(0);
 
         sqs.defer(qm, Duration.ofSeconds(90));
@@ -261,13 +266,13 @@ class SqsQueueTest {
         client.enqueueReceive(ReceiveMessageResponse.builder()
                 .messages(sqsMessage("mid-A", "receipt-A1", "{\"id\":\"msg-A\"}")).build());
         sqs.ack(delivered(sqs.poll(10)).get(0));
-        clock.advance(Duration.ofMinutes(10));
+        clock.advance(Duration.ofSeconds(4));
         client.enqueueReceive(ReceiveMessageResponse.builder()
                 .messages(sqsMessage("mid-B", "receipt-B1", "{\"id\":\"msg-B\"}")).build());
         sqs.ack(delivered(sqs.poll(10)).get(0));
-        clock.advance(Duration.ofMinutes(6));
+        clock.advance(Duration.ofSeconds(2));
 
-        // mid-A is 16 minutes old (expired), mid-B 6 (fresh).
+        // mid-A completed 6s ago (past the 5s grace), mid-B 2s ago (fresh).
         client.enqueueReceive(ReceiveMessageResponse.builder()
                 .messages(sqsMessage("mid-C", "receipt-C1", "{\"id\":\"msg-C\"}")).build());
         sqs.poll(10);
@@ -281,7 +286,7 @@ class SqsQueueTest {
     }
 
     @Test
-    @DisplayName("pendingDelete entries older than 15 minutes are pruned on the next non-empty poll")
+    @DisplayName("pendingDelete entries completed more than 5 seconds ago are pruned on the next non-empty poll")
     void pendingDeleteIsPrunedByAgeOnEveryNonEmptyPoll() throws InterruptedException {
         client.enqueueReceive(ReceiveMessageResponse.builder()
                 .messages(sqsMessage("mid-A", "receipt-A1", "{\"id\":\"msg-A\"}"))
@@ -290,7 +295,7 @@ class SqsQueueTest {
         sqs.ack(delivered(sqs.poll(10)).get(0));
         assertThat(sqs.pendingDeleteSizeForTest()).isEqualTo(1);
 
-        clock.advance(Duration.ofMinutes(16));
+        clock.advance(Duration.ofSeconds(6));
 
         // Any non-empty poll prunes, regardless of what it delivers.
         client.enqueueReceive(ReceiveMessageResponse.builder()
@@ -346,6 +351,117 @@ class SqsQueueTest {
                 .build());
         sqs.poll(10);
         assertThat(sqs.receiptMapSizeForTest()).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("a pendingDelete entry whose delete is still in flight is never pruned; it expires 5s after completion")
+    void pendingDeleteInFlightSurvivesUntilCompletionPlusGrace() throws Exception {
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-A", "receipt-A1", "{\"id\":\"msg-A\"}")).build());
+        SqsQueue sqs = batching(1_000_000L);
+        QueuedMessage qm = delivered(sqs.poll(10)).get(0);
+        var gate = new java.util.concurrent.CountDownLatch(1);
+        client.gateBatches(gate);
+        try (var pool = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            var acking = pool.submit(() -> sqs.ack(qm));
+            try {
+                awaitTrue(() -> client.batchesEntered() == 1);
+                clock.advance(Duration.ofMinutes(1));
+                client.enqueueReceive(ReceiveMessageResponse.builder()
+                        .messages(sqsMessage("mid-X", "receipt-X1", "{\"id\":\"msg-X\"}")).build());
+                sqs.poll(10);
+                // Long past the grace, but the delete has not finished: still remembered.
+                assertThat(sqs.pendingDeleteSizeForTest()).isEqualTo(1);
+            } finally {
+                gate.countDown();
+            }
+            acking.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        }
+
+        clock.advance(Duration.ofSeconds(4));
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-Y", "receipt-Y1", "{\"id\":\"msg-Y\"}")).build());
+        sqs.poll(10);
+        assertThat(sqs.pendingDeleteSizeForTest()).isEqualTo(1);
+
+        clock.advance(Duration.ofSeconds(2));
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-Z", "receipt-Z1", "{\"id\":\"msg-Z\"}")).build());
+        sqs.poll(10);
+        assertThat(sqs.pendingDeleteSizeForTest()).isZero();
+        sqs.close();
+    }
+
+    @Test
+    @DisplayName("a delete that failed is also forgotten after the grace")
+    void pendingDeleteFailedDeleteForgottenAfterGrace() throws Exception {
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-A", "receipt-A1", "{\"id\":\"msg-A\"}")).build());
+        client.failBatchWith(software.amazon.awssdk.core.exception.SdkClientException.create("boom"));
+        SqsQueue sqs = batching(1_000_000L);
+        sqs.ack(delivered(sqs.poll(10)).get(0));
+        assertThat(sqs.metrics()).get().extracting(QueueMetrics::acked).isEqualTo(0L);
+        assertThat(sqs.pendingDeleteSizeForTest()).isEqualTo(1);
+
+        clock.advance(Duration.ofSeconds(4));
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-B", "receipt-B1", "{\"id\":\"msg-B\"}")).build());
+        sqs.poll(10);
+        assertThat(sqs.pendingDeleteSizeForTest()).isEqualTo(1);
+
+        clock.advance(Duration.ofSeconds(2));
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-C", "receipt-C1", "{\"id\":\"msg-C\"}")).build());
+        sqs.poll(10);
+        assertThat(sqs.pendingDeleteSizeForTest()).isZero();
+        sqs.close();
+    }
+
+    @Test
+    @DisplayName("an ordered message's ack is urgent: it does not wait for the delete linger")
+    void orderedAckIsUrgent() throws Exception {
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-1", "receipt-1",
+                        "{\"id\":\"msg-1\",\"messageGroupId\":\"g\",\"dispatchMode\":\"BLOCK_ON_ERROR\"}")).build());
+        SqsQueue sqs = batching(java.util.concurrent.TimeUnit.SECONDS.toNanos(20));
+        QueuedMessage qm = delivered(sqs.poll(10)).get(0);
+        assertThat(qm.ordered()).isTrue();
+
+        long start = System.nanoTime();
+        assertThat(sqs.ack(qm)).isTrue();
+        long elapsedMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+
+        assertThat(client.batchRequests()).hasSize(1);
+        assertThat(elapsedMs).isLessThan(3000);
+        sqs.close();
+    }
+
+    @Test
+    @DisplayName("an unordered message's ack lingers for the cap before the delete is sent")
+    void unorderedAckLingers() throws Exception {
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-1", "receipt-1", "{\"id\":\"msg-1\"}")).build());
+        SqsQueue sqs = batching(java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(400));
+        QueuedMessage qm = delivered(sqs.poll(10)).get(0);
+        assertThat(qm.ordered()).isFalse();
+
+        long start = System.nanoTime();
+        assertThat(sqs.ack(qm)).isTrue();
+        long elapsedMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+
+        assertThat(client.batchRequests()).hasSize(1);
+        assertThat(elapsedMs).isGreaterThanOrEqualTo(350);
+        sqs.close();
+    }
+
+    private static void awaitTrue(java.util.function.BooleanSupplier cond) throws InterruptedException {
+        long deadline = System.nanoTime() + 10_000_000_000L;
+        while (!cond.getAsBoolean()) {
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("condition not reached");
+            }
+            Thread.sleep(5);
+        }
     }
 
     // --- ack ----------------------------------------------------------------

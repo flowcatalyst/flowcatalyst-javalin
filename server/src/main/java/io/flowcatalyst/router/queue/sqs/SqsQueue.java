@@ -47,24 +47,30 @@ import java.util.concurrent.atomic.AtomicLong;
 /// `MessageId` is forgotten by AWS. Two in-memory maps carry the bookkeeping
 /// that makes that safe:
 ///
-///   - [#pendingDelete]: `MessageId -> ackedAt`, checked on every poll so a
+///   - [#pendingDelete]: `MessageId -> PendingDelete`, checked on every poll so a
 ///     redelivery of an already-acked message is deleted immediately instead
-///     of being routed to the mediator a second time.
+///     of being routed to the mediator a second time. An id is remembered from
+///     the moment it is acked until its delete has completed (success or
+///     failure) plus [#PENDING_DELETE_GRACE]; an entry whose delete is still in
+///     flight is never pruned, however long the batcher lingers.
 ///   - [#receiptToMessageId]: `receiptHandle -> (MessageId, polledAt)`, kept
 ///     only long enough to answer "did I already deliver this receipt", and
 ///     pruned on a size threshold rather than by age (unlike the map above)
 ///     because a live poll can hand out far more receipts than acked
 ///     MessageIds in the same window.
 ///
-/// Both maps are bounded by [#PENDING_DELETE_TTL] / [#RECEIPT_MAP_PRUNE_THRESHOLD]
-/// — see [#pruneMapsLocked()] for the two different pruning rules.
+/// The maps are bounded by (acks in flight + [#PENDING_DELETE_GRACE] of
+/// throughput) / [#RECEIPT_MAP_PRUNE_THRESHOLD] — see [#pruneMapsLocked()] for the two different pruning rules.
 public final class SqsQueue implements Consumer {
 
     private static final Logger log = LoggerFactory.getLogger(SqsQueue.class);
 
-    /// How long an acked `MessageId` is remembered so a redelivery is
-    /// short-circuited to a plain delete instead of being handed back out.
-    static final Duration PENDING_DELETE_TTL = Duration.ofMinutes(15);
+    /// How long an acked `MessageId` is remembered after its delete completed, so a
+    /// redelivery is short-circuited to a plain delete instead of being handed back out.
+    static final Duration PENDING_DELETE_GRACE = Duration.ofSeconds(5);
+
+    /// How long [#receiptToMessageId] keeps an entry once it is over its size threshold.
+    static final Duration RECEIPT_MAP_TTL = Duration.ofMinutes(15);
 
     /// [#receiptToMessageId] is only pruned once it grows past this many
     /// entries — it is expected to churn on its own as receipts are acked,
@@ -94,10 +100,11 @@ public final class SqsQueue implements Consumer {
     /// Guards both maps below. Held only for map mutation/lookup, never
     /// across a network call.
     private final Object mapLock = new Object();
-    /// Insertion-ordered (oldest first) so age pruning pops from the front
-    /// instead of scanning every entry on every poll; a re-put goes through
-    /// remove-then-put to move the id to the back.
-    private final LinkedHashMap<String, Instant> pendingDelete = new LinkedHashMap<>();
+    /// Insertion-ordered; completion moves an entry to the back, so the completed
+    /// entries are in completion-time order and pruning pops the expired ones from
+    /// the front, skipping any still-in-flight entry (there are only as many of
+    /// those as acks in flight).
+    private final LinkedHashMap<String, PendingDelete> pendingDelete = new LinkedHashMap<>();
     private final LinkedHashMap<String, ReceiptMapping> receiptToMessageId = new LinkedHashMap<>();
 
     /// Set once by [#close()]; never cleared. Plain `volatile` is enough —
@@ -124,6 +131,11 @@ public final class SqsQueue implements Consumer {
     private final AtomicLong nacked = new AtomicLong();
     private final AtomicLong deferred = new AtomicLong();
 
+    /// An acked message's delete. `completedAt` is null while the delete is in flight.
+    private static final class PendingDelete {
+        Instant completedAt;
+    }
+
     private record ReceiptMapping(String messageId, Instant polledAt) {
     }
 
@@ -133,6 +145,12 @@ public final class SqsQueue implements Consumer {
 
     SqsQueue(SqsClient client, String queueUrl, String configuredName, int visibilityTimeoutSeconds, Clock clock,
              boolean batchDeletes) {
+        this(client, queueUrl, configuredName, visibilityTimeoutSeconds, clock, batchDeletes,
+                DeleteBatcher.DEFAULT_LINGER_NANOS);
+    }
+
+    SqsQueue(SqsClient client, String queueUrl, String configuredName, int visibilityTimeoutSeconds, Clock clock,
+             boolean batchDeletes, long deleteLingerNanos) {
         this.client = Objects.requireNonNull(client, "client");
         this.queueUrl = Objects.requireNonNull(queueUrl, "queueUrl");
         this.identifier = (configuredName != null && !configuredName.isBlank())
@@ -142,7 +160,7 @@ public final class SqsQueue implements Consumer {
                 ? visibilityTimeoutSeconds
                 : DEFAULT_VISIBILITY_TIMEOUT_SECONDS;
         this.clock = Objects.requireNonNull(clock, "clock");
-        this.deleteBatcher = batchDeletes ? new DeleteBatcher(client, queueUrl, this.identifier) : null;
+        this.deleteBatcher = batchDeletes ? new DeleteBatcher(client, queueUrl, this.identifier, deleteLingerNanos) : null;
         this.visibilityBatcher = batchDeletes
                 ? new VisibilityBatcher(client, queueUrl, this.identifier,
                         (message, cause) -> transportFailure(message, cause).log())
@@ -414,7 +432,7 @@ public final class SqsQueue implements Consumer {
                 // would otherwise redeliver forever, so it is acked and
                 // dropped rather than returned (§7.2 Poll row).
                 if (receiptHandle != null) {
-                    deleteAndCount(receiptHandle);
+                    deleteAndCount(receiptHandle, false);
                 }
                 continue;
             }
@@ -469,13 +487,23 @@ public final class SqsQueue implements Consumer {
                 receiptToMessageId.remove(receiptHandle);
             }
             String messageId = message.brokerMessageId();
+            PendingDelete pending = null;
             if (messageId != null && !messageId.isBlank()) {
+                pending = new PendingDelete();
                 synchronized (mapLock) {
                     pendingDelete.remove(messageId);
-                    pendingDelete.put(messageId, Instant.now(clock));
+                    pendingDelete.put(messageId, pending);
                 }
             }
-            deleteAndCount(receiptHandle);
+            try {
+                // An ordered message's ack is what releases the next message of its group, so it
+                // must not wait for the batcher to fill.
+                deleteAndCount(receiptHandle, message.ordered());
+            } finally {
+                if (pending != null) {
+                    completePendingDelete(messageId, pending);
+                }
+            }
             return true;
         } catch (RuntimeException e) {
             // Ack must never throw (Consumer#ack) — a broker hiccup here
@@ -627,10 +655,10 @@ public final class SqsQueue implements Consumer {
     /// Deletes and counts it as an ack on success only. Used both by the
     /// public [#ack] and by the malformed-body skip path in [#poll]. Never
     /// throws.
-    private void deleteAndCount(String receiptHandle) {
+    private void deleteAndCount(String receiptHandle, boolean urgent) {
         try {
             if (deleteBatcher != null) {
-                deleteBatcher.delete(receiptHandle);
+                deleteBatcher.delete(receiptHandle, urgent);
             } else {
                 client.deleteMessage(DeleteMessageRequest.builder()
                         .queueUrl(queueUrl)
@@ -655,6 +683,19 @@ public final class SqsQueue implements Consumer {
         }
     }
 
+    /// The delete for `messageId` has finished (either way): start its grace period by
+    /// moving it to the back with the completion time. A newer ack of the same id owns
+    /// the entry now and is left alone.
+    private void completePendingDelete(String messageId, PendingDelete pending) {
+        synchronized (mapLock) {
+            if (pendingDelete.get(messageId) == pending) {
+                pending.completedAt = Instant.now(clock);
+                pendingDelete.remove(messageId);
+                pendingDelete.put(messageId, pending);
+            }
+        }
+    }
+
     int pendingDeleteSizeForTest() {
         synchronized (mapLock) {
             return pendingDelete.size();
@@ -663,16 +704,27 @@ public final class SqsQueue implements Consumer {
 
     /// The two pruning rules differ (§7.2 "Maps" row):
     ///
-    ///   - [#pendingDelete] is pruned of entries older than
-    ///     [#PENDING_DELETE_TTL] on every non-empty poll.
-    ///   - [#receiptToMessageId] is pruned of entries older than the same
-    ///     TTL, but only once it exceeds [#RECEIPT_MAP_PRUNE_THRESHOLD]
+    ///   - [#pendingDelete] is pruned of entries whose delete completed more than
+    ///     [#PENDING_DELETE_GRACE] ago, on every non-empty poll. In-flight ones stay.
+    ///   - [#receiptToMessageId] is pruned of entries older than
+    ///     [#RECEIPT_MAP_TTL], but only once it exceeds [#RECEIPT_MAP_PRUNE_THRESHOLD]
     ///     entries — it does not need age-based pruning on the common path
     ///     because acking a message already removes its entry.
     private void pruneMapsLocked() {
         Instant now = Instant.now(clock);
         synchronized (mapLock) {
-            pruneOldest(pendingDelete.entrySet().iterator(), e -> e.getValue(), now);
+            var it = pendingDelete.values().iterator();
+            while (it.hasNext()) {
+                Instant done = it.next().completedAt;
+                if (done == null) {
+                    continue; // still in flight
+                }
+                if (Duration.between(done, now).compareTo(PENDING_DELETE_GRACE) > 0) {
+                    it.remove();
+                } else {
+                    break;
+                }
+            }
             if (receiptToMessageId.size() > RECEIPT_MAP_PRUNE_THRESHOLD) {
                 pruneOldest(receiptToMessageId.entrySet().iterator(), e -> e.getValue().polledAt(), now);
             }
@@ -683,7 +735,7 @@ public final class SqsQueue implements Consumer {
     /// inside the TTL: the work is the number expired, not the map size.
     private static <E> void pruneOldest(java.util.Iterator<E> it, java.util.function.Function<E, Instant> at, Instant now) {
         while (it.hasNext()) {
-            if (Duration.between(at.apply(it.next()), now).compareTo(PENDING_DELETE_TTL) > 0) {
+            if (Duration.between(at.apply(it.next()), now).compareTo(RECEIPT_MAP_TTL) > 0) {
                 it.remove();
             } else {
                 break;

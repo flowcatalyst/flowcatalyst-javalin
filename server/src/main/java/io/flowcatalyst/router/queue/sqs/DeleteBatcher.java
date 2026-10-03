@@ -16,41 +16,60 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /// Coalesces concurrent per-message deletes for one queue into
 /// `DeleteMessageBatch` calls of up to [#MAX_BATCH] entries.
 ///
-/// There is no fill window: a drainer takes whatever is already waiting (up to
-/// ten) and sends it, so an idle queue still deletes a lone message with no
-/// added latency and a busy one sends ten per request. Each caller still blocks
-/// until the broker has answered for its own receipt, so [SqsQueue#ack] keeps
-/// its meaning: true only when the delete succeeded.
+/// One primary drainer per queue takes the first waiting delete and then lingers
+/// for up to the linger cap (measured from that first item) for more, sending as
+/// soon as it holds [#MAX_BATCH] (a full batch never waits) or as soon as any
+/// collected delete is urgent (an ordered message's ack: the router will not
+/// deliver the next message of the group until it returns). Several drainers sharing the queue would steal each
+/// other's items and send small batches, so there is deliberately one. Under load
+/// (a full batch already waiting after an enqueue) up to [#MAX_HELPERS] helper
+/// drainers start; a helper drains whatever is immediately available with no
+/// linger and exits when the queue is empty, so a slow round trip does not cap the
+/// queue's ack rate at ten per round trip.
 ///
-/// A few drainers run per queue so one slow round trip does not cap the queue's
-/// ack rate at ten messages per round trip.
+/// Each caller still blocks until the broker has answered for its own receipt, so
+/// [SqsQueue#ack] keeps its meaning: true only when the delete succeeded. The
+/// added latency of a non-urgent ack is bounded by the linger cap plus the SDK
+/// call; an urgent one is not held at all.
 final class DeleteBatcher {
 
     private static final Logger log = LoggerFactory.getLogger(DeleteBatcher.class);
 
     static final int MAX_BATCH = 10;
-    static final int DRAINERS = 4;
+    static final int MAX_HELPERS = 3;
+    static final long DEFAULT_LINGER_NANOS = TimeUnit.SECONDS.toNanos(5);
+    /// How often a lingering primary looks at [#stopped], so close() does not wait out the cap.
+    private static final long STOP_CHECK_NANOS = TimeUnit.MILLISECONDS.toNanos(100);
     static final java.time.Duration IDLE_EXIT = java.time.Duration.ofSeconds(30);
 
-    private record Pending(String receiptHandle, CompletableFuture<Void> done) {
+    private record Pending(String receiptHandle, boolean urgent, CompletableFuture<Void> done) {
     }
 
     private final SqsClient client;
     private final String queueUrl;
     private final String identifier;
     private final LinkedBlockingQueue<Pending> waiting = new LinkedBlockingQueue<>();
-    /// Drainers currently alive. They exit after [#IDLE_EXIT] with nothing to do and
-    /// are started again by the next delete, so a closed queue's batcher goes away
+    /// Primary drainers alive (0 or 1). It exits after [#IDLE_EXIT] with nothing to do
+    /// and is started again by the next delete, so a closed queue's batcher goes away
     /// on its own while acks of already-polled messages keep working after close
     /// (the [io.flowcatalyst.router.queue.Consumer] contract).
-    private final java.util.concurrent.atomic.AtomicInteger live = new java.util.concurrent.atomic.AtomicInteger();
+    private final AtomicInteger live = new AtomicInteger();
+    private final AtomicInteger helpers = new AtomicInteger();
     private volatile boolean stopped;
+    /// The longest the primary waits for a batch to fill, from its first item. Tests set it.
+    volatile long lingerNanos = DEFAULT_LINGER_NANOS;
 
     DeleteBatcher(SqsClient client, String queueUrl, String identifier) {
+        this(client, queueUrl, identifier, DEFAULT_LINGER_NANOS);
+    }
+
+    DeleteBatcher(SqsClient client, String queueUrl, String identifier, long lingerNanos) {
+        this.lingerNanos = lingerNanos;
         this.client = client;
         this.queueUrl = queueUrl;
         this.identifier = identifier;
@@ -58,12 +77,20 @@ final class DeleteBatcher {
 
     /// Blocks until the broker has answered for this receipt. Throws on failure.
     void delete(String receiptHandle) {
+        delete(receiptHandle, false);
+    }
+
+    /// `urgent` makes the primary send what it has collected at once instead of lingering.
+    void delete(String receiptHandle, boolean urgent) {
         if (stopped) {
             throw new IllegalStateException("sqs delete batcher closed: " + identifier);
         }
-        start();
-        Pending p = new Pending(receiptHandle, new CompletableFuture<>());
+        startPrimary();
+        Pending p = new Pending(receiptHandle, urgent, new CompletableFuture<>());
         waiting.add(p);
+        if (waiting.size() >= MAX_BATCH) {
+            startHelper();
+        }
         try {
             p.done.join();
         } catch (CompletionException e) {
@@ -78,19 +105,47 @@ final class DeleteBatcher {
         stopped = true;
     }
 
-    private void start() {
-        if (live.get() == 0) {
-            startDrainers();
+    /// Helper drainers currently running (for tests).
+    int helpersRunning() {
+        return helpers.get();
+    }
+
+    private void startPrimary() {
+        if (live.get() == 0 && live.compareAndSet(0, 1)) {
+            Thread.ofVirtual().name("sqs-delete-" + identifier).start(this::drain);
         }
     }
 
-    private synchronized void startDrainers() {
-        if (live.get() != 0) {
-            return;
+    private void startHelper() {
+        while (true) {
+            int h = helpers.get();
+            if (h >= MAX_HELPERS) {
+                return;
+            }
+            if (helpers.compareAndSet(h, h + 1)) {
+                try {
+                    Thread.ofVirtual().name("sqs-delete-" + identifier + "-h" + h).start(this::help);
+                } catch (Throwable t) {
+                    helpers.decrementAndGet();
+                    throw t;
+                }
+                return;
+            }
         }
-        live.set(DRAINERS);
-        for (int i = 0; i < DRAINERS; i++) {
-            Thread.ofVirtual().name("sqs-delete-" + identifier + "-" + i).start(this::drain);
+    }
+
+    private void help() {
+        try {
+            List<Pending> batch = new ArrayList<>(MAX_BATCH);
+            while (!stopped) {
+                batch.clear();
+                if (waiting.drainTo(batch, MAX_BATCH) == 0) {
+                    break;
+                }
+                send(batch);
+            }
+        } finally {
+            helpers.decrementAndGet();
         }
     }
 
@@ -114,7 +169,32 @@ final class DeleteBatcher {
             idleTicks = 0;
             batch.clear();
             batch.add(first);
-            waiting.drainTo(batch, MAX_BATCH - 1);
+            long deadline = System.nanoTime() + lingerNanos;
+            boolean cut = first.urgent;
+            try {
+                while (!cut && !stopped) {
+                    int before = batch.size();
+                    waiting.drainTo(batch, MAX_BATCH - before);
+                    cut = anyUrgent(batch, before);
+                    if (cut || batch.size() >= MAX_BATCH) {
+                        break;
+                    }
+                    long remaining = deadline - System.nanoTime();
+                    if (remaining <= 0) {
+                        break;
+                    }
+                    // Any arrival (urgent or not) wakes this poll, so an urgent delete is seen at once.
+                    Pending next = waiting.poll(Math.min(remaining, STOP_CHECK_NANOS), TimeUnit.NANOSECONDS);
+                    if (next != null) {
+                        batch.add(next);
+                        cut = next.urgent;
+                    }
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                send(batch);
+                break;
+            }
             send(batch);
         }
         if (stopped) {
@@ -123,10 +203,20 @@ final class DeleteBatcher {
                 p.done.completeExceptionally(new IllegalStateException("sqs delete batcher closed: " + identifier));
             }
         }
-        // Last one out restarts the pool if a delete slipped in while we were leaving.
-        if (live.decrementAndGet() == 0 && !waiting.isEmpty() && !stopped) {
-            startDrainers();
+        live.set(0);
+        // Restart if a delete slipped in while we were leaving.
+        if (!waiting.isEmpty() && !stopped) {
+            startPrimary();
         }
+    }
+
+    private static boolean anyUrgent(List<Pending> batch, int from) {
+        for (int i = from; i < batch.size(); i++) {
+            if (batch.get(i).urgent) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void send(List<Pending> batch) {

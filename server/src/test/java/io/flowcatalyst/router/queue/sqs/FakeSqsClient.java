@@ -85,6 +85,14 @@ final class FakeSqsClient implements SqsClient {
         this.batchGate = gate;
     }
 
+    private final java.util.concurrent.atomic.AtomicInteger batchesInFlight = new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger maxBatchesInFlight = new java.util.concurrent.atomic.AtomicInteger();
+
+    /// Highest number of DeleteMessageBatch calls observed running at the same time.
+    int maxConcurrentBatches() {
+        return maxBatchesInFlight.get();
+    }
+
     int batchesEntered() {
         return batchesEntered.get();
     }
@@ -172,6 +180,15 @@ final class FakeSqsClient implements SqsClient {
     @Override
     public DeleteMessageBatchResponse deleteMessageBatch(DeleteMessageBatchRequest request) {
         batchesEntered.incrementAndGet();
+        maxBatchesInFlight.accumulateAndGet(batchesInFlight.incrementAndGet(), Math::max);
+        try {
+            return deleteMessageBatchInner(request);
+        } finally {
+            batchesInFlight.decrementAndGet();
+        }
+    }
+
+    private DeleteMessageBatchResponse deleteMessageBatchInner(DeleteMessageBatchRequest request) {
         var gate = batchGate;
         if (gate != null) {
             try {
