@@ -115,6 +115,8 @@ prepare() {
     || docker exec $PG psql -U pg -d postgres -c "CREATE DATABASE rt OWNER pg;" >/dev/null
   echo "-- building bench-router-sink"
   docker build -q -t bench-router-sink -f "$here/Dockerfile.sink" "$here" >/dev/null
+  echo "-- building bench-router-sqsfix (SQS_EMULATOR=sqsfix in-memory SQS)"
+  docker build -q -t bench-router-sqsfix -f "$here/sqsfix/Dockerfile" "$here" >/dev/null
   echo "-- building bench-router-seedsqs (BROKER=sqs bulk producer)"
   docker build -q -t bench-router-seedsqs -f "$here/Dockerfile.seedsqs" "$here" >/dev/null
   echo "-- building bench-router-seednats (BROKER=nats bulk producer)"
@@ -196,6 +198,16 @@ probe() { docker exec $PROBER curl -s "$@"; }
 # containers this rig recreates per run.
 start_localstack() {
   docker rm -f $LOCALSTACK >/dev/null 2>&1
+  if [ "${SQS_EMULATOR:-localstack}" = sqsfix ]; then
+    # Purpose-built in-memory SQS (JSON protocol only, lazy queues) — see sqsfix/main.go.
+    docker run -d --name $LOCALSTACK --network $NET --ip $LOCALSTACK_IP --cpuset-cpus=2-9 \
+        bench-router-sqsfix >/dev/null
+    for i in $(seq 1 30); do
+      docker exec $LOCALSTACK wget -q -O /dev/null http://127.0.0.1:4566/stats 2>/dev/null && return 0
+      sleep 1
+    done
+    return 1
+  fi
   docker run -d --name $LOCALSTACK --network $NET --ip $LOCALSTACK_IP --cpuset-cpus=2-9 \
       -e SERVICES=sqs -e DEFAULT_REGION=us-east-1 "$LOCALSTACK_IMAGE" >/dev/null
   for i in $(seq 1 60); do
@@ -220,6 +232,7 @@ awsprobe() { docker exec $AWSPROBER aws --endpoint-url "http://$LOCALSTACK_IP:45
 # standard (non-FIFO) queues.
 create_sqs_queues() {
   local n=$1
+  [ "${SQS_EMULATOR:-localstack}" = sqsfix ] && return 0   # sqsfix creates queues lazily
   export -f awsprobe; export AWSPROBER LOCALSTACK_IP
   seq 1 "$n" | xargs -P "$SETUP_PARALLEL" -I{} bash -c \
       'awsprobe sqs create-queue --queue-name "BENCH-{}" --attributes VisibilityTimeout=120 >/dev/null' \
@@ -244,6 +257,10 @@ sqs_depth_one() {
 # starts per drain-completion poll.
 sqs_queue_depth() {
   local n=$1
+  if [ "${SQS_EMULATOR:-localstack}" = sqsfix ]; then
+    probe "http://$LOCALSTACK_IP:4566/stats" | python3 -c 'import sys,json;print(json.load(sys.stdin)["depth"])'
+    return
+  fi
   export -f awsprobe sqs_depth_one; export AWSPROBER LOCALSTACK_IP
   seq 1 "$n" | xargs -P "$SETUP_PARALLEL" -I{} bash -c 'sqs_depth_one {}' | awk '{s+=$1} END{print s+0}'
 }
