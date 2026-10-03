@@ -216,6 +216,42 @@ class SqsQueueTest {
         sqs.close();
     }
 
+    @Test
+    @DisplayName("an ack still reaches the broker after close() (the Consumer contract), with batching on")
+    void batchedAckStillWorksAfterClose() throws InterruptedException {
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-1", "receipt-1", "{\"id\":\"msg-1\"}")).build());
+        SqsQueue sqs = new SqsQueue(client, QUEUE_URL, null, 30, clock, true);
+        QueuedMessage qm = delivered(sqs.poll(10)).get(0);
+
+        sqs.close();
+        sqs.ack(qm);
+
+        assertThat(client.batchRequests()).hasSize(1);
+        assertThat(sqs.metrics()).get().extracting(QueueMetrics::acked).isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("with batching on, defer goes through ChangeMessageVisibilityBatch and is counted once the broker answered")
+    void batchedDeferUsesTheBatchApi() throws Exception {
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-1", "receipt-1", "{\"id\":\"msg-1\"}")).build());
+        SqsQueue sqs = new SqsQueue(client, QUEUE_URL, null, 30, clock, true);
+        QueuedMessage qm = delivered(sqs.poll(10)).get(0);
+
+        sqs.defer(qm, Duration.ofSeconds(90));
+
+        long deadline = System.nanoTime() + 10_000_000_000L;
+        while (sqs.metrics().orElseThrow().deferred() != 1L && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertThat(sqs.metrics()).get().extracting(QueueMetrics::deferred).isEqualTo(1L);
+        assertThat(client.changeVisibilityRequests()).isEmpty();
+        var entry = client.visibilityBatches().get(0).entries().get(0);
+        assertThat(entry.receiptHandle()).isEqualTo("receipt-1");
+        assertThat(entry.visibilityTimeout()).isEqualTo(90);
+    }
+
     // --- map pruning (the two rules differ) --------------------------------
 
     @Test

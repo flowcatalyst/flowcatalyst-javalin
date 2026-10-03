@@ -16,7 +16,6 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /// Coalesces concurrent per-message deletes for one queue into
 /// `DeleteMessageBatch` calls of up to [#MAX_BATCH] entries.
@@ -35,6 +34,7 @@ final class DeleteBatcher {
 
     static final int MAX_BATCH = 10;
     static final int DRAINERS = 4;
+    static final java.time.Duration IDLE_EXIT = java.time.Duration.ofSeconds(30);
 
     private record Pending(String receiptHandle, CompletableFuture<Void> done) {
     }
@@ -43,7 +43,11 @@ final class DeleteBatcher {
     private final String queueUrl;
     private final String identifier;
     private final LinkedBlockingQueue<Pending> waiting = new LinkedBlockingQueue<>();
-    private final AtomicBoolean started = new AtomicBoolean();
+    /// Drainers currently alive. They exit after [#IDLE_EXIT] with nothing to do and
+    /// are started again by the next delete, so a closed queue's batcher goes away
+    /// on its own while acks of already-polled messages keep working after close
+    /// (the [io.flowcatalyst.router.queue.Consumer] contract).
+    private final java.util.concurrent.atomic.AtomicInteger live = new java.util.concurrent.atomic.AtomicInteger();
     private volatile boolean stopped;
 
     DeleteBatcher(SqsClient client, String queueUrl, String identifier) {
@@ -75,15 +79,24 @@ final class DeleteBatcher {
     }
 
     private void start() {
-        if (started.compareAndSet(false, true)) {
-            for (int i = 0; i < DRAINERS; i++) {
-                Thread.ofVirtual().name("sqs-delete-" + identifier + "-" + i).start(this::drain);
-            }
+        if (live.get() == 0) {
+            startDrainers();
+        }
+    }
+
+    private synchronized void startDrainers() {
+        if (live.get() != 0) {
+            return;
+        }
+        live.set(DRAINERS);
+        for (int i = 0; i < DRAINERS; i++) {
+            Thread.ofVirtual().name("sqs-delete-" + identifier + "-" + i).start(this::drain);
         }
     }
 
     private void drain() {
         List<Pending> batch = new ArrayList<>(MAX_BATCH);
+        int idleTicks = 0;
         while (!stopped) {
             Pending first;
             try {
@@ -93,16 +106,26 @@ final class DeleteBatcher {
                 break;
             }
             if (first == null) {
+                if (++idleTicks >= IDLE_EXIT.toSeconds()) {
+                    break;
+                }
                 continue;
             }
+            idleTicks = 0;
             batch.clear();
             batch.add(first);
             waiting.drainTo(batch, MAX_BATCH - 1);
             send(batch);
         }
-        Pending p;
-        while ((p = waiting.poll()) != null) {
-            p.done.completeExceptionally(new IllegalStateException("sqs delete batcher closed: " + identifier));
+        if (stopped) {
+            Pending p;
+            while ((p = waiting.poll()) != null) {
+                p.done.completeExceptionally(new IllegalStateException("sqs delete batcher closed: " + identifier));
+            }
+        }
+        // Last one out restarts the pool if a delete slipped in while we were leaving.
+        if (live.decrementAndGet() == 0 && !waiting.isEmpty() && !stopped) {
+            startDrainers();
         }
     }
 

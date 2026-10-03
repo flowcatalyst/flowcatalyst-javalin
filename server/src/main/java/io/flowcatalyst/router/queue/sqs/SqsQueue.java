@@ -109,6 +109,10 @@ public final class SqsQueue implements Consumer {
     /// DeleteMessage call per ack.
     private final DeleteBatcher deleteBatcher;
 
+    /// Same idea for deferrals and nacks (fire-and-forget, bounded); null = one
+    /// synchronous ChangeMessageVisibility call each.
+    private final VisibilityBatcher visibilityBatcher;
+
     /// True while SQS calls are failing, so a stack trace is logged once per
     /// streak instead of once per message: an outage fails the delete for
     /// every message in flight, and a trace each time is volume rather than
@@ -139,6 +143,10 @@ public final class SqsQueue implements Consumer {
                 : DEFAULT_VISIBILITY_TIMEOUT_SECONDS;
         this.clock = Objects.requireNonNull(clock, "clock");
         this.deleteBatcher = batchDeletes ? new DeleteBatcher(client, queueUrl, this.identifier) : null;
+        this.visibilityBatcher = batchDeletes
+                ? new VisibilityBatcher(client, queueUrl, this.identifier,
+                        (message, cause) -> transportFailure(message, cause).log())
+                : null;
     }
 
     /// Longest one SQS attempt may take. The long-poll receive waits up to
@@ -525,16 +533,24 @@ public final class SqsQueue implements Consumer {
         try {
             long seconds = (delay == null || delay.isNegative()) ? 0 : delay.toSeconds();
             long clamped = Math.min(seconds, remainingVisibilitySeconds(message.receiptHandle()));
+            if (visibilityBatcher != null) {
+                visibilityBatcher.submit(new VisibilityBatcher.Change(message.receiptHandle(), (int) clamped,
+                        message.id(), counter::incrementAndGet));
+                return;
+            }
             client.changeMessageVisibility(ChangeMessageVisibilityRequest.builder()
                     .queueUrl(queueUrl)
                     .receiptHandle(message.receiptHandle())
                     .visibilityTimeout((int) clamped)
                     .build());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         } catch (RuntimeException e) {
             transportFailure("sqs ChangeMessageVisibility failed", e).addKeyValue("message_id", message.id()).log();
-        } finally {
-            counter.incrementAndGet();
         }
+        // Counted whether or not the broker confirmed. (The batched path returned above;
+        // its batcher counts once the broker has answered.)
+        counter.incrementAndGet();
     }
 
     /// How much of SQS's [#MAX_VISIBILITY_SECONDS] ceiling `receiptHandle`
@@ -593,9 +609,6 @@ public final class SqsQueue implements Consumer {
         // Flag only — no client close (§7.2 "Stop"). SqsQueue does not
         // assume it is the sole owner of the SqsClient it was built with.
         stopped = true;
-        if (deleteBatcher != null) {
-            deleteBatcher.close();
-        }
     }
 
     /// Deletes without counting it as an ack — used for a redelivery of a

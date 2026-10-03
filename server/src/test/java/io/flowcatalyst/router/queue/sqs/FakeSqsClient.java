@@ -2,6 +2,10 @@ package io.flowcatalyst.router.queue.sqs;
 
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.BatchResultErrorEntry;
+import software.amazon.awssdk.services.sqs.model.ChangeMessageVisibilityBatchRequest;
+import software.amazon.awssdk.services.sqs.model.ChangeMessageVisibilityBatchRequestEntry;
+import software.amazon.awssdk.services.sqs.model.ChangeMessageVisibilityBatchResponse;
+import software.amazon.awssdk.services.sqs.model.ChangeMessageVisibilityBatchResultEntry;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageBatchRequest;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageBatchRequestEntry;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageBatchResponse;
@@ -43,6 +47,11 @@ final class FakeSqsClient implements SqsClient {
     private volatile java.util.concurrent.CountDownLatch batchGate;
     private final java.util.concurrent.atomic.AtomicInteger batchesEntered = new java.util.concurrent.atomic.AtomicInteger();
 
+    private final List<ChangeMessageVisibilityBatchRequest> visibilityBatches =
+            java.util.Collections.synchronizedList(new ArrayList<>());
+    private volatile RuntimeException visibilityBatchError;
+    private volatile java.util.concurrent.CountDownLatch visibilityGate;
+
     private Supplier<RuntimeException> receiveError;
     private RuntimeException deleteError;
     private Map<QueueAttributeName, String> attributes;
@@ -78,6 +87,18 @@ final class FakeSqsClient implements SqsClient {
 
     int batchesEntered() {
         return batchesEntered.get();
+    }
+
+    List<ChangeMessageVisibilityBatchRequest> visibilityBatches() {
+        return visibilityBatches;
+    }
+
+    void failVisibilityBatchWith(RuntimeException error) {
+        this.visibilityBatchError = error;
+    }
+
+    void gateVisibilityBatches(java.util.concurrent.CountDownLatch gate) {
+        this.visibilityGate = gate;
     }
 
     void failDeleteWith(RuntimeException error) {
@@ -173,6 +194,27 @@ final class FakeSqsClient implements SqsClient {
             }
         }
         return DeleteMessageBatchResponse.builder().successful(ok).failed(bad).build();
+    }
+
+    @Override
+    public ChangeMessageVisibilityBatchResponse changeMessageVisibilityBatch(ChangeMessageVisibilityBatchRequest request) {
+        var gate = visibilityGate;
+        if (gate != null) {
+            try {
+                gate.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        visibilityBatches.add(request);
+        if (visibilityBatchError != null) {
+            throw visibilityBatchError;
+        }
+        var ok = new ArrayList<ChangeMessageVisibilityBatchResultEntry>();
+        for (ChangeMessageVisibilityBatchRequestEntry e : request.entries()) {
+            ok.add(ChangeMessageVisibilityBatchResultEntry.builder().id(e.id()).build());
+        }
+        return ChangeMessageVisibilityBatchResponse.builder().successful(ok).failed(List.of()).build();
     }
 
     @Override
