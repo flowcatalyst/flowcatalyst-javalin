@@ -413,8 +413,11 @@ public final class Pool implements AutoCloseable {
             // above, closed-before-dispatch below, a stood-down hand-back)
             // stays a nack — a full buffer is the one case that is not a
             // rejection.
-            var rate = PoolAdmission.usableRate(metrics.completionCount(PoolAdmission.RATE_WINDOW),
-                    metrics.completionRate(PoolAdmission.RATE_WINDOW), config.concurrency());
+            var rate = PoolAdmission.fasterOf(
+                    PoolAdmission.usableRate(metrics.completionCount(PoolAdmission.RATE_WINDOW),
+                            metrics.completionRate(PoolAdmission.RATE_WINDOW), config.concurrency()),
+                    PoolAdmission.usableRate(metrics.completionCount(PoolAdmission.FAST_RATE_WINDOW),
+                            metrics.completionRate(PoolAdmission.FAST_RATE_WINDOW), config.concurrency()));
             var delay = admission.delay(queueSize(), rate,
                     broker.honoursDelayedReturn(message), message.ordered());
             broker.defer(message, delay);

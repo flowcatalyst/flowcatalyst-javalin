@@ -29,8 +29,8 @@ class PoolAdmissionTest {
         var rate = OptionalDouble.of(0.2); // 5s per message
 
         var first = admission.delay(100, rate, true, true);
-        // wait = 100/0.2 * 0.5 = 250s, slot = 1/0.2 = 5s -> ~255s.
-        assertThat(first.toSeconds()).isCloseTo(255, org.assertj.core.data.Offset.offset(2L));
+        // wait = 100/0.2 * 0.5 = 250s, capped at MAX_WAIT (20s); slot = 1/0.2 = 5s -> ~25s.
+        assertThat(first.toSeconds()).isCloseTo(25, org.assertj.core.data.Offset.offset(2L));
 
         var prev = first;
         for (int i = 0; i < 5; i++) {
@@ -41,6 +41,28 @@ class PoolAdmissionTest {
             prev = next;
         }
         assertThat(admission.totalDeferred()).isEqualTo(6);
+    }
+
+    @Test
+    @DisplayName("the wait for the buffer to drain is capped at 20s however slow the pace; below the cap it is "
+            + "half the drain time")
+    void waitIsCappedButNotBelowTheCap() {
+        var admission = new PoolAdmission(null, FIXED);
+        // 1000 queued at 100/s: half the drain time is 5s, under the cap -> 5s wait + 10ms slot -> floor 5s.
+        assertThat(admission.delay(1000, OptionalDouble.of(100.0), true, false).toSeconds()).isEqualTo(5L);
+        // 100000 queued at 10/s: half the drain time is 5000s, capped to 20s (+100ms slot).
+        var capped = new PoolAdmission(null, FIXED).delay(100_000, OptionalDouble.of(10.0), true, false);
+        assertThat(capped).isEqualTo(Duration.ofMillis(20_100));
+    }
+
+    @Test
+    @DisplayName("the faster of the short and long window rates is used")
+    void fasterOfPicksTheHigherRate() {
+        assertThat(PoolAdmission.fasterOf(OptionalDouble.of(15), OptionalDouble.of(330))).hasValue(330);
+        assertThat(PoolAdmission.fasterOf(OptionalDouble.of(300), OptionalDouble.of(20))).hasValue(300);
+        assertThat(PoolAdmission.fasterOf(OptionalDouble.empty(), OptionalDouble.of(7))).hasValue(7);
+        assertThat(PoolAdmission.fasterOf(OptionalDouble.of(7), OptionalDouble.empty())).hasValue(7);
+        assertThat(PoolAdmission.fasterOf(OptionalDouble.empty(), OptionalDouble.empty())).isEmpty();
     }
 
     // ── D2: floor / fallback ─────────────────────────────────────────────

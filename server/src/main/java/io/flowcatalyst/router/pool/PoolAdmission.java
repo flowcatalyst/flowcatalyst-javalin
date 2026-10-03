@@ -74,6 +74,29 @@ final class PoolAdmission {
     /// 1/rate), so a bounce stays rare.
     static final double HOLDBACK_FRACTION = 0.5;
 
+    /// A pool that has just warmed up (or whose rate has just risen) is measured by a
+    /// short window as well as [#RATE_WINDOW]; the faster of the two is used, so an
+    /// estimate dragged down by an idle stretch or a slow ramp does not book messages
+    /// far past the point the pool is already fast enough to take them.
+    static final Duration FAST_RATE_WINDOW = Duration.ofSeconds(5);
+
+    /// Longest a deferred message waits for the buffer to drain, however slow the
+    /// measured pace says the pool is. A message that returns to a pool that is still
+    /// full simply bounces again with a fresher estimate; the alternative is a pool
+    /// that sits idle for the whole stretch of a stale one. The reservation cursor
+    /// (one slot after the previous) still spaces a large backlog out past this.
+    static final Duration MAX_WAIT = Duration.ofSeconds(20);
+
+    static OptionalDouble fasterOf(OptionalDouble a, OptionalDouble b) {
+        if (a.isEmpty()) {
+            return b;
+        }
+        if (b.isEmpty()) {
+            return a;
+        }
+        return OptionalDouble.of(Math.max(a.getAsDouble(), b.getAsDouble()));
+    }
+
     /// The reservation horizon when none is configured (`FC_ROUTER_DEFERRAL_MAX_DELAY_SECONDS`
     /// unset or non-positive).
     static final Duration DEFAULT_HORIZON = Duration.ofHours(1);
@@ -145,6 +168,9 @@ final class PoolAdmission {
         if (rate.isPresent() && rate.getAsDouble() > 0) {
             double r = rate.getAsDouble();
             wait = Duration.ofNanos(Math.round(queued / r * HOLDBACK_FRACTION * 1_000_000_000.0));
+            if (wait.compareTo(MAX_WAIT) > 0) {
+                wait = MAX_WAIT;
+            }
             slot = Duration.ofNanos(Math.round(1_000_000_000.0 / r));
         }
         if (!brokerHonoursDelayedReturn && ordered && slot.compareTo(ORDERED_SPACING) < 0) {
