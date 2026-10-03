@@ -1,6 +1,11 @@
 package io.flowcatalyst.router.queue.sqs;
 
 import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.model.BatchResultErrorEntry;
+import software.amazon.awssdk.services.sqs.model.DeleteMessageBatchRequest;
+import software.amazon.awssdk.services.sqs.model.DeleteMessageBatchRequestEntry;
+import software.amazon.awssdk.services.sqs.model.DeleteMessageBatchResponse;
+import software.amazon.awssdk.services.sqs.model.DeleteMessageBatchResultEntry;
 import software.amazon.awssdk.services.sqs.model.ChangeMessageVisibilityRequest;
 import software.amazon.awssdk.services.sqs.model.ChangeMessageVisibilityResponse;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageRequest;
@@ -31,6 +36,13 @@ final class FakeSqsClient implements SqsClient {
     private final List<GetQueueAttributesRequest> attributesRequests = new ArrayList<>();
     private final List<ChangeMessageVisibilityRequest> changeVisibilityRequests = new ArrayList<>();
 
+    private final List<DeleteMessageBatchRequest> batchRequests =
+            java.util.Collections.synchronizedList(new ArrayList<>());
+    private volatile RuntimeException batchError;
+    private volatile String failBatchHandlePrefix;
+    private volatile java.util.concurrent.CountDownLatch batchGate;
+    private final java.util.concurrent.atomic.AtomicInteger batchesEntered = new java.util.concurrent.atomic.AtomicInteger();
+
     private Supplier<RuntimeException> receiveError;
     private RuntimeException deleteError;
     private Map<QueueAttributeName, String> attributes;
@@ -43,6 +55,29 @@ final class FakeSqsClient implements SqsClient {
 
     void failNextReceiveWith(Supplier<RuntimeException> error) {
         this.receiveError = error;
+    }
+
+    List<DeleteMessageBatchRequest> batchRequests() {
+        return batchRequests;
+    }
+
+    /// Whole DeleteMessageBatch calls throw `error`.
+    void failBatchWith(RuntimeException error) {
+        this.batchError = error;
+    }
+
+    /// Entries whose receipt handle starts with `prefix` are reported in `failed`.
+    void failBatchEntriesWithHandlePrefix(String prefix) {
+        this.failBatchHandlePrefix = prefix;
+    }
+
+    /// Every DeleteMessageBatch call blocks (after being counted) until the latch opens.
+    void gateBatches(java.util.concurrent.CountDownLatch gate) {
+        this.batchGate = gate;
+    }
+
+    int batchesEntered() {
+        return batchesEntered.get();
     }
 
     void failDeleteWith(RuntimeException error) {
@@ -111,6 +146,33 @@ final class FakeSqsClient implements SqsClient {
             throw deleteError;
         }
         return DeleteMessageResponse.builder().build();
+    }
+
+    @Override
+    public DeleteMessageBatchResponse deleteMessageBatch(DeleteMessageBatchRequest request) {
+        batchesEntered.incrementAndGet();
+        var gate = batchGate;
+        if (gate != null) {
+            try {
+                gate.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        batchRequests.add(request);
+        if (batchError != null) {
+            throw batchError;
+        }
+        var ok = new ArrayList<DeleteMessageBatchResultEntry>();
+        var bad = new ArrayList<BatchResultErrorEntry>();
+        for (DeleteMessageBatchRequestEntry e : request.entries()) {
+            if (failBatchHandlePrefix != null && e.receiptHandle().startsWith(failBatchHandlePrefix)) {
+                bad.add(BatchResultErrorEntry.builder().id(e.id()).code("InvalidParameterValue").message("nope").senderFault(true).build());
+            } else {
+                ok.add(DeleteMessageBatchResultEntry.builder().id(e.id()).build());
+            }
+        }
+        return DeleteMessageBatchResponse.builder().successful(ok).failed(bad).build();
     }
 
     @Override

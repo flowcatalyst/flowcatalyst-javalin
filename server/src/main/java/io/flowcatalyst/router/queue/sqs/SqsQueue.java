@@ -33,7 +33,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -94,13 +94,20 @@ public final class SqsQueue implements Consumer {
     /// Guards both maps below. Held only for map mutation/lookup, never
     /// across a network call.
     private final Object mapLock = new Object();
-    private final Map<String, Instant> pendingDelete = new HashMap<>();
-    private final Map<String, ReceiptMapping> receiptToMessageId = new HashMap<>();
+    /// Insertion-ordered (oldest first) so age pruning pops from the front
+    /// instead of scanning every entry on every poll; a re-put goes through
+    /// remove-then-put to move the id to the back.
+    private final LinkedHashMap<String, Instant> pendingDelete = new LinkedHashMap<>();
+    private final LinkedHashMap<String, ReceiptMapping> receiptToMessageId = new LinkedHashMap<>();
 
     /// Set once by [#close()]; never cleared. Plain `volatile` is enough —
     /// it is read-mostly and the single writer only ever transitions
     /// false -> true.
     private volatile boolean stopped = false;
+
+    /// Coalesces acknowledgement deletes into DeleteMessageBatch; null = one
+    /// DeleteMessage call per ack.
+    private final DeleteBatcher deleteBatcher;
 
     /// True while SQS calls are failing, so a stack trace is logged once per
     /// streak instead of once per message: an outage fails the delete for
@@ -117,6 +124,11 @@ public final class SqsQueue implements Consumer {
     }
 
     public SqsQueue(SqsClient client, String queueUrl, String configuredName, int visibilityTimeoutSeconds, Clock clock) {
+        this(client, queueUrl, configuredName, visibilityTimeoutSeconds, clock, false);
+    }
+
+    SqsQueue(SqsClient client, String queueUrl, String configuredName, int visibilityTimeoutSeconds, Clock clock,
+             boolean batchDeletes) {
         this.client = Objects.requireNonNull(client, "client");
         this.queueUrl = Objects.requireNonNull(queueUrl, "queueUrl");
         this.identifier = (configuredName != null && !configuredName.isBlank())
@@ -126,6 +138,7 @@ public final class SqsQueue implements Consumer {
                 ? visibilityTimeoutSeconds
                 : DEFAULT_VISIBILITY_TIMEOUT_SECONDS;
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.deleteBatcher = batchDeletes ? new DeleteBatcher(client, queueUrl, this.identifier) : null;
     }
 
     /// Longest one SQS attempt may take. The long-poll receive waits up to
@@ -180,7 +193,7 @@ public final class SqsQueue implements Consumer {
     /// repeats for the life of the process rather than happening once.
     static SqsQueue adopt(SqsClient client, String queueUrl, String configuredName, int visibilityTimeoutSeconds) {
         try {
-            return new SqsQueue(client, queueUrl, configuredName, visibilityTimeoutSeconds, Clock.systemUTC());
+            return new SqsQueue(client, queueUrl, configuredName, visibilityTimeoutSeconds, Clock.systemUTC(), true);
         } catch (RuntimeException e) {
             try {
                 client.close();
@@ -450,6 +463,7 @@ public final class SqsQueue implements Consumer {
             String messageId = message.brokerMessageId();
             if (messageId != null && !messageId.isBlank()) {
                 synchronized (mapLock) {
+                    pendingDelete.remove(messageId);
                     pendingDelete.put(messageId, Instant.now(clock));
                 }
             }
@@ -579,6 +593,9 @@ public final class SqsQueue implements Consumer {
         // Flag only — no client close (§7.2 "Stop"). SqsQueue does not
         // assume it is the sole owner of the SqsClient it was built with.
         stopped = true;
+        if (deleteBatcher != null) {
+            deleteBatcher.close();
+        }
     }
 
     /// Deletes without counting it as an ack — used for a redelivery of a
@@ -599,10 +616,14 @@ public final class SqsQueue implements Consumer {
     /// throws.
     private void deleteAndCount(String receiptHandle) {
         try {
-            client.deleteMessage(DeleteMessageRequest.builder()
-                    .queueUrl(queueUrl)
-                    .receiptHandle(receiptHandle)
-                    .build());
+            if (deleteBatcher != null) {
+                deleteBatcher.delete(receiptHandle);
+            } else {
+                client.deleteMessage(DeleteMessageRequest.builder()
+                        .queueUrl(queueUrl)
+                        .receiptHandle(receiptHandle)
+                        .build());
+            }
             acked.incrementAndGet();
             sqsFailing = false;
         } catch (RuntimeException e) {
@@ -638,10 +659,21 @@ public final class SqsQueue implements Consumer {
     private void pruneMapsLocked() {
         Instant now = Instant.now(clock);
         synchronized (mapLock) {
-            pendingDelete.entrySet().removeIf(e -> Duration.between(e.getValue(), now).compareTo(PENDING_DELETE_TTL) > 0);
+            pruneOldest(pendingDelete.entrySet().iterator(), e -> e.getValue(), now);
             if (receiptToMessageId.size() > RECEIPT_MAP_PRUNE_THRESHOLD) {
-                receiptToMessageId.entrySet()
-                        .removeIf(e -> Duration.between(e.getValue().polledAt(), now).compareTo(PENDING_DELETE_TTL) > 0);
+                pruneOldest(receiptToMessageId.entrySet().iterator(), e -> e.getValue().polledAt(), now);
+            }
+        }
+    }
+
+    /// Entries are in insertion (time) order, so stop at the first one still
+    /// inside the TTL: the work is the number expired, not the map size.
+    private static <E> void pruneOldest(java.util.Iterator<E> it, java.util.function.Function<E, Instant> at, Instant now) {
+        while (it.hasNext()) {
+            if (Duration.between(at.apply(it.next()), now).compareTo(PENDING_DELETE_TTL) > 0) {
+                it.remove();
+            } else {
+                break;
             }
         }
     }

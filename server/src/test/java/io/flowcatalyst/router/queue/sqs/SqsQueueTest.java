@@ -194,7 +194,55 @@ class SqsQueueTest {
         assertThat(sqs.metrics()).get().extracting(QueueMetrics::acked).isEqualTo(1L);
     }
 
+    // --- batched ack ---------------------------------------------------------
+
+    @Test
+    @DisplayName("with batching on, ack deletes through DeleteMessageBatch and counts it only on success")
+    void batchedAckDeletesAndCountsOnlyOnSuccess() throws InterruptedException {
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-1", "receipt-1", "{\"id\":\"msg-1\"}"),
+                        sqsMessage("mid-2", "bad-receipt-2", "{\"id\":\"msg-2\"}"))
+                .build());
+        client.failBatchEntriesWithHandlePrefix("bad");
+        SqsQueue sqs = new SqsQueue(client, QUEUE_URL, null, 30, clock, true);
+        List<QueuedMessage> polled = delivered(sqs.poll(10));
+
+        assertThat(sqs.ack(polled.get(0))).isTrue();
+        assertThat(sqs.ack(polled.get(1))).isTrue(); // ack never reports failure upward; the metric does
+
+        assertThat(client.deleteRequests()).isEmpty();
+        assertThat(client.batchRequests()).isNotEmpty();
+        assertThat(sqs.metrics()).get().extracting(QueueMetrics::acked).isEqualTo(1L);
+        sqs.close();
+    }
+
     // --- map pruning (the two rules differ) --------------------------------
+
+    @Test
+    @DisplayName("pendingDelete pruning removes only the expired front of the queue and keeps fresher entries")
+    void pendingDeletePruneStopsAtFirstFreshEntry() throws InterruptedException {
+        SqsQueue sqs = queue();
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-A", "receipt-A1", "{\"id\":\"msg-A\"}")).build());
+        sqs.ack(delivered(sqs.poll(10)).get(0));
+        clock.advance(Duration.ofMinutes(10));
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-B", "receipt-B1", "{\"id\":\"msg-B\"}")).build());
+        sqs.ack(delivered(sqs.poll(10)).get(0));
+        clock.advance(Duration.ofMinutes(6));
+
+        // mid-A is 16 minutes old (expired), mid-B 6 (fresh).
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-C", "receipt-C1", "{\"id\":\"msg-C\"}")).build());
+        sqs.poll(10);
+
+        assertThat(sqs.pendingDeleteSizeForTest()).isEqualTo(1);
+        // mid-B is still remembered, so its redelivery is short-circuited to a plain delete.
+        client.enqueueReceive(ReceiveMessageResponse.builder()
+                .messages(sqsMessage("mid-B", "receipt-B2", "{\"id\":\"msg-B\"}")).build());
+        assertThat(delivered(sqs.poll(10))).isEmpty();
+        assertThat(client.deleteRequests()).extracting(r -> r.receiptHandle()).contains("receipt-B2");
+    }
 
     @Test
     @DisplayName("pendingDelete entries older than 15 minutes are pruned on the next non-empty poll")
