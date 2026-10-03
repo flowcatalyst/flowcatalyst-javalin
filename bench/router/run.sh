@@ -492,11 +492,16 @@ run() {
     # the main phase is measured on a warm JVM. total = W + TOTAL_MESSAGES.
     local warm=${WARMUP_MESSAGES:-0} first_seed=$total
     if [ "$warm" -gt 0 ]; then first_seed=$warm; total=$((warm + TOTAL_MESSAGES)); fi
+    # WARMUP_CHUNK=N (with WARMUP_MESSAGES): do not pre-seed; feed the warm-up N messages every
+    # WARMUP_INTERVAL_S seconds once the router is running, i.e. slowly, instead of as one flood.
+    [ -n "${WARMUP_CHUNK:-}" ] && first_seed=0
     local t_seed0; t_seed0=$(python3 -c 'import time;print(time.time())')
+    if [ "$first_seed" -gt 0 ]; then
     docker run --rm --network $NET \
         -e TOTAL="$first_seed" -e QUEUES="$nqueues" -e POOLS="$npools" -e ENDPOINT="http://$LOCALSTACK_IP:4566" \
         -e REGION=us-east-1 -e MEDIATION_TARGET="http://$SINK_IP:9000/hook" \
         bench-router-seedsqs || fail "seedsqs (TOTAL=$first_seed QUEUES=$nqueues)"
+    fi
     local sql_seed_wall; sql_seed_wall=$(python3 -c "import time;print(round(time.time()-$t_seed0,2))")
     echo "-- seeded $total messages across $nqueues SQS queue(s) in ${sql_seed_wall}s (queues full BEFORE the router starts)"
   elif [ "$BROKER" = nats ]; then
@@ -615,6 +620,17 @@ run() {
 
   if [ "${WARMUP_MESSAGES:-0}" -gt 0 ] && [ "$BROKER" = sqs ]; then
     local wc=0 wi
+    if [ -n "${WARMUP_CHUNK:-}" ]; then
+      local ci nchunks=$((WARMUP_MESSAGES / WARMUP_CHUNK))
+      echo "-- slow warm-up: $nchunks chunks of $WARMUP_CHUNK, one every ${WARMUP_INTERVAL_S:-2}s (plus seeder start-up)"
+      for ci in $(seq 0 $((nchunks - 1))); do
+        docker run --rm --network $NET \
+            -e TOTAL="$WARMUP_CHUNK" -e ID_OFFSET=$((ci * WARMUP_CHUNK)) -e QUEUES="$nqueues" -e POOLS="$npools" \
+            -e ENDPOINT="http://$LOCALSTACK_IP:4566" -e REGION=us-east-1 -e MEDIATION_TARGET="http://$SINK_IP:9000/hook" \
+            bench-router-seedsqs >/dev/null || fail "slow warm-up chunk $ci"
+        sleep "${WARMUP_INTERVAL_S:-2}"
+      done
+    fi
     for wi in $(seq 1 240); do
       wc=$(probe "http://$SINK_IP:9000/stats" 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin)["count"])' 2>/dev/null || echo 0)
       [ "${wc:-0}" -ge "$WARMUP_MESSAGES" ] && break
@@ -622,11 +638,15 @@ run() {
     done
     echo "-- warm-up: $wc/$WARMUP_MESSAGES delivered; pausing ${WARMUP_PAUSE_S:-5}s, then seeding the main $TOTAL_MESSAGES"
     sleep "${WARMUP_PAUSE_S:-5}"
+    local t_main0; t_main0=$(python3 -c 'import time;print(time.time())')
     docker run --rm --network $NET \
-        -e TOTAL="$TOTAL_MESSAGES" -e QUEUES="$nqueues" -e POOLS="$npools" -e ENDPOINT="http://$LOCALSTACK_IP:4566" \
+        -e TOTAL="$TOTAL_MESSAGES" -e ID_OFFSET=1000000 -e RATE="${MAIN_RATE:-0}" -e QUEUES="$nqueues" -e POOLS="$npools" -e ENDPOINT="http://$LOCALSTACK_IP:4566" \
         -e REGION=us-east-1 -e MEDIATION_TARGET="http://$SINK_IP:9000/hook" \
         bench-router-seedsqs || fail "main seedsqs after warm-up"
-    date +%s > "$out/$label.main-seeded-epoch" 2>/dev/null
+    # The time series starts only after this seeding finishes, and the router is already
+    # delivering while it runs: a fair main-phase rate is M / (seeding wall + series length).
+    python3 -c "import time;print(round(time.time()-$t_main0,2))" > "$out/$label.main-seed-s"
+    echo "-- main seeding took $(cat "$out/$label.main-seed-s")s (router already delivering)"
   fi
 
   if [ -n "${SEED_LATE_S:-}" ] && [ "$BROKER" = nats ]; then
@@ -810,6 +830,9 @@ print(round($scount/((ln-fn)/1e9),1) if ln>fn else 0)
   local broker_line
   if [ "$BROKER" = sqs ]; then
     broker_line="queue_depth_end=$broker_remaining localstack_mean_cpu_pct=$broker_mean_cpu"
+    # sqsfix keeps its own counters (sent/received/deleted/...): print them so a delivered-vs-
+    # acked mismatch is visible instead of inferred.
+    [ "${SQS_EMULATOR:-localstack}" = sqsfix ] && echo "   sqsfix stats: $(probe "http://$LOCALSTACK_IP:4566/stats" 2>/dev/null)"
   elif [ "$BROKER" = nats ]; then
     broker_line="queue_depth_end=$broker_remaining nats_mean_cpu_pct=$broker_mean_cpu"
   else

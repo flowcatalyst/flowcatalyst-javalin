@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awscfg "github.com/aws/aws-sdk-go-v2/config"
@@ -59,6 +60,10 @@ func main() {
 	// POOLS: 1 = poolCode "BENCH" on every message; N>1 = queue q (1-based) carries
 	// "BENCH-(((q-1)%N)+1)" (same mapping as the sink's /config and run.sh's seed_sql).
 	pools := envInt("POOLS", 1)
+	// ID_OFFSET shifts the numbering of the "id" in each body, so several invocations against
+	// the same router (a slow warm-up fed in chunks, then the main backlog) never repeat an id
+	// the router's in-flight tracker could still hold.
+	idOffset := envInt("ID_OFFSET", 0)
 
 	if endpoint == "" || target == "" {
 		log.Fatal("ENDPOINT and MEDIATION_TARGET are required")
@@ -104,7 +109,7 @@ func main() {
 				for k, id := range j.ids {
 					body := fmt.Sprintf(
 						`{"id":"bench-%d","poolCode":"%s","mediationType":"HTTP","mediationTarget":"%s","dispatchMode":"IMMEDIATE"}`,
-						id, j.poolCode, target)
+						id+idOffset, j.poolCode, target)
 					entries[k] = types.SendMessageBatchRequestEntry{
 						Id:          aws.String(strconv.Itoa(id)),
 						MessageBody: aws.String(body),
@@ -128,17 +133,43 @@ func main() {
 		}()
 	}
 
-	for qi, ids := range perQueue {
-		for i := 0; i < len(ids); i += 10 {
-			end := i + 10
-			if end > len(ids) {
-				end = len(ids)
+	poolCodeFor := func(qi int) string {
+		if pools > 1 {
+			return fmt.Sprintf("BENCH-%d", (qi%pools)+1) // qi is 0-based here
+		}
+		return "BENCH"
+	}
+	if rate := float64(envInt("RATE", 0)); rate > 0 {
+		// RATE=N messages/second: spread the sends over time, round-robin across the queues (a
+		// real producer feeds every queue at once, not one queue at a time), pacing against an
+		// absolute schedule so a slow send is caught up rather than slowing the whole run.
+		maxLen := 0
+		for _, ids := range perQueue {
+			if len(ids) > maxLen {
+				maxLen = len(ids)
 			}
-			pc := "BENCH"
-			if pools > 1 {
-				pc = fmt.Sprintf("BENCH-%d", (qi%pools)+1) // qi is 0-based here
+		}
+		t0 := time.Now()
+		issued := 0
+		for i := 0; i < maxLen; i += 10 {
+			for qi, ids := range perQueue {
+				if i >= len(ids) {
+					continue
+				}
+				end := min(i+10, len(ids))
+				if d := time.Until(t0.Add(time.Duration(float64(issued) / rate * float64(time.Second)))); d > 0 {
+					time.Sleep(d)
+				}
+				jobs <- job{queueURL: queueURLs[qi], poolCode: poolCodeFor(qi), ids: ids[i:end]}
+				issued += end - i
 			}
-			jobs <- job{queueURL: queueURLs[qi], poolCode: pc, ids: ids[i:end]}
+		}
+	} else {
+		for qi, ids := range perQueue {
+			for i := 0; i < len(ids); i += 10 {
+				end := min(i+10, len(ids))
+				jobs <- job{queueURL: queueURLs[qi], poolCode: poolCodeFor(qi), ids: ids[i:end]}
+			}
 		}
 	}
 	close(jobs)

@@ -113,6 +113,18 @@ type server struct {
 	seq    atomic.Uint64
 
 	sent, received, deleted, changed, empty atomic.Int64
+
+	// calls counts HTTP requests per operation, so a run can report messages per call
+	// (how well receive/delete/visibility batching is actually doing).
+	calls sync.Map // op -> *atomic.Int64
+}
+
+func (s *server) countCall(op string) {
+	v, ok := s.calls.Load(op)
+	if !ok {
+		v, _ = s.calls.LoadOrStore(op, new(atomic.Int64))
+	}
+	v.(*atomic.Int64).Add(1)
 }
 
 func (s *server) queue(name string) *queue {
@@ -412,7 +424,10 @@ func (s *server) stats(w http.ResponseWriter) {
 		q.mu.Unlock()
 	}
 	w.Header().Set("Content-Type", "application/json")
+	calls := m_{}
+	s.calls.Range(func(k, v any) bool { calls[k.(string)] = v.(*atomic.Int64).Load(); return true })
 	json.NewEncoder(w).Encode(m_{
+		"calls":  calls,
 		"queues": len(s.queues), "ready": ready, "inflight": fl, "depth": ready + fl,
 		"sent": s.sent.Load(), "received": s.received.Load(), "deleted": s.deleted.Load(),
 		"visibilityChanges": s.changed.Load(), "emptyReceives": s.empty.Load(),
@@ -458,6 +473,7 @@ func main() {
 			http.Error(w, err.Error(), 400)
 			return
 		}
+		s.countCall(op)
 		out, err := s.dispatch(r, op, []byte(buf.String()))
 		w.Header().Set("Content-Type", "application/x-amz-json-1.0")
 		if err != nil {
