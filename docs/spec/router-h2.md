@@ -93,9 +93,15 @@ through the same `"request timeout"` outcome as the JDK path.
 **Confirmed, not merely asserted:** an HTTP/1.1-only target fails the delivery
 (`MediationOutcome.ErrorConnection`) rather than being silently reinterpreted as HTTP/1.1 — a
 prior-knowledge h2 connection preface sent to a server that only speaks HTTP/1.1 is not a request
-that server can answer. No tuning knobs were added; every `HttpClientOptions`/`HttpServerOptions`
+that server can answer. No operator-facing knobs were added; every `HttpClientOptions`/`HttpServerOptions`
 value not called out above is Vert.x's own default (`CLAUDE.md` "no tuning; defaults are the
-product").
+product"), **except the HTTP/2 pool and the event loops (2026-10-03, measured)**: Vert.x's defaults
+(one connection per origin, one loop) capped the router near 40k/s at 4 CPUs with 6,400 deliveries in
+flight, because one connection carries only the server's stream limit (250 / commonly 128) and the
+rest queue behind it on one loop. The client now allows up to 32 connections per origin, opened
+lazily when the existing ones are full, and one event loop per CPU of the quota (at most 4); the
+pool uses the same number of loops. Measured at 100 queues x 64 workers: 4 CPUs 40k/s to ~69k/s,
+1 CPU 21k/s to ~24k/s, 2 CPUs unchanged (CPU-bound).
 
 Tests: `io.flowcatalyst.http.vertx.VertxTransportTest` (h2c by prior knowledge against a cleartext
 target with a body — the case Q7 identified the JDK client as unable to do; no silent downgrade
