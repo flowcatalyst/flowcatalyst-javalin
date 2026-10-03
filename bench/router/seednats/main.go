@@ -8,8 +8,9 @@
 // Body shape matches the other brokers exactly (docs/spec/router.md §2.1, §7.4 Publish):
 // {"id":...,"poolCode":"BENCH","mediationType":"HTTP","mediationTarget":...,"dispatchMode":"IMMEDIATE"}
 //
-// Publish subject per queue n: bench.<n>.BENCH (§7.4: "subject = filter with trailing .>/.*
-// replaced by .<poolCode>" — the filter for stream BENCHn is bench.<n>.>, poolCode is BENCH).
+// Publish subject per queue n: bench.<n>.<poolCode> (§7.4: "subject = filter with trailing .>/.*
+// replaced by .<poolCode>" — the filter for stream BENCHn is bench.<n>.>; poolCode is BENCH, or
+// with POOLS=N BENCH-(((n-1)%N)+1)).
 //
 // Uses JetStream's async publish (js.PublishAsync), NOT core nc.Publish. An earlier version of
 // this tool used core publish (fire-and-forget, no PubAck) for raw throughput and silently lost
@@ -55,6 +56,9 @@ func main() {
 	natsURL := envStr("NATS_URL", "nats://127.0.0.1:4222")
 	target := os.Getenv("MEDIATION_TARGET") // e.g. http://172.30.0.11:9000/hook
 	maxPending := envInt("MAX_PENDING", 4096)
+	// POOLS: 1 = every message carries poolCode "BENCH"; N>1 = queue qi's messages carry
+	// "BENCH-(((qi-1)%N)+1)" (same mapping as the sink's /config and run.sh's seed_sql).
+	pools := envInt("POOLS", 1)
 
 	if target == "" {
 		log.Fatal("MEDIATION_TARGET is required")
@@ -84,12 +88,16 @@ func main() {
 	var submitErrs int64
 	id := 0
 	for qi := 1; qi <= nqueues; qi++ {
-		subject := fmt.Sprintf("bench.%d.BENCH", qi)
+		poolCode := "BENCH"
+		if pools > 1 {
+			poolCode = fmt.Sprintf("BENCH-%d", ((qi-1)%pools)+1)
+		}
+		subject := fmt.Sprintf("bench.%d.%s", qi, poolCode)
 		for i := 0; i < perQueue[qi-1]; i++ {
 			id++
 			body := fmt.Sprintf(
-				`{"id":"bench-%d","poolCode":"BENCH","mediationType":"HTTP","mediationTarget":"%s","dispatchMode":"IMMEDIATE"}`,
-				id, target)
+				`{"id":"bench-%d","poolCode":"%s","mediationType":"HTTP","mediationTarget":"%s","dispatchMode":"IMMEDIATE"}`,
+				id, poolCode, target)
 			f, err := js.PublishAsync(subject, []byte(body))
 			if err != nil {
 				submitErrs++
@@ -117,8 +125,8 @@ func main() {
 		}
 	}
 
-	fmt.Printf("seednats: acked=%d failed=%d submit_errors=%d total=%d queues=%d\n",
-		acked, failed, submitErrs, total, nqueues)
+	fmt.Printf("seednats: acked=%d failed=%d submit_errors=%d total=%d queues=%d pools=%d\n",
+		acked, failed, submitErrs, total, nqueues, pools)
 	if failed > 0 || submitErrs > 0 {
 		os.Exit(1)
 	}

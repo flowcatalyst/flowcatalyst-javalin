@@ -44,6 +44,7 @@ func envStr(name, def string) string {
 
 type job struct {
 	queueURL string
+	poolCode string
 	ids      []int
 }
 
@@ -55,6 +56,9 @@ func main() {
 	accountID := envStr("ACCOUNT_ID", "000000000000")
 	target := os.Getenv("MEDIATION_TARGET") // e.g. http://172.30.0.11:9000/hook
 	concurrency := envInt("CONCURRENCY", 64)
+	// POOLS: 1 = poolCode "BENCH" on every message; N>1 = queue q (1-based) carries
+	// "BENCH-(((q-1)%N)+1)" (same mapping as the sink's /config and run.sh's seed_sql).
+	pools := envInt("POOLS", 1)
 
 	if endpoint == "" || target == "" {
 		log.Fatal("ENDPOINT and MEDIATION_TARGET are required")
@@ -99,8 +103,8 @@ func main() {
 				entries := make([]types.SendMessageBatchRequestEntry, len(j.ids))
 				for k, id := range j.ids {
 					body := fmt.Sprintf(
-						`{"id":"bench-%d","poolCode":"BENCH","mediationType":"HTTP","mediationTarget":"%s","dispatchMode":"IMMEDIATE"}`,
-						id, target)
+						`{"id":"bench-%d","poolCode":"%s","mediationType":"HTTP","mediationTarget":"%s","dispatchMode":"IMMEDIATE"}`,
+						id, j.poolCode, target)
 					entries[k] = types.SendMessageBatchRequestEntry{
 						Id:          aws.String(strconv.Itoa(id)),
 						MessageBody: aws.String(body),
@@ -130,7 +134,11 @@ func main() {
 			if end > len(ids) {
 				end = len(ids)
 			}
-			jobs <- job{queueURL: queueURLs[qi], ids: ids[i:end]}
+			pc := "BENCH"
+			if pools > 1 {
+				pc = fmt.Sprintf("BENCH-%d", (qi%pools)+1) // qi is 0-based here
+			}
+			jobs <- job{queueURL: queueURLs[qi], poolCode: pc, ids: ids[i:end]}
 		}
 	}
 	close(jobs)

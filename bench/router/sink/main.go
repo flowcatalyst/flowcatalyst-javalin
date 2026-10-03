@@ -46,6 +46,11 @@ var (
 	// sharing one queueUri but distinct queueName values give N independent poll loops against
 	// the same database — queue-level parallelism past the one-consumer-per-queue ceiling.
 	numQueues = envInt("QUEUES", 1)
+	// POOLS: how many processing pools /config advertises. 1 (default) = the single shared
+	// pool "BENCH" fed by every queue. N>1 = pools BENCH-1..BENCH-N, each with
+	// POOL_CONCURRENCY workers; queue i feeds pool BENCH-(((i-1) % N)+1) (the seeders stamp
+	// that code on each message's poolCode).
+	numPools = envInt("POOLS", 1)
 )
 
 func envInt(name string, def int) int {
@@ -222,10 +227,23 @@ func configHandler(w http.ResponseWriter, r *http.Request) {
 			Connections: 1, VisibilityTimeout: 120,
 		}
 	}
+	// POOLS=1: one pool_code ("BENCH") on every message's payload regardless of which queue it
+	// came from — all N queues route to the same shared worker pool. POOLS=N: N pools
+	// BENCH-1..BENCH-N, each with poolConcurrency workers (queue i feeds BENCH-(((i-1)%N)+1)).
+	np := numPools
+	if np < 1 {
+		np = 1
+	}
+	pools := make([]poolConfig, np)
+	for k := 0; k < np; k++ {
+		code := "BENCH"
+		if np > 1 {
+			code = "BENCH-" + strconv.Itoa(k+1)
+		}
+		pools[k] = poolConfig{Code: code, Concurrency: poolConcurrency}
+	}
 	cfg := routerConfig{
-		// One pool_code ("BENCH") on every message's payload regardless of which queue it
-		// came from — all N queues route to the same shared worker pool.
-		ProcessingPools: []poolConfig{{Code: "BENCH", Concurrency: poolConcurrency}},
+		ProcessingPools: pools,
 		Queues:          queues,
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -242,9 +260,9 @@ func main() {
 	var handler http.Handler = mux
 	if os.Getenv("SINK_H2C") == "1" {
 		handler = h2c.NewHandler(mux, &http2.Server{})
-		log.Printf("sink: listening on :9000 (h2c prior-knowledge cleartext enabled), SINK_DELAY_MS=%d, /config pool=BENCH concurrency=%d queues=%d queueUri=%s", delayMs, poolConcurrency, numQueues, queueURI)
+		log.Printf("sink: listening on :9000 (h2c prior-knowledge cleartext enabled), SINK_DELAY_MS=%d, /config pools=%d concurrency=%d queues=%d queueUri=%s", delayMs, numPools, poolConcurrency, numQueues, queueURI)
 	} else {
-		log.Printf("sink: listening on :9000 (HTTP/1.1), SINK_DELAY_MS=%d, /config pool=BENCH concurrency=%d queues=%d queueUri=%s", delayMs, poolConcurrency, numQueues, queueURI)
+		log.Printf("sink: listening on :9000 (HTTP/1.1), SINK_DELAY_MS=%d, /config pools=%d concurrency=%d queues=%d queueUri=%s", delayMs, numPools, poolConcurrency, numQueues, queueURI)
 	}
 
 	srv := &http.Server{

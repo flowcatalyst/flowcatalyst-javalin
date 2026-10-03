@@ -1250,3 +1250,39 @@ gap to Go/Java/Rust here is the NATS-mode `DEFAULT-POOL` concurrency-20 fallback
 limitation documented earlier in this file, not the runtime's container-awareness. The memory half
 of the original hypothesis (V8 planning a multi-gigabyte heap under a container) does not even
 apply to this Node version, which already reads the cgroup memory limit by default.
+
+## Rig update — 2026-10-02 (consumer limits, pools per queue, 100 queues, steady rate vs tail)
+
+Rig changes only; no router code and no earlier result row was touched or re-run. Rows measured
+before this date used the old defaults described below, so they are not directly comparable with
+rows measured after it.
+
+- **Stale consumer limits removed.** The rig forced `max-ack-pending=1000` and `max-deliver=10`
+  on every NATS consumer (the `nats consumer add` flags and the queue URI), described as "equal to
+  the parser defaults". The routers' own defaults are now unlimited (-1) for both, so every NATS
+  row measured with the forced values was running a configuration production no longer uses.
+  Both are now `NATS_MAXPEND` / `NATS_MAXDELIVER`, default -1, and the same value goes into the
+  consumer-add flags and the URI (so the router's own create-or-update stays a no-op). Also
+  parameterised: `NATS_STORAGE` (default memory) and `SEED_LATE_S` (seed after the router is up).
+- **Shared-pool overshoot.** Every queue fed ONE pool `BENCH`, which is not how production is
+  shaped (many pools, each with its own concurrency) and let a single pool's admission/backpressure
+  behaviour dominate (overshoot against the shared pool's limit). New `POOLS=N` (default 1 = the
+  old shape): pools `BENCH-1..BENCH-N`, queue i feeds `BENCH-(((i-1)%N)+1)`, the sink's `/config`
+  emits all N pools at `POOL_CONCURRENCY` each, and the seeders (seednats, seedsqs, and the
+  Postgres `seed_sql`) stamp each message's `poolCode`. `pool_seen` now checks that all N pools are
+  present. `POOLS>1` is not supported for the Postgres API seeder / DEFAULT-POOL bootstrap
+  (run.sh refuses it).
+- **100 queues.** Per-queue setup that ran the `nats` / `aws` CLI serially (stream+consumer
+  creation, SQS queue creation and depth) now runs with bounded parallelism (`SETUP_PARALLEL`,
+  default 16), and the NATS drain-completion check plus the pre-seed verification read ONE `/jsz`
+  call on port 8222 instead of two `nats ... info` execs per queue per poll, so the monitor stays
+  cheap at `QUEUES=100`. A failed `/jsz` read is "unknown" and keeps waiting rather than being
+  mistaken for an empty broker. Not yet exercised at `QUEUES=100` on a real run.
+- **Steady rate and tail reported separately.** The headline `deliveries_per_s` is
+  count / (last - first hit), so a long slow tail is averaged into the headline and hides it.
+  Each run now also writes `results/<label>.ts.jsonl` (sink count every second, sampled from the
+  host through the existing prober container, nothing inside the router container) and prints
+  `steady_rate_10_90_per_s` (deliveries/s between 10% and 90% delivered), `time_to_90pct_s`,
+  `time_to_100pct_s` (or `timeout at X delivered`) and `tail_99_to_end_s` (or, for a run that
+  never finishes, seconds past 99% plus the final rate over the last 10 s). The existing summary
+  lines are unchanged. `ts.py report <file> <total> [pools] [--rows]` re-reads a series.

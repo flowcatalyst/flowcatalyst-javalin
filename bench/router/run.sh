@@ -8,6 +8,31 @@
 #
 # ENV=v args starting with SINK_ are passed to the sink container; everything else is passed
 # to the server container (in addition to the fixed router-only env below).
+#
+# Rig knobs (environment of THIS script, not ENV=v args). Defaults in brackets:
+#   BROKER=postgres|sqs|nats [postgres]   TOTAL_MESSAGES [50000]   TIMEOUT_S [300]
+#   QUEUES [1]            independent queues BENCH-1..BENCH-n (one consumer each)
+#   POOLS [1]             processing pools. 1 = the single shared pool BENCH fed by every queue
+#                         (the old behaviour). N = pools BENCH-1..BENCH-N, each with
+#                         POOL_CONCURRENCY workers; queue i feeds pool BENCH-(((i-1)%N)+1) (N may
+#                         equal QUEUES, e.g. QUEUES=100 POOLS=100 = one pool per queue). Seeders
+#                         stamp each message's poolCode accordingly. Works for BROKER=nats|sqs and
+#                         for BROKER=postgres with SEED_VIA=sql and POOL_CONCURRENCY!=0 (the API
+#                         seed path and the synthesised DEFAULT-POOL path are single-pool only).
+#   POOL_CONCURRENCY [64] workers per pool (0 = synthesised DEFAULT-POOL, postgres only)
+#   NATS_MAXPEND [-1]     JetStream consumer max-ack-pending, used BOTH in `nats consumer add` and
+#   NATS_MAXDELIVER [-1]  max-deliver, in the queue URI. -1 = unlimited, which is the routers' own
+#                         default now (an earlier rig version forced 1000 / 10 — stale).
+#   NATS_STORAGE [memory] memory|file for the streams (and the URI)
+#   SEED_LATE_S [unset]   BROKER=nats: seed N seconds AFTER the router has started instead of before
+#   SETUP_PARALLEL [16]   bounded parallelism for per-queue setup/depth calls (stream/consumer
+#                         creation, SQS queue creation and depth) so QUEUES=100 stays cheap
+#   SINK_H2C [1]  DRAIN_GRACE_S [30]  KEEP [0]  SEED_VIA=sql|api [sql]
+#
+# After the unchanged summary lines every run also prints (and logs) a steady-rate/tail line from
+# a 1-second sink-count series (results/<label>.ts.jsonl, sampled by ts.py on the host through
+# the prober container, never inside the router container): steady rate between 10% and 90%
+# delivered, time to 90%, time to 100% (or "timeout at X delivered"), tail seconds 99% -> end.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 out=$here/results; mkdir -p "$out"
@@ -57,6 +82,13 @@ SINK_H2C=${SINK_H2C:-1}
 # feeding the same worker pool — a legitimate production shape (queues are independent
 # consumers), not a rig trick. Only applies with POOL_CONCURRENCY != 0 (the config-URL path).
 QUEUES=${QUEUES:-1}
+POOLS=${POOLS:-1}
+# Consumer limits: the routers' own defaults are unlimited (-1) for both now; the rig no longer
+# overrides them unless asked.
+NATS_MAXPEND=${NATS_MAXPEND:--1}
+NATS_MAXDELIVER=${NATS_MAXDELIVER:--1}
+NATS_STORAGE=${NATS_STORAGE:-memory}
+SETUP_PARALLEL=${SETUP_PARALLEL:-16}
 
 # ---- prepare: network + pg reused from bench/real, database `rt`, sink image -------------
 
@@ -118,7 +150,7 @@ reset_db() {
   " >/dev/null
 }
 
-# seed_sql(n, nqueues, poolCode, target): one INSERT ... SELECT generate_series statement —
+# seed_sql(n, nqueues, poolCode, target, npools=1): one INSERT ... SELECT generate_series statement —
 # fills queue_messages with n unclaimed, immediately-visible rows so the queue is FULL before
 # the router container is even started (measures the drain, not the seed API). Rows are
 # distributed round-robin over BENCH-1..BENCH-nqueues (matching the sink's /config — each
@@ -129,9 +161,12 @@ reset_db() {
 # from §2.1, confirmed against a real API-seeded row (see RESULTS.md —
 # {"id":...,"poolCode":...,"mediationType":"HTTP","mediationTarget":...,"dispatchMode":"IMMEDIATE"},
 # message_group_id NULL, unset optionals simply absent from the JSON). pool_code is the same
-# "BENCH" on every row regardless of which queue it lands in — one shared worker pool.
+# "BENCH" on every row regardless of which queue it lands in — one shared worker pool — unless
+# npools>1, when row gs (queue qi=((gs-1)%nqueues)+1) gets pool_code BENCH-(((qi-1)%npools)+1).
 seed_sql() {
-  local n=$1 nqueues=$2 pcode=$3 target=$4
+  local n=$1 nqueues=$2 pcode=$3 target=$4 npools=${5:-1}
+  local poolexpr="'$pcode'"
+  [ "$npools" -gt 1 ] && poolexpr="'BENCH-' || ((((gs - 1) % $nqueues) % $npools) + 1)"
   docker exec $PG psql -U pg -d rt -c "
     INSERT INTO queue_messages (id, queue_name, message_group_id, receipt_handle, visible_at, payload, created_at, receive_count)
     SELECT
@@ -140,7 +175,7 @@ seed_sql() {
       NULL,
       NULL,
       extract(epoch from now())::bigint,
-      '{\"id\":\"bench-' || gs || '\",\"poolCode\":\"$pcode\",\"mediationType\":\"HTTP\",\"mediationTarget\":\"$target\",\"dispatchMode\":\"IMMEDIATE\"}',
+      '{\"id\":\"bench-' || gs || '\",\"poolCode\":\"' || $poolexpr || '\",\"mediationType\":\"HTTP\",\"mediationTarget\":\"$target\",\"dispatchMode\":\"IMMEDIATE\"}',
       extract(epoch from now())::bigint,
       0
     FROM generate_series(1, $n) AS gs;
@@ -184,28 +219,33 @@ awsprobe() { docker exec $AWSPROBER aws --endpoint-url "http://$LOCALSTACK_IP:45
 # create_sqs_queues(n): BENCH-1..BENCH-n, visibility timeout 120 to match the Postgres rows,
 # standard (non-FIFO) queues.
 create_sqs_queues() {
-  local n=$1 i
-  for i in $(seq 1 "$n"); do
-    awsprobe sqs create-queue --queue-name "BENCH-$i" --attributes VisibilityTimeout=120 >/dev/null
-  done
+  local n=$1
+  export -f awsprobe; export AWSPROBER LOCALSTACK_IP
+  seq 1 "$n" | xargs -P "$SETUP_PARALLEL" -I{} bash -c \
+      'awsprobe sqs create-queue --queue-name "BENCH-{}" --attributes VisibilityTimeout=120 >/dev/null' \
+    || { echo "FAILED: create_sqs_queues" >&2; return 1; }
 }
 
 # sqs_queue_depth(n): sum of ApproximateNumberOfMessages + ApproximateNumberOfMessagesNotVisible
 # across BENCH-1..BENCH-n — the SQS equivalent of `SELECT count(*) FROM queue_messages`. Queue
 # URLs are the same "real AWS-shaped" ones the router's config uses (§7.1) — LocalStack resolves
 # by path regardless of host, confirmed manually before wiring this in (RESULTS.md).
+sqs_depth_one() {
+  local out visible notvisible
+  out=$(awsprobe sqs get-queue-attributes \
+      --queue-url "https://sqs.us-east-1.amazonaws.com/000000000000/BENCH-$1" \
+      --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible \
+      --query 'Attributes.[ApproximateNumberOfMessages,ApproximateNumberOfMessagesNotVisible]' \
+      --output text 2>/dev/null)
+  read -r visible notvisible <<<"$out"
+  echo $(( ${visible:-0} + ${notvisible:-0} ))
+}
+# Queries run with bounded parallelism (SETUP_PARALLEL) so 100 queues don't mean 100 serial aws-cli
+# starts per drain-completion poll.
 sqs_queue_depth() {
-  local n=$1 i total=0 out visible notvisible
-  for i in $(seq 1 "$n"); do
-    out=$(awsprobe sqs get-queue-attributes \
-        --queue-url "https://sqs.us-east-1.amazonaws.com/000000000000/BENCH-$i" \
-        --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible \
-        --query 'Attributes.[ApproximateNumberOfMessages,ApproximateNumberOfMessagesNotVisible]' \
-        --output text 2>/dev/null)
-    read -r visible notvisible <<<"$out"
-    total=$((total + ${visible:-0} + ${notvisible:-0}))
-  done
-  echo "$total"
+  local n=$1
+  export -f awsprobe sqs_depth_one; export AWSPROBER LOCALSTACK_IP
+  seq 1 "$n" | xargs -P "$SETUP_PARALLEL" -I{} bash -c 'sqs_depth_one {}' | awk '{s+=$1} END{print s+0}'
 }
 
 # ---- BROKER=nats helpers ---------------------------------------------------------------------
@@ -233,55 +273,91 @@ start_natsbox() {
 natsprobe() { docker exec $NATSBOX nats -s "nats://$NATS_IP:4222" "$@"; }
 
 # create_nats_streams(n): BENCH1..BENCHn, WorkQueue retention, subjects "bench.<i>.>",
-# storage=memory, replicas=1, max-age=7d (docs/spec/router.md §7.4 defaults) — matching, field
-# for field, the config the router's own queue URI (see run(), BROKER=nats branch) asks its
-# CreateOrUpdateStream/CreateOrUpdateConsumer to provision, so the router's own provisioning
-# call is a no-op against what's seeded here. Durable pull consumer "router" per stream:
-# ack policy explicit, deliver all, ack-wait 120s, max-deliver 10, max-pending 1000, filtered to
-# the same subject as the stream (matching cfg.Subject as FilterSubject in nats.go/NatsQueue).
+# storage=$NATS_STORAGE (default memory), replicas=1, max-age=7d (docs/spec/router.md §7.4
+# defaults) — matching, field for field, the config the router's own queue URI (see run(),
+# BROKER=nats branch) asks its CreateOrUpdateStream/CreateOrUpdateConsumer to provision, so the
+# router's own provisioning call is a no-op against what's seeded here. Durable pull consumer
+# "router" per stream: ack policy explicit, deliver all, ack-wait 120s, max-deliver
+# $NATS_MAXDELIVER and max-pending $NATS_MAXPEND (both default -1 = unlimited, the routers' own
+# defaults; the same values go into the queue URI), filtered to the same subject as the stream
+# (matching cfg.Subject as FilterSubject in nats.go/NatsQueue).
+# Streams are created with bounded parallelism (SETUP_PARALLEL) — one `nats` CLI exec per call is
+# a second or so each, minutes at QUEUES=100 if serial.
+nats_create_one() {
+  local i=$1
+  natsprobe stream add "BENCH$i" \
+      --retention=work --storage="$NATS_STORAGE" --subjects="bench.$i.>" --replicas=1 \
+      --max-age=7d --defaults >/dev/null \
+    || { echo "FAILED: nats stream add BENCH$i" >&2; return 1; }
+  natsprobe consumer add "BENCH$i" router \
+      --pull --deliver=all --ack=explicit --wait=120s --max-deliver="$NATS_MAXDELIVER" --max-pending="$NATS_MAXPEND" \
+      --filter="bench.$i.>" --defaults >/dev/null \
+    || { echo "FAILED: nats consumer add BENCH$i router" >&2; return 1; }
+}
 create_nats_streams() {
-  local n=$1 i
-  for i in $(seq 1 "$n"); do
-    natsprobe stream add "BENCH$i" \
-        --retention=work --storage=memory --subjects="bench.$i.>" --replicas=1 \
-        --max-age=7d --defaults >/dev/null \
-      || { echo "FAILED: nats stream add BENCH$i" >&2; return 1; }
-    natsprobe consumer add "BENCH$i" router \
-        --pull --deliver=all --ack=explicit --wait=120s --max-deliver=10 --max-pending=1000 \
-        --filter="bench.$i.>" --defaults >/dev/null \
-      || { echo "FAILED: nats consumer add BENCH$i router" >&2; return 1; }
-  done
+  local n=$1
+  export -f natsprobe nats_create_one
+  export NATSBOX NATS_IP NATS_STORAGE NATS_MAXDELIVER NATS_MAXPEND
+  seq 1 "$n" | xargs -P "$SETUP_PARALLEL" -I{} bash -c 'nats_create_one {}'
 }
 
-# nats_stream_messages(n): sum of state.messages across BENCH1..BENCHn — the NATS equivalent of
-# `SELECT count(*) FROM queue_messages` / sqs_queue_depth's ApproximateNumberOfMessages.
+# nats_jsz(): ONE monitoring call (NATS HTTP port 8222 /jsz, run inside the NATS container) for
+# the state of every stream and consumer — replaces a `nats stream info` + `nats consumer info`
+# exec per queue per poll, which at QUEUES=100 would cost more than the drain it is watching.
+nats_jsz() { docker exec $NATS wget -qO- 'http://127.0.0.1:8222/jsz?consumers=true' 2>/dev/null; }
+
+# nats_totals(): "<sum state.messages> <sum num_ack_pending> <streams seen>" over BENCH* streams
+# (WorkQueue streams drop a message only on ack, so messages already includes in-flight);
+# "unknown" if /jsz could not be read or parsed (the drain loop then keeps waiting rather than
+# mistaking a failed probe for an empty broker).
+nats_totals() {
+  nats_jsz | python3 -c '
+import json, sys
+try:
+    j = json.load(sys.stdin)
+    m = a = n = 0
+    for acc in j.get("account_details", []):
+        for sd in acc.get("stream_detail", []):
+            if not str(sd.get("name", "")).startswith("BENCH"): continue
+            n += 1
+            m += sd.get("state", {}).get("messages", 0)
+            for c in sd.get("consumer_detail") or []:
+                a += c.get("num_ack_pending", 0)
+    print(m, a, n)
+except Exception:
+    print("unknown")
+' 2>/dev/null || echo unknown
+}
+
+# nats_stream_messages(n): sum of state.messages across the BENCH streams (one /jsz call).
 nats_stream_messages() {
-  local n=$1 i total=0 m
-  for i in $(seq 1 "$n"); do
-    m=$(natsprobe stream info "BENCH$i" --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"]["messages"])' 2>/dev/null || echo 0)
-    total=$((total + ${m:-0}))
-  done
-  echo "$total"
-}
-
-# nats_ack_pending(n): sum of num_ack_pending across the "router" consumer on BENCH1..BENCHn —
-# claimed-but-unacked messages, the NATS equivalent of the Postgres backend's
-# `receipt_handle IS NOT NULL` in-flight count.
-nats_ack_pending() {
-  local n=$1 i total=0 p
-  for i in $(seq 1 "$n"); do
-    p=$(natsprobe consumer info "BENCH$i" router --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["num_ack_pending"])' 2>/dev/null || echo 0)
-    total=$((total + ${p:-0}))
-  done
-  echo "$total"
+  local m a s; read -r m a s <<<"$(nats_totals)"
+  echo "${m:-unknown}"
 }
 
 # nats_queue_depth(n): stream backlog + still-unacked in-flight — the drain isn't done until
 # both are 0 (docs/spec/router.md §7.4: Ack is a JetStream Ack() on the pending map; a message
-# claimed-but-not-yet-acked is neither "in the stream as pending" nor already gone).
+# claimed-but-not-yet-acked is neither "in the stream as pending" nor already gone). Echoes
+# "unknown" when /jsz is unreadable.
 nats_queue_depth() {
-  local n=$1
-  echo $(( $(nats_stream_messages "$n") + $(nats_ack_pending "$n") ))
+  local m a s; read -r m a s <<<"$(nats_totals)"
+  if [ "$m" = unknown ] || [ -z "${a:-}" ]; then echo unknown; else echo $((m + a)); fi
+}
+
+# nats_stream_listing(): "BENCH<i> messages=<n>" per stream from one /jsz call, numerically sorted.
+nats_stream_listing() {
+  nats_jsz | python3 -c '
+import json, re, sys
+j = json.load(sys.stdin)
+rows = []
+for acc in j.get("account_details", []):
+    for sd in acc.get("stream_detail", []):
+        nm = str(sd.get("name", ""))
+        if nm.startswith("BENCH"):
+            rows.append((int(re.sub(r"\D", "", nm) or 0), nm, sd.get("state", {}).get("messages", 0)))
+for _, nm, m in sorted(rows):
+    print(f"   {nm} messages={m}")
+' 2>/dev/null
 }
 
 # snap(): per-OS-thread kernel context-switch counters for PID 1 of a container.
@@ -346,6 +422,7 @@ run() {
   fail() {
     echo "FAILED at: $1" >&2
     docker logs "$sname" 2>&1 | tail -30 >&2
+    [ -n "${ts_pid:-}" ] && kill "$ts_pid" >/dev/null 2>&1
     docker rm -f "$sname" "$kname" $PROBER $AWSPROBER $LOCALSTACK $NATS $NATSBOX >/dev/null 2>&1
     exit 1
   }
@@ -363,7 +440,18 @@ run() {
   start_prober
 
   local pool_code=DEFAULT-POOL nqueues=1 queue_uri total effective_seed_via
-  local config_url_env=()
+  local config_url_env=() ts_pid=""
+
+  # POOLS: 1 = single shared pool BENCH (old behaviour); N = BENCH-1..BENCH-N (see header).
+  local npools=1
+  case "$POOLS" in ''|*[!0-9]*|0) echo "POOLS must be a positive integer (got '$POOLS')" >&2; exit 2 ;; esac
+  if [ "$POOLS" -gt 1 ]; then
+    if [ "$BROKER" = postgres ] && { [ "$POOL_CONCURRENCY" = 0 ] || [ "$SEED_VIA" != sql ]; }; then
+      echo "POOLS>1 with BROKER=postgres needs POOL_CONCURRENCY!=0 and SEED_VIA=sql (the DEFAULT-POOL bootstrap and the API seeder are single-pool)" >&2
+      exit 2
+    fi
+    npools=$POOLS
+  fi
 
   if [ "$BROKER" = sqs ]; then
     # BROKER=sqs always uses the config-URL/BENCH path — the synthesised-DEFAULT-POOL
@@ -384,7 +472,7 @@ run() {
 
     local t_seed0; t_seed0=$(python3 -c 'import time;print(time.time())')
     docker run --rm --network $NET \
-        -e TOTAL="$total" -e QUEUES="$nqueues" -e ENDPOINT="http://$LOCALSTACK_IP:4566" \
+        -e TOTAL="$total" -e QUEUES="$nqueues" -e POOLS="$npools" -e ENDPOINT="http://$LOCALSTACK_IP:4566" \
         -e REGION=us-east-1 -e MEDIATION_TARGET="http://$SINK_IP:9000/hook" \
         bench-router-seedsqs || fail "seedsqs (TOTAL=$total QUEUES=$nqueues)"
     local sql_seed_wall; sql_seed_wall=$(python3 -c "import time;print(round(time.time()-$t_seed0,2))")
@@ -394,36 +482,38 @@ run() {
     pool_code=BENCH; nqueues=$QUEUES; total=$TOTAL_MESSAGES; effective_seed_via=nats
     # %d is templated per queue by the sink's /config (sink/main.go, ReplaceAll now, not
     # Sprintf, because this template needs the queue number substituted twice). Every param is
-    # explicit and equal to the Go/Java parser default (docs/spec/router.md §7.4,
-    # NatsQueueUri.java) EXCEPT storage=memory (deliberately not file — disk isn't the variable
-    # under test, see RESULTS.md) — spelling every default out here, rather than relying on both
-    # sides defaulting the same way, is what makes the router's own create-or-update a verified
-    # no-op against create_nats_streams() below, not an assumed one.
-    queue_uri="nats://$NATS_IP:4222?stream=BENCH%d&consumer=router&subject=bench.%d.>&max-messages=10&poll-timeout-ms=20000&ack-wait-secs=120&max-deliver=10&max-ack-pending=1000&storage=memory&replicas=1&max-age-days=7"
+    # explicit. max-messages/poll-timeout/ack-wait/replicas/max-age equal the Go/Java parser
+    # defaults (docs/spec/router.md §7.4, NatsQueueUri.java); max-deliver and max-ack-pending
+    # are $NATS_MAXDELIVER / $NATS_MAXPEND, default -1 (unlimited), which is ALSO what the
+    # routers now default to — an earlier version of this rig forced 10 / 1000, which no longer
+    # matched production defaults. storage=$NATS_STORAGE (default memory, deliberately not file —
+    # disk isn't the variable under test, see RESULTS.md). Spelling everything out here, and
+    # using the SAME values in create_nats_streams()'s consumer-add flags, is what makes the
+    # router's own create-or-update a verified no-op, not an assumed one.
+    queue_uri="nats://$NATS_IP:4222?stream=BENCH%d&consumer=router&subject=bench.%d.>&max-messages=10&poll-timeout-ms=20000&ack-wait-secs=120&max-deliver=$NATS_MAXDELIVER&max-ack-pending=$NATS_MAXPEND&storage=$NATS_STORAGE&replicas=1&max-age-days=7"
     config_url_env=(-e FLOWCATALYST_CONFIG_URL="http://$SINK_IP:9000/config")
 
     start_nats || fail "NATS health wait ($NATS_IP:8222/healthz)"
     start_natsbox
     create_nats_streams "$nqueues" || fail "create_nats_streams(QUEUES=$nqueues)"
 
-    local t_seed0; t_seed0=$(python3 -c 'import time;print(time.time())')
-    docker run --rm --network $NET \
-        -e NATS_URL="nats://$NATS_IP:4222" -e TOTAL="$total" -e QUEUES="$nqueues" \
-        -e MEDIATION_TARGET="http://$SINK_IP:9000/hook" \
-        bench-router-seednats || fail "seednats (TOTAL=$total QUEUES=$nqueues)"
-    local sql_seed_wall; sql_seed_wall=$(python3 -c "import time;print(round(time.time()-$t_seed0,2))")
-    echo "-- seeded $total messages across $nqueues NATS stream(s) in ${sql_seed_wall}s (streams full BEFORE the router starts)"
+    if [ -z "${SEED_LATE_S:-}" ]; then
+      local t_seed0; t_seed0=$(python3 -c 'import time;print(time.time())')
+      docker run --rm --network $NET \
+          -e NATS_URL="nats://$NATS_IP:4222" -e TOTAL="$total" -e QUEUES="$nqueues" -e POOLS="$npools" \
+          -e MEDIATION_TARGET="http://$SINK_IP:9000/hook" \
+          bench-router-seednats || fail "seednats (TOTAL=$total QUEUES=$nqueues POOLS=$npools)"
+      local sql_seed_wall; sql_seed_wall=$(python3 -c "import time;print(round(time.time()-$t_seed0,2))")
+      echo "-- seeded $total messages across $nqueues NATS stream(s) in ${sql_seed_wall}s (streams full BEFORE the router starts)"
 
-    # Verify per-stream counts BEFORE the router starts (task requirement): each BENCH<n>
-    # stream must hold exactly its round-robin share of $total.
-    local qi expect_lo expect_hi got all_ok=1
-    for qi in $(seq 1 "$nqueues"); do
-      got=$(natsprobe stream info "BENCH$qi" --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"]["messages"])' 2>/dev/null || echo -1)
-      echo "   BENCH$qi messages=$got"
-      [ "$got" -ge 0 ] 2>/dev/null || all_ok=0
-    done
-    local seeded_total; seeded_total=$(nats_stream_messages "$nqueues")
-    [ "$seeded_total" = "$total" ] || fail "pre-seed verify: nats streams hold $seeded_total, expected $total"
+      # Verify per-stream counts BEFORE the router starts (task requirement), from ONE /jsz
+      # call: the per-stream listing, then the total must equal $total. Beyond 16 streams only
+      # the listing's head/tail is echoed to keep the log readable.
+      local listing; listing=$(nats_stream_listing)
+      if [ "$nqueues" -le 16 ]; then echo "$listing"; else echo "$listing" | sed -n '1,3p;$p'; echo "   ... ($nqueues streams, see total below)"; fi
+      local seeded_total; seeded_total=$(nats_stream_messages)
+      [ "$seeded_total" = "$total" ] || fail "pre-seed verify: nats streams hold $seeded_total, expected $total"
+    fi
   else
     reset_db
 
@@ -452,7 +542,7 @@ run() {
     if [ "$effective_seed_via" = sql ]; then
       total=$TOTAL_MESSAGES
       local t_seed0; t_seed0=$(python3 -c 'import time;print(time.time())')
-      seed_sql "$total" "$nqueues" "$pool_code" "http://$SINK_IP:9000/hook"
+      seed_sql "$total" "$nqueues" "$pool_code" "http://$SINK_IP:9000/hook" "$npools"
       local sql_seed_wall; sql_seed_wall=$(python3 -c "import time;print(round(time.time()-$t_seed0,2))")
       echo "-- seeded $total rows by SQL across $nqueues queue(s) in ${sql_seed_wall}s (queue full BEFORE the router starts)"
       # per-queue distribution, for the record (also proves the round-robin actually spread rows)
@@ -462,9 +552,9 @@ run() {
     fi
   fi
 
-  # (b) fresh sink — always serves /config (POOL_CONCURRENCY/QUEUES/QUEUE_URI) and /hook (SINK_H2C).
+  # (b) fresh sink — always serves /config (POOL_CONCURRENCY/QUEUES/POOLS/QUEUE_URI) and /hook (SINK_H2C).
   docker run -d --name "$kname" --network $NET --ip $SINK_IP --cpuset-cpus=2-9 \
-      -e POOL_CONCURRENCY="$POOL_CONCURRENCY" -e QUEUES="$nqueues" -e QUEUE_URI="$queue_uri" -e SINK_H2C="$SINK_H2C" \
+      -e POOL_CONCURRENCY="$POOL_CONCURRENCY" -e QUEUES="$nqueues" -e POOLS="$npools" -e QUEUE_URI="$queue_uri" -e SINK_H2C="$SINK_H2C" \
       ${sink_envs[@]+"${sink_envs[@]}"} bench-router-sink >/dev/null
   for i in $(seq 1 50); do probe -o /dev/null -w '%{http_code}' "http://$SINK_IP:9000/stats" 2>/dev/null | grep -q 200 && break; sleep 0.2; done
 
@@ -501,6 +591,15 @@ run() {
   local authflag=(-u bench:bench)
   local snap_before; snap_before=$(snap "$sname")
 
+  if [ -n "${SEED_LATE_S:-}" ] && [ "$BROKER" = nats ]; then
+    echo "-- sleeping ${SEED_LATE_S}s so every consumer is online before seeding"
+    sleep "$SEED_LATE_S"
+    local t_ls0; t_ls0=$(python3 -c 'import time;print(time.time())')
+    docker run --rm --network $NET -e NATS_URL="nats://$NATS_IP:4222" -e TOTAL="$total" -e QUEUES="$nqueues" -e POOLS="$npools" \
+        -e MEDIATION_TARGET="http://$SINK_IP:9000/hook" bench-router-seednats || fail "late seednats"
+    echo "-- late-seeded $total messages in $(python3 -c "import time;print(round(time.time()-$t_ls0,2))")s (router already running)"
+  fi
+
   if [ "$effective_seed_via" = api ]; then
     # (e) debug path: SEED_CALLS x POST /router/api/seed/messages, count=SEED_COUNT each.
     # Note this folds seeding into the measured window below — it's for debugging the rig,
@@ -531,6 +630,11 @@ run() {
       sleep 1
     done ) &
   local sampler_pid=$!
+  # 1-second sink-count series for the steady-rate/tail report (ts.py). Host-side python +
+  # `docker exec` into the prober container only: nothing runs inside the router container.
+  local tsfile="$out/$label.ts.jsonl"
+  python3 "$here/ts.py" sample "$tsfile" $PROBER "http://$SINK_IP:9000/stats" 1 &
+  ts_pid=$!
   local t_poll0; t_poll0=$(python3 -c 'import time;print(time.time())')
   local count=0 elapsed=0
   while :; do
@@ -541,6 +645,10 @@ run() {
     python3 -c "exit(0 if $elapsed < $TIMEOUT_S else 1)" || { echo "WARNING: timed out at count=$count/$total after ${TIMEOUT_S}s" >&2; break; }
     sleep 0.5
   done
+
+  # Stop the series at sink completion (or timeout): the tail/stall figures are about the delivery
+  # curve, not the ack grace window below.
+  kill "$ts_pid" >/dev/null 2>&1; wait "$ts_pid" 2>/dev/null; ts_pid=""
 
   # The sink recording a hit and the router's own ACK (a Postgres DELETE, or an SQS
   # DeleteMessage) reaching the broker are two separate events — under load the ack can lag
@@ -581,18 +689,31 @@ run() {
 
   # pools API — confirms the router actually picked up the config-URL pool (§9.1 /monitoring/pools)
   probe ${authflag[@]+"${authflag[@]}"} "http://$SERVER_IP:8080/router/monitoring/pools" > "$out/$label.pools.json" 2>/dev/null
-  local pool_seen; pool_seen=$(python3 - "$out/$label.pools.json" "$pool_code" <<'PY'
+  local pool_seen; pool_seen=$(python3 - "$out/$label.pools.json" "$pool_code" "$npools" <<'PY'
 import json, sys
 try:
     pools = json.load(open(sys.argv[1]))
 except Exception:
     print("unknown"); sys.exit()
-code = sys.argv[2]
-for p in pools if isinstance(pools, list) else []:
-    if p.get("pool_code") == code or p.get("poolCode") == code or p.get("code") == code:
-        print(f"yes(concurrency={p.get('concurrency', p.get('max_concurrency', '?'))})")
-        sys.exit()
-print("no")
+code, npools = sys.argv[2], int(sys.argv[3])
+pools = pools if isinstance(pools, list) else []
+def pcode(p): return p.get("pool_code") or p.get("poolCode") or p.get("code")
+def conc(p): return p.get("concurrency", p.get("max_concurrency", "?"))
+if npools <= 1:
+    for p in pools:
+        if pcode(p) == code:
+            print(f"yes(concurrency={conc(p)})")
+            sys.exit()
+    print("no")
+else:
+    # POOLS>1: every BENCH-1..BENCH-N must be present.
+    by = {pcode(p): p for p in pools}
+    want = [f"BENCH-{k}" for k in range(1, npools + 1)]
+    have = [w for w in want if w in by]
+    if len(have) == npools:
+        print(f"yes(pools={npools},concurrency={conc(by[want[0]])})")
+    else:
+        print(f"partial({len(have)}/{npools})" if have else "no")
 PY
 )
 
@@ -662,6 +783,8 @@ print(round($scount/((ln-fn)/1e9),1) if ln>fn else 0)
     echo "   total_messages=$total delivered=$scount deliveries_per_s=$rate drain_time_s=$drain_time $broker_line"
     echo "   max_rss_mb=$max_rss end_rss_mb=$end_rss mean_cpu_pct=$mean_cpu context_switches=$switches switches_per_delivery=$switches_per"
     echo "   proto_counts=$protoc"
+    echo "   [steady-vs-tail] timeseries=results/$label.ts.jsonl total=$total"
+    python3 "$here/ts.py" report "$tsfile" "$total" "$npools"
   } | tee "$out/$label.log"
 
   docker logs "$sname" > "$out/$label.server.log" 2>&1
