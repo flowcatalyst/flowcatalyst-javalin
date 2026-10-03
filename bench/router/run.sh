@@ -487,11 +487,16 @@ run() {
     start_awsprober
     create_sqs_queues "$nqueues"
 
+    # WARMUP_MESSAGES=W: seed only W before the router starts; once the router has drained them
+    # (and WARMUP_PAUSE_S has passed) the main TOTAL_MESSAGES are seeded while it is running, so
+    # the main phase is measured on a warm JVM. total = W + TOTAL_MESSAGES.
+    local warm=${WARMUP_MESSAGES:-0} first_seed=$total
+    if [ "$warm" -gt 0 ]; then first_seed=$warm; total=$((warm + TOTAL_MESSAGES)); fi
     local t_seed0; t_seed0=$(python3 -c 'import time;print(time.time())')
     docker run --rm --network $NET \
-        -e TOTAL="$total" -e QUEUES="$nqueues" -e POOLS="$npools" -e ENDPOINT="http://$LOCALSTACK_IP:4566" \
+        -e TOTAL="$first_seed" -e QUEUES="$nqueues" -e POOLS="$npools" -e ENDPOINT="http://$LOCALSTACK_IP:4566" \
         -e REGION=us-east-1 -e MEDIATION_TARGET="http://$SINK_IP:9000/hook" \
-        bench-router-seedsqs || fail "seedsqs (TOTAL=$total QUEUES=$nqueues)"
+        bench-router-seedsqs || fail "seedsqs (TOTAL=$first_seed QUEUES=$nqueues)"
     local sql_seed_wall; sql_seed_wall=$(python3 -c "import time;print(round(time.time()-$t_seed0,2))")
     echo "-- seeded $total messages across $nqueues SQS queue(s) in ${sql_seed_wall}s (queues full BEFORE the router starts)"
   elif [ "$BROKER" = nats ]; then
@@ -607,6 +612,22 @@ run() {
   local authmode; authmode=$(wait_health $SERVER_IP) || fail "health wait ($SERVER_IP:8080/router/health)"
   local authflag=(-u bench:bench)
   local snap_before; snap_before=$(snap "$sname")
+
+  if [ "${WARMUP_MESSAGES:-0}" -gt 0 ] && [ "$BROKER" = sqs ]; then
+    local wc=0 wi
+    for wi in $(seq 1 240); do
+      wc=$(probe "http://$SINK_IP:9000/stats" 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin)["count"])' 2>/dev/null || echo 0)
+      [ "${wc:-0}" -ge "$WARMUP_MESSAGES" ] && break
+      sleep 0.5
+    done
+    echo "-- warm-up: $wc/$WARMUP_MESSAGES delivered; pausing ${WARMUP_PAUSE_S:-5}s, then seeding the main $TOTAL_MESSAGES"
+    sleep "${WARMUP_PAUSE_S:-5}"
+    docker run --rm --network $NET \
+        -e TOTAL="$TOTAL_MESSAGES" -e QUEUES="$nqueues" -e POOLS="$npools" -e ENDPOINT="http://$LOCALSTACK_IP:4566" \
+        -e REGION=us-east-1 -e MEDIATION_TARGET="http://$SINK_IP:9000/hook" \
+        bench-router-seedsqs || fail "main seedsqs after warm-up"
+    date +%s > "$out/$label.main-seeded-epoch" 2>/dev/null
+  fi
 
   if [ -n "${SEED_LATE_S:-}" ] && [ "$BROKER" = nats ]; then
     echo "-- sleeping ${SEED_LATE_S}s so every consumer is online before seeding"
