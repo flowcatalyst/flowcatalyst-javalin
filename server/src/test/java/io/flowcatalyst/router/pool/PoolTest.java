@@ -32,6 +32,7 @@ import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
@@ -514,6 +515,57 @@ class PoolTest {
                 .as("with the old permits gone, the new limit is the only one left")
                 .isEqualTo(2);
         mediator.unblock();
+    }
+
+    // ── Slot released before the ack ────────────────────────────────────
+
+    @Test
+    @DisplayName("an unordered message's slot is released before its ack, so a slow ack does not hold the pool "
+            + "(mutant: release after the ack)")
+    void slotIsReleasedBeforeTheAck() {
+        broker.ackGate = new CountDownLatch(1);
+        var p = pool(1, 0);
+
+        IntStream.range(0, 3).forEach(i -> p.submit(immediate("m" + i)));
+
+        // Concurrency 1 and no ack has completed: all three can only have
+        // reached the target if each slot was freed before its ack.
+        await(() -> mediator.delivered.size() == 3);
+        assertThat(broker.acked).isEmpty();
+
+        broker.ackGate.countDown();
+        await(() -> broker.acked.size() == 3);
+        await(() -> p.queueSize() == 0);
+        assertThat(broker.acked).containsExactlyInAnyOrder("m0", "m1", "m2");
+        assertThat(broker.nacked).isEmpty();
+    }
+
+    @Test
+    @DisplayName("an ordered head's slot is released before its ack; the group itself still waits for the ack")
+    void orderedSlotIsReleasedBeforeTheAck() {
+        broker.ackGate = new CountDownLatch(1);
+        var p = pool(1, 0);
+
+        p.submit(ordered("g", "g0", DispatchMode.BLOCK_ON_ERROR));
+        p.submit(ordered("g", "g1", DispatchMode.BLOCK_ON_ERROR));
+        p.submit(ordered("g", "g2", DispatchMode.BLOCK_ON_ERROR));
+        p.submit(ordered("h", "h0", DispatchMode.BLOCK_ON_ERROR));
+
+        // g0's ack is in flight and blocked. The single slot is free, so the
+        // other group delivers, while g's own next message must wait for the
+        // drainer: strict in-group order is the drainer being sequential.
+        await(() -> mediator.delivered.contains("g0") && mediator.delivered.contains("h0"));
+        await(() -> broker.ackStarted.contains("g0") && broker.ackStarted.contains("h0"));
+        assertThat(broker.acked).isEmpty();
+        assertThat(mediator.delivered).doesNotContain("g1", "g2");
+
+        broker.ackGate.countDown();
+        await(() -> broker.acked.size() == 4);
+        await(() -> p.queueSize() == 0);
+        assertThat(mediator.delivered.stream().filter(id -> id.startsWith("g")).toList())
+                .containsExactly("g0", "g1", "g2");
+        assertThat(broker.acked).containsExactlyInAnyOrder("g0", "g1", "g2", "h0");
+        assertThat(broker.nacked).isEmpty();
     }
 
     // ── Ordering ────────────────────────────────────────────────────────
@@ -1537,9 +1589,24 @@ class PoolTest {
         /// rejection.
         final Map<String, Duration> deferred = new ConcurrentHashMap<>();
         final InFlightTracker tracker = new InFlightTracker(Clock.systemUTC());
+        /// When set, every ack blocks on it before completing — an SQS
+        /// DeleteMessage round trip that has not returned yet.
+        volatile CountDownLatch ackGate;
+        /// Ids whose ack has been ISSUED (entered), completed or not.
+        final List<String> ackStarted = new CopyOnWriteArrayList<>();
 
         @Override
         public void ack(QueuedMessage message) {
+            ackStarted.add(message.id());
+            var gate = ackGate;
+            if (gate != null) {
+                try {
+                    gate.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
             acked.add(message.id());
             tracker.remove(message.id());
         }

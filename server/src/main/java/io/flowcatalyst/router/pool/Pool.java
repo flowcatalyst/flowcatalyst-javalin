@@ -486,10 +486,11 @@ public final class Pool implements AutoCloseable {
         try {
             while (true) {
                 Attempt attempt;
+                var slot = new SlotRelease(semaphore);
                 try {
-                    attempt = deliverOnce(message);
+                    attempt = deliverOnce(message, slot);
                 } finally {
-                    semaphore.release();
+                    slot.release();
                 }
                 if (attempt instanceof Attempt.Settled) {
                     return;
@@ -797,10 +798,11 @@ public final class Pool implements AutoCloseable {
                     return;
                 }
                 Attempt attempt;
+                var slot = new SlotRelease(semaphore);
                 try {
-                    attempt = deliverOnce(message);
+                    attempt = deliverOnce(message, slot);
                 } finally {
-                    semaphore.release();
+                    slot.release();
                 }
                 boolean carryOn = switch (attempt) {
                     case Attempt.Settled ignored -> true;
@@ -1101,13 +1103,37 @@ public final class Pool implements AutoCloseable {
         }
     }
 
-    /// One delivery attempt and its consequences (§3.5).
-    private Attempt deliverOnce(QueuedMessage message) {
+    /// Gives a concurrency slot back at most once. A slot bounds concurrent
+    /// deliveries to the target; a broker acknowledgement is not one, and on
+    /// SQS it is a blocking round trip, so the slot is released immediately
+    /// before every ACK of a settled message ([#deliverOnce], [#resolve]) and
+    /// the caller's `finally` releases it again as a no-op. Used by the one
+    /// worker that took the slot, so no synchronisation.
+    private static final class SlotRelease {
+        private final ResizableSemaphore semaphore;
+        private boolean released;
+
+        SlotRelease(ResizableSemaphore semaphore) {
+            this.semaphore = semaphore;
+        }
+
+        void release() {
+            if (!released) {
+                released = true;
+                semaphore.release();
+            }
+        }
+    }
+
+    /// One delivery attempt and its consequences (§3.5). `slot` is released
+    /// just before any ACK made here.
+    private Attempt deliverOnce(QueuedMessage message, SlotRelease slot) {
         if (!broker.owns(message)) {
             // Layer 2 dedup backstop (`docs/spec/router.md` §2.1
             // EnsureTracked): a different broker copy now owns the
             // pipeline for this message — this attempt must ACK its own
             // copy as a duplicate and go no further, never deliver it.
+            slot.release();
             broker.ack(message, "duplicate");
             return new Attempt.Settled();
         }
@@ -1116,6 +1142,7 @@ public final class Pool implements AutoCloseable {
             // Checked before the rate limiter, which is the point: a flushed
             // group spends neither a token nor a slot.
             metrics.recordSuppressed();
+            slot.release();
             broker.ack(message);
             return new Attempt.Settled();
         }
@@ -1187,7 +1214,7 @@ public final class Pool implements AutoCloseable {
         // recording with a queue) must find the attempt already recorded
         // once the ack is visible — the other order raced exactly that.
         dispatched(event, message, outcome);
-        return resolve(message, outcome, took);
+        return resolve(message, outcome, took, slot);
     }
 
     /// The pool's own delivery metric — distinct from [PoolMetrics], which is
@@ -1227,7 +1254,7 @@ public final class Pool implements AutoCloseable {
         }
     }
 
-    private Attempt resolve(QueuedMessage message, MediationOutcome outcome, Duration took) {
+    private Attempt resolve(QueuedMessage message, MediationOutcome outcome, Duration took, SlotRelease slot) {
         var metric = metricFor(outcome);
         return switch (outcome) {
             case MediationOutcome.Success success -> {
@@ -1235,6 +1262,7 @@ public final class Pool implements AutoCloseable {
                     applyFlush(message, success.delaySeconds());
                 }
                 recordMetric(metric, took);
+                slot.release();
                 broker.ack(message, "delivered");
                 yield new Attempt.Settled();
             }
@@ -1245,6 +1273,7 @@ public final class Pool implements AutoCloseable {
                     // unchanged cannot succeed, so it is dropped rather than
                     // kept forever.
                     case UNDELIVERABLE -> {
+                        slot.release();
                         broker.ack(message, "undeliverable");
                         yield new Attempt.Settled();
                     }
