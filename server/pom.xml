@@ -147,6 +147,12 @@
     <!-- Infra -->
     <!-- Router queue backends. Versions are pinned by the parent's
          dependencyManagement (awssdk BOM / jnats). -->
+    <!-- The sync HTTP client the AWS SDK uses by default, declared so SqsQueue can size
+         its connection pool (SDK default: 50 per client). Version from the AWS BOM. -->
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>apache5-client</artifactId>
+    </dependency>
     <dependency>
       <groupId>software.amazon.awssdk</groupId>
       <artifactId>sqs</artifactId>

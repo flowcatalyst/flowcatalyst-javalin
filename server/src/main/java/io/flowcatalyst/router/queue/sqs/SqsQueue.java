@@ -10,8 +10,11 @@ import io.flowcatalyst.router.wire.Message;
 import org.slf4j.Logger;
 import org.slf4j.spi.LoggingEventBuilder;
 import org.slf4j.LoggerFactory;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.http.apache5.Apache5HttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.SqsClientBuilder;
 import software.amazon.awssdk.services.sqs.model.ChangeMessageVisibilityRequest;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageRequest;
 import software.amazon.awssdk.services.sqs.model.GetQueueAttributesRequest;
@@ -125,15 +128,46 @@ public final class SqsQueue implements Consumer {
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
+    /// Longest one SQS attempt may take. The long-poll receive waits up to
+    /// [#WAIT_TIME_SECONDS] (20s), so this must exceed that; every other call is
+    /// quick, and without any bound a call on a stalled connection blocked its
+    /// caller for good (an acknowledgement held a pool worker and its slot) --
+    /// the same unbounded wait that froze the NATS consumer.
+    static final Duration API_CALL_ATTEMPT_TIMEOUT = Duration.ofSeconds(25);
+
+    /// Longest a whole call may take including the SDK's retries.
+    static final Duration API_CALL_TIMEOUT = Duration.ofSeconds(30);
+
+    /// Connections each queue's client may hold. The SDK's Apache default is 50
+    /// per client, and one queue's client carries the long poll plus a
+    /// DeleteMessage from every concurrent worker of its pool (up to 64 or more):
+    /// beyond 50 the workers queued for a connection lease and, after the lease
+    /// timeout, the delete failed and the message was redelivered. Above any
+    /// pool's concurrency, so a busy queue never waits for a lease.
+    static final int MAX_HTTP_CONNECTIONS = 256;
+
+    /// The SQS client builder: region from the queue URL, bounded calls, and a
+    /// connection pool sized for a busy queue. A package-private seam so a test
+    /// can shorten the timeouts and point it at a local server.
+    static SqsClientBuilder clientBuilder(String queueUrl, Duration apiCallTimeout, Duration attemptTimeout) {
+        var builder = SqsClient.builder()
+                .httpClientBuilder(Apache5HttpClient.builder().maxConnections(MAX_HTTP_CONNECTIONS))
+                .overrideConfiguration(ClientOverrideConfiguration.builder()
+                        .apiCallTimeout(apiCallTimeout)
+                        .apiCallAttemptTimeout(attemptTimeout)
+                        .build());
+        regionFromUrl(queueUrl).ifPresent(region -> builder.region(Region.of(region)));
+        return builder;
+    }
+
     /// Builds the real client: region from the queue URL's host when it
     /// looks like an SQS endpoint, otherwise the SDK's default region chain
     /// (§7.2 "Build"). An SQS queue must be reached in its own region, and
     /// this works even when `AWS_REGION`/`AWS_DEFAULT_REGION` isn't set in
     /// the environment.
     public static SqsQueue create(String queueUrl, String configuredName, int visibilityTimeoutSeconds) {
-        var builder = SqsClient.builder();
-        regionFromUrl(queueUrl).ifPresent(region -> builder.region(Region.of(region)));
-        return adopt(builder.build(), queueUrl, configuredName, visibilityTimeoutSeconds);
+        return adopt(clientBuilder(queueUrl, API_CALL_TIMEOUT, API_CALL_ATTEMPT_TIMEOUT).build(),
+                queueUrl, configuredName, visibilityTimeoutSeconds);
     }
 
     /// Wraps a freshly built client, closing it if the wrapping fails.
@@ -162,9 +196,8 @@ public final class SqsQueue implements Consumer {
     /// §7.2): builds its own region-aware client, exactly like [#create],
     /// then checks the queue exists before adopting it.
     public static ConsumerBuild createChecked(String queueUrl, String configuredName, int visibilityTimeoutSeconds) {
-        var builder = SqsClient.builder();
-        regionFromUrl(queueUrl).ifPresent(region -> builder.region(Region.of(region)));
-        return checkedAdopt(builder.build(), queueUrl, configuredName, visibilityTimeoutSeconds);
+        return checkedAdopt(clientBuilder(queueUrl, API_CALL_TIMEOUT, API_CALL_ATTEMPT_TIMEOUT).build(),
+                queueUrl, configuredName, visibilityTimeoutSeconds);
     }
 
     /// As [#createChecked], but over an already-built client — the hook
