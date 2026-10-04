@@ -75,6 +75,37 @@ class RouterManagerTest {
 
     // ── Ownership ───────────────────────────────────────────────────────
 
+    // ── pools() snapshot ────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("pools() does not allocate per call while the pool set is unchanged")
+    void poolsViewIsNotCopiedPerCall() {
+        registerPool("A");
+        registerPool("B");
+        manager.pools();
+        double bytes = io.flowcatalyst.router.support.AllocProbe.bytesPerCall(20_000, 50_000, manager::pools);
+        System.out.println("ALLOC pools bytes/call=" + bytes);
+        assertThat(bytes).isLessThan(64);
+    }
+
+    @Test
+    @DisplayName("pools() snapshots are stable for holders and reflect every change to the pool set")
+    void poolsSnapshotTracksChanges() {
+        registerPool("A");
+        var before = manager.pools();
+        assertThat(manager.pools()).isSameAs(before);
+
+        registerPool("B");
+        var after = manager.pools();
+        assertThat(before).containsOnlyKeys("A");
+        assertThat(after).containsOnlyKeys("A", "B");
+
+        // a synthesised per-client fallback pool is part of the set too
+        manager.poolFor(message("m1", "b1", "acme-DEFAULT-POOL"));
+        assertThat(manager.pools()).containsKey("acme-DEFAULT-POOL");
+        assertThat(after).doesNotContainKey("acme-DEFAULT-POOL");
+    }
+
     @Test
     @DisplayName("a new message is submitted to its pool")
     void newMessageIsSubmitted() {

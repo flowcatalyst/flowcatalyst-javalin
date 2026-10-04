@@ -84,6 +84,14 @@ public final class RouterManager implements AutoCloseable {
     public static final Duration DEFAULT_SYNTH_POOL_IDLE_TTL = Duration.ofHours(1);
 
     private final Map<String, Pool> pools = new ConcurrentHashMap<>();
+    /// Bumped after every change to [#pools]; [#pools()] hands out an immutable
+    /// snapshot that is rebuilt only when this has moved since it was taken, so the
+    /// hot path does not copy the map per call and a caller iterating a snapshot
+    /// is never disturbed by a reconfigure.
+    private final java.util.concurrent.atomic.AtomicLong poolsVersion = new java.util.concurrent.atomic.AtomicLong();
+    private record PoolsSnapshot(long version, Map<String, Pool> pools) {
+    }
+    private volatile PoolsSnapshot poolsSnapshot = new PoolsSnapshot(-1, Map.of());
 
     /// Pools removed from routing by [#applyPools] but not yet [Pool#drained]
     /// (X-11, `docs/spec/router-completion.md` §2 ruling 6). Kept apart from
@@ -254,6 +262,7 @@ public final class RouterManager implements AutoCloseable {
     /// ledger (§1).
     private void addPool(String code, Pool pool) {
         pools.put(code, pool);
+        poolsVersion.incrementAndGet();
         pool.onCapacityFreed(capacityGate::signal);
         pool.onDeferral(this::noteDeferral);
         capacityGate.signal();
@@ -421,7 +430,16 @@ public final class RouterManager implements AutoCloseable {
     }
 
     public Map<String, Pool> pools() {
-        return Map.copyOf(pools);
+        var snapshot = poolsSnapshot;
+        // Version read BEFORE copying: a change racing the copy leaves the version
+        // ahead of the stored one, so the next call rebuilds rather than serving stale.
+        long version = poolsVersion.get();
+        if (snapshot.version() == version) {
+            return snapshot.pools();
+        }
+        var rebuilt = new PoolsSnapshot(version, Map.copyOf(pools));
+        poolsSnapshot = rebuilt;
+        return rebuilt.pools();
     }
 
     /// Routing pools plus every pool still [Pool#drain]ing after removal
@@ -547,6 +565,7 @@ public final class RouterManager implements AutoCloseable {
         forgetConsumers();
         List.copyOf(pools.values()).forEach(Pool::close);
         pools.clear();
+        poolsVersion.incrementAndGet();
         List.copyOf(drainingPools.values()).forEach(Pool::close);
         drainingPools.clear();
     }
@@ -683,7 +702,7 @@ public final class RouterManager implements AutoCloseable {
                 return Optional.of(pool);
             }
             if (code.endsWith(DEFAULT_POOL_SUFFIX)) {
-                return Optional.of(pools.computeIfAbsent(code, synthesised -> {
+                var synthesisedPool = pools.computeIfAbsent(code, synthesised -> {
                     // computeIfAbsent guarantees this lambda runs at most once
                     // per code, so wiring the listener and signalling the gate
                     // here — rather than unconditionally after the call —
@@ -693,7 +712,9 @@ public final class RouterManager implements AutoCloseable {
                     created.onDeferral(this::noteDeferral);
                     capacityGate.signal();
                     return created;
-                }));
+                });
+                poolsVersion.incrementAndGet();
+                return Optional.of(synthesisedPool);
             }
             warnings.raise(Warnings.Severity.WARNING, "ROUTING",
                     "no pool for pool_code \"" + code + "\"; routed to " + DEFAULT_POOL);
@@ -801,6 +822,7 @@ public final class RouterManager implements AutoCloseable {
                 // Synthesised per-client fallbacks are never in the config and
                 // must survive a reconfigure that does not mention them.
                 var pool = pools.remove(code);
+                poolsVersion.incrementAndGet();
                 if (pool != null) {
                     // drain, not close (X-11, `docs/spec/router-completion.md`
                     // §2 ruling 6): stop admitting at once — this pool has
@@ -883,6 +905,7 @@ public final class RouterManager implements AutoCloseable {
                 continue;
             }
             if (pools.remove(code, pool)) {
+                poolsVersion.incrementAndGet();
                 lastRoutedAt.remove(code);
                 pool.close();
                 evicted++;
