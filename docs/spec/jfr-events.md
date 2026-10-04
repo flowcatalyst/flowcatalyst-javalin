@@ -3,7 +3,7 @@
 Written 2026-09-05 by the orchestrator. The router already has its three
 events (`io.flowcatalyst.router.observability.jfr`: `MessageSettled`,
 `Dispatch`, `GroupDecision`, landed `246e270`), the dispatch scheduler has
-`ClaimedBatch`, and the dispatch-job seam has `DispatchProcessed`. Every
+`ClaimedBatch` (one per claim) and `LanePublish` (one per dispatcher-lane batch), and the dispatch-job seam has `DispatchProcessed`. Every
 loop Phase 2 added is silent in the same way the router used to be: a row
 leaves a queue state and no counter or log line can say afterwards which
 row, why, and with what outcome. This spec adds one event per loop at the

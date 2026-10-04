@@ -256,8 +256,9 @@ inside one transaction:
    (`dispatcher.go:62-73`) — the status guard leaves alone any row the
    processing endpoint has already advanced past `QUEUED`.
 
-**Java since 2026-09-28: publish inside the claim transaction, steps 4-6
-reordered.** Go's order has a window: a process death between the commit
+**Java 2026-09-28 to 2026-10-04: publish inside the claim transaction, steps 4-6
+reordered — SUPERSEDED by the decoupled poller and lanes below (kept for the
+reasoning, which still holds: `QUEUED` means the broker accepted it).** Go's order has a window: a process death between the commit
 (step 5) and the publish leaves rows `QUEUED` that never reached the broker,
 and since the stale-`QUEUED` sweep was removed (owner ruling 2026-09-22, "a
 broker-held job is the broker's") nothing ever recovers them. Java instead
@@ -294,6 +295,96 @@ Pinned by `PendingJobPollerTest` (`whenThePublisherRunsTheJobIsNotYetCommittedQu
 `aDeathBetweenPublishAndCommitLeavesTheJobPendingAndTheNextTickPublishesItAgain`,
 `theDuplicateCopyAPublishThenDeathLeavesIsDiscardedByTheDeliveryClaim`,
 `aJobRefusedAsNotYetDueIsPublishedAndClaimableOnceDue`; `ProcessingApiTest.aStaleCopyDoesNotMakeAScheduledRetryEarly`).
+
+**Java since 2026-10-04: a decoupled poller and dispatcher lanes (owner
+decision).** The poller never waits for a publish, and nothing holds a
+transaction or a row lock across one.
+
+```
+poller (leader only) --claim--> lanes[hash(group) % N] --SendMessageBatch--> broker
+   ^  permits (BufferCapacity)        |  bulk UPDATE status='QUEUED' ... AND status='PENDING'
+   +----------- released -------------+
+```
+
+*Poller* (`PendingJobPoller`, one daemon thread): not the leader -> wait the
+poll interval. Acquire one permit (blocking — the poller blocks only when the
+buffer is full), then up to `BatchSize` in all without blocking; `wanted` =
+permits held. `gen = ++claimGeneration`, THEN snapshot the in-flight id set,
+THEN claim: the same `SELECT` (same `WHERE`, same `ORDER BY`) with `LIMIT
+wanted` and `AND id <> ALL($inflight)`, **no `FOR UPDATE SKIP LOCKED`, no
+transaction** (one statement, status literals in the text, on a pooled
+connection). Apply the `BLOCK_ON_ERROR` hold-back (one `heldBeforeIds` query,
+unchanged); the Java paused-subscription re-check is gone (the claim's SQL
+filter made it dead — it could never fire). Add the submitted ids to the
+in-flight set, stamp them with `gen`, send each to its lane (grouped:
+`hash(message_group) % N`; ungrouped: round-robin), release the unused
+permits. Sleep the poll interval only when the claim came back short, nothing
+was submitted (all held), the claim errored, or a lane reported a failure since
+the previous claim; otherwise claim again at once.
+
+*Lanes* (`DispatchLanes`, N virtual threads, each with its own channel): take
+one job, drain up to `LaneBatch` more; drop jobs of a poisoned group; publish
+the rest through the existing publisher (`SqsDispatchPublisher` /
+`PostgresQueuePublisher`, unchanged: chunks of 10, one job per group per chunk,
+failed group skips its later jobs); one bulk `UPDATE ... SET status='QUEUED'
+WHERE id = ANY($1) AND status = 'PENDING' AND updated_at = <the claim's>`
+for the published ids, joined to the claimed `(id, updated_at)` pairs
+(optimistic on the row version the claim read: the router can deliver and the
+callback can move the job on — and even reschedule it back to `PENDING` — before
+the update runs, and a job whose message is gone must never be marked `QUEUED`:
+nothing recovers `QUEUED`. Every callback transition writes `updated_at`;
+`settleAcked` does not, but only follows one that did); poison the groups of unpublished jobs;
+then remove the batch from the in-flight set, record the poison, release the
+permits, in that order.
+
+*Ordering under failure.* A group lives in one lane and a lane publishes in
+claim order. When job `j` of group `g` is not published, later jobs of `g`
+already claimed must not be published ahead of it. Each lane keeps
+`poison[g] = generation`: after removing the batch from the in-flight set it
+reads the current `claimGeneration` `P` and sets `poison[g] = P`; a job of `g`
+with `gen <= poison[g]` is dropped on arrival (in-flight id removed, permit
+released, not published); a claim with `gen > P` incremented the counter after
+`P` was read, so its snapshot is after `j` left the set, so it returns `j`
+again in order — its jobs pass and the first clears the entry. Ungrouped jobs
+are never poisoned; entries unseen for 10 minutes are evicted. **Extension to
+the rule as first specified:** a dropped job re-poisons its group (at the
+generation read after it leaves the set) and drops the rest of its group in
+the same batch — otherwise a claim taken just after `j1`'s failure, which
+excludes the in-flight `j2` but returns `j3`, publishes `j3` ahead of `j2`.
+
+*Accepted:* a double publish. A job published and then left `PENDING` by a
+failed status update is claimed and published again; the router drops a second
+broker copy of a message it already owns (`InFlightTracker`
+`ExternalRequeue`) and `/process` owns a delivery only by winning the
+status-guarded `claimForDelivery` — which also accepts a `PENDING` row, so a
+copy that arrives before the lane's update wins, after which the lane's update
+matches no row of the version it claimed and changes nothing (counted in
+`fc_scheduler_mark_queued_not_updated_total`). *Shutdown:* the poller stops
+claiming; each lane finishes the batch it is sending and its update, then
+exits; whatever is still buffered stays `PENDING`. Nothing needs recovery
+after a crash.
+
+Sizes (`SchedulerConfig`): `BufferCapacity` 1000, `Dispatchers` 10,
+`BatchSize` 500, `LaneBatch` 100, `PollInterval` 1s; the first three are
+overridable by `FC_SCHEDULER_BUFFER_CAPACITY`, `FC_SCHEDULER_DISPATCHERS`,
+`FC_SCHEDULER_BATCH_SIZE` (§11). Metrics (`fc_scheduler_*`): jobs
+claimed/submitted/published/unpublished/skipped-held/dropped-poisoned, QUEUED
+updates that matched no `PENDING` row, buffer in use, in-flight set size, claim
+time, per-lane publish time. JFR: `ClaimedBatch` (one per claim) and
+`LanePublish` (one per lane batch).
+
+Pinned by `DispatchLanesTest` (order across claims and lanes; failure midway;
+the generation rule driven deterministically, including both race windows —
+generation taken after the snapshot, poison read before the ids leave the
+in-flight set — through test hooks; the re-poison extension; permits/in-flight
+on every path; eviction; shutdown), `DispatchLanesStressTest` (a randomised
+multi-threaded run asserting per-group order at the broker),
+`PendingJobPollerConcurrencyTest` (back-pressure; no duplicate submission; the
+snapshot-before-failure race through the real poller), `PendingJobPollerTest`
+(`aDeliveryThatBeatsTheQueuedUpdateIsNotRegressedToQueued`),
+`PendingJobPollerBacklogTest` (back-off rules), `DispatchSchedulerTest`
+(no hot loop, shutdown), `DispatchJobRepositoryTest` (claim exclusion,
+guarded update).
 
 ### The claim-time `GroupHolding` hold-back — `filterByDispatchMode`
 
@@ -338,7 +429,7 @@ func filterByDispatchMode(claims []dispatchClaim, holders map[string]jobKey) []d
 | Constant | Value | File:line | Load-bearing or accident? |
 |---|---|---|---|
 | `Config.PollInterval` | 1s | `scheduler.go:62` | Load-bearing — sets claim latency; "fast, conventional... over the slower legacy values" (`scheduler.go:56-59`) |
-| `Config.BatchSize` | 100 | `scheduler.go:63` | Load-bearing — bounds claim-tx row locks and publish-batch size; SQS chunks to 10/`SendMessageBatch` regardless (`dispatcher.go:14-16`) |
+| `Config.BatchSize` | 100 (Go); **500 (Java since 2026-10-04: max rows per claim; `FC_SCHEDULER_BATCH_SIZE`)** | `scheduler.go:63` | Load-bearing — bounds the rows one claim returns; SQS chunks to 10/`SendMessageBatch` regardless (`dispatcher.go:14-16`). Java adds `BufferCapacity` 1000 (`FC_SCHEDULER_BUFFER_CAPACITY`), `Dispatchers` 10 (`FC_SCHEDULER_DISPATCHERS`), `LaneBatch` 100 — see the 2026-10-04 section above |
 | `Config.PausedCacheTTL` | 60s | `scheduler.go:64` | Load-bearing but soft — bounds staleness of the paused-connection *and* pool-code caches (shared TTL, `poller.go:113-114`); a stale read costs at most one TTL of misrouting |
 | `Config.StaleAfter` | ~~5 minutes~~ **removed** | `scheduler.go:65` | **Owner ruling 2026-09-22** (`router-hol-deferral.md` §Owner rulings): no stale-`QUEUED` recovery at all — a broker-held job is the broker's; the sweep re-published every message the router deferred for a full pool. Java removed `StaleQueuedJobPoller`; Go hand-off `docs/go-mirror/2026-09-22-stale-sweep-and-reaper.md` |
 | `Config.StaleScanInterval` | ~~60s~~ **removed** | `scheduler.go:66` | with the sweep |
@@ -924,7 +1015,10 @@ stage of the port rather than a lockfile gap per se.
 | `FLOWCATALYST_APP_KEY` | — | *(required)* | Source key for the HKDF-SHA256-derived dispatch-auth HMAC secret (`info="fc-dispatch-auth"`); **fail-closed** — both the scheduler (`StartScheduler`) and the `/api/dispatch/process`+`/api/dispatch/settled` mount refuse to start without it | `subsystems.go:119-131`, `wire_public.go:113-133` |
 | `FC_ROUTER_PLATFORM_URL` | `FC_API_BASE_URL`, `FLOWCATALYST_URL` | `""` | When set, wires `HTTPSettledReporter` onto every router pool (§6); when unset, the router behaves as if the feature never existed and the reaper is the sole recovery path | `envcfg.go:228`, `run.go:325-341` |
 | `FC_ROUTER_STRICT_ROUTING` | — | `false` | Router-spec §2.3's strict gate: absent `poolCode`/`dispatchMode` becomes a drop-and-notice instead of the lenient default-fallback (unrelated to the scheduler's own always-set publish behaviour, §2) | `envcfg.go:107-111,226` |
-| *(none)* | — | — | `Config.PollInterval` / `BatchSize` / `PausedCacheTTL` / `StaleAfter` / `StaleScanInterval` are **not** env-driven despite `DefaultConfig`'s doc comment claiming otherwise — see §3's timing-table note | `subsystems.go:63-82` (only `ProcessingEndpoint` is overridden) |
+| `FC_SCHEDULER_BUFFER_CAPACITY` | — | `1000` (`0`/unset = default) | Java: the most dispatch jobs claimed and not yet settled by a lane (the permit pool bounding how far the poller runs ahead) | `Env.schedulerBufferCapacity`, `SchedulerConfig` |
+| `FC_SCHEDULER_DISPATCHERS` | — | `10` (`0`/unset = default) | Java: the number of dispatcher lanes (each publishes its groups' jobs in order and marks them `QUEUED`) | `Env.schedulerDispatchers`, `SchedulerConfig` |
+| `FC_SCHEDULER_BATCH_SIZE` | — | `500` (`0`/unset = default) | Java: the most rows one claim returns | `Env.schedulerBatchSize`, `SchedulerConfig` |
+| *(none)* | — | — | `PollInterval` (1s) / `LaneBatch` (100) / `PausedCacheTTL` / `StaleAfter` / `StaleScanInterval` are **not** env-driven — see §3's timing-table note (the Go `DefaultConfig` doc comment claiming otherwise is stale) | `subsystems.go:63-82` (only `ProcessingEndpoint` is overridden in Go) |
 | *(none)* | — | `DefaultReaperInterval`=2m, `DefaultProcessingLiveAfter`=45m | Reaper cadence/cutoff — hardcoded at the call site, not env-driven | `run.go:129-130` |
 
 `schedulerPublisher` (`subsystems.go:87-116`) additionally falls back to
@@ -1029,13 +1123,12 @@ under concurrent execution from multiple platform instances.
    status guard at all, so a duplicate delivery called the subscriber twice.
    Java replaced it with the guarded `claimForDelivery` and NACKs on a claim
    error; Go still has the original and must follow (go-mirror G14).
-3. **Scheduler `Config` env-overridability (§3, §11).** `DefaultConfig`'s
-   doc comment claims all five timing knobs are env-overridable and
-   mentions an `in-flight` cap that doesn't exist on the struct; only
-   `ProcessingEndpoint` is actually wired from `EnvCfg`. *Should
-   `PollInterval`/`BatchSize`/`PausedCacheTTL`/`StaleAfter`/
-   `StaleScanInterval` become env-driven in the Java port, or is the Go
-   comment simply stale and the hardcoded defaults are the real spec?*
+3. **Scheduler `Config` env-overridability (§3, §11) — PARTLY RESOLVED
+   2026-10-04.** The owner asked for three knobs for the benchmark and
+   operators: `FC_SCHEDULER_BUFFER_CAPACITY`, `FC_SCHEDULER_DISPATCHERS`,
+   `FC_SCHEDULER_BATCH_SIZE` — wired in Java (§11). Still open and still
+   hardcoded: `PollInterval`, `LaneBatch`, `PausedCacheTTL`. (`StaleAfter` and
+   `StaleScanInterval` no longer exist: the sweep was removed 2026-09-22.)
 4. **DJ-2 (ledger, still open).** `ResendDispatchJobs`/`requeue` is total
    — it resets `PROCESSING`/`QUEUED`/`COMPLETED` jobs too, not just
    `FAILED`/terminal ones. *Add a precondition, or keep it total?*
