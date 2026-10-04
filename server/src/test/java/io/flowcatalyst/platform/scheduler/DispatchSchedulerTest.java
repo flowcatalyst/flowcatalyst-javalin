@@ -6,6 +6,8 @@ import io.flowcatalyst.platform.dispatchjob.DispatchJobStatus;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
+import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS;
+import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.DB;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.RUN;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.code;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedWriteRow;
@@ -73,5 +75,84 @@ class DispatchSchedulerTest {
             assertThat(publisher.batches().stream().flatMap(List::stream).map(PublishedMessage::jobId).toList())
                     .as("never re-published").doesNotContain(jobId);
         }
+    }
+
+    // ── backlog drain: a full, productive tick is followed at once ─────────
+
+    /// Six full batches of 5 must drain well inside the 1s poll delay's
+    /// reach: with the delay between passes, 6 passes cost 5+ seconds.
+    /// Mutant: pollSafely runs one tick per scheduled run.
+    @Test
+    void aBacklogOfFullBatchesDrainsWithoutTheDelayBetweenThem() throws InterruptedException {
+        var ids = new java.util.ArrayList<String>();
+        for (int i = 0; i < 30; i++) {
+            ids.add(seedWriteRow(Seed.of(code("drain" + i + "-"))));
+        }
+        var publisher = FakeDispatchPublisher.succeeding();
+
+        long start = System.nanoTime();
+        try (var scheduler = DispatchScheduler.start("test-app-key-" + RUN, PROCESSING_ENDPOINT, DATA_SOURCE,
+                publisher, () -> true, 5)) {
+            assertThat(scheduler).isNotNull();
+            long deadline = System.currentTimeMillis() + 15_000;
+            while (System.currentTimeMillis() < deadline && !allQueued(ids)) {
+                Thread.sleep(20);
+            }
+            long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+            assertThat(allQueued(ids)).as("all 30 jobs published").isTrue();
+            assertThat(elapsedMillis).as("6 full batches without a 1s sleep between them").isLessThan(3000);
+        }
+    }
+
+    /// A full claim that publishes nothing would claim the same rows again, so
+    /// it must wait out the delay. Mutant: re-poll on `claimed == batch` alone.
+    @Test
+    void aFullClaimThatPublishesNothingDoesNotRePollImmediately() throws InterruptedException {
+        var ids = new java.util.ArrayList<String>();
+        for (int i = 0; i < 6; i++) {
+            ids.add(seedWriteRow(Seed.of(code("nopublish" + i + "-")).withMessageGroup("aaa-nopublish-" + RUN)
+                    .withSequence(i)));
+        }
+        var attempts = new java.util.concurrent.atomic.AtomicInteger();
+        DispatchPublisher refusing = batch -> {
+            attempts.incrementAndGet();
+            throw new DispatchPublisher.PublishException("refused", null,
+                    batch.stream().map(PublishedMessage::jobId).toList());
+        };
+
+        try (var scheduler = DispatchScheduler.start("test-app-key-" + RUN, PROCESSING_ENDPOINT, DATA_SOURCE,
+                refusing, () -> true, 5)) {
+            assertThat(scheduler).isNotNull();
+            Thread.sleep(600); // inside the 1s delay: only the first tick can have run
+            assertThat(attempts.get()).as("one tick, then the fixed delay").isEqualTo(1);
+        } finally {
+            for (String id : ids) { // leave nothing PENDING for the other tests
+                DB.update(MSG_DISPATCH_JOBS).set(MSG_DISPATCH_JOBS.STATUS, "COMPLETED")
+                        .where(MSG_DISPATCH_JOBS.ID.eq(id)).execute();
+            }
+        }
+    }
+
+    @Test
+    void aNonLeaderDoesNothingAndDoesNotSpin() throws InterruptedException {
+        String id = seedWriteRow(Seed.of(code("nonleader-")));
+        var checks = new java.util.concurrent.atomic.AtomicInteger();
+        var publisher = FakeDispatchPublisher.succeeding();
+
+        try (var scheduler = DispatchScheduler.start("test-app-key-" + RUN, PROCESSING_ENDPOINT, DATA_SOURCE,
+                publisher, () -> { checks.incrementAndGet(); return false; }, 1)) {
+            assertThat(scheduler).isNotNull();
+            Thread.sleep(600);
+            assertThat(checks.get()).as("one leadership check, then the fixed delay").isEqualTo(1);
+        } finally {
+            assertThat(REPO.findById(id).orElseThrow().status()).isEqualTo(DispatchJobStatus.PENDING);
+            DB.update(MSG_DISPATCH_JOBS).set(MSG_DISPATCH_JOBS.STATUS, "COMPLETED")
+                    .where(MSG_DISPATCH_JOBS.ID.eq(id)).execute();
+        }
+        assertThat(publisher.batches()).isEmpty();
+    }
+
+    private static boolean allQueued(List<String> ids) {
+        return ids.stream().allMatch(id -> REPO.findById(id).orElseThrow().status() == DispatchJobStatus.QUEUED);
     }
 }

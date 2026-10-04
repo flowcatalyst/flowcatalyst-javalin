@@ -39,6 +39,7 @@ public final class DispatchScheduler implements AutoCloseable {
 
     private final PendingJobPoller poller;
     private final ScheduledExecutorService executor;
+    private volatile boolean closed;
 
     /// No stale-`QUEUED` recovery loop (owner ruling 2026-09-22,
     /// `docs/spec/router-hol-deferral.md` §Owner rulings): a job the broker
@@ -109,9 +110,20 @@ public final class DispatchScheduler implements AutoCloseable {
         executor.scheduleWithFixedDelay(this::pollSafely, 0, POLL_INTERVAL.toMillis(), TimeUnit.MILLISECONDS);
     }
 
+    /// One scheduled run: ticks, and keeps ticking without the fixed delay
+    /// while each tick fills the batch and publishes something (a backlog
+    /// draining) — otherwise one 100-row claim per second capped throughput
+    /// at 100 jobs/s. Every pass re-checks shutdown, and
+    /// [PendingJobPoller#pollOnce] re-checks leadership. A short claim, a
+    /// full claim that published nothing, or an exception ends the run, and
+    /// the fixed delay applies.
     private void pollSafely() {
         try {
-            poller.pollOnce();
+            while (!closed && !Thread.currentThread().isInterrupted()) {
+                if (!poller.pollOnce().drainImmediately()) {
+                    return;
+                }
+            }
         } catch (RuntimeException e) {
             LOG.warn("dispatch job poll failed; will retry next tick", e);
         }
@@ -126,6 +138,7 @@ public final class DispatchScheduler implements AutoCloseable {
 
     @Override
     public void close() {
+        closed = true;
         executor.shutdownNow();
     }
 }

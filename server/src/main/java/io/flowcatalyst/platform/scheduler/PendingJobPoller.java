@@ -124,11 +124,29 @@ public final class PendingJobPoller {
         this.batchSize = batchSize;
     }
 
+    /// What one tick did, so the scheduler can decide whether to tick again
+    /// at once.
+    ///
+    /// @param claimed   rows the claim returned
+    /// @param published rows the broker accepted (marked `QUEUED`, committed)
+    /// @param full      the claim filled the whole batch, so more rows may be waiting
+    public record PollResult(int claimed, int published, boolean full) {
+        static final PollResult IDLE = new PollResult(0, 0, false);
+
+        /// Tick again without sleeping: a full claim means a backlog, and
+        /// `published > 0` means it is draining. A full claim that published
+        /// nothing (everything held back, or the broker refusing) would claim
+        /// the same rows again, so it must wait for the ordinary delay.
+        public boolean drainImmediately() {
+            return full && published > 0;
+        }
+    }
+
     /// Runs one tick. Only the leader claims (spec §12) — a non-leader tick
-    /// is a no-op, not an error.
-    public void pollOnce() {
+    /// is a no-op ([PollResult#IDLE]), not an error.
+    public PollResult pollOnce() {
         if (!leader.getAsBoolean()) {
-            return;
+            return PollResult.IDLE;
         }
         Set<String> paused = pausedCache.pausedSubscriptionIds();
         try (Connection conn = dataSource.getConnection()) {
@@ -150,6 +168,7 @@ public final class PendingJobPoller {
             // After the commit, never before: an event for a write that then
             // rolls back is a lie in the recording (docs/spec/jfr-events.md).
             recordBatch(claimed, queued.size());
+            return new PollResult(claimed.claimedCount(), queued.size(), claimed.claimedCount() >= batchSize);
         } catch (SQLException e) {
             throw new PollFailedException(e);
         }
