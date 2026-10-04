@@ -416,11 +416,20 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                     // resource is tracked for #stop() regardless of whether the scheduler
                     // itself ends up starting (the fail-closed branch below releases it,
                     // same as the leader election, rather than leaking it).
-                    DispatchPublisher publisher = schedulerPublisher(env, dbPool);
+                    // The scheduler has its OWN physical pool (a fifth, opened only when it
+                    // is enabled — admission.md §11.7): its poller and lanes must not
+                    // compete with the reaper and housekeeping on `pools.background()`.
+                    // Without one (a test's Pools.ofSingle) it falls back to `dbPool`.
+                    DataSource schedulerPool = switch (mode) {
+                        case Mode.Platform(var pools) when pools.scheduler() != null -> pools.scheduler();
+                        case Mode.Worker(var pools) when pools.scheduler() != null -> pools.scheduler();
+                        default -> dbPool;
+                    };
+                    DispatchPublisher publisher = schedulerPublisher(env, schedulerPool);
                     if (publisher instanceof AutoCloseable closeable) {
                         schedulerPublisherResource = closeable;
                     }
-                    scheduler = DispatchScheduler.start(env.appKey(), env.dispatchProcessingEndpoint(), dbPool,
+                    scheduler = DispatchScheduler.start(env.appKey(), env.dispatchProcessingEndpoint(), schedulerPool,
                             publisher, leaderGate.isLeader(),
                             SchedulerConfig.of(env.schedulerBufferCapacity(), env.schedulerDispatchers(),
                                     env.schedulerBatchSize()));

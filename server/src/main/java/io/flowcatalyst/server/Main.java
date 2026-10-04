@@ -1,5 +1,6 @@
 package io.flowcatalyst.server;
 
+import io.flowcatalyst.platform.scheduler.SchedulerConfig;
 import io.flowcatalyst.platform.shared.database.Pools;
 import io.flowcatalyst.platform.seed.Seeder;
 import io.flowcatalyst.platform.shared.database.Migrator;
@@ -107,19 +108,27 @@ public final class Main {
             }
 
             // Four physical pools (admission.md §11.7), not one: `API` (½ B),
-            // `BFF` (¼ B), `DISPATCH` (¼ B), `BACKGROUND` (4, outside B) —
+            // `BFF` (¼ B), `DISPATCH` (¼ B), `BACKGROUND` (4, outside B) — plus
+            // `SCHEDULER` (dispatchers + 2, outside B) when it is enabled —
             // `FC_DB_POOL_SIZE` overrides B, `FC_DB_POOL_SIZE_<GROUP>` overrides
             // one pool.
-            pools = Pools.open(databaseUrl, EnvReader.system());
+            // A fifth pool, for the dispatch scheduler's poller and lanes, only when
+            // the scheduler is enabled (`FC_DB_POOL_SIZE_SCHEDULER` overrides it).
+            int schedulerDispatchers = env.schedulerEnabled()
+                    ? SchedulerConfig.of(env.schedulerBufferCapacity(), env.schedulerDispatchers(),
+                            env.schedulerBatchSize()).dispatchers()
+                    : 0;
+            pools = Pools.open(databaseUrl, EnvReader.system(), schedulerDispatchers);
             LOG.info("postgres connected");
 
             if (secretMode != null) {
                 try {
                     // One refresher per physical pool — each is an independent
                     // HikariDataSource, so each needs its own credential push.
-                    var refreshers = new ArrayList<DbSecretRefresher>(4);
+                    var refreshers = new ArrayList<DbSecretRefresher>(5);
                     for (var g : new io.flowcatalyst.platform.shared.database.GatedDataSource[] {
-                            pools.api(), pools.bff(), pools.dispatch(), pools.background()}) {
+                            pools.api(), pools.bff(), pools.dispatch(), pools.background(), pools.scheduler()}) {
+                        if (g == null) continue;
                         refreshers.add(DbSecretRefresher.start(g.hikari(), DbSecretFetcher.aws(secretMode.arn()),
                                 secretMode.arn(), secretMode.refreshIntervalMs()));
                     }

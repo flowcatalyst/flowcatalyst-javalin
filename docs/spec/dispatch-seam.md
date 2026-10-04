@@ -1018,6 +1018,7 @@ stage of the port rather than a lockfile gap per se.
 | `FC_SCHEDULER_BUFFER_CAPACITY` | — | `1000` (`0`/unset = default) | Java: the most dispatch jobs claimed and not yet settled by a lane (the permit pool bounding how far the poller runs ahead) | `Env.schedulerBufferCapacity`, `SchedulerConfig` |
 | `FC_SCHEDULER_DISPATCHERS` | — | `10` (`0`/unset = default) | Java: the number of dispatcher lanes (each publishes its groups' jobs in order and marks them `QUEUED`) | `Env.schedulerDispatchers`, `SchedulerConfig` |
 | `FC_SCHEDULER_BATCH_SIZE` | — | `500` (`0`/unset = default) | Java: the most rows one claim returns | `Env.schedulerBatchSize`, `SchedulerConfig` |
+| `FC_DB_POOL_SIZE_SCHEDULER` | — | `dispatchers + 2` ordinary connections + the gate's probe reservation (13 at 10 dispatchers); floor 2 | Java: the scheduler's OWN connection pool (poller, lanes, publisher, caches), opened only when the scheduler is enabled — `docs/spec/admission.md` §11.7 | `Pools.open`, `Pools#schedulerPoolSizeFor` |
 | *(none)* | — | — | `PollInterval` (1s) / `LaneBatch` (100) / `PausedCacheTTL` / `StaleAfter` / `StaleScanInterval` are **not** env-driven — see §3's timing-table note (the Go `DefaultConfig` doc comment claiming otherwise is stale) | `subsystems.go:63-82` (only `ProcessingEndpoint` is overridden in Go) |
 | *(none)* | — | `DefaultReaperInterval`=2m, `DefaultProcessingLiveAfter`=45m | Reaper cadence/cutoff — hardcoded at the call site, not env-driven | `run.go:129-130` |
 

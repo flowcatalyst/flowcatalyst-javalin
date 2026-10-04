@@ -283,9 +283,13 @@ derived from it or observed:
    `pods × B ≤ max_connections − reserved` (§5's rule) and `B` is small. Today's 32 stays the
    default `B`.
 2. **The split is a product default, expressed as shares of `B`**, not per-group absolutes:
-   API ½, BFF ¼, ingest/dispatch ¼; background subsystems (purger, outbox, scheduler, stream,
-   mail) a fixed small pool of 4 outside `B`'s request share; probes their own reservation
-   (§1); SSE none. A share is by *connection-hold time*, not request count — a group that holds
+   API ½, BFF ¼, ingest/dispatch ¼; background subsystems (purger, outbox, stream, scheduled-job
+   scheduler, mail, the dispatch-job reaper) a fixed small pool of 4 outside `B`'s request share;
+   **the dispatch scheduler its own fifth pool** (owner, 2026-10-04: subsystems are deployed
+   together or standalone, so it shares nothing), opened only when the scheduler is enabled and
+   sized `dispatchers + 2` ordinary permits plus the gate's probe reservation (`FC_SCHEDULER_DISPATCHERS`,
+   default 10 → 13 connections, 12 ordinary: a poller claim, its hold-back query and one per lane),
+   outside `B`; probes their own reservation (§1); SSE none. A share is by *connection-hold time*, not request count — a group that holds
    a connection across a whole transaction needs more than one that borrows per statement.
    Every group's pool is at least 2. The per-group pool size is the accepted knob for a
    deployment that knows better; nothing else is configurable.
@@ -370,13 +374,21 @@ during the suite is better if cheap).
 
 **Pools.** Four `GatedDataSource`s from one budget `B` (default 32, `FC_DB_POOL_SIZE` keeps
 overriding it): `API` (½ B, serves `API_READ`, `API_WRITE`, `LOGIN`, `OIDC`), `BFF` (¼ B),
-`DISPATCH` (¼ B), `BACKGROUND` (4, outside B; outbox, stream, scheduler, purger, mail, the
-router's own Postgres queues stay on their own URI-opened pools). Per-group override:
-`FC_DB_POOL_SIZE_<GROUP>`; that is the only knob. Probes keep their reservation on the API pool
+`DISPATCH` (¼ B), `BACKGROUND` (4, outside B; outbox, stream, scheduled-job scheduler, purger,
+mail, the dispatch-job reaper, the router's housekeeping — the router's own Postgres queues stay
+on their own URI-opened pools), **plus `SCHEDULER`** — a fifth, opened only when
+`FC_SCHEDULER_ENABLED` (`Pools.open(url, reader, schedulerDispatchers)`; `Pools#scheduler()` is
+`null` otherwise), sized by `Pools#schedulerPoolSizeFor(dispatchers)` — the smallest Hikari size
+whose gate leaves `dispatchers + 2` ordinary permits (default: 13 for 10 dispatchers) — and used by
+the dispatch scheduler's poller, lanes, publisher and caches (`Server#start`'s `schedulerPool`);
+the reaper stays on `background`. Its gate series carry `pool="scheduler"`. Per-group override:
+`FC_DB_POOL_SIZE_<GROUP>` (`_API`, `_BFF`, `_DISPATCH`, `_BACKGROUND`, `_SCHEDULER`, floor 2);
+that is the only knob. Probes keep their reservation on the API pool
 (§1). `Main`/`StartCommand` open the four and hand `Server` a `Pools` record instead of one
 `DataSource`; every subsystem receives the pool it belongs to, and the `Platform` registration
 receives the request-path pools by group. Postgres's `max_connections` guidance in
-`docs/spec/cutover.md` becomes `pods × (B + 4) ≤ max_connections − reserved`.
+`docs/spec/cutover.md` becomes `pods × (B + 4 + S) ≤ max_connections − reserved`, `S` = the
+scheduler pool (13 at the defaults) on a pod that runs the scheduler, else 0.
 
 **Workers.** `RequestWorkers` is the Vert.x adapter's dispatch for every grouped route:
 `API_WRITE` = API pool size; `API_READ` = 2 × API pool size; `BFF` = 2 × BFF pool size (BFF is

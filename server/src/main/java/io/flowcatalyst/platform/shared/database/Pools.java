@@ -13,8 +13,9 @@ import java.util.Objects;
 import java.util.logging.Logger;
 import javax.sql.DataSource;
 
-/// The four physical connection pools a `Platform`/`Worker` instance opens
-/// (`docs/spec/admission.md` §11.7, "Pools"), all against the SAME database —
+/// The physical connection pools a `Platform`/`Worker` instance opens
+/// (`docs/spec/admission.md` §11.7, "Pools"): four, plus a fifth for the
+/// dispatch scheduler when it is enabled — all against the SAME database —
 /// isolation is the point (§11.3 ruling): a slow lane in one group can no
 /// longer starve connections another group needs, and each can later point
 /// at a different replica.
@@ -22,18 +23,24 @@ import javax.sql.DataSource;
 /// - `api`        (`½ B`)  — [Group#API_READ], [Group#API_WRITE], [Group#LOGIN], [Group#OIDC]
 /// - `bff`        (`¼ B`)  — [Group#BFF]
 /// - `dispatch`   (`¼ B`)  — [Group#DISPATCH]: every route the message router calls
-/// - `background` (`4`, outside `B`) — outbox, stream, scheduler, scheduled-job
+/// - `background` (`4`, outside `B`) — outbox, stream, scheduled-job
 ///   scheduler, purger, mail sender, dispatch-job reaper, the router's own
 ///   housekeeping — never the request path
+/// - `scheduler` (`dispatchers + 2` ordinary permits, outside `B`) — the
+///   dispatch scheduler's poller and dispatcher lanes ([#schedulerPoolSizeFor]),
+///   opened only when the scheduler is enabled; the scheduler may be deployed
+///   with the platform or standalone, so it must not share a pool with
+///   anything else
 ///
 /// `B` (the budget) is [#DEFAULT_BUDGET] (32) unless `FC_DB_POOL_SIZE`
 /// overrides it. Each of the four sizes may be overridden independently with
-/// `FC_DB_POOL_SIZE_API` / `_BFF` / `_DISPATCH` / `_BACKGROUND` — the only
-/// knobs (§11.3a): every pool is at least [#MIN_POOL_SIZE], whether derived
-/// from the budget or from an explicit override. `NO_DB` routes never reach
+/// `FC_DB_POOL_SIZE_API` / `_BFF` / `_DISPATCH` / `_BACKGROUND` (and
+/// `_SCHEDULER` for the scheduler pool) — the only knobs (§11.3a): every pool
+/// is at least [#MIN_POOL_SIZE], whether derived from the budget or from an
+/// explicit override. `NO_DB` routes never reach
 /// [#forGroup] — they touch no pool.
-public record Pools(GatedDataSource api, GatedDataSource bff, GatedDataSource dispatch, GatedDataSource background)
-        implements AutoCloseable {
+public record Pools(GatedDataSource api, GatedDataSource bff, GatedDataSource dispatch, GatedDataSource background,
+                    GatedDataSource scheduler) implements AutoCloseable {
 
     /// `B`'s default, unchanged from the single-pool era ([Database#DEFAULT_POOL_SIZE]).
     public static final int DEFAULT_BUDGET = Database.DEFAULT_POOL_SIZE;
@@ -46,11 +53,36 @@ public record Pools(GatedDataSource api, GatedDataSource bff, GatedDataSource di
     /// group's pool is at least 2").
     public static final int MIN_POOL_SIZE = 2;
 
+    /// The scheduler's pool is permits on top of its dispatcher lanes: one for
+    /// the poller's claim and one for its hold-back query (they run one after
+    /// the other, but a lane's own cache refresh must never wait behind them).
+    public static final int SCHEDULER_EXTRA_PERMITS = 2;
+
+    /// `scheduler` is `null` when the dispatch scheduler is not enabled: the
+    /// pool is then never opened.
     public Pools {
         Objects.requireNonNull(api, "api");
         Objects.requireNonNull(bff, "bff");
         Objects.requireNonNull(dispatch, "dispatch");
         Objects.requireNonNull(background, "background");
+    }
+
+    /// The four request/background pools, no scheduler pool.
+    public Pools(GatedDataSource api, GatedDataSource bff, GatedDataSource dispatch, GatedDataSource background) {
+        this(api, bff, dispatch, background, null);
+    }
+
+    /// The smallest Hikari size whose gate leaves at least
+    /// `dispatchers + `[#SCHEDULER_EXTRA_PERMITS] ordinary permits (the gate sets
+    /// `max(1, size / 16)` aside for probes, so the pool is a little larger than
+    /// the permits it must serve).
+    public static int schedulerPoolSizeFor(int dispatchers) {
+        int needed = Math.max(1, dispatchers) + SCHEDULER_EXTRA_PERMITS;
+        int size = Math.max(MIN_POOL_SIZE, needed);
+        while (size - GatedDataSource.reservedFor(size) < needed) {
+            size++;
+        }
+        return size;
     }
 
     /// Opens all four pools against `url`, sized from `reader` per §11.3a:
@@ -60,16 +92,38 @@ public record Pools(GatedDataSource api, GatedDataSource bff, GatedDataSource di
     /// [#BACKGROUND_POOL_SIZE] (overridable with `FC_DB_POOL_SIZE_BACKGROUND`),
     /// outside `B`. Every resulting size is at least [#MIN_POOL_SIZE].
     public static Pools open(String url, EnvReader reader) {
+        return open(url, reader, 0);
+    }
+
+    /// As [#open(String, EnvReader)], and — when `schedulerDispatchers > 0`,
+    /// i.e. the dispatch scheduler is enabled — a fifth pool for it, sized
+    /// [#schedulerPoolSizeFor] unless `FC_DB_POOL_SIZE_SCHEDULER` overrides it
+    /// (floor [#MIN_POOL_SIZE], like every pool; an override that leaves fewer
+    /// ordinary permits than `schedulerDispatchers + 2` only makes the lanes
+    /// wait for a connection at the gate, which is logged).
+    public static Pools open(String url, EnvReader reader, int schedulerDispatchers) {
         int budget = Math.max(1, reader.integer("FC_DB_POOL_SIZE", DEFAULT_BUDGET));
         int apiSize = sizeFor(reader, "API", budget / 2);
         int bffSize = sizeFor(reader, "BFF", budget / 4);
         int dispatchSize = sizeFor(reader, "DISPATCH", budget / 4);
         int backgroundSize = sizeFor(reader, "BACKGROUND", BACKGROUND_POOL_SIZE);
+        GatedDataSource scheduler = null;
+        if (schedulerDispatchers > 0) {
+            int schedulerSize = sizeFor(reader, "SCHEDULER", schedulerPoolSizeFor(schedulerDispatchers));
+            scheduler = Database.newPool(url, schedulerSize);
+            if (scheduler.ordinaryPermits() < schedulerDispatchers + SCHEDULER_EXTRA_PERMITS) {
+                java.util.logging.Logger.getLogger(Pools.class.getName()).warning(
+                        "FC_DB_POOL_SIZE_SCHEDULER=" + schedulerSize + " leaves " + scheduler.ordinaryPermits()
+                                + " connections for " + schedulerDispatchers + " dispatcher lanes and the poller; "
+                                + "lanes will wait for a connection");
+            }
+        }
         return new Pools(
                 Database.newPool(url, apiSize),
                 Database.newPool(url, bffSize),
                 Database.newPool(url, dispatchSize),
-                Database.newPool(url, backgroundSize));
+                Database.newPool(url, backgroundSize),
+                scheduler);
     }
 
     /// `derivedShare`, unless `FC_DB_POOL_SIZE_<group>` overrides it; the
@@ -183,13 +237,19 @@ public record Pools(GatedDataSource api, GatedDataSource bff, GatedDataSource di
         }
     }
 
-    /// Registers all four gates' collectors, each its own [MultiCollector]
+    /// Registers every open gate's collector, each its own [MultiCollector]
     /// labelled `pool` with its own name (`api` / `bff` / `dispatch` /
-    /// `background`) — a scrape of `registry` carries all four `pool` values
-    /// under the `fc_db_gate_waiting` / `fc_db_gate_held` names (§11.7).
+    /// `background`, and `scheduler` when it was opened) — a scrape of
+    /// `registry` carries every `pool` value under the `fc_db_gate_waiting` /
+    /// `fc_db_gate_held` names (§11.7).
     public void registerCollectors(PrometheusRegistry registry) {
-        for (var entry : java.util.Map.of("api", api, "bff", bff, "dispatch", dispatch, "background", background)
-                .entrySet()) {
+        var named = new java.util.LinkedHashMap<String, GatedDataSource>();
+        named.put("api", api);
+        named.put("bff", bff);
+        named.put("dispatch", dispatch);
+        named.put("background", background);
+        if (scheduler != null) named.put("scheduler", scheduler);
+        for (var entry : named.entrySet()) {
             registry.register(entry.getValue().collector(entry.getKey()));
         }
     }
@@ -197,7 +257,8 @@ public record Pools(GatedDataSource api, GatedDataSource bff, GatedDataSource di
     @Override
     public void close() {
         RuntimeException failure = null;
-        for (GatedDataSource pool : new GatedDataSource[] {api, bff, dispatch, background}) {
+        for (GatedDataSource pool : new GatedDataSource[] {api, bff, dispatch, background, scheduler}) {
+            if (pool == null) continue;
             try {
                 pool.close();
             } catch (RuntimeException e) {

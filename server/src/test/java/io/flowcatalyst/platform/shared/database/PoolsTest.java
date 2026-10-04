@@ -94,6 +94,81 @@ class PoolsTest {
         }
     }
 
+    /// The scheduler's pool: leaves at least `dispatchers + 2` ordinary permits
+    /// (the gate sets `max(1, size/16)` aside for probes), and is the SMALLEST
+    /// such size. Mutant: size it as `dispatchers + 2` outright — the probe
+    /// reservation then eats into the permits and the first assertion fails.
+    @Test
+    void theSchedulerPoolLeavesDispatchersPlusTwoOrdinaryPermitsAndNoMore() {
+        for (int dispatchers = 1; dispatchers <= 200; dispatchers++) {
+            int size = Pools.schedulerPoolSizeFor(dispatchers);
+            var gate = GatedDataSource.over(TestPg.dataSource(), size);
+            assertThat(gate.ordinaryPermits()).as("dispatchers=%d size=%d", dispatchers, size)
+                    .isGreaterThanOrEqualTo(dispatchers + 2);
+            if (size > Pools.MIN_POOL_SIZE) {
+                var smaller = GatedDataSource.over(TestPg.dataSource(), size - 1);
+                assertThat(smaller.ordinaryPermits()).as("one smaller is too small (dispatchers=%d)", dispatchers)
+                        .isLessThan(dispatchers + 2);
+            }
+        }
+    }
+
+    @Test
+    void theSchedulerPoolAtTheDefaultTenDispatchersIsThirteenWithTwelveOrdinaryPermits() {
+        try (Pools pools = Pools.open(url(), new EnvReader(Map.of()), 10)) {
+            assertThat(pools.scheduler()).isNotNull();
+            assertThat(pools.scheduler().poolSize()).isEqualTo(13);
+            assertThat(pools.scheduler().reserved()).isEqualTo(1);
+            assertThat(pools.scheduler().ordinaryPermits()).isEqualTo(12);
+            // The other four are untouched by it.
+            assertThat(pools.background().poolSize()).isEqualTo(Pools.BACKGROUND_POOL_SIZE);
+            assertThat(pools.api().poolSize()).isEqualTo(Pools.DEFAULT_BUDGET / 2);
+        }
+    }
+
+    @Test
+    void fcDbPoolSizeSchedulerOverridesTheDerivedSizeWithTheUsualFloor() {
+        try (Pools pools = Pools.open(url(), new EnvReader(Map.of("FC_DB_POOL_SIZE_SCHEDULER", "20")), 10)) {
+            assertThat(pools.scheduler().poolSize()).isEqualTo(20);
+        }
+        try (Pools pools = Pools.open(url(), new EnvReader(Map.of("FC_DB_POOL_SIZE_SCHEDULER", "1")), 10)) {
+            assertThat(pools.scheduler().poolSize()).isEqualTo(Pools.MIN_POOL_SIZE);
+        }
+    }
+
+    /// Mutant: open it unconditionally — a platform without the scheduler holds
+    /// idle connections it never uses.
+    @Test
+    void theSchedulerPoolIsNotOpenedWhenTheSchedulerIsDisabled() {
+        try (Pools pools = Pools.open(url(), new EnvReader(Map.of("FC_DB_POOL_SIZE_SCHEDULER", "20")))) {
+            assertThat(pools.scheduler()).isNull();
+        }
+        try (Pools pools = Pools.open(url(), new EnvReader(Map.of()), 0)) {
+            assertThat(pools.scheduler()).isNull();
+            var registry = new PrometheusRegistry();
+            pools.registerCollectors(registry);
+            assertThat(poolLabels(registry)).containsExactlyInAnyOrder("api", "bff", "dispatch", "background");
+        }
+    }
+
+    @Test
+    void theSchedulerPoolHasItsOwnLabelledGateSeries() {
+        try (Pools pools = Pools.open(url(), new EnvReader(Map.of("FC_DB_POOL_SIZE", "8")), 4)) {
+            var registry = new PrometheusRegistry();
+            pools.registerCollectors(registry);
+            assertThat(poolLabels(registry)).containsExactlyInAnyOrder("api", "bff", "dispatch", "background",
+                    "scheduler");
+        }
+    }
+
+    private static Set<String> poolLabels(PrometheusRegistry registry) {
+        return registry.scrape().stream()
+                .filter(s -> s.getMetadata().getName().equals("fc_db_gate_waiting"))
+                .flatMap(s -> ((io.prometheus.metrics.model.snapshots.GaugeSnapshot) s).getDataPoints().stream())
+                .map(dp -> dp.getLabels().get("pool"))
+                .collect(Collectors.toSet());
+    }
+
     @Test
     void theCollectorExposesFourLabelledSeries() {
         try (Pools pools = Pools.open(url(), new EnvReader(Map.of("FC_DB_POOL_SIZE", "8")))) {

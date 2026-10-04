@@ -69,6 +69,49 @@ class BackgroundPoolWiringTest {
         }
     }
 
+    /// The dispatch scheduler has its own physical pool (a fifth): its poller
+    /// and lanes check out from `pools.scheduler()`, never from `background`
+    /// (shared with the reaper and housekeeping) or a request-path pool.
+    /// Mutant: in `Server#start`, hand the scheduler `dbPool` (background)
+    /// instead of `schedulerPool` — `schedulerConnections` stays 0.
+    @Test
+    void theSchedulerChecksOutFromItsOwnPoolNotBackgroundOrApi() throws Exception {
+        var api = new CountingDataSource(TestPg.dataSource());
+        var bff = new CountingDataSource(TestPg.dataSource());
+        var dispatch = new CountingDataSource(TestPg.dataSource());
+        var background = new CountingDataSource(TestPg.dataSource());
+        var scheduler = new CountingDataSource(TestPg.dataSource());
+        var pools = new Pools(
+                GatedDataSource.over(api, 4),
+                GatedDataSource.over(bff, 4),
+                GatedDataSource.over(dispatch, 4),
+                GatedDataSource.over(background, 4),
+                GatedDataSource.over(scheduler, 16));
+
+        Env env = Env.load(Map.of(
+                "FC_API_PORT", "0",
+                "FC_METRICS_PORT", "0",
+                "FC_PLATFORM_ENABLED", "false",
+                "FC_ROUTER_ENABLED", "false",
+                "FC_SCHEDULER_ENABLED", "true",
+                "FLOWCATALYST_APP_KEY", "test-app-key-for-the-scheduler-pool-wiring"));
+        var running = new Server(env, new Server.Mode.Worker(pools), Server.Spa.none(), new PrometheusRegistry()).start();
+        try {
+            long deadline = System.currentTimeMillis() + 10_000;
+            while (System.currentTimeMillis() < deadline && scheduler.connections.get() == 0) {
+                Thread.sleep(20);
+            }
+            assertThat(scheduler.connections.get()).as("the poller claims through the scheduler's own pool")
+                    .isGreaterThan(0);
+            // (The purger, which every Worker runs, still uses `background`.)
+            assertThat(api.connections.get()).isZero();
+            assertThat(bff.connections.get()).isZero();
+            assertThat(dispatch.connections.get()).isZero();
+        } finally {
+            running.stop();
+        }
+    }
+
     /// Counts every `getConnection()` call, delegating the connection itself
     /// to a real (migrated, shared) `DataSource` — `TestPg.dataSource()`
     /// several times over, since [Pools] needs four distinct instances to
