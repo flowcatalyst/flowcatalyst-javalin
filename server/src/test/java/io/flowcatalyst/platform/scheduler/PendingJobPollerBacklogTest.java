@@ -12,6 +12,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.BooleanSupplier;
 
 import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS;
@@ -22,58 +25,109 @@ import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedWriteR
 import static io.flowcatalyst.platform.scheduler.SchedulerFixture.DATA_SOURCE;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// [PendingJobPoller] under a backlog: what a tick reports (the scheduler's
-/// drain decision), and what a full claim does and does not publish. Its own
-/// class, so its own embedded database — the small batch sizes here are only
-/// meaningful when no other test's `PENDING` rows share the table.
+/// [PendingJobPoller] under a backlog: what a claim reports (the scheduler's
+/// back-off decision), and what a full claim does and does not publish. Its
+/// own class, so its own embedded database — the small batch sizes here are
+/// only meaningful when no other test's `PENDING` rows share the table.
 class PendingJobPollerBacklogTest {
 
     private static final DispatchJobRepository REPO = new DispatchJobRepository(DATA_SOURCE);
     private static final HmacTokenVerifier AUTH = HmacTokenVerifier.fromAppKey("test-app-key-" + RUN);
     private static final String ENDPOINT = "http://localhost:18080/api/dispatch/process";
 
-    private static PendingJobPoller poller(DispatchJobRepository repo, DispatchPublisher publisher,
-                                           BooleanSupplier leader, int batchSize) {
-        return new PendingJobPoller(DATA_SOURCE, repo, new PausedConnectionCache(DATA_SOURCE),
-                new PoolCodeResolver(DATA_SOURCE), publisher, AUTH, ENDPOINT, leader, batchSize);
+    private final List<PendingJobPoller> pollers = new ArrayList<>();
+
+    private PendingJobPoller poller(DispatchJobRepository repo, DispatchPublisher publisher,
+                                    BooleanSupplier leader, int batchSize) {
+        var poller = new PendingJobPoller(DATA_SOURCE, repo, new PausedConnectionCache(DATA_SOURCE),
+                new PoolCodeResolver(DATA_SOURCE), publisher, AUTH, ENDPOINT, leader,
+                SchedulerConfig.DEFAULTS.withBatchSize(batchSize));
+        pollers.add(poller);
+        return poller;
     }
 
-    private static PendingJobPoller poller(DispatchPublisher publisher, int batchSize) {
+    private PendingJobPoller poller(DispatchPublisher publisher, int batchSize) {
         return poller(REPO, publisher, () -> true, batchSize);
+    }
+
+    private static PendingJobPoller.PollResult pollAndSettle(PendingJobPoller poller) {
+        var result = poller.pollOnce();
+        assertThat(poller.awaitIdle(Duration.ofSeconds(15))).as("the lanes went idle").isTrue();
+        return result;
     }
 
     /// Each test sees only its own rows: whatever it left PENDING (held,
     /// paused, refused) would otherwise sort ahead of the next test's.
     @AfterEach
     void clearPending() {
+        pollers.forEach(PendingJobPoller::close);
+        pollers.clear();
         DB.update(MSG_DISPATCH_JOBS).set(MSG_DISPATCH_JOBS.STATUS, "COMPLETED")
                 .where(MSG_DISPATCH_JOBS.STATUS.eq("PENDING")).execute();
     }
 
     @Test
-    void aFullProductiveTickReportsItCanDrainImmediately() {
+    void aFullClaimThatSubmittedSomethingDoesNotBackOff() {
         for (int i = 0; i < 3; i++) {
             seedWriteRow(Seed.of(code("res-full" + i + "-")).withMessageGroup("aaa-res-full-" + RUN + i));
         }
         var result = poller(FakeDispatchPublisher.succeeding(), 3).pollOnce();
         assertThat(result.claimed()).isEqualTo(3);
-        assertThat(result.published()).isEqualTo(3);
-        assertThat(result.drainImmediately()).isTrue();
+        assertThat(result.submitted()).isEqualTo(3);
+        assertThat(result.wanted()).isEqualTo(3);
+        assertThat(result.backOff()).as("a full claim that submitted rows: more may be waiting").isFalse();
     }
 
+    /// Mutant: no back-off on a short claim — the poller spins on an empty queue.
     @Test
-    void aShortOrUnproductiveTickDoesNotDrainImmediately() {
+    void aShortClaimBacksOff() {
         seedWriteRow(Seed.of(code("res-short-")).withMessageGroup("bbb-res-short-" + RUN));
         var a = poller(FakeDispatchPublisher.succeeding(), 1000).pollOnce();
-        assertThat(a.drainImmediately()).as("short batch").isFalse();
+        assertThat(a.claimed()).isEqualTo(1);
+        assertThat(a.backOff()).as("short claim").isTrue();
+    }
 
+    /// Mutant: no back-off when nothing was submitted — a full claim of held
+    /// rows is claimed again at once, for ever.
+    @Test
+    void aFullClaimOfOnlyHeldRowsBacksOff() {
+        String group = "000-allheld-" + RUN;
+        seedWriteRow(Seed.of(code("allheld-head-")).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
+                .withSequence(1).withStatus("FAILED"));
+        for (int i = 0; i < 3; i++) {
+            seedWriteRow(Seed.of(code("allheld" + i + "-")).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
+                    .withSequence(2 + i));
+        }
+        var result = poller(FakeDispatchPublisher.succeeding(), 3).pollOnce();
+        assertThat(result.claimed()).isEqualTo(3);
+        assertThat(result.submitted()).isZero();
+        assertThat(result.heldBack()).isEqualTo(3);
+        assertThat(result.backOff()).isTrue();
+    }
+
+    /// Without the pause a failing broker is retried in a hot loop: its rows
+    /// are still PENDING, so every claim returns them again. The claim that
+    /// follows a lane failure must say "back off" even though it is full and
+    /// submitted rows. Mutant: ignore the lanes' failure report.
+    @Test
+    void aClaimFollowingALaneFailureBacksOff() {
         for (int i = 0; i < 2; i++) {
             seedWriteRow(Seed.of(code("res-fail" + i + "-")).withMessageGroup("ccc-res-fail-" + RUN + i));
         }
-        var b = poller(FakeDispatchPublisher.failing(), 2).pollOnce();
-        assertThat(b.claimed()).isEqualTo(2);
-        assertThat(b.published()).isZero();
-        assertThat(b.drainImmediately()).as("full claim that published nothing").isFalse();
+        var poller = poller(FakeDispatchPublisher.failing(), 2);
+
+        var first = pollAndSettle(poller);
+        assertThat(first.claimed()).isEqualTo(2);
+
+        var second = pollAndSettle(poller);
+        assertThat(second.claimed()).as("the failed rows are PENDING and not in flight, so claimed again")
+                .isEqualTo(2);
+        assertThat(second.submitted()).isEqualTo(2);
+        // The lane's failure report is consumed by whichever claim looks first:
+        // the first one if the lane was quick, otherwise the second. Either way
+        // one of the two claims — both full, both submitting — must back off.
+        assertThat(first.backOff() || second.backOff())
+                .as("a lane failed since the previous claim").isTrue();
     }
 
     @Test
@@ -81,7 +135,7 @@ class PendingJobPollerBacklogTest {
         seedWriteRow(Seed.of(code("res-nl-")));
         var result = poller(REPO, FakeDispatchPublisher.succeeding(), () -> false, 1).pollOnce();
         assertThat(result.claimed()).isZero();
-        assertThat(result.drainImmediately()).isFalse();
+        assertThat(result.backOff()).isTrue();
     }
 
     // ── paused subscriptions do not starve the queue ────────────────────────
@@ -104,18 +158,18 @@ class PendingJobPollerBacklogTest {
         String ungrouped = seedWriteRow(Seed.of(code("starve-nosub-")));
         var publisher = FakeDispatchPublisher.succeeding();
 
-        var result = poller(publisher, 5).pollOnce();
+        var result = pollAndSettle(poller(publisher, 5));
 
         assertThat(publisher.batches().stream().flatMap(java.util.List::stream).map(PublishedMessage::jobId))
                 .containsExactlyInAnyOrder(active, ungrouped);
         assertThat(REPO.findById(active).orElseThrow().status()).isEqualTo(DispatchJobStatus.QUEUED);
-        assertThat(result.published()).isEqualTo(2);
+        assertThat(result.submitted()).isEqualTo(2);
     }
 
     // ── a full claim that publishes nothing says so ─────────────────────────
 
     @Test
-    void aFullClaimThatPublishesNothingWarnsOncePerMinuteWithTheCounts() {
+    void aFullClaimThatSubmitsNothingWarnsOncePerMinuteWithTheCounts() {
         String group = "000-starved-" + RUN;
         seedWriteRow(Seed.of(code("held-head-")).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
                 .withSequence(1).withStatus("FAILED"));
@@ -132,18 +186,18 @@ class PendingJobPollerBacklogTest {
             var first = poller.pollOnce();
             poller.pollOnce();
 
-            assertThat(first.published()).isZero();
+            assertThat(first.submitted()).isZero();
             var warnings = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
             assertThat(warnings).as("once, not once per tick").hasSize(1);
             assertThat(warnings.getFirst().getKeyValuePairs().toString())
-                    .contains("claimed", "3").contains("heldSkipped").contains("pausedSkipped");
+                    .contains("claimed", "3").contains("heldSkipped");
         } finally {
             logger.detachAppender(appender);
         }
     }
 
     @Test
-    void aShortClaimThatPublishesNothingDoesNotWarn() {
+    void aShortClaimThatSubmitsNothingDoesNotWarn() {
         String group = "000-notstarved-" + RUN;
         seedWriteRow(Seed.of(code("held2-head-")).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
                 .withSequence(1).withStatus("FAILED"));
@@ -162,21 +216,35 @@ class PendingJobPollerBacklogTest {
 
     // ── the hold-back check is one query, not one per candidate ─────────────
 
-    /// A DataSource that counts the connections the repository asks for: its
-    /// claim and mark statements ride the poller's own transaction, so every
-    /// connection it takes here is a read of its own (the hold-back check).
+    /// A DataSource whose connections count the hold-back statements
+    /// (`DISTINCT ON (message_group)`) prepared on them.
     private static final class CountingDataSource {
-        final java.util.concurrent.atomic.AtomicInteger connections = new java.util.concurrent.atomic.AtomicInteger();
+        final java.util.concurrent.atomic.AtomicInteger holdBackQueries = new java.util.concurrent.atomic.AtomicInteger();
         final javax.sql.DataSource proxy = (javax.sql.DataSource) java.lang.reflect.Proxy.newProxyInstance(
                 PendingJobPollerBacklogTest.class.getClassLoader(), new Class<?>[]{javax.sql.DataSource.class},
                 (p, method, args) -> {
-                    if (method.getName().equals("getConnection")) connections.incrementAndGet();
-                    try {
-                        return method.invoke(DATA_SOURCE, args);
-                    } catch (java.lang.reflect.InvocationTargetException e) {
-                        throw e.getCause();
+                    Object result = invoke(method, DATA_SOURCE, args);
+                    if (method.getName().equals("getConnection") && result instanceof java.sql.Connection c) {
+                        return java.lang.reflect.Proxy.newProxyInstance(
+                                PendingJobPollerBacklogTest.class.getClassLoader(),
+                                new Class<?>[]{java.sql.Connection.class}, (cp, cm, cargs) -> {
+                                    if (cm.getName().equals("prepareStatement") && cargs != null
+                                            && cargs[0] instanceof String sql && sql.contains("DISTINCT ON (message_group)")) {
+                                        holdBackQueries.incrementAndGet();
+                                    }
+                                    return invoke(cm, c, cargs);
+                                });
                     }
+                    return result;
                 });
+
+        private static Object invoke(java.lang.reflect.Method method, Object target, Object[] args) throws Throwable {
+            try {
+                return method.invoke(target, args);
+            } catch (java.lang.reflect.InvocationTargetException e) {
+                throw e.getCause();
+            }
+        }
     }
 
     /// Mutant: ask once per BLOCK_ON_ERROR candidate (12 round trips here).
@@ -204,9 +272,9 @@ class PendingJobPollerBacklogTest {
         var counting = new CountingDataSource();
         var publisher = FakeDispatchPublisher.succeeding();
 
-        var result = poller(new DispatchJobRepository(counting.proxy), publisher, () -> true, 100).pollOnce();
+        var result = pollAndSettle(poller(new DispatchJobRepository(counting.proxy), publisher, () -> true, 100));
 
-        assertThat(counting.connections.get()).as("one hold-back query for 12 candidates in 4 groups").isEqualTo(1);
+        assertThat(counting.holdBackQueries.get()).as("one hold-back query for 12 candidates in 4 groups").isEqualTo(1);
         assertThat(publisher.batches().stream().flatMap(java.util.List::stream).map(PublishedMessage::jobId))
                 .containsExactlyInAnyOrderElementsOf(flowing)
                 .doesNotContainAnyElementsOf(held);

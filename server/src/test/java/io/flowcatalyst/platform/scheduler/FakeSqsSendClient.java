@@ -27,8 +27,9 @@ import java.util.Set;
 /// way; there is no SQS in the test environment).
 final class FakeSqsSendClient implements SqsClient {
 
-    private final List<SendMessageBatchRequest> sendRequests = new ArrayList<>();
-    private final List<CreateQueueRequest> createQueueRequests = new ArrayList<>();
+    /// Several dispatcher lanes publish at once: synchronized.
+    private final List<SendMessageBatchRequest> sendRequests = java.util.Collections.synchronizedList(new ArrayList<>());
+    private final List<CreateQueueRequest> createQueueRequests = java.util.Collections.synchronizedList(new ArrayList<>());
 
     /// Queue URLs that behave as "does not exist yet": every send against one
     /// throws [QueueDoesNotExistException] until [#createQueue] is called for
@@ -62,11 +63,15 @@ final class FakeSqsSendClient implements SqsClient {
     }
 
     List<SendMessageBatchRequest> sendRequests() {
-        return List.copyOf(sendRequests);
+        synchronized (sendRequests) {
+            return List.copyOf(sendRequests);
+        }
     }
 
     List<CreateQueueRequest> createQueueRequests() {
-        return List.copyOf(createQueueRequests);
+        synchronized (createQueueRequests) {
+            return List.copyOf(createQueueRequests);
+        }
     }
 
     @Override

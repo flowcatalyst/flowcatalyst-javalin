@@ -2,43 +2,38 @@ package io.flowcatalyst.platform.scheduler;
 
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
+import io.prometheus.metrics.model.registry.MultiCollector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
 import java.time.Duration;
-import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
-/// The dispatch-job scheduler (dispatch-seam spec §3, §11, §12): owns
-/// [PendingJobPoller]'s claim/publish loop, ticking on a
-/// [ScheduledExecutorService] task —
-/// the same daemon-thread, `scheduleWithFixedDelay` pattern
-/// [io.flowcatalyst.platform.dispatchjob.DispatchJobReaper] already
-/// established for this codebase's background subsystems. [#close] stops
-/// both loops (CONVENTIONS §5: an explicit stop signal, no fire-and-forget
-/// thread).
+/// The dispatch-job scheduler (dispatch-seam spec §3, §11, §12): one daemon
+/// thread runs [PendingJobPoller]'s claim loop; the poller hands claimed rows
+/// to N dispatcher lanes ([DispatchLanes]) that publish and mark `QUEUED`. The
+/// poller never waits for a publish — it blocks only when the buffer
+/// (`FC_SCHEDULER_BUFFER_CAPACITY` claimed-and-unsettled jobs) is full — and
+/// sleeps the poll interval only when it has nothing to do (see
+/// [PendingJobPoller.PollResult#backOff]). [#close] stops the loop and the
+/// lanes (CONVENTIONS §5: an explicit stop signal, no fire-and-forget thread).
 ///
-/// Cadence constants are `static final`, not env-driven — dispatch-seam spec
-/// §3's timing-table note: Go's own `DefaultConfig` doc comment claims every
-/// knob is env-overridable, but only `ProcessingEndpoint` (`processingEndpoint`
-/// below, `FC_DISPATCH_PROCESSING_ENDPOINT`) actually is;
-/// the owner question over the rest is still open, so this port keeps the
-/// hardcoded defaults as the current spec.
+/// Sizes are [SchedulerConfig]: the defaults are the spec's, and three are
+/// operator-overridable through `Env` (`FC_SCHEDULER_BUFFER_CAPACITY`,
+/// `FC_SCHEDULER_DISPATCHERS`, `FC_SCHEDULER_BATCH_SIZE`).
 public final class DispatchScheduler implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(DispatchScheduler.class);
 
     /// Poll cadence (spec §3 timing table `Config.PollInterval`).
-    static final Duration POLL_INTERVAL = Duration.ofSeconds(1);
+    static final Duration POLL_INTERVAL = SchedulerConfig.DEFAULT_POLL_INTERVAL;
 
     private final PendingJobPoller poller;
-    private final ScheduledExecutorService executor;
+    private final SchedulerConfig config;
+    private final Thread thread;
     private volatile boolean closed;
 
     /// No stale-`QUEUED` recovery loop (owner ruling 2026-09-22,
@@ -50,18 +45,16 @@ public final class DispatchScheduler implements AutoCloseable {
     /// the broker expires is simply gone; the reaper still redrives
     /// `PROCESSING` rows the mediator abandoned
     /// ([io.flowcatalyst.platform.dispatchjob.DispatchJobReaper], 15 min).
-    DispatchScheduler(PendingJobPoller poller) {
+    /// Nothing needs recovering after a crash either: a job is `QUEUED` only
+    /// once the broker has accepted it, and everything else is still `PENDING`.
+    DispatchScheduler(PendingJobPoller poller, SchedulerConfig config) {
         this.poller = Objects.requireNonNull(poller, "poller");
-        this.executor = Executors.newScheduledThreadPool(1, DispatchScheduler::daemonThread);
+        this.config = Objects.requireNonNull(config, "config");
+        this.thread = new Thread(this::loop, "dispatch-scheduler-" + THREAD_COUNT.getAndIncrement());
+        this.thread.setDaemon(true);
     }
 
     private static final AtomicInteger THREAD_COUNT = new AtomicInteger();
-
-    private static Thread daemonThread(Runnable r) {
-        Thread t = new Thread(r, "dispatch-scheduler-" + THREAD_COUNT.getAndIncrement());
-        t.setDaemon(true);
-        return t;
-    }
 
     /// Wires and starts the scheduler. Fails closed without a usable
     /// `FLOWCATALYST_APP_KEY` (dispatch-seam spec §11) — logged as an ERROR,
@@ -77,15 +70,8 @@ public final class DispatchScheduler implements AutoCloseable {
     /// CONVENTIONS §8 "subsystem knobs reach the composition root through
     /// `Env`" (a value-taking factory here, not an `Env`-taking one).
     public static DispatchScheduler start(String appKey, String processingEndpoint, DataSource pool,
-                                           DispatchPublisher publisher, BooleanSupplier leader) {
-        return start(appKey, processingEndpoint, pool, publisher, leader, PendingJobPoller.BATCH_SIZE);
-    }
-
-    /// Test-only: overrides the claim batch size, for the same reason
-    /// [PendingJobPoller]'s package-private constructor does (CONVENTIONS §6,
-    /// no truncation between tests).
-    static DispatchScheduler start(String appKey, String processingEndpoint, DataSource pool,
-                                    DispatchPublisher publisher, BooleanSupplier leader, int batchSize) {
+                                           DispatchPublisher publisher, BooleanSupplier leader,
+                                           SchedulerConfig config) {
         HmacTokenVerifier authVerifier;
         try {
             authVerifier = HmacTokenVerifier.fromAppKey(appKey);
@@ -97,48 +83,73 @@ public final class DispatchScheduler implements AutoCloseable {
         var pausedCache = new PausedConnectionCache(pool);
         var poolCodes = new PoolCodeResolver(pool);
         var poller = new PendingJobPoller(pool, repository, pausedCache, poolCodes, publisher, authVerifier,
-                processingEndpoint, leader, batchSize);
-        var scheduler = new DispatchScheduler(poller);
-        scheduler.startLoops();
+                processingEndpoint, leader, config);
+        var scheduler = new DispatchScheduler(poller, config);
+        scheduler.thread.start();
         LOG.atInfo().setMessage("dispatch scheduler started")
-                .addKeyValue("interval", POLL_INTERVAL)
+                .addKeyValue("interval", config.pollInterval())
+                .addKeyValue("bufferCapacity", config.bufferCapacity())
+                .addKeyValue("dispatchers", config.dispatchers())
+                .addKeyValue("batchSize", config.batchSize())
                 .log();
         return scheduler;
     }
 
-    private void startLoops() {
-        executor.scheduleWithFixedDelay(this::pollSafely, 0, POLL_INTERVAL.toMillis(), TimeUnit.MILLISECONDS);
+    /// The defaults.
+    public static DispatchScheduler start(String appKey, String processingEndpoint, DataSource pool,
+                                           DispatchPublisher publisher, BooleanSupplier leader) {
+        return start(appKey, processingEndpoint, pool, publisher, leader, SchedulerConfig.DEFAULTS);
     }
 
-    /// One scheduled run: ticks, and keeps ticking without the fixed delay
-    /// while each tick fills the batch and publishes something (a backlog
-    /// draining) — otherwise one 100-row claim per second capped throughput
-    /// at 100 jobs/s. Every pass re-checks shutdown, and
-    /// [PendingJobPoller#pollOnce] re-checks leadership. A short claim, a
-    /// full claim that published nothing, or an exception ends the run, and
-    /// the fixed delay applies.
-    private void pollSafely() {
-        try {
-            while (!closed && !Thread.currentThread().isInterrupted()) {
-                if (!poller.pollOnce().drainImmediately()) {
+    /// Test-only: the defaults with a smaller claim batch, for the same reason
+    /// the poller's tests use one (CONVENTIONS §6, no truncation between tests).
+    static DispatchScheduler start(String appKey, String processingEndpoint, DataSource pool,
+                                    DispatchPublisher publisher, BooleanSupplier leader, int batchSize) {
+        return start(appKey, processingEndpoint, pool, publisher, leader,
+                SchedulerConfig.DEFAULTS.withBatchSize(batchSize));
+    }
+
+    /// The claim loop: poll; when the poll says there is more waiting, poll
+    /// again at once; otherwise wait the poll interval. A claim that fails is
+    /// logged and waited out the same way.
+    private void loop() {
+        while (!closed && !Thread.currentThread().isInterrupted()) {
+            boolean backOff;
+            try {
+                backOff = poller.pollOnce().backOff();
+            } catch (RuntimeException e) {
+                LOG.warn("dispatch job poll failed; will retry after the poll interval", e);
+                backOff = true;
+            }
+            if (backOff && !closed) {
+                try {
+                    Thread.sleep(config.pollInterval());
+                } catch (InterruptedException e) {
                     return;
                 }
             }
-        } catch (RuntimeException e) {
-            LOG.warn("dispatch job poll failed; will retry next tick", e);
         }
     }
 
+    /// The `fc_scheduler_*` series.
+    public MultiCollector collector() {
+        return poller.metrics().collector();
+    }
 
-    /// Exposed for tests: one poll tick, synchronous.
+    /// Exposed for tests.
     PendingJobPoller poller() {
         return poller;
     }
 
-
     @Override
     public void close() {
         closed = true;
-        executor.shutdownNow();
+        thread.interrupt();
+        try {
+            thread.join(Duration.ofSeconds(5));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        poller.close();
     }
 }

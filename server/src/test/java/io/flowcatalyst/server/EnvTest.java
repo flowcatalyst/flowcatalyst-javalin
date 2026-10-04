@@ -502,6 +502,20 @@ class EnvTest {
     }
 
     @Test
+    void schedulerSizingKnobsDefaultToUnsetAndAreReadThrough() {
+        var unset = load();
+        assertThat(unset.schedulerBufferCapacity()).isZero();
+        assertThat(unset.schedulerDispatchers()).isZero();
+        assertThat(unset.schedulerBatchSize()).isZero();
+
+        var env = load("FC_SCHEDULER_BUFFER_CAPACITY", "250", "FC_SCHEDULER_DISPATCHERS", "3",
+                "FC_SCHEDULER_BATCH_SIZE", "40");
+        assertThat(env.schedulerBufferCapacity()).isEqualTo(250);
+        assertThat(env.schedulerDispatchers()).isEqualTo(3);
+        assertThat(env.schedulerBatchSize()).isEqualTo(40);
+    }
+
+    @Test
     void streamAndOutboxKnobs() {
         var env = load(
                 "FC_STREAM_PROCESSOR_ENABLED", "true",

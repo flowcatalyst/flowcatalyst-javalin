@@ -10,14 +10,15 @@ import io.flowcatalyst.router.queue.postgres.PostgresQueue;
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.router.wire.MediationType;
 import io.flowcatalyst.router.wire.Message;
-import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
 import org.jooq.Record;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import java.sql.Connection;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BooleanSupplier;
 
@@ -29,16 +30,18 @@ import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedWriteR
 import static io.flowcatalyst.platform.scheduler.SchedulerFixture.DATA_SOURCE;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// [PendingJobPoller] against a real embedded Postgres (dispatch-seam spec
-/// §2, §3): every field of the published message and its round trip through
-/// the router's own [Message] parser, the claim-time `BLOCK_ON_ERROR`
-/// hold-back's positional semantics, publish failure leaving the batch
-/// `PENDING`, the publish-before-commit order that leaves no row `QUEUED`
-/// without a message, the
+/// [PendingJobPoller] and its lanes against a real embedded Postgres
+/// (dispatch-seam spec §2, §3): every field of the published message and its
+/// round trip through the router's own [Message] parser, the claim-time
+/// `BLOCK_ON_ERROR` hold-back's positional semantics, publish failure leaving
+/// the batch `PENDING`, the publish-before-mark order that leaves no row
+/// `QUEUED` without a message, the status-guarded `QUEUED` update, the
 /// paused-connection filter, leader-gating, and the claim query's total
-/// order. A large test-only batch size (see [#poller]) keeps these robust
-/// against the `PENDING` rows other test classes leave behind — CONVENTIONS
-/// §6, no truncation between tests.
+/// order. A claim hands its rows to lanes and returns, so each test polls
+/// once and then waits for the lanes to go idle ([#pollAndSettle]); a large
+/// test-only batch size keeps these robust against the `PENDING` rows other
+/// tests in this class leave behind (the database is per class, rows are
+/// not truncated between its tests).
 class PendingJobPollerTest {
 
     private static final DispatchJobRepository REPO = new DispatchJobRepository(DATA_SOURCE);
@@ -57,9 +60,28 @@ class PendingJobPollerTest {
         PostgresQueue.initSchema(DATA_SOURCE);
     }
 
-    private static PendingJobPoller poller(DispatchPublisher publisher, BooleanSupplier leader) {
-        return new PendingJobPoller(DATA_SOURCE, REPO, new PausedConnectionCache(DATA_SOURCE),
-                new PoolCodeResolver(DATA_SOURCE), publisher, AUTH, PROCESSING_ENDPOINT, leader, 5000);
+    private static final SchedulerConfig CONFIG = SchedulerConfig.DEFAULTS.withBufferCapacity(5000).withBatchSize(5000);
+
+    private final List<PendingJobPoller> pollers = new ArrayList<>();
+
+    private PendingJobPoller poller(DispatchPublisher publisher, BooleanSupplier leader) {
+        var poller = new PendingJobPoller(DATA_SOURCE, REPO, new PausedConnectionCache(DATA_SOURCE),
+                new PoolCodeResolver(DATA_SOURCE), publisher, AUTH, PROCESSING_ENDPOINT, leader, CONFIG);
+        pollers.add(poller);
+        return poller;
+    }
+
+    @AfterEach
+    void closePollers() {
+        pollers.forEach(PendingJobPoller::close);
+        pollers.clear();
+    }
+
+    /// One claim, then wait (bounded) for the lanes to publish, mark and go idle.
+    private static PendingJobPoller.PollResult pollAndSettle(PendingJobPoller poller) {
+        var result = poller.pollOnce();
+        assertThat(poller.awaitIdle(Duration.ofSeconds(15))).as("the lanes went idle").isTrue();
+        return result;
     }
 
     private static Record queueRow(String id) {
@@ -87,7 +109,7 @@ class PendingJobPollerTest {
         String jobId = seedWriteRow(Seed.of(code("full")).withDispatchPoolId(poolId).withClientId(clientId)
                 .withMessageGroup(group).withMode("BLOCK_ON_ERROR"));
 
-        poller(new PostgresQueuePublisher(DATA_SOURCE, SETTINGS), () -> true).pollOnce();
+        pollAndSettle(poller(new PostgresQueuePublisher(DATA_SOURCE, SETTINGS), () -> true));
 
         assertThat(REPO.findById(jobId).orElseThrow().status()).isEqualTo(DispatchJobStatus.QUEUED);
 
@@ -115,7 +137,7 @@ class PendingJobPollerTest {
     void ungroupedJobPublishesWithNoMessageGroupId() {
         String jobId = seedWriteRow(Seed.of(code("ungrouped")));
 
-        poller(new PostgresQueuePublisher(DATA_SOURCE, SETTINGS), () -> true).pollOnce();
+        pollAndSettle(poller(new PostgresQueuePublisher(DATA_SOURCE, SETTINGS), () -> true));
 
         Message message = Json.read(queueRow(jobId).get("payload", String.class), Message.class);
         assertThat(message.messageGroupId()).isNull();
@@ -137,7 +159,7 @@ class PendingJobPollerTest {
         String flowingNext = seedWriteRow(Seed.of(code("flowingnext")).withMessageGroup(group).withMode("NEXT_ON_ERROR")
                 .withSequence(4).withCreatedAt(t.plusSeconds(3)));
 
-        poller(FakeDispatchPublisher.succeeding(), () -> true).pollOnce();
+        pollAndSettle(poller(FakeDispatchPublisher.succeeding(), () -> true));
 
         assertThat(REPO.findById(ahead).orElseThrow().status())
                 .as("positioned BEFORE the FAILED head — the check is positional, not set membership")
@@ -162,7 +184,7 @@ class PendingJobPollerTest {
         String heldByBackoff = seedWriteRow(Seed.of(code("heldbyback")).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
                 .withSequence(2).withCreatedAt(t.plusSeconds(1)));
 
-        poller(FakeDispatchPublisher.succeeding(), () -> true).pollOnce();
+        pollAndSettle(poller(FakeDispatchPublisher.succeeding(), () -> true));
 
         assertThat(REPO.findById(backedOff).orElseThrow().status())
                 .as("excluded from the claim query by its own future scheduled_for, not by the hold-back filter")
@@ -179,7 +201,7 @@ class PendingJobPollerTest {
         String jobA = seedWriteRow(Seed.of(code("reverta")));
         String jobB = seedWriteRow(Seed.of(code("revertb")));
 
-        poller(FakeDispatchPublisher.failing(), () -> true).pollOnce();
+        pollAndSettle(poller(FakeDispatchPublisher.failing(), () -> true));
 
         assertThat(REPO.findById(jobA).orElseThrow().status())
                 .as("publish failed; nothing in the claimed batch is marked QUEUED")
@@ -199,7 +221,7 @@ class PendingJobPollerTest {
         String published = seedWriteRow(Seed.of(code("partialok")));
         String unpublished = seedWriteRow(Seed.of(code("partialfail")));
 
-        poller(FakeDispatchPublisher.failingForJobIds(java.util.Set.of(unpublished)), () -> true).pollOnce();
+        pollAndSettle(poller(FakeDispatchPublisher.failingForJobIds(java.util.Set.of(unpublished)), () -> true));
 
         assertThat(REPO.findById(published).orElseThrow().status())
                 .as("published job stays QUEUED — a partial failure must not revert it")
@@ -211,13 +233,14 @@ class PendingJobPollerTest {
 
     // ── (d2) no QUEUED row without a message (review 2026-09-28) ──────────
     //
-    // The old order committed QUEUED and then published, so a process death in
+    // The old order marked QUEUED and then published, so a process death in
     // between stranded the jobs QUEUED for ever (the stale sweep is gone by
-    // ruling 2026-09-22). QUEUED is now marked in the claim transaction after
-    // the broker has accepted the job.
+    // ruling 2026-09-22). QUEUED is now written by the lane only after the
+    // broker has accepted the job — and with no transaction around the claim,
+    // nothing else holds the row meanwhile.
 
     @Test
-    void whenThePublisherRunsTheJobIsNotYetCommittedQueued() {
+    void whenThePublisherRunsTheJobIsNotYetQueued() {
         String job = seedWriteRow(Seed.of(code("orderpending")));
         var seenAtPublish = new java.util.concurrent.atomic.AtomicReference<DispatchJobStatus>();
         DispatchPublisher observing = batch -> {
@@ -226,41 +249,88 @@ class PendingJobPollerTest {
             seenAtPublish.set(REPO.findById(job).orElseThrow().status());
         };
 
-        poller(observing, () -> true).pollOnce();
+        pollAndSettle(poller(observing, () -> true));
 
         assertThat(seenAtPublish.get())
-                .as("mutant: commit QUEUED before publishing — a death here strands the job")
+                .as("mutant: mark QUEUED before publishing — a death here strands the job")
                 .isEqualTo(DispatchJobStatus.PENDING);
         assertThat(REPO.findById(job).orElseThrow().status()).isEqualTo(DispatchJobStatus.QUEUED);
     }
 
     @Test
-    void aDeathBetweenPublishAndCommitLeavesTheJobPendingAndTheNextTickPublishesItAgain() {
+    void aDeathBetweenPublishAndMarkLeavesTheJobPendingAndTheNextClaimPublishesItAgain() {
         String job = seedWriteRow(Seed.of(code("crashwindow")));
         var published = new java.util.concurrent.CopyOnWriteArrayList<String>();
         DispatchPublisher publishesThenDies = batch -> {
             batch.forEach(m -> published.add(m.jobId()));
-            throw new IllegalStateException("simulated process death after the broker accepted the batch");
+            throw new IllegalStateException("simulated failure after the broker accepted the batch");
         };
 
-        try {
-            poller(publishesThenDies, () -> true).pollOnce();
-        } catch (IllegalStateException expected) {
-            // the death
-        }
+        pollAndSettle(poller(publishesThenDies, () -> true));
 
         assertThat(published).contains(job);
         assertThat(REPO.findById(job).orElseThrow().status())
-                .as("mutant: commit QUEUED before publishing — the job is stranded QUEUED")
+                .as("mutant: mark QUEUED before publishing — the job is stranded QUEUED")
                 .isEqualTo(DispatchJobStatus.PENDING);
 
-        // Recovery is the next ordinary tick, not a sweep.
+        // Recovery is the next ordinary claim, not a sweep.
         var republish = FakeDispatchPublisher.succeeding();
-        poller(republish, () -> true).pollOnce();
+        pollAndSettle(poller(republish, () -> true));
 
         assertThat(republish.batches().stream().flatMap(List::stream).map(PublishedMessage::jobId))
-                .as("the next tick publishes it again").contains(job);
+                .as("the next claim publishes it again").contains(job);
         assertThat(REPO.findById(job).orElseThrow().status()).isEqualTo(DispatchJobStatus.QUEUED);
+    }
+
+    /// The claim holds no lock, so the router can deliver a copy while the
+    /// row is still `PENDING`, and `/api/dispatch/process` accepts that
+    /// (`claimForDelivery` takes `PENDING`/`QUEUED`). The lane's `QUEUED`
+    /// update then runs against a job that has moved on: it must change nothing
+    /// and count itself. Mutant: drop `AND status = 'PENDING'` from the update —
+    /// the job is dragged back to `QUEUED` after its delivery began.
+    @Test
+    void aDeliveryThatBeatsTheQueuedUpdateIsNotRegressedToQueued() {
+        String job = seedWriteRow(Seed.of(code("callbackfirst")));
+        var createdAt = REPO.findById(job).orElseThrow().createdAt();
+        var claimedByCallback = new java.util.concurrent.atomic.AtomicBoolean();
+        DispatchPublisher callbackArrivesBeforeTheUpdate = batch -> {
+            if (batch.stream().anyMatch(m -> m.jobId().equals(job))) {
+                claimedByCallback.set(REPO.claimForDelivery(job, createdAt));
+            }
+        };
+        var poller = poller(callbackArrivesBeforeTheUpdate, () -> true);
+
+        pollAndSettle(poller);
+
+        assertThat(claimedByCallback).as("the callback won the delivery claim while the row was PENDING").isTrue();
+        assertThat(REPO.findById(job).orElseThrow().status())
+                .as("mutant: unguarded QUEUED update regresses PROCESSING")
+                .isEqualTo(DispatchJobStatus.PROCESSING);
+        assertThat(poller.metrics().markNotUpdated()).isGreaterThanOrEqualTo(1);
+    }
+
+    /// The race a status guard alone cannot see: the callback processes the
+    /// job and reschedules it back to `PENDING` (a retry) before the lane's
+    /// update runs. The row is `PENDING` again, but its message is gone, so it
+    /// must not be marked `QUEUED`. Mutant: guard on the status only.
+    @Test
+    void aJobTheCallbackRescheduledBackToPendingBeforeTheQueuedUpdateIsNotMarkedQueued() {
+        String job = seedWriteRow(Seed.of(code("callbackretry")));
+        var createdAt = REPO.findById(job).orElseThrow().createdAt();
+        DispatchPublisher callbackRunsAndRetries = batch -> {
+            if (batch.stream().anyMatch(m -> m.jobId().equals(job))) {
+                assertThat(REPO.claimForDelivery(job, createdAt)).isTrue();
+                REPO.scheduleRetry(job, createdAt, Instant.now().minusSeconds(1), 1, "subscriber 500");
+            }
+        };
+        var poller = poller(callbackRunsAndRetries, () -> true);
+
+        pollAndSettle(poller);
+
+        assertThat(REPO.findById(job).orElseThrow().status())
+                .as("mutant: status-only guard marks a PENDING row whose message is gone")
+                .isEqualTo(DispatchJobStatus.PENDING);
+        assertThat(poller.metrics().markNotUpdated()).isGreaterThanOrEqualTo(1);
     }
 
     @Test
@@ -269,7 +339,7 @@ class PendingJobPollerTest {
         // recovering one's). /process owns a delivery only by winning the
         // status-guarded claim, so the second copy never reaches the subscriber.
         String job = seedWriteRow(Seed.of(code("dupcopy")));
-        poller(FakeDispatchPublisher.succeeding(), () -> true).pollOnce();
+        pollAndSettle(poller(FakeDispatchPublisher.succeeding(), () -> true));
         var row = REPO.findById(job).orElseThrow();
 
         boolean firstCopy = REPO.claimForDelivery(job, row.createdAt());
@@ -295,7 +365,7 @@ class PendingJobPollerTest {
         assertThat(REPO.claimForDelivery(job, row.createdAt())).as("a stale copy before it is due").isFalse();
         assertThat(REPO.findById(job).orElseThrow().status()).isEqualTo(DispatchJobStatus.PENDING);
         var early = FakeDispatchPublisher.succeeding();
-        poller(early, () -> true).pollOnce();
+        pollAndSettle(poller(early, () -> true));
         assertThat(early.batches().stream().flatMap(List::stream).map(PublishedMessage::jobId))
                 .as("not published before it is due either").doesNotContain(job);
 
@@ -303,7 +373,7 @@ class PendingJobPollerTest {
                 .set(MSG_DISPATCH_JOBS.SCHEDULED_FOR, Instant.now().minusSeconds(1).atOffset(ZoneOffset.UTC))
                 .where(MSG_DISPATCH_JOBS.ID.eq(job)).execute();
         var due = FakeDispatchPublisher.succeeding();
-        poller(due, () -> true).pollOnce();
+        pollAndSettle(poller(due, () -> true));
 
         assertThat(due.batches().stream().flatMap(List::stream).map(PublishedMessage::jobId)).contains(job);
         assertThat(REPO.claimForDelivery(job, row.createdAt())).as("the copy published once due is delivered")
@@ -322,7 +392,7 @@ class PendingJobPollerTest {
         String heldJob = seedWriteRow(Seed.of(code("pausedjob")).withSubscriptionId(pausedSub));
         String flowingJob = seedWriteRow(Seed.of(code("activejob")).withSubscriptionId(activeSub));
 
-        poller(FakeDispatchPublisher.succeeding(), () -> true).pollOnce();
+        pollAndSettle(poller(FakeDispatchPublisher.succeeding(), () -> true));
 
         assertThat(REPO.findById(heldJob).orElseThrow().status()).isEqualTo(DispatchJobStatus.PENDING);
         assertThat(REPO.findById(flowingJob).orElseThrow().status()).isEqualTo(DispatchJobStatus.QUEUED);
@@ -334,7 +404,7 @@ class PendingJobPollerTest {
     void notLeaderClaimsNothing() {
         String jobId = seedWriteRow(Seed.of(code("notleader")));
 
-        poller(FakeDispatchPublisher.succeeding(), () -> false).pollOnce();
+        pollAndSettle(poller(FakeDispatchPublisher.succeeding(), () -> false));
 
         assertThat(REPO.findById(jobId).orElseThrow().status())
                 .as("a non-leader tick must not claim — the status counter must not change")
@@ -345,7 +415,7 @@ class PendingJobPollerTest {
     // ── (h) claim order is total, even on a tie ─────────────────────────────
 
     @Test
-    void claimOrderIsTotalEvenWhenSequenceAndCreatedAtTie() throws Exception {
+    void claimOrderIsTotalEvenWhenSequenceAndCreatedAtTie() {
         Instant t = Instant.now().minusSeconds(5);
         String group = "grp-order-" + RUN;
         String idLow = "a" + RUN + "order1";
@@ -355,17 +425,10 @@ class PendingJobPollerTest {
         seedWriteRow(new Seed(idLow, code("orderlow"), null, "PENDING", t, null, null, null, group,
                 0, null, null, null, null, null, null, null, "IMMEDIATE", 7, t, "EVENT", "exponential", null));
 
-        try (Connection conn = DATA_SOURCE.getConnection()) {
-            conn.setAutoCommit(false);
-            try {
-                List<DispatchJobRepository.ClaimRow> claims = REPO.claimPending(DbTx.wrapForBootstrap(conn), 5000);
-                List<String> myOrder = claims.stream().map(DispatchJobRepository.ClaimRow::id)
-                        .filter(id -> id.equals(idLow) || id.equals(idHigh)).toList();
-                assertThat(myOrder).as("equal sequence and created_at; the id breaks the tie ascending")
-                        .containsExactly(idLow, idHigh);
-            } finally {
-                conn.rollback();
-            }
-        }
+        List<DispatchJobRepository.ClaimRow> claims = REPO.claimPending(5000, java.util.Set.of(), List.of());
+        List<String> myOrder = claims.stream().map(DispatchJobRepository.ClaimRow::id)
+                .filter(id -> id.equals(idLow) || id.equals(idHigh)).toList();
+        assertThat(myOrder).as("equal sequence and created_at; the id breaks the tie ascending")
+                .containsExactly(idLow, idHigh);
     }
 }

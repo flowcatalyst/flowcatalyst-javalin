@@ -4,26 +4,29 @@ import jdk.jfr.Description;
 import jdk.jfr.Label;
 import jdk.jfr.Name;
 
-/// One poll tick's claim (dispatch-seam spec §3): how many `PENDING` rows
-/// were claimed, how many of those actually got published, and how many
-/// stayed `PENDING` behind a `BLOCK_ON_ERROR` hold-back. `size` always equals
-/// `published + heldBack + pausedSkipped` plus whatever the publisher
-/// reported unpublished. Paused subscriptions are excluded by the claim
-/// query itself, so `pausedSkipped` should be zero.
+/// One claim by the scheduler's poller (dispatch-seam spec §3): how many rows
+/// it asked for (the permits it held), how many came back, how many of those
+/// were handed to a lane, and how many stayed `PENDING` behind a
+/// `BLOCK_ON_ERROR` hold-back. `size == submitted + heldBack`. The event's own
+/// duration is the claim query plus the hold-back check. Paused subscriptions
+/// are excluded by the claim query itself.
 @Name("io.flowcatalyst.platform.scheduler.ClaimedBatch")
 @Label("Dispatch Batch Claimed")
-@Description("One scheduler poll tick's claim: rows claimed, rows published, rows held back by a BLOCK_ON_ERROR sibling")
+@Description("One scheduler claim: rows asked for, rows claimed, rows handed to a lane, rows held back by a BLOCK_ON_ERROR sibling")
 public final class ClaimedBatchEvent extends SchedulerEvent {
+
+    @Label("Wanted")
+    public int wanted;
 
     @Label("Claimed")
     public int size;
 
-    @Label("Published")
-    public int published;
+    @Label("Submitted")
+    public int submitted;
 
     @Label("Held Back")
     public int heldBack;
 
-    @Label("Paused Skipped")
-    public int pausedSkipped;
+    @Label("In Flight Excluded")
+    public int inFlight;
 }

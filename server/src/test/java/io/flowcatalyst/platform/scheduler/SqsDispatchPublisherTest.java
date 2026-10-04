@@ -85,6 +85,61 @@ class SqsDispatchPublisherTest {
         assertThat(sentOrder).as("claim order preserved across the chunk boundaries").containsExactlyElementsOf(claimOrder);
     }
 
+    // ── (1b) the dispatcher lanes publish concurrently ──────────────────────
+
+    /// Several lanes call [SqsDispatchPublisher#publish] on one publisher at
+    /// once (each with its own groups): every job is sent exactly once, each
+    /// call's own group order is preserved, and no two calls share a
+    /// deduplication id (each call has its own nonce).
+    @Test
+    void concurrentPublishCallsSendEveryJobOnceInTheirOwnOrderWithDistinctDedupIds() throws Exception {
+        FakeSqsSendClient client = new FakeSqsSendClient();
+        SqsDispatchPublisher publisher = publisher(client);
+        int callers = 8;
+        int perCaller = 30;
+        var failures = java.util.Collections.synchronizedList(new ArrayList<Throwable>());
+        var start = new java.util.concurrent.CountDownLatch(1);
+        var threads = new ArrayList<Thread>();
+        for (int c = 0; c < callers; c++) {
+            int caller = c;
+            Thread t = Thread.ofVirtual().unstarted(() -> {
+                try {
+                    start.await();
+                    List<PublishedMessage> batch = new ArrayList<>();
+                    for (int i = 0; i < perCaller; i++) {
+                        batch.add(published("conc-" + RUN + "-c" + caller + "-" + String.format("%03d", i), null, null,
+                                "conc-group-" + RUN + "-" + caller + "-" + (i % 3)));
+                    }
+                    publisher.publish(batch);
+                } catch (Throwable e) {
+                    failures.add(e);
+                }
+            });
+            threads.add(t);
+            t.start();
+        }
+        start.countDown();
+        for (Thread t : threads) t.join(15_000);
+
+        assertThat(failures).isEmpty();
+        var entries = client.sendRequests().stream().flatMap(r -> r.entries().stream()).toList();
+        assertThat(entries).hasSize(callers * perCaller);
+        assertThat(entries.stream().map(SendMessageBatchRequestEntry::id).distinct().count())
+                .as("every job exactly once").isEqualTo(callers * perCaller);
+        assertThat(entries.stream().map(SendMessageBatchRequestEntry::messageDeduplicationId).distinct().count())
+                .as("distinct dedup ids").isEqualTo(callers * perCaller);
+        for (int c = 0; c < callers; c++) {
+            String prefix = "conc-" + RUN + "-c" + c + "-";
+            for (int g = 0; g < 3; g++) {
+                String group = "conc-group-" + RUN + "-" + c + "-" + g;
+                List<String> sent = entries.stream().filter(e -> e.messageGroupId().equals(group))
+                        .map(SendMessageBatchRequestEntry::id).toList();
+                assertThat(sent).as(group).isSorted();
+                assertThat(sent).allMatch(id -> id.startsWith(prefix));
+            }
+        }
+    }
+
     // ── (2) routing to the composed (tenant, priority) queue ────────────────
 
     /// Mutant this pins: swapping the tenant/priority composition, or

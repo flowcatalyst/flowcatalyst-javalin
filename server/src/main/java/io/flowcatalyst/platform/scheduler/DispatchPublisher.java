@@ -3,20 +3,21 @@ package io.flowcatalyst.platform.scheduler;
 import java.util.List;
 import java.util.Objects;
 
-/// Hands a claimed batch of dispatch jobs to the message queue the router
-/// consumes from (dispatch-seam spec §3, step 5). `PendingJobPoller` calls
-/// this exactly once per poll tick, **inside** the claim transaction, and
-/// marks `QUEUED` only what this call reports published (review 2026-09-28;
-/// this used to run after the commit, which stranded jobs `QUEUED` with no
-/// message whenever the process died in between — see `PendingJobPoller`'s
-/// class doc for the trade and why the duplicate it accepts is harmless).
-/// An implementation therefore runs while the claimed rows are locked, and
-/// must not itself wait on anything that needs those rows.
+/// Hands a batch of claimed dispatch jobs to the message queue the router
+/// consumes from (dispatch-seam spec §3). A dispatcher lane ([DispatchLanes])
+/// calls this with up to `LaneBatch` jobs in claim order, and marks `QUEUED`
+/// only what this call reports published (a job is `QUEUED` only once the
+/// broker has accepted it, so a death in between strands nothing — see
+/// `PendingJobPoller`'s class doc for why the duplicate this accepts is
+/// harmless). Several lanes call [#publish] **concurrently**, each with its own
+/// batch, and a group's jobs only ever arrive from one lane: an implementation
+/// must be thread-safe, and must publish a batch's jobs in the order given. No
+/// row lock is held while it runs.
 ///
 /// **Publishing is no longer all-or-nothing (ruling O2,
 /// `docs/go-mirror/2026-09-12-dispatch-rulings.md`) — superseding this
 /// paragraph's original text, kept below for the record.** SQS caps a
-/// `SendMessageBatch` call at 10 entries while `PendingJobPoller` claims up
+/// `SendMessageBatch` call at 10 entries while a lane publishes up
 /// to 100, so [#publish] chunks internally; a chunk failure is SQS's normal
 /// operating mode, not an exceptional one, and jobs already accepted by the
 /// broker are legitimately [io.flowcatalyst.platform.dispatchjob.DispatchJobStatus#QUEUED]
@@ -29,7 +30,7 @@ import java.util.Objects;
 /// [PostgresQueuePublisher] failure reports its whole batch as unpublished —
 /// but the contract itself no longer requires it, and an implementation MUST
 /// NOT claim a job unpublished that the broker actually accepted, or vice
-/// versa: [PendingJobPoller] trusts [PublishException#unpublishedJobIds()]
+/// versa: [DispatchLanes] trusts [PublishException#unpublishedJobIds()]
 /// exactly.
 ///
 /// ~~Original text (all-or-nothing, superseded above):~~ ~~Publishing is
@@ -61,7 +62,7 @@ public interface DispatchPublisher {
 
     /// The batch failed to publish, in whole or in part (ruling O2). Carries
     /// the underlying cause (when there is a single one to attach; `null` is
-    /// permitted — see [#cause()]) and — the part [PendingJobPoller] actually
+    /// permitted — see [#cause()]) and — the part [DispatchLanes] actually
     /// acts on — exactly the ids of the jobs in the batch that were NOT
     /// published, so the caller can leave precisely those `PENDING` and mark
     /// every successfully published job `QUEUED`. Never thrown for an empty batch

@@ -104,10 +104,12 @@ class DispatchSchedulerTest {
         }
     }
 
-    /// A full claim that publishes nothing would claim the same rows again, so
-    /// it must wait out the delay. Mutant: re-poll on `claimed == batch` alone.
+    /// A broker that refuses everything leaves its rows PENDING, so every
+    /// claim would return them again: without a back-off the poller retries it
+    /// in a hot loop. Mutant: no back-off after a lane failure / a short claim —
+    /// hundreds of attempts inside the window instead of a handful.
     @Test
-    void aFullClaimThatPublishesNothingDoesNotRePollImmediately() throws InterruptedException {
+    void aFailingBrokerIsNotRetriedInAHotLoop() throws InterruptedException {
         var ids = new java.util.ArrayList<String>();
         for (int i = 0; i < 6; i++) {
             ids.add(seedWriteRow(Seed.of(code("nopublish" + i + "-")).withMessageGroup("aaa-nopublish-" + RUN)
@@ -123,10 +125,99 @@ class DispatchSchedulerTest {
         try (var scheduler = DispatchScheduler.start("test-app-key-" + RUN, PROCESSING_ENDPOINT, DATA_SOURCE,
                 refusing, () -> true, 5)) {
             assertThat(scheduler).isNotNull();
-            Thread.sleep(600); // inside the 1s delay: only the first tick can have run
-            assertThat(attempts.get()).as("one tick, then the fixed delay").isEqualTo(1);
+            Thread.sleep(700); // inside the 1s delay: a first claim or two, then the back-off
+            int early = attempts.get();
+            assertThat(early).as("a claim or two, then the poll interval").isBetween(1, 4);
+            Thread.sleep(200);
+            assertThat(attempts.get()).as("nothing more inside the same interval").isEqualTo(early);
         } finally {
             for (String id : ids) { // leave nothing PENDING for the other tests
+                DB.update(MSG_DISPATCH_JOBS).set(MSG_DISPATCH_JOBS.STATUS, "COMPLETED")
+                        .where(MSG_DISPATCH_JOBS.ID.eq(id)).execute();
+            }
+        }
+    }
+
+    /// A claim that errors (database down) is logged and waited out, not
+    /// retried at once. Mutant: no back-off on error.
+    @Test
+    void aFailingClaimIsNotRetriedInAHotLoop() throws InterruptedException {
+        var connections = new java.util.concurrent.atomic.AtomicInteger();
+        javax.sql.DataSource down = (javax.sql.DataSource) java.lang.reflect.Proxy.newProxyInstance(
+                DispatchSchedulerTest.class.getClassLoader(), new Class<?>[]{javax.sql.DataSource.class},
+                (p, method, args) -> {
+                    if (method.getName().equals("getConnection")) {
+                        connections.incrementAndGet();
+                        throw new java.sql.SQLException("database is down");
+                    }
+                    throw new UnsupportedOperationException(method.getName());
+                });
+
+        try (var scheduler = DispatchScheduler.start("test-app-key-" + RUN, PROCESSING_ENDPOINT, down,
+                FakeDispatchPublisher.succeeding(), () -> true, 5)) {
+            assertThat(scheduler).isNotNull();
+            Thread.sleep(600);
+            // The paused-connection cache and the claim each ask once per poll.
+            assertThat(connections.get()).as("one poll, then the fixed delay").isBetween(1, 3);
+            assertThat(scheduler.poller().metrics().pollErrors()).isEqualTo(1);
+        }
+    }
+
+    /// Shutdown mid-batch: close() returns promptly (once the batch in the
+    /// middle of its publish finishes), every job the publisher accepted is
+    /// QUEUED, and everything else — still in a channel, never taken — is left
+    /// PENDING for the next leader. Mutant: lanes that keep draining their
+    /// channels after close (nothing stays PENDING), or that exit mid-batch
+    /// (a published job stays PENDING).
+    @Test
+    void shutdownMidBatchLeavesUnpublishedJobsPendingAndReturnsPromptly() throws Exception {
+        var ids = new java.util.ArrayList<String>();
+        for (int i = 0; i < 12; i++) {
+            ids.add(seedWriteRow(Seed.of(code("shutdown" + i + "-"))));
+        }
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var open = new java.util.concurrent.CountDownLatch(1);
+        var accepted = java.util.Collections.synchronizedList(new java.util.ArrayList<String>());
+        DispatchPublisher held = batch -> {
+            entered.countDown();
+            try {
+                if (!open.await(20, java.util.concurrent.TimeUnit.SECONDS)) throw new IllegalStateException("never opened");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+            }
+            batch.forEach(m -> accepted.add(m.jobId()));
+        };
+        var config = SchedulerConfig.DEFAULTS.withBatchSize(5).withDispatchers(1);
+        try {
+            var scheduler = DispatchScheduler.start("test-app-key-" + RUN, PROCESSING_ENDPOINT, DATA_SOURCE,
+                    held, () -> true, config);
+            assertThat(scheduler).isNotNull();
+            assertThat(entered.await(15, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            // Let the poller claim ahead while the lane is held: 12 rows in claims of 5.
+            long deadline = System.currentTimeMillis() + 10_000;
+            while (System.currentTimeMillis() < deadline && scheduler.poller().lanes().inFlightCount() < 12) {
+                Thread.sleep(10);
+            }
+            assertThat(scheduler.poller().lanes().inFlightCount()).as("all 12 claimed and buffered").isGreaterThanOrEqualTo(12);
+
+            var closer = new Thread(scheduler::close);
+            long start = System.nanoTime();
+            closer.start();
+            Thread.sleep(150);
+            open.countDown(); // the batch in progress finishes
+            closer.join(10_000);
+            assertThat(closer.isAlive()).as("close returned").isFalse();
+            assertThat(java.time.Duration.ofNanos(System.nanoTime() - start)).isLessThan(java.time.Duration.ofSeconds(5));
+
+            var queued = ids.stream().filter(id -> REPO.findById(id).orElseThrow().status() == DispatchJobStatus.QUEUED).toList();
+            var pending = ids.stream().filter(id -> REPO.findById(id).orElseThrow().status() == DispatchJobStatus.PENDING).toList();
+            assertThat(queued).as("exactly what the broker accepted is QUEUED").containsExactlyInAnyOrderElementsOf(accepted);
+            assertThat(pending).as("the rest was never published and is PENDING").hasSize(12 - accepted.size());
+            assertThat(pending).as("something was still buffered at shutdown").isNotEmpty();
+        } finally {
+            open.countDown();
+            for (String id : ids) {
                 DB.update(MSG_DISPATCH_JOBS).set(MSG_DISPATCH_JOBS.STATUS, "COMPLETED")
                         .where(MSG_DISPATCH_JOBS.ID.eq(id)).execute();
             }

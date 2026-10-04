@@ -18,8 +18,8 @@ import static io.flowcatalyst.db.generated.Tables.MSG_CONNECTIONS;
 import static io.flowcatalyst.db.generated.Tables.MSG_SUBSCRIPTIONS;
 
 /// Caches the set of subscription ids whose target connection is `PAUSED`
-/// (dispatch-seam spec §3, step 3). `PendingJobPoller` skips a claimed job
-/// whose subscription is in this set — the row stays `PENDING` until the
+/// (dispatch-seam spec §3, step 3). `PendingJobPoller` excludes these
+/// subscriptions' rows from its claim — they stay `PENDING` until the
 /// connection is reactivated, no different from any other claim-time
 /// hold-back.
 ///

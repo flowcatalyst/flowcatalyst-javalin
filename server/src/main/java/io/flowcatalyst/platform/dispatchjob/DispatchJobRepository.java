@@ -35,6 +35,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -131,7 +132,8 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
     /// raw stored priority claim (dispatch-job-priority spec R4) — carried
     /// through to [io.flowcatalyst.platform.scheduler.PublishedMessage] so
     /// [io.flowcatalyst.platform.scheduler.DispatchDestinationResolver] can
-    /// resolve it ahead of the subscription's.
+    /// resolve it ahead of the subscription's. `updatedAt` is the row's version
+    /// as the claim read it: [#markQueued] only marks a row that still has it.
     public record ClaimRow(
             String id,
             String subscriptionId,
@@ -141,7 +143,8 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
             String clientId,
             Instant createdAt,
             int sequence,
-            String queue) {
+            String queue,
+            Instant updatedAt) {
     }
 
     /// The closed set of projection columns a facet may be taken over (spec §3).
@@ -486,20 +489,32 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
 
     private static final String CLAIM_PENDING_SQL = """
             SELECT id, subscription_id, message_group, mode, dispatch_pool_id, client_id,
-                   created_at, sequence, queue
+                   created_at, sequence, queue, updated_at
               FROM msg_dispatch_jobs
              WHERE status = 'PENDING'
                AND (scheduled_for IS NULL OR scheduled_for <= NOW())
                AND (subscription_id IS NULL OR subscription_id <> ALL(?::text[]))
+               AND id <> ALL(?::text[])
              ORDER BY message_group ASC NULLS LAST, sequence ASC, created_at ASC, id ASC
              LIMIT ?
-             FOR UPDATE SKIP LOCKED
             """;
 
+    /// Optimistic on the row version the claim read: `id = ANY(?)` keeps the
+    /// access path an index lookup per id, and the join to the claimed
+    /// `(id, updated_at)` pairs (the version travels as ISO-8601 text, which
+    /// Postgres parses to the exact microsecond it was read at) lets only a row
+    /// nothing has touched since the claim through. `status = 'PENDING'` alone
+    /// is not enough: a job the callback delivered and RESCHEDULED back to
+    /// `PENDING` before this runs is `PENDING` again, but its message is
+    /// gone — marking it `QUEUED` would strand it (nothing recovers `QUEUED`).
     private static final String MARK_QUEUED_SQL = """
-            UPDATE msg_dispatch_jobs SET status = 'QUEUED', updated_at = ?
-             WHERE id = ANY(?)
-               AND created_at >= ? AND created_at <= ?
+            UPDATE msg_dispatch_jobs j SET status = 'QUEUED', updated_at = ?
+              FROM unnest(?::text[], ?::text[]) AS v(id, version)
+             WHERE j.id = ANY(?)
+               AND j.id = v.id
+               AND j.updated_at = v.version::timestamptz
+               AND j.status = 'PENDING'
+               AND j.created_at >= ? AND j.created_at <= ?
             """;
 
     /// A JDBC failure in one of the plain-JDBC statements, as the same
@@ -573,7 +588,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 while (rs.next()) {
                     String group = rs.getString(1);
                     earliestHolder.put(group, new ClaimRow(rs.getString(4), null, group, null, null, null,
-                            rs.getObject(3, OffsetDateTime.class).toInstant(), rs.getInt(2), null));
+                            rs.getObject(3, OffsetDateTime.class).toInstant(), rs.getInt(2), null, null));
                 }
             }
         } catch (SQLException e) {
@@ -599,35 +614,43 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
         return a.id().compareTo(b.id()) < 0;
     }
 
-    /// The scheduler's claim query (spec §3, step 2): `SELECT ... FOR UPDATE
-    /// SKIP LOCKED`, ordered `message_group ASC NULLS LAST, sequence,
-    /// created_at, id` so the order is TOTAL — the positional hold-back
-    /// above depends on it. `tx` MUST be the caller's own open transaction
-    /// (not auto-commit): the claim's row locks are only useful held across
-    /// the mark-QUEUED [#markQueued] that follows, in the same transaction,
-    /// released together at commit.
-    public List<ClaimRow> claimPending(DbTx tx, int batchSize) {
-        return claimPending(tx, batchSize, Set.of());
-    }
-
-    /// As [#claimPending(DbTx,int)], leaving rows of the given (paused)
-    /// subscriptions out of the claim itself. Filtering them after the claim
-    /// left them `PENDING`, so the next tick claimed the same rows again, and
-    /// when `batchSize` or more of them sorted first nothing behind them was
-    /// ever published. A row with no subscription is never excluded. The
-    /// `BLOCK_ON_ERROR` hold-back is deliberately NOT here: it stays the
-    /// caller's positional check against [#GROUP_HOLDING_SQL].
-    public List<ClaimRow> claimPending(DbTx tx, int batchSize, Set<String> excludedSubscriptionIds) {
-        Connection conn = tx.connection();
-        // Always the same statement: an empty exclusion set binds an empty
-        // array (`<> ALL('{}')` is true for every row), never a different SQL
-        // text. Never a NULL array — `<> ALL(NULL)` is NULL and would exclude
-        // every row that has a subscription.
-        try (PreparedStatement ps = conn.prepareStatement(CLAIM_PENDING_SQL)) {
+    /// The scheduler's claim query: the `PENDING` rows that are due, ordered
+    /// `message_group ASC NULLS LAST, sequence, created_at, id` so the order is
+    /// TOTAL — the positional hold-back above depends on it.
+    ///
+    /// One plain statement on a pooled connection in auto-commit: **no
+    /// transaction and no row locks**. Nothing here stops a second claim from
+    /// returning the same rows; the scheduler keeps its own claimed rows out of
+    /// the next claim by passing their ids as `inFlightIds` (`id <> ALL(...)`),
+    /// and a double publish is acceptable (the router drops a copy whose
+    /// original is in its pipeline, and the delivery claim is status-guarded).
+    ///
+    /// @param limit                   the most rows to return
+    /// @param excludedSubscriptionIds subscriptions whose rows stay out of the
+    ///                                claim (paused connections). Filtering them
+    ///                                after the claim left them `PENDING`, so
+    ///                                the next claim returned the same rows and,
+    ///                                when `limit` or more of them sorted first,
+    ///                                nothing behind them was ever published. A
+    ///                                row with no subscription is never excluded.
+    ///                                The `BLOCK_ON_ERROR` hold-back is
+    ///                                deliberately NOT here: it stays the
+    ///                                caller's positional check
+    /// @param inFlightIds             ids the caller has claimed and not yet
+    ///                                settled
+    public List<ClaimRow> claimPending(int limit, Set<String> excludedSubscriptionIds,
+                                       Collection<String> inFlightIds) {
+        // Always the same statement: an empty set binds an empty array
+        // (`<> ALL('{}')` is true for every row), never a different SQL text.
+        // Never a NULL array — `<> ALL(NULL)` is NULL and would exclude every
+        // row (for the paused set, every row that has a subscription).
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(CLAIM_PENDING_SQL)) {
             ps.setArray(1, conn.createArrayOf("text", excludedSubscriptionIds.toArray(String[]::new)));
-            ps.setInt(2, batchSize);
+            ps.setArray(2, conn.createArrayOf("text", inFlightIds.toArray(String[]::new)));
+            ps.setInt(3, limit);
             try (ResultSet rs = ps.executeQuery()) {
-                List<ClaimRow> claims = new ArrayList<>(batchSize);
+                List<ClaimRow> claims = new ArrayList<>(Math.min(limit, 1024));
                 while (rs.next()) {
                     claims.add(new ClaimRow(
                             rs.getString(1),
@@ -638,7 +661,8 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                             rs.getString(6),
                             rs.getObject(7, OffsetDateTime.class).toInstant(),
                             rs.getInt(8),
-                            rs.getString(9)));
+                            rs.getString(9),
+                            rs.getObject(10, OffsetDateTime.class).toInstant()));
                 }
                 return claims;
             }
@@ -647,21 +671,49 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
         }
     }
 
-    /// Marks the survivors of one poll tick `QUEUED` (spec §3, step 4), in
-    /// the SAME transaction as [#claimPending] — no status guard needed, the
-    /// rows are already locked and known `PENDING`. Bounded by the batch's
-    /// own `created_at` span so the `created_at`-partitioned table prunes to
-    /// the partitions the claimed rows actually span, exactly as
-    /// [#claimPending]'s lock did.
-    public void markQueued(DbTx tx, List<String> ids, Instant spanStart, Instant spanEnd) {
-        if (ids.isEmpty()) return;
-        Connection conn = tx.connection();
-        try (PreparedStatement ps = conn.prepareStatement(MARK_QUEUED_SQL)) {
+    /// Marks jobs the broker accepted `QUEUED`, in bulk, on a pooled
+    /// connection with no transaction. Bounded by the batch's own `created_at`
+    /// span so the `created_at`-partitioned table prunes to the partitions the
+    /// rows actually span.
+    ///
+    /// **Optimistic on the version the claim read** (`status = 'PENDING' AND
+    /// updated_at = claimed updated_at`). The claim holds no lock, so the
+    /// router can deliver a job and the callback can move it on before this
+    /// statement runs — and not only forward: it can reschedule it back to
+    /// `PENDING` (a retry, a deferral, a `BLOCK_ON_ERROR` hold). A status guard
+    /// alone would then mark a job `QUEUED` whose message is already gone, and
+    /// nothing recovers `QUEUED`. Every transition of this table that the
+    /// callback makes (`claimForDelivery`, `markCompleted`, `markFailed`,
+    /// `reschedule`, `scheduleRetry`) writes `updated_at`, so the version
+    /// differs; `settleAcked` (`QUEUED`/`PROCESSING` → `PENDING`) does not, but
+    /// it can only follow a transition that did.
+    ///
+    /// @param published rows exactly as [#claimPending] returned them
+    /// @return the rows actually updated — fewer than `published.size()` when
+    ///         some had already moved on
+    public int markQueued(List<ClaimRow> published) {
+        if (published.isEmpty()) return 0;
+        String[] ids = new String[published.size()];
+        String[] versions = new String[published.size()];
+        Instant spanStart = null;
+        Instant spanEnd = null;
+        for (int i = 0; i < ids.length; i++) {
+            ClaimRow c = published.get(i);
+            ids[i] = c.id();
+            versions[i] = c.updatedAt().toString();
+            if (spanStart == null || c.createdAt().isBefore(spanStart)) spanStart = c.createdAt();
+            if (spanEnd == null || c.createdAt().isAfter(spanEnd)) spanEnd = c.createdAt();
+        }
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(MARK_QUEUED_SQL)) {
+            java.sql.Array idArray = conn.createArrayOf("text", ids);
             ps.setObject(1, utc(Instant.now()));
-            ps.setArray(2, conn.createArrayOf("text", ids.toArray(String[]::new)));
-            ps.setObject(3, utc(spanStart));
-            ps.setObject(4, utc(spanEnd));
-            ps.executeUpdate();
+            ps.setArray(2, idArray);
+            ps.setArray(3, conn.createArrayOf("text", versions));
+            ps.setArray(4, idArray);
+            ps.setObject(5, utc(spanStart));
+            ps.setObject(6, utc(spanEnd));
+            return ps.executeUpdate();
         } catch (SQLException e) {
             throw failed("mark QUEUED", e);
         }
@@ -679,9 +731,10 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
     ///
     /// **Not before it is due** (review 2026-09-28): a row whose
     /// `scheduled_for` is still in the future is not claimable either. The
-    /// poller publishes a batch before committing it (`PendingJobPoller`), so
-    /// a commit that fails after the publish leaves a second copy at the
-    /// broker; if the first copy's attempt then fails and schedules a retry,
+    /// scheduler publishes a batch before marking it `QUEUED` (and holds no
+    /// lock meanwhile), so a failed mark after the publish leaves the row
+    /// `PENDING` with a copy at the broker, which the next claim publishes
+    /// again — a second copy; if the first copy's attempt then fails and schedules a retry,
     /// that stale copy would otherwise claim the `PENDING` row at once and
     /// make the retry early, skipping its backoff. Refusing it cannot strand
     /// the job. Only `markQueued` writes `QUEUED`, and only for a row the

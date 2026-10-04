@@ -35,6 +35,7 @@ public final class Recorded {
             io.flowcatalyst.router.observability.jfr.GroupDecisionEvent.class,
             io.flowcatalyst.router.observability.jfr.DispatchEvent.class,
             io.flowcatalyst.platform.scheduler.jfr.ClaimedBatchEvent.class,
+            io.flowcatalyst.platform.scheduler.jfr.LanePublishEvent.class,
             io.flowcatalyst.platform.dispatchjob.jfr.DispatchProcessedEvent.class,
             io.flowcatalyst.stream.jfr.FanOutBatchEvent.class,
             io.flowcatalyst.outbox.jfr.OutboxItemSettledEvent.class,

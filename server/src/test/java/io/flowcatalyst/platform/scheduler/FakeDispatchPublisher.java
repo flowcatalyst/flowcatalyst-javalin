@@ -10,7 +10,8 @@ import java.util.Set;
 /// touching any real queue.
 final class FakeDispatchPublisher implements DispatchPublisher {
 
-    private final List<List<PublishedMessage>> batches = new ArrayList<>();
+    /// Written from several lane threads: synchronized.
+    private final List<List<PublishedMessage>> batches = java.util.Collections.synchronizedList(new ArrayList<>());
     private final boolean failWhole;
     private final Set<String> failJobIds;
 
@@ -56,10 +57,14 @@ final class FakeDispatchPublisher implements DispatchPublisher {
     }
 
     List<List<PublishedMessage>> batches() {
-        return List.copyOf(batches);
+        synchronized (batches) {
+            return List.copyOf(batches);
+        }
     }
 
     List<PublishedMessage> lastBatch() {
-        return batches.getLast();
+        synchronized (batches) {
+            return batches.getLast();
+        }
     }
 }

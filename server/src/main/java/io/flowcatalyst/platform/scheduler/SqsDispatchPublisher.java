@@ -53,10 +53,18 @@ import java.util.UUID;
 /// back to [ClientIdentifier#RESERVED_PLATFORM], ruling R5) and priority
 /// (ruling R6: [QueuePriority#DEFAULT] on anything unusable) rules.
 ///
+/// ### Concurrency
+///
+/// Several dispatcher lanes ([DispatchLanes]) call [#publish] at once. Every
+/// call is self-contained (its own nonce, its own failed-group set) and the
+/// collaborators are thread-safe, so nothing here is shared between calls but
+/// the [SqsClient]. A group's jobs always reach the same lane, so two calls
+/// never carry the same group at the same time.
+///
 /// ### Chunking and per-queue grouping (ruling O2)
 ///
-/// `PendingJobPoller` claims up to 100 jobs; SQS caps `SendMessageBatch` at
-/// 10, and one such call can only address a single queue. [#publish] first
+/// A dispatcher lane takes up to `LaneBatch` (100) jobs at a time; SQS caps
+/// `SendMessageBatch` at 10, and one such call can only address a single queue. [#publish] first
 /// partitions the claim-ordered batch into one ordered list per destination
 /// queue — a single forward pass over `batch`, appending each job to its
 /// destination's list — then builds each of those lists into chunks of at
@@ -149,7 +157,7 @@ public final class SqsDispatchPublisher implements DispatchPublisher, AutoClosea
     private static final Logger LOG = LoggerFactory.getLogger(SqsDispatchPublisher.class);
 
     /// SQS's hard cap on a single `SendMessageBatch` call — well below
-    /// `PendingJobPoller.BATCH_SIZE` (100), which is exactly why [#publish]
+    /// `SchedulerConfig#laneBatch` (100), which is exactly why [#publish]
     /// chunks (ruling O2).
     static final int MAX_BATCH_SIZE = 10;
 
@@ -170,7 +178,14 @@ public final class SqsDispatchPublisher implements DispatchPublisher, AutoClosea
     /// duplicated rather than threaded across a new dependency edge between
     /// the two).
     public SqsDispatchPublisher(DataSource dataSource, DispatchQueueSettings settings) {
-        this(buildClient(settings), settings, new DispatchDestinationResolver(
+        this(dataSource, settings, 1);
+    }
+
+    /// As above, for a scheduler whose `concurrency` dispatcher lanes call
+    /// [#publish] at once (each sends one chunk at a time): the client's
+    /// connection pool is sized for that many calls in flight.
+    public SqsDispatchPublisher(DataSource dataSource, DispatchQueueSettings settings, int concurrency) {
+        this(buildClient(settings, concurrency), settings, new DispatchDestinationResolver(
                 new PoolCodeResolver(dataSource), new SubscriptionPriorityCache(dataSource), settings));
     }
 
@@ -189,28 +204,35 @@ public final class SqsDispatchPublisher implements DispatchPublisher, AutoClosea
     }
 
     /// Longest one SQS attempt may take. There is no long poll on this path
-    /// (every call is a `SendMessageBatch` of at most ten small entries), and
-    /// the call runs inside the claim transaction with its row locks held, so
-    /// a stalled connection must be cut off quickly.
+    /// (every call is a `SendMessageBatch` of at most ten small entries), and a
+    /// dispatcher lane — and the permits its jobs hold, which is what lets the
+    /// poller claim more — waits on every call, so a stalled connection must be
+    /// cut off quickly.
     static final Duration API_CALL_ATTEMPT_TIMEOUT = Duration.ofSeconds(5);
 
     /// Longest a whole call may take including the SDK's retries.
     static final Duration API_CALL_TIMEOUT = Duration.ofSeconds(10);
 
-    /// Chunks are sent one at a time, so the pool never needs more.
+    /// A lane sends its chunks one at a time, so each concurrent [#publish]
+    /// needs one connection; the pool is never smaller than this.
     static final int MAX_HTTP_CONNECTIONS = 10;
 
     /// Package-visible so a test can read the configured timeouts.
     static SqsClientBuilder clientBuilder(DispatchQueueSettings settings) {
-        var builder = SqsClients.builder(API_CALL_TIMEOUT, API_CALL_ATTEMPT_TIMEOUT, MAX_HTTP_CONNECTIONS);
+        return clientBuilder(settings, 1);
+    }
+
+    static SqsClientBuilder clientBuilder(DispatchQueueSettings settings, int concurrency) {
+        var builder = SqsClients.builder(API_CALL_TIMEOUT, API_CALL_ATTEMPT_TIMEOUT,
+                Math.max(MAX_HTTP_CONNECTIONS, concurrency));
         if (!settings.sqsRegion().isBlank()) {
             builder.region(Region.of(settings.sqsRegion()));
         }
         return builder;
     }
 
-    private static SqsClient buildClient(DispatchQueueSettings settings) {
-        return clientBuilder(settings).build();
+    private static SqsClient buildClient(DispatchQueueSettings settings, int concurrency) {
+        return clientBuilder(settings, concurrency).build();
     }
 
     @Override

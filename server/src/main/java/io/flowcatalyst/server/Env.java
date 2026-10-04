@@ -108,6 +108,13 @@ public record Env(
         boolean routerEnabled,
         // `FC_SCHEDULER_ENABLED` (alias `DISPATCH_SCHEDULER_ENABLED`), default false.
         boolean schedulerEnabled,
+        // `FC_SCHEDULER_BUFFER_CAPACITY`, default 0 (= 1000): the most dispatch jobs claimed and not
+        // yet settled by a dispatcher lane — how far the poller may run ahead of the lanes.
+        int schedulerBufferCapacity,
+        // `FC_SCHEDULER_DISPATCHERS`, default 0 (= 10): the number of dispatcher lanes.
+        int schedulerDispatchers,
+        // `FC_SCHEDULER_BATCH_SIZE`, default 0 (= 500): the most rows one claim returns.
+        int schedulerBatchSize,
         // `FC_SCHEDULED_JOB_ENABLED` (alias `SCHEDULED_JOB_SCHEDULER_ENABLED`), default false.
         boolean scheduledJobEnabled,
         // `FC_STREAM_PROCESSOR_ENABLED` (alias `STREAM_PROCESSOR_ENABLED`), default false.
@@ -497,6 +504,9 @@ public record Env(
                 e.boolAlias("FC_PLATFORM_ENABLED", "PLATFORM_ENABLED", true),
                 e.boolAlias("FC_ROUTER_ENABLED", "MESSAGE_ROUTER_ENABLED", false),
                 e.boolAlias("FC_SCHEDULER_ENABLED", "DISPATCH_SCHEDULER_ENABLED", false),
+                e.integer("FC_SCHEDULER_BUFFER_CAPACITY", 0),
+                e.integer("FC_SCHEDULER_DISPATCHERS", 0),
+                e.integer("FC_SCHEDULER_BATCH_SIZE", 0),
                 e.boolAlias("FC_SCHEDULED_JOB_ENABLED", "SCHEDULED_JOB_SCHEDULER_ENABLED", false),
                 e.boolAlias("FC_STREAM_PROCESSOR_ENABLED", "STREAM_PROCESSOR_ENABLED", false),
                 e.boolAlias("FC_OUTBOX_ENABLED", "OUTBOX_PROCESSOR_ENABLED", false),

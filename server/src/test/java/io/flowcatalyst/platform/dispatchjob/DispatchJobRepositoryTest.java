@@ -685,4 +685,141 @@ class DispatchJobRepositoryTest {
         List<String> reset = repo.sweepStrandedSiblings(Instant.now().minusSeconds(60), "reaper: legacy");
         assertThat(reset).containsExactly(sibling);
     }
+
+    // ── the scheduler's claim and mark-QUEUED statements ───────────────────
+
+    /// The claim excludes the ids it is given (`id <> ALL`), takes an empty
+    /// array as "exclude nothing" (not NULL, which would exclude every row),
+    /// holds no lock (a second claim sees the same rows), and is bounded by
+    /// its limit. Mutant: ignore the in-flight ids.
+    @Test
+    void claimPendingExcludesTheInFlightIdsHoldsNoLockAndHonoursItsLimit() {
+        Instant t = BASE.plusSeconds(200);
+        String group = "000-claim-" + RUN;
+        var mine = new java.util.ArrayList<String>();
+        for (int i = 0; i < 4; i++) {
+            mine.add(seedWriteRow(Seed.of(code("claim" + i + "-")).withMessageGroup(group)
+                    .withSequence(i).withCreatedAt(t.plusSeconds(i))));
+        }
+
+        var all = claimIds(repo.claimPending(5000, java.util.Set.of(), List.of()));
+        assertThat(all).as("an empty exclusion array excludes nothing").containsAll(mine);
+        var again = claimIds(repo.claimPending(5000, java.util.Set.of(), List.of()));
+        assertThat(again).as("no lock, no SKIP LOCKED: the same rows come back").containsAll(mine);
+
+        var withoutFirstTwo = claimIds(repo.claimPending(5000, java.util.Set.of(), List.of(mine.get(0), mine.get(1))));
+        assertThat(withoutFirstTwo).doesNotContain(mine.get(0), mine.get(1)).contains(mine.get(2), mine.get(3));
+
+        var ordered = repo.claimPending(2, java.util.Set.of(), List.of());
+        assertThat(ordered).as("LIMIT").hasSize(2);
+
+        var bigExclusion = new java.util.ArrayList<String>();
+        for (int i = 0; i < 5000; i++) bigExclusion.add("not-a-job-" + i);
+        assertThat(claimIds(repo.claimPending(5000, java.util.Set.of(), bigExclusion))).containsAll(mine);
+    }
+
+    private static List<String> claimIds(List<DispatchJobRepository.ClaimRow> claims) {
+        return claims.stream().map(DispatchJobRepository.ClaimRow::id).toList();
+    }
+
+    private static List<DispatchJobRepository.ClaimRow> claimed(String... jobIds) {
+        var wanted = java.util.Set.of(jobIds);
+        var rows = repo.claimPending(5000, java.util.Set.of(), List.of()).stream()
+                .filter(c -> wanted.contains(c.id())).toList();
+        assertThat(rows).hasSize(jobIds.length);
+        return rows;
+    }
+
+    /// Only a row still `PENDING` is marked `QUEUED`: the claim holds no lock,
+    /// so the router can deliver a job (and the callback move it on) before the
+    /// lane's update runs. Mutant: drop the status guard from the statement.
+    @Test
+    void markQueuedNeverRegressesAJobThatHasMovedPastPending() {
+        Instant t = BASE.plusSeconds(300);
+        String pending = seedWriteRow(Seed.of(code("mq-pending-")).withCreatedAt(t));
+        String processing = seedWriteRow(Seed.of(code("mq-processing-")).withCreatedAt(t.plusSeconds(1)));
+        String completed = seedWriteRow(Seed.of(code("mq-completed-")).withCreatedAt(t.plusSeconds(2)));
+        var rows = claimed(pending, processing, completed);
+
+        // The callback gets there first for two of them.
+        assertThat(repo.claimForDelivery(processing, t.plusSeconds(1))).isTrue();
+        assertThat(repo.claimForDelivery(completed, t.plusSeconds(2))).isTrue();
+        repo.markCompleted(completed, t.plusSeconds(2), Instant.now(), 5L);
+
+        int updated = repo.markQueued(rows);
+
+        assertThat(updated).as("only the row nothing touched matched").isEqualTo(1);
+        assertThat(repo.findById(pending).orElseThrow().status()).isEqualTo(DispatchJobStatus.QUEUED);
+        assertThat(repo.findById(processing).orElseThrow().status()).isEqualTo(DispatchJobStatus.PROCESSING);
+        assertThat(repo.findById(completed).orElseThrow().status()).isEqualTo(DispatchJobStatus.COMPLETED);
+        assertThat(repo.markQueued(List.of())).isZero();
+    }
+
+    /// The race a status guard alone cannot see: the lane publishes, the router
+    /// delivers, and the callback processes the job and puts it BACK to
+    /// `PENDING` (a retry, a deferral, a `BLOCK_ON_ERROR` hold, or the settled
+    /// endpoint) before the lane's update runs. The row is `PENDING` again, but
+    /// its message is gone: marking it `QUEUED` would strand it. The version
+    /// (`updated_at`) the claim read no longer matches, so it stays `PENDING`.
+    /// Mutant: compare the status only.
+    @Test
+    void markQueuedDoesNotMarkAJobTheCallbackMovedOnAndRescheduledBackToPending() {
+        Instant t = BASE.plusSeconds(310);
+        String deferred = seedWriteRow(Seed.of(code("mq-deferred-")).withCreatedAt(t));
+        String retried = seedWriteRow(Seed.of(code("mq-retried-")).withCreatedAt(t.plusSeconds(1)));
+        String held = seedWriteRow(Seed.of(code("mq-held-")).withCreatedAt(t.plusSeconds(2)));
+        String settled = seedWriteRow(Seed.of(code("mq-settled-")).withCreatedAt(t.plusSeconds(3)));
+        String untouched = seedWriteRow(Seed.of(code("mq-untouched-")).withCreatedAt(t.plusSeconds(4)));
+        var rows = claimed(deferred, retried, held, settled, untouched);
+
+        assertThat(repo.claimForDelivery(deferred, t)).isTrue();
+        repo.reschedule(deferred, t, Instant.now().minusSeconds(1));                       // cooperative deferral
+        assertThat(repo.claimForDelivery(retried, t.plusSeconds(1))).isTrue();
+        repo.scheduleRetry(retried, t.plusSeconds(1), Instant.now().minusSeconds(1), 1, "boom"); // failed attempt
+        assertThat(repo.claimForDelivery(held, t.plusSeconds(2))).isTrue();
+        repo.reschedule(held, t.plusSeconds(2), Instant.now());                            // BLOCK_ON_ERROR hold
+        assertThat(repo.claimForDelivery(settled, t.plusSeconds(3))).isTrue();
+        assertThat(repo.settleAcked(List.of(settled), "router acked")).containsExactly(settled);
+
+        int updated = repo.markQueued(rows);
+
+        assertThat(updated).as("only the untouched row is marked").isEqualTo(1);
+        for (String id : List.of(deferred, retried, held, settled)) {
+            assertThat(repo.findById(id).orElseThrow().status())
+                    .as("%s is PENDING again, with no message in the queue: it must stay PENDING", id)
+                    .isEqualTo(DispatchJobStatus.PENDING);
+        }
+        assertThat(repo.findById(untouched).orElseThrow().status()).isEqualTo(DispatchJobStatus.QUEUED);
+    }
+
+    /// The status guard is its own defence, not only the version's: a row that
+    /// is no longer `PENDING` but still carries the version the claim read (a
+    /// transition that does not write `updated_at`) is not marked either.
+    /// Mutant: drop `status = 'PENDING'` and rely on the version alone.
+    @Test
+    void markQueuedRequiresPendingEvenWhenTheVersionStillMatches() {
+        Instant t = BASE.plusSeconds(315);
+        String id = seedWriteRow(Seed.of(code("mq-sameversion-")).withCreatedAt(t).withStatus("PROCESSING"));
+        var row = repo.findById(id).orElseThrow();
+        var claimRow = new DispatchJobRepository.ClaimRow(id, null, null, null, null, null, row.createdAt(), 0, null,
+                row.updatedAt());
+
+        assertThat(repo.markQueued(List.of(claimRow))).isZero();
+        assertThat(repo.findById(id).orElseThrow().status()).isEqualTo(DispatchJobStatus.PROCESSING);
+    }
+
+    /// The version round-trips exactly through the claim and the update: a row
+    /// whose `updated_at` has sub-microsecond digits and a non-trivial offset
+    /// is still matched by its own claim.
+    @Test
+    void markQueuedMatchesARowWhoseVersionHasFractionalSecondsExactly() {
+        Instant t = BASE.plusSeconds(320);
+        String id = seedWriteRow(Seed.of(code("mq-precise-")).withCreatedAt(t)
+                .withUpdatedAt(Instant.parse("2026-10-04T10:15:30.123456789Z")));
+        String id2 = seedWriteRow(Seed.of(code("mq-precise2-")).withCreatedAt(t.plusSeconds(1))
+                .withUpdatedAt(Instant.parse("2026-10-04T10:15:30.100000Z")));
+
+        assertThat(repo.markQueued(claimed(id, id2))).isEqualTo(2);
+        assertThat(repo.findById(id).orElseThrow().status()).isEqualTo(DispatchJobStatus.QUEUED);
+    }
 }

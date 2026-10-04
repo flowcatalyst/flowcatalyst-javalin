@@ -5,6 +5,7 @@ import io.flowcatalyst.platform.scheduler.DispatchPublisher;
 import io.flowcatalyst.platform.scheduler.DispatchScheduler;
 import io.flowcatalyst.platform.scheduler.NoopPublisher;
 import io.flowcatalyst.platform.scheduler.PostgresQueuePublisher;
+import io.flowcatalyst.platform.scheduler.SchedulerConfig;
 import io.flowcatalyst.platform.scheduler.SqsDispatchPublisher;
 import io.flowcatalyst.platform.scheduler.jobs.ScheduledJobScheduler;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
@@ -420,7 +421,9 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                         schedulerPublisherResource = closeable;
                     }
                     scheduler = DispatchScheduler.start(env.appKey(), env.dispatchProcessingEndpoint(), dbPool,
-                            publisher, leaderGate.isLeader());
+                            publisher, leaderGate.isLeader(),
+                            SchedulerConfig.of(env.schedulerBufferCapacity(), env.schedulerDispatchers(),
+                                    env.schedulerBatchSize()));
                     if (scheduler == null) {
                         // Fail-closed (no FLOWCATALYST_APP_KEY): DispatchScheduler.start already
                         // logged the ERROR; release the leader election we just started for nothing.
@@ -518,6 +521,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                         MailSender.DEFAULT_INTERVAL);
                 registry.register(mailSender.collector());
             }
+            if (scheduler != null) registry.register(scheduler.collector());
             registry.register(AuthAlarms.collector());
             if (router != null) registry.register(router.mediationHttpVersionCollector());
             switch (mode) {
@@ -615,7 +619,9 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
                     .addKeyValue("prefix", settings.prefix())
                     .addKeyValue("region", settings.sqsRegion())
                     .log();
-            return new SqsDispatchPublisher(pool, settings);
+            return new SqsDispatchPublisher(pool, settings,
+                    SchedulerConfig.of(env.schedulerBufferCapacity(), env.schedulerDispatchers(),
+                            env.schedulerBatchSize()).dispatchers());
         }
         if ("postgres".equals(env.defaultBroker()) && !env.databaseUrl().isBlank()) {
             PostgresQueue.initSchema(pool);

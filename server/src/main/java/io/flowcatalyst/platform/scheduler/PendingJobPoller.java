@@ -6,289 +6,226 @@ import io.flowcatalyst.platform.scheduler.jfr.ClaimedBatchEvent;
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.router.wire.MediationType;
 import io.flowcatalyst.router.wire.Message;
-import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
-import java.sql.Connection;
-import java.sql.SQLException;
-import java.time.Instant;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 
-/// One poll tick = one transaction (dispatch-seam spec §3): claim `PENDING`
-/// rows `FOR UPDATE SKIP LOCKED`, filter (paused subscription, then the
-/// positional `BLOCK_ON_ERROR` hold-back), **publish while the claim's row
-/// locks are held, mark `QUEUED` exactly the jobs the broker accepted, then
-/// commit**.
+/// The scheduler's poller (dispatch-seam spec §3): claims `PENDING` rows and
+/// hands them to the dispatcher lanes ([DispatchLanes]), which publish them
+/// and mark them `QUEUED`. **It never waits for a publish**: it blocks only
+/// when the buffer is full (no permit left), i.e. when it is too far ahead of
+/// the lanes.
 ///
-/// ### Why publish before commit (review 2026-09-28)
+/// One [#pollOnce]:
 ///
-/// The previous order — mark `QUEUED`, commit, then publish — had a window:
-/// a process death between the commit and the publish left jobs `QUEUED`
-/// that never reached the broker. Nothing recovers a `QUEUED` row (owner
-/// ruling 2026-09-22 removed the stale sweep: a broker-held job is the
-/// broker's), so they stayed that way for ever.
+///  1. not the leader: nothing (the caller waits the poll interval);
+///  2. acquire one permit (blocking), then up to `batchSize` in all without
+///     blocking; `wanted` = permits held;
+///  3. increment the claim generation, THEN snapshot the in-flight ids, THEN
+///     claim `LIMIT wanted` excluding paused subscriptions and the in-flight
+///     ids — one plain statement, no transaction, no row lock;
+///  4. apply the `BLOCK_ON_ERROR` hold-back (rows held stay `PENDING`);
+///  5. hand the rest to the lanes (claim order, grouped -> `hash(group) % N`,
+///     ungrouped -> round-robin) and release the permits not used.
 ///
-/// Publishing first makes `QUEUED` mean what the ruling assumes it means:
-/// **the broker accepted this job**. There is no window in which a row is
-/// `QUEUED` without a message, so there is still nothing to sweep, and a job
-/// the broker holds is still never re-sent because of its status.
+/// ### Why there is no transaction around the claim any more
 ///
-/// The price is the case Go's order was avoiding: the publish succeeds and
-/// the commit then fails (or the process dies before it). The rows roll back
-/// to `PENDING` with a copy already at the broker, and the next tick
-/// publishes them again. That second copy is harmless: `/api/dispatch/process`
-/// owns a delivery only by winning the status-guarded
-/// [DispatchJobRepository#claimForDelivery] (`PENDING`/`QUEUED` →
-/// `PROCESSING`), so whichever copy arrives second finds the job
-/// `PROCESSING` or terminal and is acked without calling the subscriber. A
-/// duplicate publish costs one extra queue message; a stranded row cost the
-/// job.
+/// A claim that holds row locks across the broker round-trips (ten
+/// `SendMessageBatch` calls for a full SQS batch) serialises the whole
+/// scheduler behind its slowest publish. The rows a claim returns are kept out
+/// of the NEXT claim by the in-flight id set instead, which costs one array
+/// parameter. Two outcomes that the locks used to prevent are now simply
+/// accepted, because both were already harmless: a job published and then
+/// returned to `PENDING` by a failed status update is published again (the
+/// router drops a copy whose original is in its pipeline, and
+/// `/api/dispatch/process` owns a delivery only by winning the status-guarded
+/// [DispatchJobRepository#claimForDelivery], so the copy that arrives second
+/// finds the job moved on and is acked without calling the subscriber); and a
+/// copy can reach `/process` while the row is still `PENDING`, which
+/// `claimForDelivery` accepts (`PENDING`/`QUEUED` -> `PROCESSING`), after
+/// which the lane's status-guarded `QUEUED` update finds no `PENDING` row and
+/// changes nothing.
 ///
-/// Two consequences worth knowing:
-/// - A copy can reach `/process` before this transaction commits. Its
-///   status-guarded `UPDATE` waits on the claim's row lock and, at commit,
-///   re-reads the row (`QUEUED` → it wins the claim, as usual).
-/// - The claim's row locks are held across the broker round-trips (for SQS,
-///   ten `SendMessageBatch` calls for a full batch). Only the leader claims,
-///   and every other writer of these rows is status-guarded and short, so
-///   the cost is a brief wait, not contention.
+/// ### Hold-back and paused subscriptions
 ///
-/// A partial publish failure (ruling O2) needs no revert any more: the jobs
-/// the publisher reports unpublished are simply not marked, and stay
-/// `PENDING` for the next tick.
+/// The hold-back check is one [DispatchJobRepository#heldBeforeIds] query over
+/// the candidates' distinct groups, keyed by the EARLIEST holder per group,
+/// then applied in memory — "is ANY holder positioned before me" and "is the
+/// earliest holder positioned before me" are the same question. The claimed
+/// list is iterated in claim order throughout, which is exactly the order
+/// [DispatchPublisher] must preserve. Paused subscriptions are excluded by the
+/// claim query itself (they used to be filtered a second time in memory, a
+/// check that could never fire and is gone).
 ///
-/// The hold-back check is one [DispatchJobRepository#heldBeforeIds] query
-/// over the candidates' distinct groups, keyed by the EARLIEST holder per
-/// group, then applied in memory — "is ANY holder positioned before me" and
-/// "is the earliest holder positioned before me" are the same question. The
-/// claimed list is iterated in claim order throughout, which is exactly the
-/// order [DispatchPublisher] must preserve.
-public final class PendingJobPoller {
+/// Everything here runs on the scheduler's one poller thread.
+public final class PendingJobPoller implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(PendingJobPoller.class);
 
-    /// Batch size and claim-tx row-lock bound (dispatch-seam spec §3 timing
-    /// table `Config.BatchSize`). Not env-driven — spec §3's timing-table
-    /// note flags the Go doc comment claiming otherwise as stale; the owner
-    /// question is open, so this stays a hardcoded default per current spec.
-    static final int BATCH_SIZE = 100;
+    /// Max rows per claim (spec §3 timing table `Config.BatchSize`).
+    static final int BATCH_SIZE = SchedulerConfig.DEFAULT_BATCH_SIZE;
 
-    private final DataSource dataSource;
     private final DispatchJobRepository repository;
     private final PausedConnectionCache pausedCache;
     private final PoolCodeResolver poolCodes;
-    private final DispatchPublisher publisher;
     private final HmacTokenVerifier authVerifier;
     private final String processingEndpoint;
     private final BooleanSupplier leader;
-    private final int batchSize;
+    private final SchedulerConfig config;
+    private final SchedulerMetrics metrics;
+    private final DispatchLanes lanes;
 
     /// At most one starvation warning a minute ([#warnIfStarved]); touched
-    /// only by the single scheduler thread.
-    private static final long STARVED_WARN_INTERVAL_NANOS = java.time.Duration.ofMinutes(1).toNanos();
+    /// only by the poller thread.
+    private static final long STARVED_WARN_INTERVAL_NANOS = Duration.ofMinutes(1).toNanos();
     private boolean warnedStarved;
     private long lastStarvedWarnNanos;
 
+    /// Builds the poller and starts its lanes.
     public PendingJobPoller(DataSource dataSource, DispatchJobRepository repository,
                              PausedConnectionCache pausedCache, PoolCodeResolver poolCodes,
                              DispatchPublisher publisher, HmacTokenVerifier authVerifier,
-                             String processingEndpoint, BooleanSupplier leader) {
-        this(dataSource, repository, pausedCache, poolCodes, publisher, authVerifier, processingEndpoint,
-                leader, BATCH_SIZE);
-    }
-
-    /// Test-only: overrides the claim batch size. The embedded test database
-    /// is never truncated between test classes (CONVENTIONS §6), so a poller
-    /// test seeding a handful of its own rows needs a batch large enough that
-    /// unrelated `PENDING` rows other test classes left behind cannot crowd
-    /// them out of `LIMIT`.
-    PendingJobPoller(DataSource dataSource, DispatchJobRepository repository,
-                      PausedConnectionCache pausedCache, PoolCodeResolver poolCodes,
-                      DispatchPublisher publisher, HmacTokenVerifier authVerifier,
-                      String processingEndpoint, BooleanSupplier leader, int batchSize) {
-        this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
+                             String processingEndpoint, BooleanSupplier leader, SchedulerConfig config) {
+        Objects.requireNonNull(dataSource, "dataSource");
         this.repository = Objects.requireNonNull(repository, "repository");
         this.pausedCache = Objects.requireNonNull(pausedCache, "pausedCache");
         this.poolCodes = Objects.requireNonNull(poolCodes, "poolCodes");
-        this.publisher = Objects.requireNonNull(publisher, "publisher");
         this.authVerifier = Objects.requireNonNull(authVerifier, "authVerifier");
         this.processingEndpoint = Objects.requireNonNull(processingEndpoint, "processingEndpoint");
         this.leader = Objects.requireNonNull(leader, "leader");
-        this.batchSize = batchSize;
+        this.config = Objects.requireNonNull(config, "config");
+        this.metrics = new SchedulerMetrics(config.dispatchers());
+        this.lanes = new DispatchLanes(config, repository, Objects.requireNonNull(publisher, "publisher"),
+                this::buildMessage, metrics);
+        this.lanes.start();
     }
 
-    /// What one tick did, so the scheduler can decide whether to tick again
-    /// at once.
+    /// What one [#pollOnce] did, so the caller can decide whether to wait.
     ///
     /// @param claimed   rows the claim returned
-    /// @param published rows the broker accepted (marked `QUEUED`, committed)
-    /// @param full      the claim filled the whole batch, so more rows may be waiting
-    public record PollResult(int claimed, int published, boolean full) {
-        static final PollResult IDLE = new PollResult(0, 0, false);
-
-        /// Tick again without sleeping: a full claim means a backlog, and
-        /// `published > 0` means it is draining. A full claim that published
-        /// nothing (everything held back, or the broker refusing) would claim
-        /// the same rows again, so it must wait for the ordinary delay.
-        public boolean drainImmediately() {
-            return full && published > 0;
-        }
+    /// @param submitted rows handed to a lane (claimed less held back)
+    /// @param wanted    rows the claim asked for (the permits it held)
+    /// @param heldBack  rows left `PENDING` behind a `BLOCK_ON_ERROR` hold-back
+    /// @param backOff   wait the poll interval before the next claim: the claim
+    ///                  came back short (nothing more is waiting), or nothing
+    ///                  was submitted (all held), or a lane reported a failure
+    ///                  since the previous claim (without the pause a failing
+    ///                  broker is retried in a hot loop, because failed rows
+    ///                  are still `PENDING`), or this is not the leader
+    public record PollResult(int claimed, int submitted, int wanted, int heldBack, boolean backOff) {
+        /// Not the leader, or nothing to do.
+        static final PollResult IDLE = new PollResult(0, 0, 0, 0, true);
+        /// Interrupted while waiting for a permit: the caller is shutting down.
+        static final PollResult INTERRUPTED = new PollResult(0, 0, 0, 0, false);
     }
 
-    /// Runs one tick. Only the leader claims (spec §12) — a non-leader tick
-    /// is a no-op ([PollResult#IDLE]), not an error.
+    /// Runs one poll. Only the leader claims (spec §12) — a non-leader poll is
+    /// a no-op ([PollResult#IDLE]), not an error. Blocks while the buffer is
+    /// full. A claim failure releases what it held and throws.
     public PollResult pollOnce() {
         if (!leader.getAsBoolean()) {
             return PollResult.IDLE;
         }
-        Set<String> paused = pausedCache.pausedSubscriptionIds();
-        try (Connection conn = dataSource.getConnection()) {
-            conn.setAutoCommit(false);
-            Claimed claimed;
-            List<String> queued;
-            try {
-                DbTx tx = DbTx.wrapForBootstrap(conn);
-                claimed = claim(tx, paused);
-                queued = publishAndMark(tx, claimed.toPublish());
-            } catch (RuntimeException e) {
-                // Anything published before this point redelivers as a
-                // harmless duplicate once the rows are claimed again (class
-                // doc); nothing is left QUEUED without a message.
-                rollbackQuietly(conn);
-                throw e;
-            }
-            commit(conn, queued);
-            // After the commit, never before: an event for a write that then
-            // rolls back is a lie in the recording (docs/spec/jfr-events.md).
-            recordBatch(claimed, queued.size());
-            warnIfStarved(claimed, queued.size());
-            return new PollResult(claimed.claimedCount(), queued.size(), claimed.claimedCount() >= batchSize);
-        } catch (SQLException e) {
-            throw new PollFailedException(e);
-        }
-    }
-
-    /// The claim's transaction is [DbTx#wrapForBootstrap] — the sanctioned
-    /// escape hatch for exactly this shape: an externally managed,
-    /// multi-statement transaction outside the use-case envelope. This is
-    /// router-driven infrastructure, not a human-initiated command, so it has
-    /// no `Operation`/`UnitOfWork` to run inside (mirroring the repository's
-    /// own "infra writes" section, which bypasses the envelope for the same
-    /// reason).
-    private void commit(Connection conn, List<String> queued) throws SQLException {
+        int wanted;
         try {
-            conn.commit();
-        } catch (SQLException e) {
-            rollbackQuietly(conn);
-            if (!queued.isEmpty()) {
-                LOG.atWarn().setMessage("claim commit failed after publishing; the jobs stay PENDING and will be "
-                                + "published again, and /process discards whichever copy arrives second")
-                        .addKeyValue("count", queued.size())
-                        .setCause(e)
-                        .log();
-            }
+            wanted = lanes.acquirePermits(config.batchSize());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return PollResult.INTERRUPTED;
+        }
+        // The wait may have been long: leadership can have gone meanwhile.
+        if (!leader.getAsBoolean()) {
+            lanes.releasePermits(wanted);
+            return PollResult.IDLE;
+        }
+        Claimed claimed;
+        long generation;
+        var event = new ClaimedBatchEvent();
+        event.begin();
+        long startNanos = System.nanoTime();
+        int excluded;
+        try {
+            // Generation FIRST, then the snapshot (DispatchLanes class doc).
+            generation = lanes.nextGeneration();
+            List<String> inFlight = lanes.inFlightSnapshot();
+            excluded = inFlight.size();
+            Set<String> paused = pausedCache.pausedSubscriptionIds();
+            claimed = claim(wanted, paused, inFlight);
+        } catch (RuntimeException e) {
+            metrics.pollErrors.increment();
+            lanes.releasePermits(wanted);
             throw e;
         }
-    }
+        metrics.claimNanos.add(System.nanoTime() - startNanos);
+        metrics.claimCount.increment();
 
-    /// The result of one claim+filter step.
-    private record Claimed(int claimedCount, List<DispatchJobRepository.ClaimRow> toPublish, int heldBack,
-                           int pausedSkipped) {
-        private static final Claimed EMPTY = new Claimed(0, List.of(), 0, 0);
-    }
+        lanes.submit(claimed.toSubmit(), generation);
+        lanes.releasePermits(wanted - claimed.toSubmit().size());
 
-    /// Claims and filters inside the caller's transaction (spec §3, steps
-    /// 2-3). Marks nothing: `QUEUED` waits for the broker ([#publishAndMark]).
-    private Claimed claim(DbTx tx, Set<String> paused) {
-        List<DispatchJobRepository.ClaimRow> claims = repository.claimPending(tx, batchSize, paused);
-        if (claims.isEmpty()) {
-            return Claimed.EMPTY;
+        int submitted = claimed.toSubmit().size();
+        metrics.claimed.add(claimed.claimedCount());
+        metrics.submitted.add(submitted);
+        metrics.skippedHeld.add(claimed.heldBack());
+        boolean full = claimed.claimedCount() >= wanted;
+        if (full) metrics.fullBatchClaims.increment();
+        if (event.shouldCommit()) {
+            event.wanted = wanted;
+            event.size = claimed.claimedCount();
+            event.submitted = submitted;
+            event.heldBack = claimed.heldBack();
+            event.inFlight = excluded;
+            event.commit();
         }
-        List<DispatchJobRepository.ClaimRow> toPublish = new ArrayList<>(claims.size());
+        warnIfStarved(claimed, wanted, submitted);
+        boolean laneFailed = lanes.takeFailure();
+        boolean backOff = !full || submitted == 0 || laneFailed;
+        return new PollResult(claimed.claimedCount(), submitted, wanted, claimed.heldBack(), backOff);
+    }
+
+    /// The result of one claim + hold-back step.
+    private record Claimed(int claimedCount, List<DispatchJobRepository.ClaimRow> toSubmit, int heldBack) {
+    }
+
+    private Claimed claim(int wanted, Set<String> paused, List<String> inFlight) {
+        List<DispatchJobRepository.ClaimRow> claims = repository.claimPending(wanted, paused, inFlight);
+        if (claims.isEmpty()) {
+            return new Claimed(0, List.of(), 0);
+        }
+        List<DispatchJobRepository.ClaimRow> toSubmit = new ArrayList<>(claims.size());
         // One query for every BLOCK_ON_ERROR candidate's positional hold-back
-        // (not one per candidate), asked only of the rows the paused check
-        // lets through.
+        // (not one per candidate).
         List<DispatchJobRepository.ClaimRow> blockCandidates = new ArrayList<>();
         for (DispatchJobRepository.ClaimRow c : claims) {
-            if (c.mode() == DispatchMode.BLOCK_ON_ERROR
-                    && !(c.subscriptionId() != null && paused.contains(c.subscriptionId()))) {
+            if (c.mode() == DispatchMode.BLOCK_ON_ERROR) {
                 blockCandidates.add(c);
             }
         }
         Set<String> held = blockCandidates.isEmpty() ? Set.of() : repository.heldBeforeIds(blockCandidates);
         int heldBack = 0;
-        int pausedSkipped = 0;
         for (DispatchJobRepository.ClaimRow c : claims) {
-            if (c.subscriptionId() != null && paused.contains(c.subscriptionId())) {
-                // The claim query already excludes these (one snapshot serves
-                // both), so this is defence in depth and should count zero; a
-                // non-zero count means the two have drifted apart.
-                pausedSkipped++;
-                continue;
-            }
             if (held.contains(c.id())) {
                 heldBack++;
                 continue; // positional hold-back — left PENDING, spec §3 "GroupHolding"
             }
-            toPublish.add(c);
+            toSubmit.add(c);
         }
-        return new Claimed(claims.size(), toPublish, heldBack, pausedSkipped);
+        return new Claimed(claims.size(), toSubmit, heldBack);
     }
 
-    /// Publishes the survivors and marks `QUEUED` exactly those the broker
-    /// accepted, in the claim's transaction.
-    ///
-    /// @return the ids marked `QUEUED`
-    private List<String> publishAndMark(DbTx tx, List<DispatchJobRepository.ClaimRow> toPublish) {
-        if (toPublish.isEmpty()) {
-            return List.of();
-        }
-        List<PublishedMessage> batch = toPublish.stream().map(this::buildMessage).toList();
-        Set<String> unpublished = Set.of();
-        try {
-            publisher.publish(batch);
-        } catch (DispatchPublisher.PublishException e) {
-            // Ruling O2: exactly the jobs the publisher reports unpublished
-            // stay PENDING. A job it omits was accepted by the broker and is
-            // legitimately QUEUED; leaving that one PENDING too would publish
-            // it again next tick.
-            unpublished = Set.copyOf(e.unpublishedJobIds());
-            LOG.atWarn().setMessage("batch publish failed; the unpublished job(s) stay PENDING for the next tick")
-                    .addKeyValue("count", unpublished.size())
-                    .addKeyValue("claimed", batch.size())
-                    .setCause(e)
-                    .log();
-        }
-        List<String> ids = new ArrayList<>(toPublish.size());
-        Instant minCreated = null;
-        Instant maxCreated = null;
-        for (DispatchJobRepository.ClaimRow c : toPublish) {
-            if (unpublished.contains(c.id())) {
-                continue;
-            }
-            ids.add(c.id());
-            if (minCreated == null || c.createdAt().isBefore(minCreated)) minCreated = c.createdAt();
-            if (maxCreated == null || c.createdAt().isAfter(maxCreated)) maxCreated = c.createdAt();
-        }
-        if (!ids.isEmpty()) {
-            repository.markQueued(tx, ids, minCreated, maxCreated);
-        }
-        return ids;
-    }
-
-    /// A full claim that publishes nothing is the signature of starvation: the
-    /// first `batchSize` rows in claim order are all held back (a
-    /// `BLOCK_ON_ERROR` group behind a failed head), so every tick claims the
-    /// same rows and whatever sorts behind them is never reached — silently.
-    /// Warns, at most once a minute, with the counts that say why.
-    private void warnIfStarved(Claimed claimed, int published) {
-        if (claimed.claimedCount() < batchSize || published > 0) {
+    /// A full claim that submits nothing is the signature of starvation: the
+    /// first rows in claim order are all held back (a `BLOCK_ON_ERROR` group
+    /// behind a failed head), so every claim returns the same rows and
+    /// whatever sorts behind them is never reached — silently. Warns, at most
+    /// once a minute, with the counts that say why.
+    private void warnIfStarved(Claimed claimed, int wanted, int submitted) {
+        if (claimed.claimedCount() < wanted || submitted > 0) {
             return;
         }
         long now = System.nanoTime();
@@ -297,45 +234,18 @@ public final class PendingJobPoller {
         }
         warnedStarved = true;
         lastStarvedWarnNanos = now;
-        LOG.atWarn().setMessage("a full claim published nothing; PENDING jobs behind these rows are not being "
+        LOG.atWarn().setMessage("a full claim submitted nothing; PENDING jobs behind these rows are not being "
                         + "reached until the held rows move")
                 .addKeyValue("claimed", claimed.claimedCount())
-                .addKeyValue("pausedSkipped", claimed.pausedSkipped())
                 .addKeyValue("heldSkipped", claimed.heldBack())
                 .log();
-    }
-
-    private static void rollbackQuietly(Connection conn) {
-        try {
-            conn.rollback();
-        } catch (SQLException rollbackFailure) {
-            LOG.warn("poll transaction rollback failed", rollbackFailure);
-        }
-    }
-
-    /// @param published how many the broker accepted — marked `QUEUED` and
-    ///                  committed; a partial publish failure makes it less
-    ///                  than the survivors of the filter
-    private void recordBatch(Claimed claimed, int published) {
-        if (claimed.claimedCount() == 0) {
-            return;
-        }
-        var event = new ClaimedBatchEvent();
-        if (!event.shouldCommit()) {
-            return;
-        }
-        event.size = claimed.claimedCount();
-        event.published = published;
-        event.heldBack = claimed.heldBack();
-        event.pausedSkipped = claimed.pausedSkipped();
-        event.commit();
     }
 
     /// Resolves a claimed row to the exact wire [Message] the router
     /// contract requires (dispatch-seam spec §2). `authToken` is
     /// double-duty (spec §2): the same token both authenticates the
     /// `/api/dispatch/process` callback AND is what the router forwards to
-    /// `/api/dispatch/settled` for an ACKed sibling.
+    /// `/api/dispatch/settled` for an ACKed sibling. Runs on a lane.
     private PublishedMessage buildMessage(DispatchJobRepository.ClaimRow c) {
         String poolCode = poolCodes.resolve(c.dispatchPoolId(), c.clientId());
         String authToken = authVerifier.sign(c.id());
@@ -345,14 +255,24 @@ public final class PendingJobPoller {
         return new PublishedMessage(c.id(), c.createdAt(), c.clientId(), c.subscriptionId(), c.queue(), message);
     }
 
-    /// Wraps a claim-transaction JDBC failure — connection acquisition or
-    /// commit (the claim/mark-QUEUED statements throw jOOQ's own unchecked
-    /// exception). Unchecked:
-    /// [DispatchScheduler]'s tick loop catches `RuntimeException` and retries
-    /// on the next tick, exactly like [io.flowcatalyst.platform.dispatchjob.DispatchJobReaper].
-    static final class PollFailedException extends RuntimeException {
-        PollFailedException(SQLException cause) {
-            super("dispatch job poll failed", cause);
-        }
+    public SchedulerMetrics metrics() {
+        return metrics;
+    }
+
+    /// Test seam: waits up to `timeout` until every claimed job has been
+    /// settled by a lane (published, left `PENDING`, or dropped) and every
+    /// permit is back.
+    boolean awaitIdle(Duration timeout) {
+        return lanes.awaitIdle(timeout);
+    }
+
+    DispatchLanes lanes() {
+        return lanes;
+    }
+
+    /// Stops the lanes (each finishes the batch it is sending, then exits).
+    @Override
+    public void close() {
+        lanes.close();
     }
 }
