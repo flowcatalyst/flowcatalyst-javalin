@@ -5,11 +5,13 @@ import io.flowcatalyst.platform.dispatch.DispatchQueueSettings;
 import io.flowcatalyst.platform.shared.dispatch.DispatchQueueName;
 import io.flowcatalyst.platform.shared.dispatch.QueuePriority;
 import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.router.queue.sqs.SqsClients;
 import io.flowcatalyst.router.queue.sqs.SqsQueue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.SqsClientBuilder;
 import software.amazon.awssdk.services.sqs.model.BatchResultErrorEntry;
 import software.amazon.awssdk.services.sqs.model.CreateQueueRequest;
 import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
@@ -20,6 +22,7 @@ import software.amazon.awssdk.services.sqs.model.SendMessageBatchResponse;
 import software.amazon.awssdk.services.sqs.model.SqsException;
 
 import javax.sql.DataSource;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -182,12 +185,29 @@ public final class SqsDispatchPublisher implements DispatchPublisher, AutoClosea
         this.destinations = Objects.requireNonNull(destinations, "destinations");
     }
 
-    private static SqsClient buildClient(DispatchQueueSettings settings) {
-        var builder = SqsClient.builder();
+    /// Longest one SQS attempt may take. There is no long poll on this path
+    /// (every call is a `SendMessageBatch` of at most ten small entries), and
+    /// the call runs inside the claim transaction with its row locks held, so
+    /// a stalled connection must be cut off quickly.
+    static final Duration API_CALL_ATTEMPT_TIMEOUT = Duration.ofSeconds(5);
+
+    /// Longest a whole call may take including the SDK's retries.
+    static final Duration API_CALL_TIMEOUT = Duration.ofSeconds(10);
+
+    /// Chunks are sent one at a time, so the pool never needs more.
+    static final int MAX_HTTP_CONNECTIONS = 10;
+
+    /// Package-visible so a test can read the configured timeouts.
+    static SqsClientBuilder clientBuilder(DispatchQueueSettings settings) {
+        var builder = SqsClients.builder(API_CALL_TIMEOUT, API_CALL_ATTEMPT_TIMEOUT, MAX_HTTP_CONNECTIONS);
         if (!settings.sqsRegion().isBlank()) {
             builder.region(Region.of(settings.sqsRegion()));
         }
-        return builder.build();
+        return builder;
+    }
+
+    private static SqsClient buildClient(DispatchQueueSettings settings) {
+        return clientBuilder(settings).build();
     }
 
     @Override

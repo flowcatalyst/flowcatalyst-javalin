@@ -10,8 +10,6 @@ import io.flowcatalyst.router.wire.Message;
 import org.slf4j.Logger;
 import org.slf4j.spi.LoggingEventBuilder;
 import org.slf4j.LoggerFactory;
-import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
-import software.amazon.awssdk.http.apache5.Apache5HttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.SqsClientBuilder;
@@ -189,12 +187,7 @@ public final class SqsQueue implements Consumer {
     /// connection pool sized for a busy queue. A package-private seam so a test
     /// can shorten the timeouts and point it at a local server.
     static SqsClientBuilder clientBuilder(String queueUrl, Duration apiCallTimeout, Duration attemptTimeout) {
-        var builder = SqsClient.builder()
-                .httpClientBuilder(Apache5HttpClient.builder().maxConnections(MAX_HTTP_CONNECTIONS))
-                .overrideConfiguration(ClientOverrideConfiguration.builder()
-                        .apiCallTimeout(apiCallTimeout)
-                        .apiCallAttemptTimeout(attemptTimeout)
-                        .build());
+        var builder = SqsClients.builder(apiCallTimeout, attemptTimeout, MAX_HTTP_CONNECTIONS);
         regionFromUrl(queueUrl).ifPresent(region -> builder.region(Region.of(region)));
         return builder;
     }

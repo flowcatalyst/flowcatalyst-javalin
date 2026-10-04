@@ -400,4 +400,25 @@ class SqsDispatchPublisherTest {
         assertThat(client.sendRequests()).as("ten distinct groups must not fragment batching").hasSize(1);
         assertThat(client.sendRequests().getFirst().entries()).hasSize(10);
     }
+
+    // ── the client is bounded (it is called with the claim's row locks held) ──
+
+    /// A bare `SqsClient.builder()` has no call timeout, so a stalled connection
+    /// would hold the claim transaction and its row locks for good. Mutant:
+    /// build the client without the override configuration.
+    @Test
+    void theProductionClientIsBuiltWithShortCallTimeouts() {
+        var config = SqsDispatchPublisher.clientBuilder(SETTINGS).overrideConfiguration();
+
+        assertThat(config.apiCallAttemptTimeout()).contains(java.time.Duration.ofSeconds(5));
+        assertThat(config.apiCallTimeout()).contains(java.time.Duration.ofSeconds(10));
+        assertThat(SqsDispatchPublisher.API_CALL_TIMEOUT)
+                .isGreaterThanOrEqualTo(SqsDispatchPublisher.API_CALL_ATTEMPT_TIMEOUT);
+    }
+
+    @Test
+    void theClientKeepsTheConfiguredRegion() {
+        assertThat(SqsDispatchPublisher.clientBuilder(SETTINGS).build().serviceClientConfiguration().region())
+                .isEqualTo(software.amazon.awssdk.regions.Region.of(REGION));
+    }
 }
