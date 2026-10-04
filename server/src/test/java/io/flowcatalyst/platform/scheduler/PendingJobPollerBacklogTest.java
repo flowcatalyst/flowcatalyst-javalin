@@ -159,4 +159,57 @@ class PendingJobPollerBacklogTest {
             logger.detachAppender(appender);
         }
     }
+
+    // ── the hold-back check is one query, not one per candidate ─────────────
+
+    /// A DataSource that counts the connections the repository asks for: its
+    /// claim and mark statements ride the poller's own transaction, so every
+    /// connection it takes here is a read of its own (the hold-back check).
+    private static final class CountingDataSource {
+        final java.util.concurrent.atomic.AtomicInteger connections = new java.util.concurrent.atomic.AtomicInteger();
+        final javax.sql.DataSource proxy = (javax.sql.DataSource) java.lang.reflect.Proxy.newProxyInstance(
+                PendingJobPollerBacklogTest.class.getClassLoader(), new Class<?>[]{javax.sql.DataSource.class},
+                (p, method, args) -> {
+                    if (method.getName().equals("getConnection")) connections.incrementAndGet();
+                    try {
+                        return method.invoke(DATA_SOURCE, args);
+                    } catch (java.lang.reflect.InvocationTargetException e) {
+                        throw e.getCause();
+                    }
+                });
+    }
+
+    /// Mutant: ask once per BLOCK_ON_ERROR candidate (12 round trips here).
+    @Test
+    void manyBlockOnErrorCandidatesAcrossSeveralGroupsAreCheckedInOneQuery() {
+        var held = new java.util.ArrayList<String>();
+        var flowing = new java.util.ArrayList<String>();
+        for (int g = 0; g < 4; g++) {
+            String group = "hold-" + g + "-" + RUN;
+            // Groups 0 and 1 have a FAILED head at sequence 2: sequences 3.. are
+            // held, sequence 1 (positioned before it) is not. Groups 2 and 3 have none.
+            boolean failedHead = g < 2;
+            flowing.add(seedWriteRow(Seed.of(code("h" + g + "a-")).withMessageGroup(group)
+                    .withMode("BLOCK_ON_ERROR").withSequence(1)));
+            if (failedHead) {
+                seedWriteRow(Seed.of(code("h" + g + "f-")).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
+                        .withSequence(2).withStatus("FAILED"));
+            }
+            for (int i = 3; i < 5; i++) {
+                String id = seedWriteRow(Seed.of(code("h" + g + "b" + i + "-")).withMessageGroup(group)
+                        .withMode("BLOCK_ON_ERROR").withSequence(i));
+                (failedHead ? held : flowing).add(id);
+            }
+        }
+        var counting = new CountingDataSource();
+        var publisher = FakeDispatchPublisher.succeeding();
+
+        var result = poller(new DispatchJobRepository(counting.proxy), publisher, () -> true, 100).pollOnce();
+
+        assertThat(counting.connections.get()).as("one hold-back query for 12 candidates in 4 groups").isEqualTo(1);
+        assertThat(publisher.batches().stream().flatMap(java.util.List::stream).map(PublishedMessage::jobId))
+                .containsExactlyInAnyOrderElementsOf(flowing)
+                .doesNotContainAnyElementsOf(held);
+        assertThat(result.claimed()).isEqualTo(flowing.size() + held.size());
+    }
 }

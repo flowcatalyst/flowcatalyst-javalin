@@ -30,6 +30,9 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
@@ -463,6 +466,59 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 .and(groupHolding(T.STATUS, T.SCHEDULED_FOR))
                 .and(DSL.row(T.SEQUENCE, T.CREATED_AT, T.ID)
                         .lt(DSL.row(sequence, utc(createdAt), id))));
+    }
+
+    /// Batch form of [#groupHeldBefore(String,int,Instant,String)]: ONE query
+    /// for every candidate, instead of one round trip per `BLOCK_ON_ERROR`
+    /// candidate (up to a whole claim's worth per tick).
+    ///
+    /// Asks for the EARLIEST [#groupHolding] row of each distinct candidate
+    /// group (`DISTINCT ON`, ordered by the same `(sequence, created_at, id)`
+    /// triple), then applies the positional test in memory: a candidate is
+    /// held iff that earliest holder is positioned strictly before it — which
+    /// is exactly when SOME holder is, so the answer per candidate is the one
+    /// the per-candidate query gave. Candidates without a `message_group`
+    /// cannot be held. The holder query has no `created_at` bound for the
+    /// same reason the per-candidate one has none: the position is
+    /// `sequence`-first, so an earlier holder can have a later `created_at`.
+    ///
+    /// The in-memory tie-break on `id` compares strings by code unit; ids are
+    /// uppercase-alphanumeric TSIDs, where that matches the database's order.
+    ///
+    /// @return the ids of the candidates that are held back
+    public Set<String> heldBeforeIds(List<ClaimRow> candidates) {
+        String[] groups = candidates.stream().map(ClaimRow::messageGroup).filter(Objects::nonNull)
+                .distinct().toArray(String[]::new);
+        if (groups.length == 0) return Set.of();
+        Map<String, ClaimRow> earliestHolder = new HashMap<>();
+        dsl.select(T.MESSAGE_GROUP, T.SEQUENCE, T.CREATED_AT, T.ID)
+                .distinctOn(T.MESSAGE_GROUP)
+                .from(T)
+                .where(T.MESSAGE_GROUP.eq(DSL.any(groups)))
+                .and(groupHolding(T.STATUS, T.SCHEDULED_FOR))
+                .orderBy(T.MESSAGE_GROUP, T.SEQUENCE, T.CREATED_AT, T.ID)
+                .fetch()
+                .forEach(r -> earliestHolder.put(r.get(T.MESSAGE_GROUP), new ClaimRow(r.get(T.ID), null,
+                        r.get(T.MESSAGE_GROUP), null, null, null, r.get(T.CREATED_AT).toInstant(),
+                        r.get(T.SEQUENCE), null)));
+        Set<String> held = new HashSet<>();
+        for (ClaimRow c : candidates) {
+            if (c.messageGroup() == null) continue;
+            ClaimRow holder = earliestHolder.get(c.messageGroup());
+            if (holder != null && positionedBefore(holder, c)) {
+                held.add(c.id());
+            }
+        }
+        return held;
+    }
+
+    /// `(sequence, created_at, id)` of `a` strictly before `b`'s.
+    private static boolean positionedBefore(ClaimRow a, ClaimRow b) {
+        int bySequence = Integer.compare(a.sequence(), b.sequence());
+        if (bySequence != 0) return bySequence < 0;
+        int byCreated = a.createdAt().compareTo(b.createdAt());
+        if (byCreated != 0) return byCreated < 0;
+        return a.id().compareTo(b.id()) < 0;
     }
 
     /// The scheduler's claim query (spec §3, step 2): `SELECT ... FOR UPDATE

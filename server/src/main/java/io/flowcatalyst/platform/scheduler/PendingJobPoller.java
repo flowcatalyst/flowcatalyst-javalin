@@ -63,19 +63,12 @@ import java.util.function.BooleanSupplier;
 /// the publisher reports unpublished are simply not marked, and stay
 /// `PENDING` for the next tick.
 ///
-/// Simplification versus Go's `pollOnce` (`poller.go:147-309`), not a
-/// behavioural change: Go batches the hold-back check into one
-/// `blockedGroups` query keyed by the EARLIEST holder per candidate group,
-/// because its claim loop needed a `map[group]jobKey` up front. This class
-/// instead asks [DispatchJobRepository#groupHeldBefore(String,int,Instant,String)]
-/// once per `BLOCK_ON_ERROR` candidate — "is ANY holder positioned before
-/// me" rather than "is the earliest holder positioned before me". The two
-/// are logically equivalent (a holder positioned before me exists iff the
-/// earliest one does), and the claim query's own `ORDER BY message_group,
-/// sequence, created_at, id` already interleaves groups correctly, so no
-/// separate grouping pass is needed either — the claimed list is iterated
-/// in claim order throughout, which is exactly the order [DispatchPublisher]
-/// must preserve.
+/// The hold-back check is one [DispatchJobRepository#heldBeforeIds] query
+/// over the candidates' distinct groups, keyed by the EARLIEST holder per
+/// group, then applied in memory — "is ANY holder positioned before me" and
+/// "is the earliest holder positioned before me" are the same question. The
+/// claimed list is iterated in claim order throughout, which is exactly the
+/// order [DispatchPublisher] must preserve.
 public final class PendingJobPoller {
 
     private static final Logger LOG = LoggerFactory.getLogger(PendingJobPoller.class);
@@ -218,6 +211,17 @@ public final class PendingJobPoller {
             return Claimed.EMPTY;
         }
         List<DispatchJobRepository.ClaimRow> toPublish = new ArrayList<>(claims.size());
+        // One query for every BLOCK_ON_ERROR candidate's positional hold-back
+        // (not one per candidate), asked only of the rows the paused check
+        // lets through.
+        List<DispatchJobRepository.ClaimRow> blockCandidates = new ArrayList<>();
+        for (DispatchJobRepository.ClaimRow c : claims) {
+            if (c.mode() == DispatchMode.BLOCK_ON_ERROR
+                    && !(c.subscriptionId() != null && paused.contains(c.subscriptionId()))) {
+                blockCandidates.add(c);
+            }
+        }
+        Set<String> held = blockCandidates.isEmpty() ? Set.of() : repository.heldBeforeIds(blockCandidates);
         int heldBack = 0;
         int pausedSkipped = 0;
         for (DispatchJobRepository.ClaimRow c : claims) {
@@ -228,8 +232,7 @@ public final class PendingJobPoller {
                 pausedSkipped++;
                 continue;
             }
-            if (c.mode() == DispatchMode.BLOCK_ON_ERROR
-                    && repository.groupHeldBefore(c.messageGroup(), c.sequence(), c.createdAt(), c.id())) {
+            if (held.contains(c.id())) {
                 heldBack++;
                 continue; // positional hold-back — left PENDING, spec §3 "GroupHolding"
             }
