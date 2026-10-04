@@ -179,6 +179,9 @@ public final class Pool implements AutoCloseable {
     /// fixed 2026-09-07 — see [#capacityChanged]).
     private final AtomicBoolean full = new AtomicBoolean(false);
 
+    /// Whether [#backlogged] held as of the last [#capacityChanged]; same role as [#full].
+    private final AtomicBoolean backlog = new AtomicBoolean(false);
+
     /// Run on the crossing back under capacity — how a parked
     /// [io.flowcatalyst.router.manager.ConsumerLoop] learns there is room
     /// again without polling on a fixed interval (§3.2). Defaults to a no-op
@@ -367,6 +370,25 @@ public final class Pool implements AutoCloseable {
                 capacityListener.run();
             }
         } while (atCapacity != (queueSize() >= config.queueCapacity()));
+        // Same crossing rule for the delivery-pacing mark (see #backlogged): wake a consumer
+        // loop that is pacing itself the moment the waiting messages drop back under it.
+        boolean nowBacklogged;
+        do {
+            nowBacklogged = backlogged();
+            if (backlog.getAndSet(nowBacklogged) && !nowBacklogged) {
+                capacityListener.run();
+            }
+        } while (nowBacklogged != backlogged());
+    }
+
+    /// Whether this pool already has a full round of work waiting for its workers: at least
+    /// as many unordered messages queued as it has workers. A consumer loop feeding only
+    /// backlogged pools paces its polling ([io.flowcatalyst.router.manager.ConsumerLoop]),
+    /// so the buffer stays shallow and the backlog stays in the broker instead of being
+    /// pulled in, filled to capacity and deferred. Ordered-group messages are not counted:
+    /// they wait for their group, and reading further finds other groups' work.
+    public boolean backlogged() {
+        return immediateWaiting.get() >= Math.max(config.concurrency(), 1);
     }
 
     /// Deliveries in progress right now.

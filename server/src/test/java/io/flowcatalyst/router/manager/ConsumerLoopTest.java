@@ -635,6 +635,51 @@ class ConsumerLoopTest {
         }
     }
 
+    @Test
+    @DisplayName("a queue whose pool already has a full round of work waiting is polled at a paced rate, "
+            + "not flat out, and nothing is deferred")
+    void backloggedPoolPacesThePolls() throws InterruptedException {
+        var slowEntered = new CountDownLatch(1);
+        var slowBlocked = new AtomicBoolean(true);
+        Mediator slowMediator = (msg, recordFailure) -> {
+            slowEntered.countDown();
+            while (slowBlocked.get()) {
+                Thread.sleep(Duration.ofMillis(5));
+            }
+            return MediationOutcome.Success.of(200);
+        };
+        var broker = new RecordingHolBroker(tracker);
+        // One worker, so one waiting message already makes the pool backlogged; capacity is 100,
+        // so the twelve messages below all fit and none is deferred.
+        var slowPool = new Pool(new Pool.Config("SLOW", 1, 0), slowMediator, broker, PoolMetrics.NO_OP, clock);
+        var manager = new RouterManager(tracker, warnings, clock,
+                config -> new Pool(config, slowMediator, broker, PoolMetrics.NO_OP, clock));
+        manager.registerPool("SLOW", slowPool);
+        manager.registerConsumer(consumer);
+        managers.add(manager);
+        try {
+            int batches = 6;
+            for (int b = 0; b < batches; b++) {
+                int base = b * 2;
+                consumer.deliver(IntStream.range(0, 2).mapToObj(i -> message("m-" + (base + i), "SLOW")).toList());
+            }
+            long startedAt = System.nanoTime();
+            start(manager);
+            await(() -> slowPool.queueSize() + slowPool.activeWorkers() == batches * 2);
+            var elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
+
+            // The first batch is polled at once; each of the other five waits up to
+            // DELIVERY_PACE_MAX_WAIT because the pool stays backlogged.
+            assertThat(elapsed)
+                    .as("five further polls must each be paced")
+                    .isGreaterThanOrEqualTo(ConsumerLoop.DELIVERY_PACE_MAX_WAIT.multipliedBy(4));
+            assertThat(broker.deferredOrder).as("pacing keeps the buffer shallow; it does not defer").isEmpty();
+            assertThat(slowPool.backlogged()).isTrue();
+        } finally {
+            slowBlocked.set(false);
+        }
+    }
+
     /// Records every ack/defer/nack, for [#fullPoolDefersInsteadOfBlockingTheQueueAcrossTwoBatches].
     private static final class RecordingHolBroker implements io.flowcatalyst.router.pool.Broker {
         final List<String> deferredOrder = new CopyOnWriteArrayList<>();

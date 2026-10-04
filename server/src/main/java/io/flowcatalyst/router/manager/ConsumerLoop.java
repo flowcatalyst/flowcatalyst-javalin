@@ -58,6 +58,10 @@ public final class ConsumerLoop implements Runnable {
     /// the NATS default batch, so no backend has to split a request.
     public static final int MAX_POLL = 10;
 
+    /// Longest a loop waits before polling again while its pools are backlogged; see
+    /// [#paceToDelivery].
+    static final Duration DELIVERY_PACE_MAX_WAIT = Duration.ofMillis(100);
+
     /// Pause after a poll whose batch was mostly deferred; see [#pauseIfMostlyDeferred].
     static final Duration DEFERRED_BACKOFF_MIN = Duration.ofMillis(50);
     static final Duration DEFERRED_BACKOFF_MAX = Duration.ofMillis(200);
@@ -211,6 +215,7 @@ public final class ConsumerLoop implements Runnable {
                 .log();
         try {
             while (!Thread.currentThread().isInterrupted()) {
+                paceToDelivery();
                 if (!awaitCapacity()) {
                     continue;
                 }
@@ -226,6 +231,30 @@ public final class ConsumerLoop implements Runnable {
                     .addKeyValue("queue", queueId())
                     .log();
         }
+    }
+
+    /// Keeps intake in step with delivery. When every pool this queue's last batch fed already
+    /// has a full round of work waiting ([io.flowcatalyst.router.pool.Pool#backlogged]),
+    /// another poll only deepens the buffer: measured at one CPU this loop received 36k
+    /// messages a second while the pools delivered 16k, filled every buffer to capacity and
+    /// then deferred the rest, where the Go and Rust routers hold about one batch per queue.
+    /// So wait for a pool to drop under that mark (the capacity gate is signalled on the
+    /// crossing) or for [#DELIVERY_PACE_MAX_WAIT], whichever is first, and then poll. One
+    /// bounded wait per iteration, never a loop: a backlogged pool slows the queue's reads to
+    /// about ten a second but does not stop them, so traffic for other pools behind it is still
+    /// found (the head-of-line ruling).
+    private void paceToDelivery() throws InterruptedException {
+        var fed = lastFedPools;
+        if (fed.isEmpty()) {
+            return;
+        }
+        var gate = manager.capacityGate();
+        var generation = gate.generation();
+        if (!manager.poolsBacklogged(fed)) {
+            return;
+        }
+        lastCapacityPause.set(clock.instant());
+        gate.awaitChangeSince(generation, DELIVERY_PACE_MAX_WAIT);
     }
 
     /// @return whether there is room to poll now; false means the caller

@@ -745,6 +745,22 @@ public final class RouterManager implements AutoCloseable {
                 .anyMatch(entry -> hasCapacity(entry.getValue()));
     }
 
+    /// Whether **every** one of the named pools this manager still knows already has a full
+    /// round of work waiting ([Pool#backlogged]). False when none of them is known, so a
+    /// consumer whose pools were all removed is not paced on a set that cannot answer.
+    public boolean poolsBacklogged(Set<String> poolCodes) {
+        boolean any = false;
+        for (var entry : pools.entrySet()) {
+            if (poolCodes.contains(entry.getKey())) {
+                if (!entry.getValue().backlogged()) {
+                    return false;
+                }
+                any = true;
+            }
+        }
+        return any;
+    }
+
     private static boolean hasCapacity(Pool pool) {
         return pool.queueSize() < pool.config().queueCapacity();
     }
