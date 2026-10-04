@@ -195,98 +195,82 @@ class DispatchLanesTest {
         assertThat(lanes.poisonedGroups()).isZero();
     }
 
-    /// The hole the generation rule alone leaves, found while implementing it:
-    /// with `j1 < j2 < j3`, `j2` claimed (so in the in-flight set) before `j1`
-    /// fails, a claim taken right after the failure returns `j1` and `j3` — never
-    /// `j2`, which is "in flight". Both pass the generation test, `j2` is then
-    /// dropped, and `j3` would be published ahead of `j2`. A dropped job
-    /// therefore poisons its group again, at the generation read after it leaves
-    /// the set, and drops the rest of its group in the same batch.
-    ///
-    /// Run with `laneBatch = 1` (`j2`, `j1`, `j3` are separate batches: mutant "a
-    /// dropped job does not re-poison" fails) and `laneBatch = 100` (one batch:
-    /// mutant "the rest of a dropped job's group in the batch is not dropped"
-    /// fails).
+    /// A drop does NOT renew the poison. `j2` (doomed) is dropped; a job of the
+    /// group from a claim taken meanwhile (generation newer than the poison)
+    /// passes and clears it. Renewing the poison on a drop closes the overtaking
+    /// hole too, but livelocks when claims outpace a lane's drain: every claim
+    /// made while a batch is dropped is older than the renewed poison and is
+    /// dropped in turn. (At the lane level the pass shows up as a publish; the
+    /// poller-side check below is what keeps it from overtaking.)
+    /// Mutant: poison the group again when a job is dropped.
     @Test
-    void aJobDroppedForAPoisonedGroupKeepsItPoisonedSoALaterJobCannotOvertakeIt() throws Exception {
+    void aDropDoesNotRenewThePoison() throws Exception {
         for (int laneBatch : new int[]{1, 100}) {
             var publisher = new ScriptedPublisher().failOnce("j1").gate("j1").gate("x");
             var lanes = lanes(config(1, laneBatch), publisher);
 
-            long gen1 = claim(lanes, row("j1", "group-j"));
+            claim(lanes, row("j1", "group-j"));
             assertThat(publisher.awaitEntered("j1")).isTrue();
-            // Claim 2 started while j1 was in flight: it returns an ungrouped x and j2.
-            // Its submit is slow: x is in the channel, j2 not yet.
             assertThat(lanes.acquirePermits(2)).isEqualTo(2);
             long gen2 = lanes.nextGeneration();
             lanes.submit(List.of(row("x", null)), gen2);
             publisher.open("j1"); // j1 fails (poison = 2); the lane takes x and blocks in it
             assertThat(publisher.awaitEntered("x")).isTrue();
             awaitTrue(() -> lanes.poisonedGroups() == 1, "j1's failure to be recorded");
-            assertThat(lanes.inFlightSnapshot()).as("j1 has left the in-flight set").doesNotContain("j1");
-            lanes.submit(List.of(row("j2", "group-j")), gen2); // claim 2's last row arrives
-
-            // Claim 3 starts after j1's failure was handled: it returns j1 and j3 but
-            // not j2 (still in flight).
-            long gen3 = claim(lanes, row("j1", "group-j"), row("j3", "group-j"));
-            assertThat(gen3).isGreaterThan(gen2).isGreaterThan(gen1);
+            lanes.submit(List.of(row("j2", "group-j")), gen2); // doomed: generation <= the poison
+            claim(lanes, row("j1", "group-j")); // a claim taken after: generation > the poison
             publisher.open("x");
             assertThat(lanes.awaitIdle(WAIT)).isTrue();
 
-            assertThat(publisher.publishedOf("j")).as("laneBatch=%d: nothing of the group went out ahead of j2", laneBatch)
-                    .isEmpty();
-            assertThat(publisher.published()).containsExactly("x");
-
-            // Claim 4: everything still PENDING, in order.
-            claim(lanes, row("j1", "group-j"), row("j2", "group-j"), row("j3", "group-j"));
-            assertThat(lanes.awaitIdle(WAIT)).isTrue();
-            assertThat(publisher.publishedOf("j")).as("laneBatch=%d", laneBatch).containsExactly("j1", "j2", "j3");
+            assertThat(publisher.publishedOf("j")).as("laneBatch=%d: j2 was dropped, the newer j1 passed", laneBatch)
+                    .containsExactly("j1");
+            assertThat(lanes.poisonedGroups()).as("and cleared the poison").isZero();
             lanes.close();
         }
     }
 
-    /// Interleaving (b), driven deterministically: a claim runs in the window
-    /// between a failing batch leaving the in-flight set and the lane reading the
-    /// generation to poison with. The claim increments the generation and
-    /// snapshots the set; because the failed job's id is already gone, it
-    /// returns the whole group in order — and the poison, read afterwards,
-    /// covers it. Mutant: read the generation BEFORE removing the ids (the
-    /// window is then after the read, so the claim's snapshot still holds the
-    /// failed job, it returns only its successors, and they pass the generation
-    /// test and overtake it).
+    /// The claim must not skip a doomed job. `j2` waits in a lane, doomed (its
+    /// generation is `<=` the poison `j1`'s failure set); a later claim excludes
+    /// it as in flight and returns the rows behind it, `j1` and `j3` — which
+    /// would be published ahead of `j2`. The poller-side check drops the group's
+    /// rows from that claim (they stay PENDING); ungrouped rows and groups with
+    /// no doomed job pass; and once the doomed job has gone the group passes.
+    /// Mutant: no check.
     @Test
-    void aClaimRunningWhileAFailureSettlesCannotOvertakeWhicheverStepComesFirst() throws Exception {
-        var publisher = new ScriptedPublisher().failOnce("w1").gate("w1");
+    void aClaimThatSawADoomedInFlightJobDoesNotSubmitTheJobsBehindIt() throws Exception {
+        var publisher = new ScriptedPublisher().failOnce("j1").gate("j1");
         var lanes = lanes(config(1, 1), publisher);
-        var group = List.of(row("w1", "group-w"), row("w2", "group-w"), row("w3", "group-w"));
-        var window = new java.util.concurrent.atomic.AtomicBoolean();
-        lanes.betweenRemovalAndPoisonHook = () -> {
-            if (!window.compareAndSet(false, true)) return;
+        var poisoned = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        lanes.afterPoisonHook = () -> {
+            poisoned.countDown();
             try {
-                // A whole poller claim, on this thread, inside the window: the
-                // PENDING rows are all three; the in-flight ones are excluded.
-                assertThat(lanes.acquirePermits(3)).isEqualTo(3);
-                long generation = lanes.nextGeneration();
-                var snapshot = lanes.inFlightSnapshot();
-                var rows = group.stream().filter(r -> !snapshot.contains(r.id())).toList();
-                lanes.releasePermits(3 - rows.size());
-                lanes.submit(rows, generation);
+                release.await(20, java.util.concurrent.TimeUnit.SECONDS);
             } catch (InterruptedException e) {
-                throw new AssertionError(e);
+                Thread.currentThread().interrupt();
             }
         };
 
-        claim(lanes, group.get(0));
-        assertThat(publisher.awaitEntered("w1")).isTrue();
-        publisher.open("w1"); // w1 fails; the claim runs in the settle window
-        awaitTrue(window::get, "the claim in the settle window");
-        assertThat(lanes.awaitIdle(WAIT)).isTrue();
+        claim(lanes, row("j1", "group-j"), row("j2", "group-j"));
+        assertThat(publisher.awaitEntered("j1")).isTrue();
+        publisher.open("j1"); // j1 fails; the lane holds in the settle with j2 doomed in its channel
+        assertThat(poisoned.await(15, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
 
-        assertThat(publisher.published()).as("nothing of the group overtook w1").isEmpty();
+        assertThat(lanes.acquirePermits(4)).isEqualTo(4);
+        lanes.nextGeneration();
+        var snapshot = lanes.inFlightSnapshot();
+        var claimed = List.of(row("j1", "group-j"), row("j3", "group-j"), row("k1", "group-k"), row("u1", null));
+        var submitted = lanes.withoutGroupsBehindDoomedJobs(claimed, snapshot);
+        assertThat(submitted.stream().map(ClaimRow::id)).as("nothing behind the doomed j2; other groups pass")
+                .containsExactly("k1", "u1");
 
-        claim(lanes, group.toArray(ClaimRow[]::new));
-        assertThat(lanes.awaitIdle(WAIT)).isTrue();
-        assertThat(publisher.published()).containsExactly("w1", "w2", "w3");
+        release.countDown();
+        lanes.releasePermits(4);
+        assertThat(lanes.awaitIdle(WAIT)).isTrue(); // j2 was dropped
+        lanes.afterPoisonHook = null;
+        var later = lanes.inFlightSnapshot();
+        assertThat(lanes.withoutGroupsBehindDoomedJobs(claimed, later)).as("the doomed job has gone")
+                .hasSameSizeAs(claimed);
     }
 
     /// Ungrouped jobs are never poisoned: a failure of one does not drop the

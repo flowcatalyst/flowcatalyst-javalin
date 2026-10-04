@@ -154,8 +154,8 @@ public final class PendingJobPoller implements AutoCloseable {
         try {
             // Generation FIRST, then the snapshot (DispatchLanes class doc).
             generation = lanes.nextGeneration();
-            List<String> inFlight = lanes.inFlightSnapshot();
-            excluded = inFlight.size();
+            DispatchLanes.Snapshot inFlight = lanes.inFlightSnapshot();
+            excluded = inFlight.ids().size();
             Set<String> paused = pausedCache.pausedSubscriptionIds();
             claimed = claim(wanted, paused, inFlight);
         } catch (RuntimeException e) {
@@ -173,6 +173,7 @@ public final class PendingJobPoller implements AutoCloseable {
         metrics.claimed.add(claimed.claimedCount());
         metrics.submitted.add(submitted);
         metrics.skippedHeld.add(claimed.heldBack());
+        metrics.skippedDoomed.add(claimed.doomedSkipped());
         boolean full = claimed.claimedCount() >= wanted;
         if (full) metrics.fullBatchClaims.increment();
         if (event.shouldCommit()) {
@@ -185,18 +186,20 @@ public final class PendingJobPoller implements AutoCloseable {
         }
         warnIfStarved(claimed, wanted, submitted);
         boolean laneFailed = lanes.takeFailure();
-        boolean backOff = !full || submitted == 0 || laneFailed;
+        // Rows left behind a doomed job are claimed again in moments: not a reason to sleep.
+        boolean backOff = !full || (submitted == 0 && claimed.doomedSkipped() == 0) || laneFailed;
         return new PollResult(claimed.claimedCount(), submitted, wanted, claimed.heldBack(), backOff);
     }
 
     /// The result of one claim + hold-back step.
-    private record Claimed(int claimedCount, List<DispatchJobRepository.ClaimRow> toSubmit, int heldBack) {
+    private record Claimed(int claimedCount, List<DispatchJobRepository.ClaimRow> toSubmit, int heldBack,
+                           int doomedSkipped) {
     }
 
-    private Claimed claim(int wanted, Set<String> paused, List<String> inFlight) {
-        List<DispatchJobRepository.ClaimRow> claims = repository.claimPending(wanted, paused, inFlight);
+    private Claimed claim(int wanted, Set<String> paused, DispatchLanes.Snapshot inFlight) {
+        List<DispatchJobRepository.ClaimRow> claims = repository.claimPending(wanted, paused, inFlight.ids());
         if (claims.isEmpty()) {
-            return new Claimed(0, List.of(), 0);
+            return new Claimed(0, List.of(), 0, 0);
         }
         List<DispatchJobRepository.ClaimRow> toSubmit = new ArrayList<>(claims.size());
         // One query for every BLOCK_ON_ERROR candidate's positional hold-back
@@ -216,7 +219,10 @@ public final class PendingJobPoller implements AutoCloseable {
             }
             toSubmit.add(c);
         }
-        return new Claimed(claims.size(), toSubmit, heldBack);
+        // The claim excluded in-flight jobs; if one of them is DOOMED (a lane will
+        // drop it), the rows behind it in its group must wait (DispatchLanes, point 4).
+        List<DispatchJobRepository.ClaimRow> passed = lanes.withoutGroupsBehindDoomedJobs(toSubmit, inFlight);
+        return new Claimed(claims.size(), passed, heldBack, toSubmit.size() - passed.size());
     }
 
     /// A full claim that submits nothing is the signature of starvation: the
@@ -225,7 +231,7 @@ public final class PendingJobPoller implements AutoCloseable {
     /// whatever sorts behind them is never reached — silently. Warns, at most
     /// once a minute, with the counts that say why.
     private void warnIfStarved(Claimed claimed, int wanted, int submitted) {
-        if (claimed.claimedCount() < wanted || submitted > 0) {
+        if (claimed.claimedCount() < wanted || submitted > 0 || claimed.doomedSkipped() > 0) {
             return;
         }
         long now = System.nanoTime();

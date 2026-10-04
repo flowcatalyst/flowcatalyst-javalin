@@ -219,4 +219,56 @@ class PendingJobPollerConcurrencyTest {
         }
         assertThat(publisher.published()).containsExactlyElementsOf(ids);
     }
+
+    /// The poller-side half of the ordering rule, through the real poller. `j2`
+    /// is in a lane's channel and DOOMED (`j1`, ahead of it, failed and poisoned
+    /// the group); a claim taken now excludes `j2` as in flight and finds `j1`
+    /// and `j3` — newer than the poison, so the lane would let them through
+    /// ahead of `j2`. The poller must not submit them: they stay PENDING.
+    /// Mutant: remove the check from the poller.
+    @Test
+    void thePollerDoesNotSubmitTheJobsBehindADoomedInFlightJob() throws Exception {
+        String group = "grp-doomed-" + RUN;
+        var ids = new ArrayList<String>();
+        for (int i = 1; i <= 3; i++) {
+            ids.add(seedWriteRow(Seed.of(code("doom" + i + "-")).withMessageGroup(group).withSequence(i)));
+        }
+        String j1 = ids.get(0);
+        var publisher = new ScriptedPublisher().failOnce(j1).gate(j1);
+        var config = SchedulerConfig.DEFAULTS.withBufferCapacity(100).withDispatchers(1).withLaneBatch(1)
+                .withBatchSize(2);
+        var poller = poller(publisher, config);
+        var poisoned = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        poller.lanes().afterPoisonHook = () -> {
+            poisoned.countDown();
+            try {
+                release.await(20, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+
+        assertThat(poller.pollOnce().submitted()).isEqualTo(2); // j1 and j2
+        assertThat(publisher.awaitEntered(j1)).isTrue();
+        publisher.open(j1); // j1 fails; the lane holds with j2 doomed behind it
+        assertThat(poisoned.await(15, TimeUnit.SECONDS)).isTrue();
+
+        var second = poller.pollOnce();
+        assertThat(second.claimed()).as("j1 and j3: j2 is excluded as in flight").isEqualTo(2);
+        assertThat(second.submitted()).as("nothing behind the doomed j2 is submitted").isZero();
+        assertThat(second.backOff()).as("it will be claimable again in moments: no sleep").isFalse();
+        assertThat(poller.metrics().skippedDoomed()).isEqualTo(2);
+
+        poller.lanes().afterPoisonHook = null;
+        release.countDown();
+        assertThat(poller.awaitIdle(WAIT)).isTrue();
+        assertThat(publisher.published()).as("nothing went out ahead of j2").isEmpty();
+
+        for (int i = 0; i < 20 && publisher.published().size() < 3; i++) {
+            poller.pollOnce();
+            assertThat(poller.awaitIdle(WAIT)).isTrue();
+        }
+        assertThat(publisher.published()).containsExactlyElementsOf(ids);
+    }
 }

@@ -346,11 +346,23 @@ with `gen <= poison[g]` is dropped on arrival (in-flight id removed, permit
 released, not published); a claim with `gen > P` incremented the counter after
 `P` was read, so its snapshot is after `j` left the set, so it returns `j`
 again in order — its jobs pass and the first clears the entry. Ungrouped jobs
-are never poisoned; entries unseen for 10 minutes are evicted. **Extension to
-the rule as first specified:** a dropped job re-poisons its group (at the
-generation read after it leaves the set) and drops the rest of its group in
-the same batch — otherwise a claim taken just after `j1`'s failure, which
-excludes the in-flight `j2` but returns `j3`, publishes `j3` ahead of `j2`.
+are never poisoned; entries unseen for 10 minutes are evicted. **Extension
+to the rule as first specified — the claim must not skip a doomed job:** a job
+of `g` waiting in a lane when `g` is poisoned is *doomed* (its generation is
+`<=` the poison; a lane will drop it), yet it is in the in-flight set, so a
+claim taken right after the failure excludes it and returns the jobs behind it
+(newer than the poison), which would be published ahead of it. The poller
+therefore checks each claim against the in-flight snapshot taken for that claim
+(in-flight entries carry `(group, generation)`; the poison map is shared state
+under one lock): if the snapshot held a doomed job of `g`, the claim's jobs of
+`g` are not submitted — they stay `PENDING` and are claimed again once the
+doomed job has gone (`fc_scheduler_jobs_skipped_doomed_total`; no poll-interval
+sleep for it). **A drop does not renew the poison:** making a drop re-poison the
+group also closes the hole but livelocks whenever the poller claims faster than
+a lane drains (every claim made while a batch is dropped is older than the
+renewed poison and is dropped in turn). Whether "generation before snapshot"
+and "poison read after removal" are still needed given the poller-side check is
+unproven; both are kept.
 
 *Accepted:* a double publish. A job published and then left `PENDING` by a
 failed status update is claimed and published again; the router drops a second
@@ -376,9 +388,11 @@ time, per-lane publish time. JFR: `ClaimedBatch` (one per claim) and
 Pinned by `DispatchLanesTest` (order across claims and lanes; failure midway;
 the generation rule driven deterministically, including both race windows —
 generation taken after the snapshot, poison read before the ids leave the
-in-flight set — through test hooks; the re-poison extension; permits/in-flight
-on every path; eviction; shutdown), `DispatchLanesStressTest` (a randomised
-multi-threaded run asserting per-group order at the broker),
+in-flight set — through test hooks; a drop does not renew the poison; a claim
+that saw a doomed in-flight job submits nothing behind it; permits/in-flight
+on every path; eviction; shutdown), `DispatchLanesStressTest` (adversarial, multi-threaded: 3,000 jobs, 30 groups,
+buffer 24, random publish and status-update failures, first-delivery order
+per group; `-Dstress.iterations=N`),
 `PendingJobPollerConcurrencyTest` (back-pressure; no duplicate submission; the
 snapshot-before-failure race through the real poller), `PendingJobPollerTest`
 (`aDeliveryThatBeatsTheQueuedUpdateIsNotRegressedToQueued`),

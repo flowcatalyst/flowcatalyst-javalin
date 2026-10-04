@@ -61,17 +61,26 @@ import java.util.function.LongSupplier;
 ///     read snapshotted the in-flight set after `j` left it, so it contains `j`
 ///     again, in order; its jobs have a generation `> P`, pass, and the first
 ///     one that passes clears the entry.
-///  4. **A dropped job poisons its group again** (and the rest of its group in
-///     the same batch is dropped with it). The spec's rule 1-3 alone leave a
-///     hole: with `j1 < j2 < j3` and `j2` already in a channel, a claim taken
-///     right after `j1`'s failure snapshots `j2` as in flight, so it returns
-///     `j1` and `j3` but not `j2`; those pass the generation test, `j2` is
-///     then dropped, and `j3` is published ahead of `j2`. Re-poisoning at the
-///     generation read after `j2` has left the in-flight set closes it by the
-///     same argument as 2-3, one level down.
+///  4. **A claim must not skip a doomed job.** A job of `g` still in a
+///     channel when `g` is poisoned is *doomed* (it will be dropped), yet it
+///     is in the in-flight set, so a claim taken right after the failure
+///     excludes it and, being newer than the poison, returns the jobs BEHIND
+///     it, which would be published ahead of it. The poller therefore checks
+///     every claim against the in-flight snapshot it took for that claim
+///     ([#withoutGroupsBehindDoomedJobs]): if the snapshot held a doomed job
+///     of `g` (an in-flight job of `g` whose generation is `<=` the group's
+///     poison), the claim's jobs of `g` are not submitted; they stay `PENDING`
+///     and are claimed again once the doomed job has gone. In-flight entries
+///     therefore carry `(group, generation)`, and the poison map is shared
+///     state (one lock) readable by the poller.
 ///
-/// Ungrouped jobs are never poisoned. Each lane's poison map is touched only
-/// by that lane's thread. Entries for groups not seen for
+/// **A drop does not renew the poison.** Making a drop poison the group again
+/// closes the same hole but livelocks whenever the poller claims faster than a
+/// lane drains: every claim made while a batch is being dropped is older than
+/// that batch's renewed poison and is dropped in turn, without end (found by
+/// the Rust implementation's stress test).
+///
+/// Ungrouped jobs are never poisoned. Entries for groups not seen for
 /// [#POISON_TTL] are evicted.
 final class DispatchLanes implements AutoCloseable {
 
@@ -90,14 +99,18 @@ final class DispatchLanes implements AutoCloseable {
     }
 
     private final SchedulerConfig config;
-    private final DispatchJobRepository repository;
+    private final java.util.function.ToIntFunction<List<ClaimRow>> markQueued;
     private final DispatchPublisher publisher;
     private final Function<ClaimRow, PublishedMessage> messageBuilder;
     private final SchedulerMetrics metrics;
     private final LongSupplier nanoClock;
 
     private final Semaphore permits;
-    private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
+    /// In-flight ids with their group and claim generation, and the poison map:
+    /// both under [#stateLock] (the poller reads them too).
+    private final Object stateLock = new Object();
+    private final Map<String, InFlight> inFlight = new HashMap<>();
+    private final Map<String, Poison> poison = new HashMap<>();
     private final AtomicLong claimGeneration = new AtomicLong();
     /// Set by a lane that left something unpublished or failed its status
     /// update; the poller reads and clears it to back off.
@@ -115,6 +128,9 @@ final class DispatchLanes implements AutoCloseable {
     /// exactly that window.
     volatile Runnable afterSnapshotHook;
     volatile Runnable betweenRemovalAndPoisonHook;
+    /// Test seam: on a lane's thread, after the poison is recorded and before the
+    /// permits are released — the lane is then holding doomed jobs in its channel.
+    volatile Runnable afterPoisonHook;
 
     DispatchLanes(SchedulerConfig config, DispatchJobRepository repository, DispatchPublisher publisher,
                   Function<ClaimRow, PublishedMessage> messageBuilder, SchedulerMetrics metrics) {
@@ -124,8 +140,17 @@ final class DispatchLanes implements AutoCloseable {
     DispatchLanes(SchedulerConfig config, DispatchJobRepository repository, DispatchPublisher publisher,
                   Function<ClaimRow, PublishedMessage> messageBuilder, SchedulerMetrics metrics,
                   LongSupplier nanoClock) {
+        this(config, Objects.requireNonNull(repository, "repository")::markQueued, publisher, messageBuilder,
+                metrics, nanoClock);
+    }
+
+    /// `markQueued` is the bulk status update (the repository's in production;
+    /// a test substitutes a model of the table that can fail).
+    DispatchLanes(SchedulerConfig config, java.util.function.ToIntFunction<List<ClaimRow>> markQueued,
+                  DispatchPublisher publisher, Function<ClaimRow, PublishedMessage> messageBuilder,
+                  SchedulerMetrics metrics, LongSupplier nanoClock) {
         this.config = Objects.requireNonNull(config, "config");
-        this.repository = Objects.requireNonNull(repository, "repository");
+        this.markQueued = Objects.requireNonNull(markQueued, "markQueued");
         this.publisher = Objects.requireNonNull(publisher, "publisher");
         this.messageBuilder = Objects.requireNonNull(messageBuilder, "messageBuilder");
         this.metrics = Objects.requireNonNull(metrics, "metrics");
@@ -136,7 +161,7 @@ final class DispatchLanes implements AutoCloseable {
         for (int i = 0; i < lanes.length; i++) {
             lanes[i] = new Lane(i, config.bufferCapacity());
         }
-        metrics.gauges(() -> config.bufferCapacity() - permits.availablePermits(), inFlight::size);
+        metrics.gauges(() -> config.bufferCapacity() - permits.availablePermits(), this::inFlightCount);
     }
 
     /// Starts the lane threads. Blocking publisher and JDBC calls run on
@@ -174,12 +199,50 @@ final class DispatchLanes implements AutoCloseable {
         return claimGeneration.incrementAndGet();
     }
 
+    /// The in-flight set as one claim saw it.
+    ///
+    /// @param ids           every in-flight id (the claim excludes them)
+    /// @param minGeneration per group, the oldest generation among its in-flight jobs
+    record Snapshot(List<String> ids, Map<String, Long> minGeneration) {
+    }
+
+    private record InFlight(String group, long generation) {
+    }
+
     /// The ids claimed and not yet settled, at this instant.
-    List<String> inFlightSnapshot() {
-        List<String> snapshot = new ArrayList<>(inFlight);
+    Snapshot inFlightSnapshot() {
+        List<String> ids;
+        Map<String, Long> min = new HashMap<>();
+        synchronized (stateLock) {
+            ids = new ArrayList<>(inFlight.keySet());
+            for (InFlight f : inFlight.values()) {
+                if (f.group != null) min.merge(f.group, f.generation, Math::min);
+            }
+        }
+        Snapshot snapshot = new Snapshot(ids, min);
         Runnable hook = afterSnapshotHook;
         if (hook != null) hook.run();
         return snapshot;
+    }
+
+    /// Drops from a claim the rows of every group whose in-flight snapshot held
+    /// a DOOMED job — one whose generation is `<=` the group's poison, so a lane
+    /// will drop it. The claim excluded that job and returned the rows behind it;
+    /// submitting them would publish them ahead of it. They stay `PENDING` and
+    /// are claimed again once the doomed job has gone. Ungrouped rows pass.
+    List<ClaimRow> withoutGroupsBehindDoomedJobs(List<ClaimRow> rows, Snapshot snapshot) {
+        if (snapshot.minGeneration().isEmpty()) return rows;
+        List<ClaimRow> kept = new ArrayList<>(rows.size());
+        synchronized (stateLock) {
+            for (ClaimRow row : rows) {
+                String g = groupOf(row);
+                Poison p = g == null ? null : poison.get(g);
+                Long min = g == null ? null : snapshot.minGeneration().get(g);
+                if (p != null && min != null && min <= p.generation) continue;
+                kept.add(row);
+            }
+        }
+        return kept;
     }
 
     /// Hands claimed rows (claim order) to their lanes: adds them to the
@@ -188,7 +251,9 @@ final class DispatchLanes implements AutoCloseable {
     /// channel's capacity.
     void submit(List<ClaimRow> rows, long generation) {
         for (ClaimRow row : rows) {
-            inFlight.add(row.id());
+            synchronized (stateLock) {
+                inFlight.put(row.id(), new InFlight(groupOf(row), generation));
+            }
             lane(row).queue.add(new Job(row, generation));
         }
     }
@@ -220,7 +285,9 @@ final class DispatchLanes implements AutoCloseable {
     }
 
     int inFlightCount() {
-        return inFlight.size();
+        synchronized (stateLock) {
+            return inFlight.size();
+        }
     }
 
     int availablePermits() {
@@ -232,9 +299,9 @@ final class DispatchLanes implements AutoCloseable {
     }
 
     int poisonedGroups() {
-        int n = 0;
-        for (Lane l : lanes) n += l.poisonSize;
-        return n;
+        synchronized (stateLock) {
+            return poison.size();
+        }
     }
 
     private Lane lane(ClaimRow row) {
@@ -285,12 +352,7 @@ final class DispatchLanes implements AutoCloseable {
     private final class Lane implements Runnable {
         final int index;
         final LinkedBlockingQueue<Job> queue;
-        /// Touched only by this lane's thread.
-        private final Map<String, Poison> poison = new HashMap<>();
         private long lastSweepNanos = nanoClock.getAsLong();
-        /// A mirror of `poison.size()` for tests and gauges.
-        volatile int poisonSize;
-
         Lane(int index, int capacity) {
             this.index = index;
             this.queue = new LinkedBlockingQueue<>(capacity);
@@ -323,8 +385,9 @@ final class DispatchLanes implements AutoCloseable {
             if (now - lastSweepNanos < POISON_SWEEP_NANOS) return;
             lastSweepNanos = now;
             long ttl = POISON_TTL.toNanos();
-            poison.values().removeIf(p -> now - p.setAtNanos >= ttl);
-            poisonSize = poison.size();
+            synchronized (stateLock) {
+                poison.values().removeIf(p -> now - p.setAtNanos >= ttl);
+            }
         }
 
         private void process(List<Job> batch) {
@@ -333,7 +396,7 @@ final class DispatchLanes implements AutoCloseable {
             long startNanos = System.nanoTime();
             Set<String> poisonGroups = new HashSet<>();
             List<Job> keep = new ArrayList<>(batch.size());
-            int dropped = dropPoisoned(batch, keep, poisonGroups);
+            int dropped = dropPoisoned(batch, keep);
 
             int published = 0;
             int unpublished = 0;
@@ -381,32 +444,23 @@ final class DispatchLanes implements AutoCloseable {
             }
         }
 
-        /// Spec step 2: splits the batch into what to publish (`keep`) and
-        /// what to drop. A dropped job also poisons its group again, and the
-        /// rest of its group in this batch goes with it (class doc, point 4).
-        private int dropPoisoned(List<Job> batch, List<Job> keep, Set<String> poisonGroups) {
-            Set<String> blockedInBatch = new HashSet<>();
+        /// Spec step 2: splits the batch into what to publish (`keep`) and what
+        /// to drop: a job of a poisoned group whose generation is `<=` the poison.
+        /// A drop does not renew the poison; the first job newer than it clears it.
+        private int dropPoisoned(List<Job> batch, List<Job> keep) {
             int dropped = 0;
             for (Job j : batch) {
                 String g = groupOf(j.row);
                 if (g != null) {
-                    if (blockedInBatch.contains(g)) {
-                        dropped++;
-                        continue;
-                    }
-                    Poison p = poison.get(g);
-                    if (p != null) {
-                        if (j.generation <= p.generation) {
-                            blockedInBatch.add(g);
-                            poisonGroups.add(g);
-                            dropped++;
-                            continue;
+                    synchronized (stateLock) {
+                        Poison p = poison.get(g);
+                        if (p != null) {
+                            if (j.generation <= p.generation) {
+                                dropped++;
+                                continue;
+                            }
+                            poison.remove(g);
                         }
-                        // A claim taken after the failure: it includes the
-                        // failed job again, in order. Every later job has a
-                        // generation at least as high, so the entry is done.
-                        poison.remove(g);
-                        poisonSize = poison.size();
                     }
                 }
                 keep.add(j);
@@ -458,7 +512,7 @@ final class DispatchLanes implements AutoCloseable {
             boolean markFailed = false;
             if (!ids.isEmpty()) {
                 try {
-                    int updated = repository.markQueued(ids);
+                    int updated = markQueued.applyAsInt(ids);
                     notUpdated = ids.size() - updated;
                 } catch (RuntimeException e) {
                     // Published, still PENDING: the next claim publishes it
@@ -480,19 +534,24 @@ final class DispatchLanes implements AutoCloseable {
         /// poison (reading the generation after the ids are gone), THEN
         /// release the permits.
         private void settle(List<Job> batch, Set<String> poisonGroups, boolean failure) {
-            for (Job j : batch) {
-                inFlight.remove(j.row.id());
+            synchronized (stateLock) {
+                for (Job j : batch) {
+                    inFlight.remove(j.row.id());
+                }
             }
             Runnable hook = betweenRemovalAndPoisonHook;
             if (hook != null) hook.run();
             if (!poisonGroups.isEmpty()) {
                 long p = claimGeneration.get();
                 long now = nanoClock.getAsLong();
-                for (String g : poisonGroups) {
-                    poison.put(g, new Poison(p, now));
+                synchronized (stateLock) {
+                    for (String g : poisonGroups) {
+                        poison.put(g, new Poison(p, now));
+                    }
                 }
-                poisonSize = poison.size();
             }
+            Runnable afterPoison = afterPoisonHook;
+            if (afterPoison != null) afterPoison.run();
             if (failure) {
                 laneFailed.set(true);
             }

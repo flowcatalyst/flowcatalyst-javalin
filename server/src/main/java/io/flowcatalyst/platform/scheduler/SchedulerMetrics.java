@@ -24,6 +24,7 @@ public final class SchedulerMetrics {
     final LongAdder published = new LongAdder();
     final LongAdder unpublished = new LongAdder();
     final LongAdder skippedHeld = new LongAdder();
+    final LongAdder skippedDoomed = new LongAdder();
     final LongAdder droppedPoisoned = new LongAdder();
     final LongAdder markNotUpdated = new LongAdder();
     final LongAdder fullBatchClaims = new LongAdder();
@@ -57,6 +58,10 @@ public final class SchedulerMetrics {
 
     /// Jobs the lanes dropped because their group was poisoned (an earlier job
     /// of the group was not published) — each is re-claimed later.
+    public long skippedDoomed() {
+        return skippedDoomed.sum();
+    }
+
     public long droppedPoisoned() {
         return droppedPoisoned.sum();
     }
@@ -97,6 +102,9 @@ public final class SchedulerMetrics {
             counter(b, "fc_scheduler_jobs_skipped_held_total",
                     "Dispatch jobs held back behind an earlier failed or backed-off job of their BLOCK_ON_ERROR group.",
                     skippedHeld);
+            counter(b, "fc_scheduler_jobs_skipped_doomed_total",
+                    "Claimed dispatch jobs not submitted because an in-flight job ahead of them in their group is doomed to be dropped; claimed again later.",
+                    skippedDoomed);
             counter(b, "fc_scheduler_jobs_dropped_poisoned_total",
                     "Claimed dispatch jobs a lane dropped unpublished because an earlier job of their group was not published.",
                     droppedPoisoned);

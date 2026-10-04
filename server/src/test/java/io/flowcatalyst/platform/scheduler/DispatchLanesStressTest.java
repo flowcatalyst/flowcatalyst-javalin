@@ -1,6 +1,5 @@
 package io.flowcatalyst.platform.scheduler;
 
-import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository.ClaimRow;
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.router.wire.MediationType;
@@ -10,7 +9,6 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -19,24 +17,24 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.ThreadLocalRandom;
 
-import static io.flowcatalyst.platform.scheduler.SchedulerFixture.DATA_SOURCE;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// A real multi-threaded run of the poller's claim loop against the lanes:
-/// many groups, random publish failures and jitter, several lanes — with a
-/// model of the table as the "database" the claim reads. What the fake broker
-/// receives, per group, must be each job exactly once and in order (the model
-/// takes a job off the pending set when it is published, so a duplicate is not
-/// possible here: a first delivery out of order is the only way to fail).
+/// An adversarial multi-threaded run of the poller's claim loop against the
+/// lanes, with a model of the table as the "database": 3,000 jobs in 30 groups,
+/// a buffer of 24, four lanes, claims of 8, lane batches of 5, 3% random publish
+/// failures, 1% random status-update failures, and random jitter in the store
+/// and the publisher. Every job must eventually be published (within 30 s — a
+/// livelock shows as a timeout), and each group's FIRST delivery of every job
+/// must be in claim order (a duplicate after a failed status update is allowed).
 ///
-/// This is a probabilistic backstop for the ordering rule; the two interleavings
-/// it rests on are driven deterministically by
-/// [DispatchLanesTest#aClaimRunningWhileAFailureSettlesCannotOvertakeWhicheverStepComesFirst]
-/// and `PendingJobPollerConcurrencyTest`'s snapshot test.
+/// The iteration count comes from `-Dstress.iterations` (default 5).
+/// A probabilistic backstop: the interleavings the ordering rule rests on are
+/// driven deterministically by [DispatchLanesTest] and
+/// `PendingJobPollerConcurrencyTest`.
 class DispatchLanesStressTest {
 
-    private static final int GROUPS = 24;
-    private static final int PER_GROUP = 40;
+    private static final int GROUPS = 30;
+    private static final int PER_GROUP = 100;
 
     private static String id(int group, int seq) {
         return String.format("s-%02d-%03d", group, seq);
@@ -53,21 +51,32 @@ class DispatchLanesStressTest {
                         false, c.mode()));
     }
 
-    /// The table: pending jobs per group, in sequence order.
+    private static void jitter(int maxMicros) {
+        var rnd = ThreadLocalRandom.current();
+        if (rnd.nextInt(3) != 0) return;
+        try {
+            Thread.sleep(0, rnd.nextInt(maxMicros) * 1000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /// The table (pending jobs per group), the broker (what was received, in
+    /// order) and the publisher in front of it.
     private static final class Model implements DispatchPublisher {
         final Map<Integer, TreeSet<Integer>> pending = new TreeMap<>();
         final Map<Integer, List<Integer>> received = new TreeMap<>();
-        final int failPercent;
-        final int jitterMicros;
+        final Map<Integer, Set<Integer>> seen = new TreeMap<>();
+        final List<String> orderViolations = new ArrayList<>();
 
-        Model(int failPercent, int jitterMicros) {
-            this.failPercent = failPercent;
-            this.jitterMicros = jitterMicros;
+        Model() {
             for (int g = 0; g < GROUPS; g++) {
                 var set = new TreeSet<Integer>();
                 for (int s = 0; s < PER_GROUP; s++) set.add(s);
                 pending.put(g, set);
                 received.put(g, new ArrayList<>());
+                seen.put(g, new HashSet<>());
             }
         }
 
@@ -75,35 +84,44 @@ class DispatchLanesStressTest {
             return pending.values().stream().mapToInt(Set::size).sum();
         }
 
-        /// The claim query: pending rows in `(group, sequence)` order, minus the
-        /// excluded (in-flight) ids, up to `limit`.
-        synchronized List<ClaimRow> claim(int limit, Set<String> inFlight) {
-            var rows = new ArrayList<ClaimRow>();
-            for (var e : pending.entrySet()) {
-                for (int seq : e.getValue()) {
-                    if (rows.size() >= limit) return rows;
-                    if (!inFlight.contains(id(e.getKey(), seq))) rows.add(row(e.getKey(), seq));
+        /// The claim query: pending rows in `(group, sequence)` order, minus the excluded ids.
+        List<ClaimRow> claim(int limit, Set<String> inFlight) {
+            jitter(300);
+            synchronized (this) {
+                var rows = new ArrayList<ClaimRow>();
+                for (var e : pending.entrySet()) {
+                    for (int seq : e.getValue()) {
+                        if (rows.size() >= limit) return rows;
+                        if (!inFlight.contains(id(e.getKey(), seq))) rows.add(row(e.getKey(), seq));
+                    }
                 }
+                return rows;
             }
-            return rows;
+        }
+
+        /// The status update: removes the rows from the pending set; sometimes fails.
+        int mark(List<ClaimRow> rows) {
+            jitter(200);
+            if (ThreadLocalRandom.current().nextInt(100) < 1) throw new IllegalStateException("random mark failure");
+            synchronized (this) {
+                int n = 0;
+                for (ClaimRow r : rows) {
+                    int g = Integer.parseInt(r.id().substring(2, 4));
+                    if (pending.get(g).remove(Integer.parseInt(r.id().substring(5)))) n++;
+                }
+                return n;
+            }
         }
 
         @Override
         public void publish(List<PublishedMessage> batch) throws PublishException {
+            jitter(300);
             var rnd = ThreadLocalRandom.current();
-            if (jitterMicros > 0 && rnd.nextInt(3) == 0) {
-                try {
-                    Thread.sleep(0, rnd.nextInt(jitterMicros) * 1000);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new IllegalStateException(e);
-                }
-            }
             Set<String> failedGroups = new HashSet<>();
             List<String> unpublished = new ArrayList<>();
             for (PublishedMessage m : batch) {
                 String group = m.message().messageGroupId();
-                boolean fails = failedGroups.contains(group) || rnd.nextInt(100) < failPercent;
+                boolean fails = failedGroups.contains(group) || rnd.nextInt(100) < 3;
                 if (fails) {
                     failedGroups.add(group);
                     unpublished.add(m.jobId());
@@ -112,7 +130,11 @@ class DispatchLanesStressTest {
                     int seq = Integer.parseInt(m.jobId().substring(5));
                     synchronized (this) {
                         received.get(g).add(seq);
-                        pending.get(g).remove(seq);
+                        if (seen.get(g).add(seq)) {
+                            // A first delivery: it must be later than every earlier first delivery.
+                            int highest = seen.get(g).stream().mapToInt(Integer::intValue).max().orElse(-1);
+                            if (highest != seq) orderViolations.add(id(g, seq) + " first-delivered after a later job");
+                        }
                     }
                 }
             }
@@ -122,41 +144,63 @@ class DispatchLanesStressTest {
         }
     }
 
-    /// The poller's loop, against the model: permits, generation, snapshot,
-    /// claim, submit, release.
-    private static void runPoller(DispatchLanes lanes, Model model, int batch, Instant deadline) throws Exception {
+    /// The poller loop against the model, honouring the same steps as
+    /// [PendingJobPoller#pollOnce] (permits, generation, snapshot, claim, the
+    /// doomed-job check, submit, release).
+    private static void runPoller(DispatchLanes lanes, Model model, int batch) throws InterruptedException {
         while (model.pendingCount() > 0) {
-            if (Instant.now().isAfter(deadline)) throw new AssertionError("stress run did not finish: "
-                    + model.pendingCount() + " jobs still pending");
             int want = lanes.acquirePermits(batch);
             long generation = lanes.nextGeneration();
-            var snapshot = new HashSet<>(lanes.inFlightSnapshot());
-            var rows = model.claim(want, snapshot);
-            lanes.submit(rows, generation);
-            lanes.releasePermits(want - rows.size());
+            var snapshot = lanes.inFlightSnapshot();
+            var rows = model.claim(want, new HashSet<>(snapshot.ids()));
+            var submit = lanes.withoutGroupsBehindDoomedJobs(rows, snapshot);
+            lanes.submit(submit, generation);
+            lanes.releasePermits(want - submit.size());
             if (rows.size() < want) Thread.sleep(1);
         }
     }
 
     @Test
-    void whatTheBrokerReceivesIsInOrderPerGroupUnderRandomFailuresAndManyLanes() throws Exception {
-        for (int round = 0; round < 6; round++) {
-            var model = new Model(8, 400);
-            var config = SchedulerConfig.DEFAULTS.withBufferCapacity(60 + round * 20)
-                    .withDispatchers(2 + round % 4).withLaneBatch(1 + round * 7);
+    void whatTheBrokerReceivesIsInOrderPerGroupAndEveryJobArrivesUnderAdversarialLoad() throws Exception {
+        int iterations = Integer.getInteger("stress.iterations", 5);
+        var failures = new ArrayList<String>();
+        for (int i = 0; i < iterations; i++) {
+            var model = new Model();
+            var config = SchedulerConfig.DEFAULTS.withBufferCapacity(24).withDispatchers(4).withLaneBatch(5);
             var metrics = new SchedulerMetrics(config.dispatchers());
-            try (var lanes = new DispatchLanes(config, new DispatchJobRepository(DATA_SOURCE), model,
-                    DispatchLanesStressTest::message, metrics)) {
+            long claims = 0;
+            try (var lanes = new DispatchLanes(config, model::mark, model, DispatchLanesStressTest::message,
+                    metrics, System::nanoTime)) {
                 lanes.start();
-                runPoller(lanes, model, 25 + round * 10, Instant.now().plus(Duration.ofSeconds(60)));
-                assertThat(lanes.awaitIdle(Duration.ofSeconds(15))).isTrue();
+                var poller = new Thread(() -> {
+                    try {
+                        runPoller(lanes, model, 8);
+                    } catch (InterruptedException e) {
+                        // timed out
+                    }
+                }, "stress-poller");
+                poller.start();
+                poller.join(Duration.ofSeconds(30));
+                if (poller.isAlive()) {
+                    poller.interrupt();
+                    poller.join(Duration.ofSeconds(5));
+                    failures.add("iteration " + i + ": TIMEOUT with " + model.pendingCount()
+                            + " jobs pending, claims=" + metrics.claims());
+                    continue;
+                }
+                lanes.awaitIdle(Duration.ofSeconds(15));
             }
-            for (int g = 0; g < GROUPS; g++) {
-                var expected = new ArrayList<Integer>();
-                for (int s = 0; s < PER_GROUP; s++) expected.add(s);
-                assertThat(model.received.get(g)).as("round %d group %d", round, g).containsExactlyElementsOf(expected);
+            synchronized (model) {
+                if (!model.orderViolations.isEmpty()) {
+                    failures.add("iteration " + i + ": " + model.orderViolations.getFirst());
+                }
+                for (int g = 0; g < GROUPS; g++) {
+                    if (model.seen.get(g).size() != PER_GROUP) {
+                        failures.add("iteration " + i + ": group " + g + " received " + model.seen.get(g).size());
+                    }
+                }
             }
-            assertThat(metrics.unpublishedTotal()).as("failures really happened").isPositive();
         }
+        assertThat(failures).as("%d iterations", iterations).isEmpty();
     }
 }
