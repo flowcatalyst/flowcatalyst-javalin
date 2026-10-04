@@ -361,7 +361,26 @@ public final class HttpMediator implements Mediator {
         }
     }
 
-    private static Optional<URI> parseTarget(String target) {
+    static Optional<URI> parseTarget(String target) {
+        var cached = TARGET_CACHE.get(target);
+        if (cached != null) {
+            return cached;
+        }
+        var parsed = parseUncached(target);
+        if (TARGET_CACHE.size() < TARGET_CACHE_CAP) {
+            TARGET_CACHE.putIfAbsent(target, parsed);
+        }
+        return parsed;
+    }
+
+    /// The parse of a target string, including "invalid" (empty), remembered per
+    /// string: a subscription's target repeats on every message. Past the cap a
+    /// target is parsed each time.
+    private static final int TARGET_CACHE_CAP = 4096;
+    private static final java.util.concurrent.ConcurrentMap<String, Optional<URI>> TARGET_CACHE =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static Optional<URI> parseUncached(String target) {
         try {
             var uri = new URI(target);
             if (uri.getHost() == null || uri.getScheme() == null) {

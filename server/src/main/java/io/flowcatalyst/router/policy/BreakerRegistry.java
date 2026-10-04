@@ -45,6 +45,23 @@ public final class BreakerRegistry {
     /// without ever reaching the breaker at all, so no live target URL
     /// actually takes this branch.
     public static String keyFor(String targetUrl) {
+        var cached = KEY_CACHE.get(targetUrl);
+        if (cached != null) {
+            return cached;
+        }
+        var key = deriveKey(targetUrl);
+        if (KEY_CACHE.size() < KEY_CACHE_CAP) {
+            KEY_CACHE.putIfAbsent(targetUrl, key);
+        }
+        return key;
+    }
+
+    /// Targets are a handful of strings repeated for every message, so the derived
+    /// key is remembered per target string; past the cap a key is derived each time.
+    private static final int KEY_CACHE_CAP = 4096;
+    private static final Map<String, String> KEY_CACHE = new ConcurrentHashMap<>();
+
+    private static String deriveKey(String targetUrl) {
         try {
             var uri = new URI(targetUrl);
             var scheme = uri.getScheme();
