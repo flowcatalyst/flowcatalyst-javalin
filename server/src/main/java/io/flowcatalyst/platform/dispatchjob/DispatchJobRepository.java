@@ -23,9 +23,14 @@ import org.jooq.Field;
 import org.jooq.JSONB;
 import org.jooq.SQLDialect;
 import org.jooq.SortField;
+import org.jooq.exception.DataAccessException;
 import org.jooq.impl.DSL;
 
 import javax.sql.DataSource;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -67,9 +72,13 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
 
     /// Reads: jOOQ acquires and releases a pooled connection per query.
     private final DSLContext dsl;
+    /// The scheduler's hot path and the hold-back gates run on plain JDBC
+    /// (see "Hot path: plain JDBC" below), taking connections from here.
+    private final DataSource dataSource;
 
     public DispatchJobRepository(DataSource dataSource) {
-        this.dsl = DSL.using(Objects.requireNonNull(dataSource, "dataSource"), SQLDialect.POSTGRES);
+        this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
+        this.dsl = DSL.using(dataSource, SQLDialect.POSTGRES);
     }
 
     /// Filters for [#findWithFilters] (spec §4); `null` / empty list = no
@@ -411,68 +420,134 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
     // one statement). Every flip carries `created_at` alongside `id` so the
     // statement prunes to one partition, exactly as the Go queries do.
 
+    // ── Hot path: plain JDBC ───────────────────────────────────────────────
+    //
+    // The scheduler's claim / mark-QUEUED / hold-back statements and the
+    // delivery-time hold-back gate are `PreparedStatement`s over fixed SQL
+    // text, not jOOQ. Two reasons, both measured (bench/router/sched.sh,
+    // 2026-10-04):
+    //
+    //  1. jOOQ renders a Java value as a bind parameter, so `status = 'PENDING'`
+    //     went to Postgres as `status = $1`. Every index these statements need
+    //     is PARTIAL on a status predicate, and Postgres can only prove a
+    //     partial index usable when the status is in the SQL text: with it
+    //     bound, the cached (generic) plan is a sequential scan of every
+    //     partition, so Postgres never adopts it and re-plans the statement on
+    //     every execution instead — and each of those one-off plans is costed
+    //     for that moment's statistics, which right after a burst of inserts
+    //     say the PENDING set is tiny, and picks "read every PENDING row and
+    //     sort" over walking the index in order. With the literals written
+    //     here, the plan is the ordered index walk whether it is planned once
+    //     or every time. So: status literals in the text; real parameters only
+    //     for the batch size, id / group / subscription arrays and timestamps.
+    //  2. The SQL text is constant, so pgjdbc keeps one server-prepared
+    //     statement per connection and Postgres one cached plan.
+    //
+    // The text matches the Go and Rust implementations' statements.
+
     /// The terminal-failure statuses a `BLOCK_ON_ERROR` head holds its group
     /// behind on — `FAILED`, plus the legacy `ERROR` alias
-    /// ([DispatchJobStatus] §1.1) — shared verbatim between [#groupHolding]
-    /// (the claim-time / delivery-time gate) and [#SWEEP_STRANDED_SIBLINGS_SQL]
-    /// (the reaper's backstop sweep, spec §7) so the two predicates cannot
-    /// silently drift apart: a sweep that recognised only `FAILED` would
-    /// permanently strand siblings behind a legacy `ERROR` head, since that
-    /// head still blocks at claim time.
-    private static final String[] HOLDING_STATUSES = {"FAILED", "ERROR"};
+    /// ([DispatchJobStatus] §1.1) — as a SQL `IN` list. Shared verbatim between
+    /// [#GROUP_HOLDING_SQL] (the claim-time / delivery-time gate) and
+    /// [#SWEEP_STRANDED_SIBLINGS_SQL] (the reaper's backstop sweep, spec §7)
+    /// so the two predicates cannot silently drift apart: a sweep that
+    /// recognised only `FAILED` would permanently strand siblings behind a
+    /// legacy `ERROR` head, since that head still blocks at claim time.
+    /// Literals, not a bound array: `idx_dispatch_jobs_group_holders` is
+    /// partial on exactly this predicate.
+    private static final String HOLDING_STATUSES_SQL = "'FAILED', 'ERROR'";
 
     /// `GroupHolding` (spec §9): the ONE status predicate shared by every
     /// enforcement point that decides whether a row holds the rest of its
-    /// group behind it — `FAILED`/legacy `ERROR` ([#HOLDING_STATUSES]), OR
+    /// group behind it — `FAILED`/legacy `ERROR` ([#HOLDING_STATUSES_SQL]), OR
     /// `PENDING` with a **future** `scheduled_for` (mid-retry-backoff;
     /// excluded from the ordinary claim query by that same future timestamp,
     /// so a check that only looked at terminal statuses would miss it).
-    /// Deliberately excludes `QUEUED`/`PROCESSING` — the ordinary in-flight flow.
-    private static Condition groupHolding(Field<String> status, Field<OffsetDateTime> scheduledFor) {
-        return status.in(HOLDING_STATUSES)
-                .or(status.eq("PENDING").and(scheduledFor.isNotNull()).and(scheduledFor.gt(DSL.currentOffsetDateTime())));
+    /// Deliberately excludes `QUEUED`/`PROCESSING` — the ordinary in-flight
+    /// flow. Unqualified column names: every use is over one table reference.
+    private static final String GROUP_HOLDING_SQL = "status IN (" + HOLDING_STATUSES_SQL + ") "
+            + "OR (status = 'PENDING' AND scheduled_for IS NOT NULL AND scheduled_for > NOW())";
+
+    private static final String GROUP_HELD_BEFORE_SQL = """
+            SELECT EXISTS (
+                SELECT 1 FROM msg_dispatch_jobs
+                 WHERE message_group = ?
+                   AND (%s)
+                   AND (sequence, created_at, id) < (?, ?, ?))
+            """.formatted(GROUP_HOLDING_SQL);
+
+    private static final String EARLIEST_HOLDERS_SQL = """
+            SELECT DISTINCT ON (message_group) message_group, sequence, created_at, id
+              FROM msg_dispatch_jobs
+             WHERE message_group = ANY(?)
+               AND (%s)
+             ORDER BY message_group, sequence, created_at, id
+            """.formatted(GROUP_HOLDING_SQL);
+
+    private static final String CLAIM_PENDING_SQL = """
+            SELECT id, subscription_id, message_group, mode, dispatch_pool_id, client_id,
+                   created_at, sequence, queue
+              FROM msg_dispatch_jobs
+             WHERE status = 'PENDING'
+               AND (scheduled_for IS NULL OR scheduled_for <= NOW())
+               AND (subscription_id IS NULL OR subscription_id <> ALL(?::text[]))
+             ORDER BY message_group ASC NULLS LAST, sequence ASC, created_at ASC, id ASC
+             LIMIT ?
+             FOR UPDATE SKIP LOCKED
+            """;
+
+    private static final String MARK_QUEUED_SQL = """
+            UPDATE msg_dispatch_jobs SET status = 'QUEUED', updated_at = ?
+             WHERE id = ANY(?)
+               AND created_at >= ? AND created_at <= ?
+            """;
+
+    /// A JDBC failure in one of the plain-JDBC statements, as the same
+    /// unchecked type jOOQ threw when these ran through it, so callers'
+    /// handling (and the 500 mapping at the processing endpoint) is unchanged.
+    private static DataAccessException failed(String what, SQLException e) {
+        return new DataAccessException("dispatch job " + what + " failed", e);
     }
 
     /// The delivery-time hold-back gate (spec §5, §9: Go `GroupHeldBefore`):
-    /// is `job` positioned behind a [#groupHolding] row in the same
+    /// is `job` positioned behind a [#GROUP_HOLDING_SQL] row in the same
     /// `message_group`? The comparison is **positional**, over the same
     /// `(sequence, created_at, id)` triple the claim query orders by — never
     /// set membership, which would include the holder itself the instant its
     /// own backoff expired and the group would never move again. A job with
     /// no `message_group` cannot be held (`false`).
     public boolean groupHeldBefore(DispatchJob job) {
-        if (job.messageGroup() == null) return false;
-        return dsl.fetchExists(dsl.selectOne().from(T)
-                .where(T.MESSAGE_GROUP.eq(job.messageGroup()))
-                .and(groupHolding(T.STATUS, T.SCHEDULED_FOR))
-                .and(DSL.row(T.SEQUENCE, T.CREATED_AT, T.ID)
-                        .lt(DSL.row(job.sequence(), utc(job.createdAt()), job.id()))));
+        return groupHeldBefore(job.messageGroup(), job.sequence(), job.createdAt(), job.id());
     }
 
     /// Claim-time equivalent of [#groupHeldBefore(DispatchJob)] (spec §3
-    /// `filterByDispatchMode`/§9): the SAME [#groupHolding] predicate and the
-    /// SAME positional `(sequence, created_at, id)` comparison, called
+    /// `filterByDispatchMode`/§9): the SAME [#GROUP_HOLDING_SQL] predicate and
+    /// the SAME positional `(sequence, created_at, id)` comparison, called
     /// against a [ClaimRow]'s own position rather than a hydrated
-    /// [DispatchJob] — the poller has only the claim query's columns at this
-    /// point, and hydrating a full entity just to reuse the other overload
-    /// would be a second query for no new information. `messageGroup == null`
-    /// can never be held, mirroring the other overload exactly (a `NULL`
-    /// group is excluded from the claim-time check the same way it is
-    /// excluded from delivery-time).
+    /// [DispatchJob]. `messageGroup == null` can never be held, mirroring the
+    /// other overload exactly (a `NULL` group is excluded from the claim-time
+    /// check the same way it is excluded from delivery-time).
     public boolean groupHeldBefore(String messageGroup, int sequence, Instant createdAt, String id) {
         if (messageGroup == null) return false;
-        return dsl.fetchExists(dsl.selectOne().from(T)
-                .where(T.MESSAGE_GROUP.eq(messageGroup))
-                .and(groupHolding(T.STATUS, T.SCHEDULED_FOR))
-                .and(DSL.row(T.SEQUENCE, T.CREATED_AT, T.ID)
-                        .lt(DSL.row(sequence, utc(createdAt), id))));
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(GROUP_HELD_BEFORE_SQL)) {
+            ps.setString(1, messageGroup);
+            ps.setInt(2, sequence);
+            ps.setObject(3, utc(createdAt));
+            ps.setString(4, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() && rs.getBoolean(1);
+            }
+        } catch (SQLException e) {
+            throw failed("group hold-back check", e);
+        }
     }
 
     /// Batch form of [#groupHeldBefore(String,int,Instant,String)]: ONE query
     /// for every candidate, instead of one round trip per `BLOCK_ON_ERROR`
     /// candidate (up to a whole claim's worth per tick).
     ///
-    /// Asks for the EARLIEST [#groupHolding] row of each distinct candidate
+    /// Asks for the EARLIEST [#GROUP_HOLDING_SQL] row of each distinct candidate
     /// group (`DISTINCT ON`, ordered by the same `(sequence, created_at, id)`
     /// triple), then applies the positional test in memory: a candidate is
     /// held iff that earliest holder is positioned strictly before it — which
@@ -491,16 +566,19 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 .distinct().toArray(String[]::new);
         if (groups.length == 0) return Set.of();
         Map<String, ClaimRow> earliestHolder = new HashMap<>();
-        dsl.select(T.MESSAGE_GROUP, T.SEQUENCE, T.CREATED_AT, T.ID)
-                .distinctOn(T.MESSAGE_GROUP)
-                .from(T)
-                .where(T.MESSAGE_GROUP.eq(DSL.any(groups)))
-                .and(groupHolding(T.STATUS, T.SCHEDULED_FOR))
-                .orderBy(T.MESSAGE_GROUP, T.SEQUENCE, T.CREATED_AT, T.ID)
-                .fetch()
-                .forEach(r -> earliestHolder.put(r.get(T.MESSAGE_GROUP), new ClaimRow(r.get(T.ID), null,
-                        r.get(T.MESSAGE_GROUP), null, null, null, r.get(T.CREATED_AT).toInstant(),
-                        r.get(T.SEQUENCE), null)));
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(EARLIEST_HOLDERS_SQL)) {
+            ps.setArray(1, conn.createArrayOf("text", groups));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String group = rs.getString(1);
+                    earliestHolder.put(group, new ClaimRow(rs.getString(4), null, group, null, null, null,
+                            rs.getObject(3, OffsetDateTime.class).toInstant(), rs.getInt(2), null));
+                }
+            }
+        } catch (SQLException e) {
+            throw failed("hold-back query", e);
+        }
         Set<String> held = new HashSet<>();
         for (ClaimRow c : candidates) {
             if (c.messageGroup() == null) continue;
@@ -538,33 +616,35 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
     /// when `batchSize` or more of them sorted first nothing behind them was
     /// ever published. A row with no subscription is never excluded. The
     /// `BLOCK_ON_ERROR` hold-back is deliberately NOT here: it stays the
-    /// caller's positional check against [#groupHolding].
+    /// caller's positional check against [#GROUP_HOLDING_SQL].
     public List<ClaimRow> claimPending(DbTx tx, int batchSize, Set<String> excludedSubscriptionIds) {
-        DSLContext txDsl = DSL.using(tx.connection(), SQLDialect.POSTGRES);
-        Condition notExcluded = excludedSubscriptionIds.isEmpty()
-                ? DSL.trueCondition()
-                : T.SUBSCRIPTION_ID.isNull()
-                        .or(T.SUBSCRIPTION_ID.ne(DSL.all(excludedSubscriptionIds.toArray(String[]::new))));
-        return txDsl.select(T.ID, T.SUBSCRIPTION_ID, T.MESSAGE_GROUP, T.MODE, T.DISPATCH_POOL_ID, T.CLIENT_ID,
-                        T.CREATED_AT, T.SEQUENCE, T.QUEUE)
-                .from(T)
-                .where(T.STATUS.eq(DispatchJobStatus.PENDING.name()))
-                .and(T.SCHEDULED_FOR.isNull().or(T.SCHEDULED_FOR.le(DSL.currentOffsetDateTime())))
-                .and(notExcluded)
-                .orderBy(T.MESSAGE_GROUP.asc().nullsLast(), T.SEQUENCE.asc(), T.CREATED_AT.asc(), T.ID.asc())
-                .limit(batchSize)
-                .forUpdate()
-                .skipLocked()
-                .fetch(r -> new ClaimRow(
-                        r.get(T.ID),
-                        r.get(T.SUBSCRIPTION_ID),
-                        r.get(T.MESSAGE_GROUP),
-                        DispatchMode.parse(r.get(T.MODE)),
-                        r.get(T.DISPATCH_POOL_ID),
-                        r.get(T.CLIENT_ID),
-                        r.get(T.CREATED_AT).toInstant(),
-                        r.get(T.SEQUENCE) == null ? 0 : r.get(T.SEQUENCE),
-                        r.get(T.QUEUE)));
+        Connection conn = tx.connection();
+        // Always the same statement: an empty exclusion set binds an empty
+        // array (`<> ALL('{}')` is true for every row), never a different SQL
+        // text. Never a NULL array — `<> ALL(NULL)` is NULL and would exclude
+        // every row that has a subscription.
+        try (PreparedStatement ps = conn.prepareStatement(CLAIM_PENDING_SQL)) {
+            ps.setArray(1, conn.createArrayOf("text", excludedSubscriptionIds.toArray(String[]::new)));
+            ps.setInt(2, batchSize);
+            try (ResultSet rs = ps.executeQuery()) {
+                List<ClaimRow> claims = new ArrayList<>(batchSize);
+                while (rs.next()) {
+                    claims.add(new ClaimRow(
+                            rs.getString(1),
+                            rs.getString(2),
+                            rs.getString(3),
+                            DispatchMode.parse(rs.getString(4)),
+                            rs.getString(5),
+                            rs.getString(6),
+                            rs.getObject(7, OffsetDateTime.class).toInstant(),
+                            rs.getInt(8),
+                            rs.getString(9)));
+                }
+                return claims;
+            }
+        } catch (SQLException e) {
+            throw failed("claim", e);
+        }
     }
 
     /// Marks the survivors of one poll tick `QUEUED` (spec §3, step 4), in
@@ -575,14 +655,16 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
     /// [#claimPending]'s lock did.
     public void markQueued(DbTx tx, List<String> ids, Instant spanStart, Instant spanEnd) {
         if (ids.isEmpty()) return;
-        DSLContext txDsl = DSL.using(tx.connection(), SQLDialect.POSTGRES);
-        txDsl.update(T)
-                .set(T.STATUS, DispatchJobStatus.QUEUED.name())
-                .set(T.UPDATED_AT, utc(Instant.now()))
-                .where(T.ID.eq(DSL.any(ids.toArray(String[]::new))))
-                .and(T.CREATED_AT.ge(utc(spanStart)))
-                .and(T.CREATED_AT.le(utc(spanEnd)))
-                .execute();
+        Connection conn = tx.connection();
+        try (PreparedStatement ps = conn.prepareStatement(MARK_QUEUED_SQL)) {
+            ps.setObject(1, utc(Instant.now()));
+            ps.setArray(2, conn.createArrayOf("text", ids.toArray(String[]::new)));
+            ps.setObject(3, utc(spanStart));
+            ps.setObject(4, utc(spanEnd));
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw failed("mark QUEUED", e);
+        }
     }
 
     /// Atomically claims a job for one delivery (dispatch-seam spec §5): the
@@ -730,15 +812,17 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
     /// never matched. Idempotent — a row already reset no longer matches
     /// `status IN ('QUEUED','PROCESSING')`. Returns the ids reset.
     ///
-    /// Note the join checks `h.status = ANY(?)`, bound to [#HOLDING_STATUSES]
-    /// — the same array [#groupHolding] builds its `IN` predicate from — not
-    /// a second, independently-typed `'FAILED', 'ERROR'` literal; the two
-    /// gates share one Java constant so they cannot drift (spec §7, §9). Not
-    /// the full [#groupHolding] predicate — a head mid-backoff (`PENDING` +
+    /// Note the join checks `h.status IN (...)` built from
+    /// [#HOLDING_STATUSES_SQL] — the same fragment [#GROUP_HOLDING_SQL] is
+    /// built from — not a second, independently-typed `'FAILED', 'ERROR'`
+    /// literal; the two gates share one Java constant so they cannot drift
+    /// (spec §7, §9). Written into the SQL text rather than bound, so the
+    /// partial index on the holders is usable. Not the full
+    /// [#GROUP_HOLDING_SQL] predicate — a head mid-backoff (`PENDING` +
     /// future `scheduled_for`) self-resolves once that timer fires and needs
     /// no reaper.
     public List<String> sweepStrandedSiblings(Instant processingLiveBefore, String reason) {
-        return dsl.fetch(SWEEP_STRANDED_SIBLINGS_SQL, HOLDING_STATUSES, utc(processingLiveBefore), reason)
+        return dsl.fetch(SWEEP_STRANDED_SIBLINGS_SQL, utc(processingLiveBefore), reason)
                 .getValues(T.ID.getName(), String.class);
     }
 
@@ -748,7 +832,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                   FROM msg_dispatch_jobs s
                   JOIN msg_dispatch_jobs h
                     ON h.message_group = s.message_group
-                   AND h.status = ANY(?)
+                   AND h.status IN (%s)
                    AND (h.sequence, h.created_at, h.id) < (s.sequence, s.created_at, s.id)
                  WHERE s.mode = 'BLOCK_ON_ERROR'
                    AND s.message_group IS NOT NULL
@@ -760,7 +844,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
               FROM stranded st
              WHERE j.id = st.id AND j.created_at = st.created_at
             RETURNING j.id
-            """;
+            """.formatted(HOLDING_STATUSES_SQL);
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
