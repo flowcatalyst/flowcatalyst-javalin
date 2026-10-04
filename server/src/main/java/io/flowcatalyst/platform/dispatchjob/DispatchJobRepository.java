@@ -579,7 +579,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
         txDsl.update(T)
                 .set(T.STATUS, DispatchJobStatus.QUEUED.name())
                 .set(T.UPDATED_AT, utc(Instant.now()))
-                .where(T.ID.in(ids))
+                .where(T.ID.eq(DSL.any(ids.toArray(String[]::new))))
                 .and(T.CREATED_AT.ge(utc(spanStart)))
                 .and(T.CREATED_AT.le(utc(spanEnd)))
                 .execute();
