@@ -87,12 +87,15 @@ import java.util.UUID;
 /// for ordering, not merely for which ids got an error back from AWS.
 /// [#publish] enforces two rules together to make that true:
 ///
-///   1. **One job per group per chunk.** While building a destination's next
-///      chunk (in [#publish]'s chunk-building loop), a candidate job whose
-///      group is ALREADY in the chunk being built closes that chunk early
-///      (without consuming the candidate). A group-less job's own job id is
-///      never shared by another job, so this never affects group-less jobs'
-///      batching (they still pack up to [#MAX_BATCH_SIZE] per chunk).
+///   1. **One job per group per chunk.** Each destination's jobs are built
+///      into LAYERS — the i-th unsent job of every group, groups in order of
+///      first appearance — and each layer is packed into chunks of up to
+///      [#MAX_BATCH_SIZE]; layers are sent in order. A group's jobs therefore
+///      go out in their original order, never two in one call, while calls
+///      are filled from different groups (ten groups of ten jobs cost ten
+///      full calls; closing a chunk at each repeat cost about ninety). A
+///      group-less job's own job id is never shared by another job, so
+///      group-less jobs all sit in the first layer and pack freely.
 ///   2. **A failed group poisons its own later jobs for the rest of THIS
 ///      publish call.** `failedGroups` — one `Set<String>` scoped to one
 ///      [#publish] invocation, spanning every destination and every chunk —
@@ -232,61 +235,54 @@ public final class SqsDispatchPublisher implements DispatchPublisher, AutoClosea
 
         for (var entry : byQueue.entrySet()) {
             DispatchQueueName queueName = entry.getKey();
-            List<PublishedMessage> queued = entry.getValue();
-            int index = 0;
-            while (index < queued.size()) {
-                List<PublishedMessage> chunk = new ArrayList<>(MAX_BATCH_SIZE);
-                Set<String> groupsInChunk = new HashSet<>();
-                while (index < queued.size() && chunk.size() < MAX_BATCH_SIZE) {
-                    PublishedMessage candidate = queued.get(index);
-                    String group = groupIdFor(candidate);
-                    if (failedGroups.contains(group)) {
+            // Layers: the i-th job of every group, groups in order of first
+            // appearance. A group's jobs are therefore sent in their claim
+            // order and never two in one call (rule 1), while a call is
+            // filled from DIFFERENT groups: ten groups of ten cost ten full
+            // calls, where closing a chunk at each repeat cost about ninety.
+            // Each layer is sent before the next is built, so a failure in
+            // layer i poisons (rule 2) the group's jobs in layer i+1 before
+            // they are ever placed in a chunk.
+            for (List<PublishedMessage> layer : layers(entry.getValue())) {
+                List<PublishedMessage> sendable = new ArrayList<>(layer.size());
+                for (PublishedMessage candidate : layer) {
+                    if (failedGroups.contains(groupIdFor(candidate))) {
                         // Never sent at all — see the class doc's rule 2. This
                         // keeps the group's relative order: it reverts to
                         // PENDING alongside the sibling that actually failed,
                         // rather than racing a later publish attempt against
                         // whatever a real send might have done.
                         unpublished.add(candidate.jobId());
-                        index++;
-                        continue;
+                    } else {
+                        sendable.add(candidate);
                     }
-                    if (groupsInChunk.contains(group)) {
-                        // Close this chunk WITHOUT consuming the candidate —
-                        // rule 1: no two jobs of the same group ever share a
-                        // SendMessageBatch call. It starts the next chunk.
-                        break;
-                    }
-                    chunk.add(candidate);
-                    groupsInChunk.add(group);
-                    index++;
                 }
-                if (chunk.isEmpty()) {
-                    // Every remaining candidate at this position was already
-                    // poisoned and skipped above; nothing left to send.
-                    continue;
-                }
-                try {
-                    List<String> failedIds = sendChunk(queueName, chunk, attemptNonce);
-                    unpublished.addAll(failedIds);
-                    if (!failedIds.isEmpty()) {
-                        Set<String> failedIdSet = Set.copyOf(failedIds);
-                        for (PublishedMessage m : chunk) {
-                            if (failedIdSet.contains(m.jobId())) {
-                                failedGroups.add(groupIdFor(m));
+                for (int from = 0; from < sendable.size(); from += MAX_BATCH_SIZE) {
+                    List<PublishedMessage> chunk =
+                            sendable.subList(from, Math.min(from + MAX_BATCH_SIZE, sendable.size()));
+                    try {
+                        List<String> failedIds = sendChunk(queueName, chunk, attemptNonce);
+                        unpublished.addAll(failedIds);
+                        if (!failedIds.isEmpty()) {
+                            Set<String> failedIdSet = Set.copyOf(failedIds);
+                            for (PublishedMessage m : chunk) {
+                                if (failedIdSet.contains(m.jobId())) {
+                                    failedGroups.add(groupIdFor(m));
+                                }
                             }
                         }
+                    } catch (RuntimeException e) {
+                        lastFailure = e;
+                        for (PublishedMessage m : chunk) {
+                            unpublished.add(m.jobId());
+                            failedGroups.add(groupIdFor(m));
+                        }
+                        LOG.atWarn().setMessage("sqs publish chunk failed; job(s) will revert to PENDING")
+                                .addKeyValue("queue", queueName.value())
+                                .addKeyValue("count", chunk.size())
+                                .setCause(e)
+                                .log();
                     }
-                } catch (RuntimeException e) {
-                    lastFailure = e;
-                    for (PublishedMessage m : chunk) {
-                        unpublished.add(m.jobId());
-                        failedGroups.add(groupIdFor(m));
-                    }
-                    LOG.atWarn().setMessage("sqs publish chunk failed; job(s) will revert to PENDING")
-                            .addKeyValue("queue", queueName.value())
-                            .addKeyValue("count", chunk.size())
-                            .setCause(e)
-                            .log();
                 }
             }
         }
@@ -296,6 +292,26 @@ public final class SqsDispatchPublisher implements DispatchPublisher, AutoClosea
                     "sqs publish failed for " + unpublished.size() + " of " + batch.size() + " job(s)",
                     lastFailure, unpublished);
         }
+    }
+
+    /// Splits one destination's claim-ordered jobs into layers: layer `i` holds
+    /// the `i`-th job of every group (groups in order of first appearance), so
+    /// no layer has two jobs of one group and each group's jobs sit in
+    /// successive layers in their original order. Group-less jobs are groups of
+    /// one (their own job id) and all land in layer 0.
+    private static List<List<PublishedMessage>> layers(List<PublishedMessage> jobs) {
+        Map<String, List<PublishedMessage>> byGroup = new LinkedHashMap<>();
+        for (PublishedMessage m : jobs) {
+            byGroup.computeIfAbsent(groupIdFor(m), k -> new ArrayList<>()).add(m);
+        }
+        List<List<PublishedMessage>> layers = new ArrayList<>();
+        for (List<PublishedMessage> group : byGroup.values()) {
+            for (int i = 0; i < group.size(); i++) {
+                if (layers.size() == i) layers.add(new ArrayList<>());
+                layers.get(i).add(group.get(i));
+            }
+        }
+        return layers;
     }
 
     private DispatchQueueName destinationFor(PublishedMessage m) {

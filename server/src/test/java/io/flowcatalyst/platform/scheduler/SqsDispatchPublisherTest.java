@@ -373,9 +373,13 @@ class SqsDispatchPublisherTest {
                 .flatMap(r -> r.entries().stream())
                 .map(SendMessageBatchRequestEntry::id)
                 .toList();
-        assertThat(sentOrder)
-                .as("claim order preserved across the chunk boundaries this group's own repetition forces")
-                .containsExactly(g1, g2, g3, other);
+        // Layered packing (not a flat claim-order walk): the group's jobs go out
+        // one per call in layers, and `other` rides in the first layer beside g1.
+        // What is pinned is the per-group order and one job per group per call.
+        assertThat(sentOrder).as("the group's jobs keep their claim order")
+                .filteredOn(id -> !id.equals(other)).containsExactly(g1, g2, g3);
+        assertThat(sentOrder).containsExactlyInAnyOrder(g1, g2, g3, other);
+        assertThat(client.sendRequests()).as("three layers: g1+other, g2, g3").hasSize(3);
     }
 
     /// **The counter that must change.** Without group-aware chunking
@@ -399,6 +403,106 @@ class SqsDispatchPublisherTest {
 
         assertThat(client.sendRequests()).as("ten distinct groups must not fragment batching").hasSize(1);
         assertThat(client.sendRequests().getFirst().entries()).hasSize(10);
+    }
+
+    // ── layered packing keeps grouped traffic in full calls ─────────────────
+
+    private static List<List<String>> callsOf(FakeSqsSendClient client) {
+        return client.sendRequests().stream()
+                .map(r -> r.entries().stream().map(SendMessageBatchRequestEntry::id).toList()).toList();
+    }
+
+    /// Ten groups of ten: closing a chunk at each repeat cost about ninety
+    /// calls; layers cost ten full ones. Mutant: the old close-at-repeat packing.
+    @Test
+    void tenGroupsOfTenJobsCostTenFullCallsWithEachGroupInOrder() throws Exception {
+        FakeSqsSendClient client = new FakeSqsSendClient();
+        List<PublishedMessage> batch = new ArrayList<>();
+        for (int g = 0; g < 10; g++) {
+            for (int j = 0; j < 10; j++) {
+                batch.add(published("lay-" + RUN + "-g" + g + "-" + j, null, null, "laygroup-" + RUN + g));
+            }
+        }
+
+        publisher(client).publish(batch);
+
+        var calls = callsOf(client);
+        assertThat(calls).hasSize(10).allSatisfy(c -> assertThat(c).hasSize(10));
+        for (int g = 0; g < 10; g++) {
+            String prefix = "lay-" + RUN + "-g" + g + "-";
+            var sent = calls.stream().flatMap(List::stream).filter(id -> id.startsWith(prefix)).toList();
+            assertThat(sent).as("group %d in claim order", g)
+                    .containsExactly(prefix + 0, prefix + 1, prefix + 2, prefix + 3, prefix + 4, prefix + 5,
+                            prefix + 6, prefix + 7, prefix + 8, prefix + 9);
+            assertThat(calls).as("never two of a group in one call")
+                    .allSatisfy(c -> assertThat(c.stream().filter(id -> id.startsWith(prefix))).hasSizeLessThanOrEqualTo(1));
+        }
+    }
+
+    @Test
+    void oneGroupOfTwentyFiveJobsIsTwentyFiveCallsOfOne() throws Exception {
+        FakeSqsSendClient client = new FakeSqsSendClient();
+        List<PublishedMessage> batch = new ArrayList<>();
+        List<String> order = new ArrayList<>();
+        for (int j = 0; j < 25; j++) {
+            String id = "one-" + RUN + "-" + String.format("%02d", j);
+            order.add(id);
+            batch.add(published(id, null, null, "onegroup-" + RUN));
+        }
+
+        publisher(client).publish(batch);
+
+        var calls = callsOf(client);
+        assertThat(calls).hasSize(25).allSatisfy(c -> assertThat(c).hasSize(1));
+        assertThat(calls.stream().flatMap(List::stream).toList()).containsExactlyElementsOf(order);
+    }
+
+    /// Two grouped jobs plus twelve group-less ones: layer 0 holds both groups'
+    /// first jobs and all twelve group-less (14, so a full call and a call of
+    /// four), layer 1 holds the groups' second jobs.
+    @Test
+    void groupedAndUngroupedJobsPackTogether() throws Exception {
+        FakeSqsSendClient client = new FakeSqsSendClient();
+        List<PublishedMessage> batch = new ArrayList<>();
+        batch.add(published("mix-" + RUN + "-a1", null, null, "mixa-" + RUN));
+        batch.add(published("mix-" + RUN + "-a2", null, null, "mixa-" + RUN));
+        batch.add(published("mix-" + RUN + "-b1", null, null, "mixb-" + RUN));
+        batch.add(published("mix-" + RUN + "-b2", null, null, "mixb-" + RUN));
+        for (int i = 0; i < 12; i++) {
+            batch.add(published("mix-" + RUN + "-u" + i, null, null, null));
+        }
+
+        publisher(client).publish(batch);
+
+        var calls = callsOf(client);
+        assertThat(calls.stream().map(List::size).toList()).containsExactly(10, 4, 2);
+        var flat = calls.stream().flatMap(List::stream).toList();
+        assertThat(flat).containsExactlyInAnyOrderElementsOf(batch.stream().map(PublishedMessage::jobId).toList());
+        assertThat(flat.indexOf("mix-" + RUN + "-a1")).isLessThan(flat.indexOf("mix-" + RUN + "-a2"));
+        assertThat(flat.indexOf("mix-" + RUN + "-b1")).isLessThan(flat.indexOf("mix-" + RUN + "-b2"));
+    }
+
+    /// Poisoning across layers: the failed group's later jobs are never sent,
+    /// but another group in the same layers is untouched.
+    @Test
+    void aFailedGroupsLaterLayersAreSkippedWhileOtherGroupsStillFlow() {
+        FakeSqsSendClient client = new FakeSqsSendClient();
+        client.failEntryOnce("pz-" + RUN + "-bad1", "InternalError");
+        List<PublishedMessage> batch = List.of(
+                published("pz-" + RUN + "-bad1", null, null, "pzbad-" + RUN),
+                published("pz-" + RUN + "-bad2", null, null, "pzbad-" + RUN),
+                published("pz-" + RUN + "-bad3", null, null, "pzbad-" + RUN),
+                published("pz-" + RUN + "-ok1", null, null, "pzok-" + RUN),
+                published("pz-" + RUN + "-ok2", null, null, "pzok-" + RUN));
+
+        var thrown = catchThrowableOfType(DispatchPublisher.PublishException.class,
+                () -> publisher(client).publish(batch));
+
+        assertThat(thrown.unpublishedJobIds()).containsExactlyInAnyOrder(
+                "pz-" + RUN + "-bad1", "pz-" + RUN + "-bad2", "pz-" + RUN + "-bad3");
+        var sent = callsOf(client).stream().flatMap(List::stream).toList();
+        assertThat(sent).doesNotContain("pz-" + RUN + "-bad2", "pz-" + RUN + "-bad3")
+                .contains("pz-" + RUN + "-ok1", "pz-" + RUN + "-ok2");
     }
 
     // ── the client is bounded (it is called with the claim's row locks held) ──
