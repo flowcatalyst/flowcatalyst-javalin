@@ -14,6 +14,8 @@
 # Knobs (environment of this script): N [100000]  TIMEOUT_S [300]  CPUS [2]  SAMPLE_S [1]
 #   SAME_CREATED_AT [0] see seed()   PG_STAT [0] 1 = load pg_stat_statements and print the top
 #   statements of the measured window (a diagnostic run: the extension itself costs a little)
+#   PG_EXPLAIN [0] 1 = auto_explain every statement into results/sched-<label>.pg.log (implies PG_STAT)
+#   PG_STAT_TOP [6] rows of pg_stat_statements printed
 #   WARMUP [100] jobs published before the measured seed, used as the readiness check
 #   KEEP [0] leave the containers up afterwards.  Extra ENV=v args after <shape> go to the server.
 #
@@ -106,6 +108,12 @@ run() {
 
   local pgargs=()
   [ "${PG_STAT:-0}" = 1 ] && pgargs=(-c shared_preload_libraries=pg_stat_statements -c pg_stat_statements.track=all)
+  # PG_EXPLAIN=1: auto_explain logs the plan Postgres actually ran for EVERY statement (with
+  # ANALYZE timings and buffers) to the Postgres log, saved as results/sched-<label>.pg.log.
+  # A plan-capture run, not a rate measurement: the instrumentation is expensive.
+  [ "${PG_EXPLAIN:-0}" = 1 ] && pgargs=(-c shared_preload_libraries=pg_stat_statements,auto_explain -c pg_stat_statements.track=all
+      -c auto_explain.log_min_duration=0 -c auto_explain.log_analyze=on -c auto_explain.log_buffers=on
+      -c auto_explain.log_timing=on -c auto_explain.log_nested_statements=on)
   # (1) fresh Postgres + sqsfix. pg_isready over TCP: the image's init-time server listens on the
   # unix socket only, so this cannot pass before the real server is up.
   docker run -d --name $PG --network $NET --ip $PG_IP -e POSTGRES_PASSWORD=pg -e POSTGRES_USER=pg \
@@ -152,6 +160,7 @@ run() {
   local base_sent=$sent base_calls=$calls
   [ "$base_sent" -eq "$WARMUP" ] || echo "WARNING: warm-up put $base_sent messages on the queue for $WARMUP jobs" >&2
 
+  [ "${PG_EXPLAIN:-0}" = 1 ] && PG_STAT=1
   [ "${PG_STAT:-0}" = 1 ] && { psqlq "CREATE EXTENSION IF NOT EXISTS pg_stat_statements" >/dev/null; psqlq "SELECT pg_stat_statements_reset()" >/dev/null; }
 
   # (4) the measured seed.
@@ -181,7 +190,7 @@ run() {
   local pending_final; pending_final=$(psqlq "SELECT count(*) FROM msg_dispatch_jobs WHERE id LIKE 'B%' AND status = 'PENDING'")
   local pgstat=""
   if [ "${PG_STAT:-0}" = 1 ]; then
-    pgstat=$(docker exec $PG psql -U pg -d $DB -c "SELECT calls, round(total_exec_time::numeric) AS total_ms, round(mean_exec_time::numeric, 3) AS mean_ms, rows, left(regexp_replace(query, '\s+', ' ', 'g'), 150) AS query FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 6")
+    pgstat=$(docker exec $PG psql -U pg -d $DB -c "SELECT calls, round(total_exec_time::numeric) AS total_ms, round(mean_exec_time::numeric, 3) AS mean_ms, rows, left(regexp_replace(query, '\s+', ' ', 'g'), 150) AS query FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT ${PG_STAT_TOP:-6}")
   fi
   docker unpause $SRV >/dev/null 2>&1
   local cpu; cpu=$(python3 - "$cpufile" $SRV $PG <<'PY'
@@ -205,6 +214,7 @@ PY
 )
   rm -f "$cpufile"
   docker logs $SRV > "$out/sched-$label.server.log" 2>&1
+  [ "${PG_EXPLAIN:-0}" = 1 ] && docker logs $PG > "$out/sched-$label.pg.log" 2>&1
   local warns errs
   warns=$(grep -ciE '"level":"warn' "$out/sched-$label.server.log"); errs=$(grep -ciE '"level":"error' "$out/sched-$label.server.log")
   {
