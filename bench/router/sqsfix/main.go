@@ -6,6 +6,10 @@
 // Supported: CreateQueue GetQueueUrl GetQueueAttributes SendMessage SendMessageBatch
 // ReceiveMessage (long poll, visibility timeout) DeleteMessage DeleteMessageBatch
 // ChangeMessageVisibility ChangeMessageVisibilityBatch PurgeQueue. GET /stats for counters.
+// GET /order lists every message still on a queue in the order it was SENT (one line each:
+// queue, MessageGroupId, batch entry Id, the body's "id"), for the scheduler bench's
+// per-group order check. It costs the send path two string fields; the body is parsed only
+// when /order is read.
 package main
 
 import (
@@ -25,6 +29,8 @@ import (
 
 type msg struct {
 	id         string
+	group      string // MessageGroupId as sent ("" when absent)
+	entryID    string // SendMessageBatch entry Id ("" for SendMessage)
 	body       string
 	md5        string
 	sentMs     int64
@@ -159,8 +165,8 @@ type apiErr struct{ typ, msg string }
 
 func (e apiErr) Error() string { return e.typ + ": " + e.msg }
 
-func (s *server) send(q *queue, body string) (string, string) {
-	m := &msg{id: s.newID(), body: body, md5: sum(body), sentMs: time.Now().UnixMilli()}
+func (s *server) send(q *queue, body, group, entryID string) (string, string) {
+	m := &msg{id: s.newID(), group: group, entryID: entryID, body: body, md5: sum(body), sentMs: time.Now().UnixMilli()}
 	q.mu.Lock()
 	q.pushReady(m)
 	q.signal()
@@ -256,16 +262,16 @@ func (s *server) dispatch(r *http.Request, op string, body []byte) (any, error) 
 		}
 		return m_{"QueueUrl": "http://" + host + "/000000000000/" + in.QueueName}, nil
 	case "SendMessage":
-		var in struct{ QueueUrl, MessageBody string }
+		var in struct{ QueueUrl, MessageBody, MessageGroupId string }
 		if err := json.Unmarshal(body, &in); err != nil {
 			return nil, err
 		}
-		id, md := s.send(s.queue(queueName(in.QueueUrl)), in.MessageBody)
+		id, md := s.send(s.queue(queueName(in.QueueUrl)), in.MessageBody, in.MessageGroupId, "")
 		return m_{"MessageId": id, "MD5OfMessageBody": md}, nil
 	case "SendMessageBatch":
 		var in struct {
 			QueueUrl string
-			Entries  []struct{ Id, MessageBody string }
+			Entries  []struct{ Id, MessageBody, MessageGroupId string }
 		}
 		if err := json.Unmarshal(body, &in); err != nil {
 			return nil, err
@@ -273,7 +279,7 @@ func (s *server) dispatch(r *http.Request, op string, body []byte) (any, error) 
 		q := s.queue(queueName(in.QueueUrl))
 		ok := make([]m_, 0, len(in.Entries))
 		for _, e := range in.Entries {
-			id, md := s.send(q, e.MessageBody)
+			id, md := s.send(q, e.MessageBody, e.MessageGroupId, e.Id)
 			ok = append(ok, m_{"Id": e.Id, "MessageId": id, "MD5OfMessageBody": md})
 		}
 		return m_{"Successful": ok, "Failed": []m_{}}, nil
@@ -434,6 +440,39 @@ func (s *server) stats(w http.ResponseWriter) {
 	})
 }
 
+// order writes every message still READY (never received) on every queue, in send order:
+// "<queue>\t<MessageGroupId>\t<entry Id>\t<body id>\n". Send order is the order of
+// q.ready, which send() appends to under the queue lock, so for requests that did not
+// overlap it is arrival order; the entries of one SendMessageBatch keep their order in the
+// request. Only meaningful while nothing consumes the queue (the scheduler bench).
+func (s *server) order(w http.ResponseWriter) {
+	s.mu.RLock()
+	qs := make([]*queue, 0, len(s.queues))
+	for _, q := range s.queues {
+		qs = append(qs, q)
+	}
+	s.mu.RUnlock()
+	w.Header().Set("Content-Type", "text/tab-separated-values")
+	for _, q := range qs {
+		q.mu.Lock()
+		ms := append([]*msg(nil), q.ready[q.head:]...)
+		q.mu.Unlock()
+		var b strings.Builder
+		for i, m := range ms {
+			var body struct {
+				ID string `json:"id"`
+			}
+			_ = json.Unmarshal([]byte(m.body), &body)
+			fmt.Fprintf(&b, "%s\t%s\t%s\t%s\n", q.name, m.group, m.entryID, body.ID)
+			if i%4096 == 4095 {
+				fmt.Fprint(w, b.String())
+				b.Reset()
+			}
+		}
+		fmt.Fprint(w, b.String())
+	}
+}
+
 func main() {
 	addr := flag.String("addr", ":4566", "listen address")
 	vt := flag.Int("vt", 120, "default visibility timeout seconds for lazily created queues")
@@ -456,6 +495,7 @@ func main() {
 
 	var seen sync.Map
 	http.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) { s.stats(w) })
+	http.HandleFunc("/order", func(w http.ResponseWriter, r *http.Request) { s.order(w) })
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		target := r.Header.Get("X-Amz-Target")
 		op := target[strings.LastIndexByte(target, '.')+1:]
