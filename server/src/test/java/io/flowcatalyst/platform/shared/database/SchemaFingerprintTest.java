@@ -55,6 +55,21 @@ class SchemaFingerprintTest {
     static final String WIDENED_COLUMN_JAVA = "COLUMN\taud_logs\tentity_id\t3\tcharacter varying\t100\t\tNO\t\tNO";
     static final String WIDENED_COLUMN_GO = "COLUMN\taud_logs\tentity_id\t3\tcharacter varying\t17\t\tNO\t\tNO";
 
+    /// V20 (Go `065_dispatch_job_scheduler_indexes.sql`, adopted statement for
+    /// statement) replaces three `msg_dispatch_jobs` indexes. The fixture is
+    /// the Go schema captured at goose 57, before Go 065, so it still lists
+    /// the three old ones: named and exact on both sides, like V18's column —
+    /// any other index change on the table still fails. Drop both lists when
+    /// the fixture is next re-captured from a Go database at 065 or later.
+    static final List<String> SCHEDULER_INDEXES_GO_057 = List.of(
+            "INDEX\tmsg_dispatch_jobs\tidx_dispatch_jobs_blocked_groups\tCREATE INDEX idx_dispatch_jobs_blocked_groups ON ONLY public.msg_dispatch_jobs USING btree (message_group, status) WHERE ((status) = ANY (ARRAY['FAILED', 'ERROR']))\ttrue",
+            "INDEX\tmsg_dispatch_jobs\tidx_dispatch_jobs_pending_poll\tCREATE INDEX idx_dispatch_jobs_pending_poll ON ONLY public.msg_dispatch_jobs USING btree (message_group, sequence, created_at) WHERE ((status) = 'PENDING')\ttrue",
+            "INDEX\tmsg_dispatch_jobs\tidx_dispatch_jobs_stale_queued\tCREATE INDEX idx_dispatch_jobs_stale_queued ON ONLY public.msg_dispatch_jobs USING btree (queued_at) WHERE ((status) = 'QUEUED')\ttrue");
+    static final List<String> SCHEDULER_INDEXES_V20 = List.of(
+            "INDEX\tmsg_dispatch_jobs\tidx_dispatch_jobs_group_holders\tCREATE INDEX idx_dispatch_jobs_group_holders ON ONLY public.msg_dispatch_jobs USING btree (message_group, sequence, created_at, id) WHERE ((message_group IS NOT NULL) AND (((status) = ANY (ARRAY['FAILED', 'ERROR'])) OR (((status) = 'PENDING') AND (scheduled_for IS NOT NULL))))\ttrue",
+            "INDEX\tmsg_dispatch_jobs\tidx_dispatch_jobs_in_flight\tCREATE INDEX idx_dispatch_jobs_in_flight ON ONLY public.msg_dispatch_jobs USING btree (status, updated_at) WHERE ((status) = ANY (ARRAY['QUEUED', 'PROCESSING']))\ttrue",
+            "INDEX\tmsg_dispatch_jobs\tidx_dispatch_jobs_pending_poll\tCREATE INDEX idx_dispatch_jobs_pending_poll ON ONLY public.msg_dispatch_jobs USING btree (message_group, sequence, created_at, id) WHERE ((status) = 'PENDING')\ttrue");
+
     static final String DIVERGENT_CONSTRAINT_TABLE = "msg_subscriptions";
     static final String DIVERGENT_CONSTRAINT_NAME = "chk_msg_subscriptions_source";
     static final String DIVERGENT_CONSTRAINT_JAVA_DEF =
@@ -136,8 +151,16 @@ class SchemaFingerprintTest {
         assertThat(javaLines).as("aud_logs.entity_id widened by V18, exactly").contains(WIDENED_COLUMN_JAVA);
         javaLines = javaLines.stream().map(l -> l.equals(WIDENED_COLUMN_JAVA) ? WIDENED_COLUMN_GO : l).toList();
 
-        var javaLinesExceptDivergent = javaLines.stream().filter(l -> !isDivergentConstraintLine(l)).toList();
-        var expectedLinesExceptDivergent = expected.lines().filter(l -> !isDivergentConstraintLine(l)).toList();
+        // The named, exact index allowance (V20 = Go 065, which the fixture predates):
+        // Java has exactly the three new indexes and none of the three they replace.
+        assertThat(javaLines).as("msg_dispatch_jobs indexes replaced by V20, exactly")
+                .containsAll(SCHEDULER_INDEXES_V20).doesNotContainAnyElementsOf(SCHEDULER_INDEXES_GO_057);
+        assertThat(expected.lines().toList()).as("the fixture predates Go 065").containsAll(SCHEDULER_INDEXES_GO_057);
+
+        var javaLinesExceptDivergent = javaLines.stream().filter(l -> !isDivergentConstraintLine(l))
+                .filter(l -> !SCHEDULER_INDEXES_V20.contains(l)).toList();
+        var expectedLinesExceptDivergent = expected.lines().filter(l -> !isDivergentConstraintLine(l))
+                .filter(l -> !SCHEDULER_INDEXES_GO_057.contains(l)).toList();
         assertThat(javaLinesExceptDivergent)
                 .as("schema fingerprint: Java-migrated vs Go (src/test/resources/db/go-schema-fingerprint.txt), Java-only tables %s removed, the one divergent constraint line excluded", JAVA_ONLY_TABLES)
                 .containsExactlyElementsOf(expectedLinesExceptDivergent);
