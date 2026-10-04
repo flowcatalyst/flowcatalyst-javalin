@@ -195,24 +195,7 @@ public final class PoolMetricsCollector implements PoolMetrics {
     /// `window`.
     @Override
     public OptionalDouble completionRate(Duration window) {
-        var now = clock.instant();
-        var cutoff = now.minus(window);
-        List<Sample> recent;
-        lock.lock();
-        try {
-            recent = sinceCutoff(new ArrayList<>(samples), cutoff);
-        } finally {
-            lock.unlock();
-        }
-        if (recent.isEmpty()) {
-            return OptionalDouble.empty();
-        }
-        var oldest = recent.get(0).at();
-        var span = Duration.between(oldest, now);
-        if (span.compareTo(Duration.ofSeconds(1)) < 0) {
-            span = Duration.ofSeconds(1);
-        }
-        return OptionalDouble.of(recent.size() / (span.toNanos() / 1_000_000_000.0));
+        return rateIfAtLeast(window, 1);
     }
 
     @Override
@@ -220,10 +203,59 @@ public final class PoolMetricsCollector implements PoolMetrics {
         var cutoff = clock.instant().minus(window);
         lock.lock();
         try {
-            return sinceCutoff(new ArrayList<>(samples), cutoff).size();
+            return countSince(cutoff, null);
         } finally {
             lock.unlock();
         }
+    }
+
+    /// [PoolMetrics#usableCompletionRate] in one pass over the ring, newest
+    /// first, stopping at the cutoff (samples are in time order), with no copy.
+    @Override
+    public OptionalDouble usableCompletionRate(Duration window, int minCompletions) {
+        return rateIfAtLeast(window, Math.max(minCompletions, 1));
+    }
+
+    private OptionalDouble rateIfAtLeast(Duration window, int minCompletions) {
+        var now = clock.instant();
+        var cutoff = now.minus(window);
+        Instant[] oldest = new Instant[1];
+        int count;
+        lock.lock();
+        try {
+            count = countSince(cutoff, oldest);
+        } finally {
+            lock.unlock();
+        }
+        if (count == 0 || count < minCompletions) {
+            return OptionalDouble.empty();
+        }
+        long spanNanos = oldest[0].until(now, java.time.temporal.ChronoUnit.NANOS);
+        if (spanNanos < 1_000_000_000L) {
+            spanNanos = 1_000_000_000L;
+        }
+        return OptionalDouble.of(count / (spanNanos / 1_000_000_000.0));
+    }
+
+    /// Samples with `at >= cutoff`, walking from the newest end and stopping at
+    /// the first older one; `oldestOut`, when given, receives the oldest of them.
+    /// Caller holds [#lock].
+    private int countSince(Instant cutoff, Instant[] oldestOut) {
+        int n = 0;
+        Instant oldest = null;
+        var it = samples.descendingIterator();
+        while (it.hasNext()) {
+            var at = it.next().at();
+            if (at.isBefore(cutoff)) {
+                break;
+            }
+            n++;
+            oldest = at;
+        }
+        if (oldestOut != null) {
+            oldestOut[0] = oldest;
+        }
+        return n;
     }
 
     @Override

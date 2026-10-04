@@ -56,6 +56,14 @@ public interface PoolMetrics {
         return 0;
     }
 
+    /// [#completionRate] when at least `minCompletions` (floored at one) deliveries
+    /// completed within `window`, else empty — [PoolAdmission#usableRate] folded
+    /// into one read. Implementations may answer in a single pass without
+    /// copying their samples; this default composes the two calls.
+    default OptionalDouble usableCompletionRate(Duration window, int minCompletions) {
+        return completionCount(window) >= Math.max(minCompletions, 1) ? completionRate(window) : OptionalDouble.empty();
+    }
+
     PoolMetrics NO_OP = new PoolMetrics() {
         @Override
         public void recordSuccess(Duration took) {
