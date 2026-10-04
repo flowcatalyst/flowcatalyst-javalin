@@ -248,4 +248,41 @@ class DeleteBatcherTest {
             Thread.sleep(5);
         }
     }
+
+    @Test
+    @DisplayName("an urgent delete allocates only a small, bounded amount on the calling thread")
+    void deleteCallerAllocationIsBounded() {
+        batcher.lingerNanos = TimeUnit.SECONDS.toNanos(20);
+        double bytes = io.flowcatalyst.router.support.AllocProbe.bytesPerCall(2_000, 5_000,
+                () -> batcher.delete("receipt-handle-constant", true));
+        System.out.println("ALLOC DeleteBatcher.delete bytes/call=" + bytes);
+        batcher.close();
+        assertThat(bytes).isLessThan(CEILING);
+    }
+
+    private static final int CEILING = 128;
+
+    @Test
+    @DisplayName("an interrupt does not abandon the wait: the delete completes and the flag is kept")
+    void interruptDoesNotAbandonTheWait() throws Exception {
+        batcher.lingerNanos = TimeUnit.MILLISECONDS.toNanos(300);
+        boolean[] flagAfter = new boolean[1];
+        Throwable[] failure = new Throwable[1];
+        Thread caller = Thread.ofVirtual().start(() -> {
+            try {
+                batcher.delete("r-int");
+                flagAfter[0] = Thread.currentThread().isInterrupted();
+            } catch (Throwable t) {
+                failure[0] = t;
+            }
+        });
+        Thread.sleep(50);
+        caller.interrupt();
+        caller.join(5_000);
+        assertThat(caller.isAlive()).isFalse();
+        assertThat(failure[0]).isNull();
+        assertThat(flagAfter[0]).isTrue();
+        assertThat(client.batchRequests()).hasSize(1);
+        batcher.close();
+    }
 }

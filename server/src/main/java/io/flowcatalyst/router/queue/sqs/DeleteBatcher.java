@@ -11,12 +11,11 @@ import software.amazon.awssdk.services.sqs.model.DeleteMessageBatchResponse;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 
 /// Coalesces concurrent per-message deletes for one queue into
 /// `DeleteMessageBatch` calls of up to [#MAX_BATCH] entries.
@@ -47,7 +46,42 @@ final class DeleteBatcher {
     private static final long STOP_CHECK_NANOS = TimeUnit.MILLISECONDS.toNanos(100);
     static final java.time.Duration IDLE_EXIT = java.time.Duration.ofSeconds(30);
 
-    private record Pending(String receiptHandle, boolean urgent, CompletableFuture<Void> done) {
+    /// One waiting delete: the caller's thread parks on it until a drainer sets the
+    /// outcome and unparks it. Cheaper than a future per ack — one object, no
+    /// completion stack — and the callers are virtual threads, for which park is cheap.
+    private static final class Pending {
+        final String receiptHandle;
+        final boolean urgent;
+        final Thread caller;
+        /// 0 = waiting, 1 = deleted, 2 = failed (see [#error]). Written last, so a reader
+        /// that sees it non-zero also sees [#error].
+        volatile int state;
+        RuntimeException error;
+
+        Pending(String receiptHandle, boolean urgent, Thread caller) {
+            this.receiptHandle = receiptHandle;
+            this.urgent = urgent;
+            this.caller = caller;
+        }
+
+        /// Completion is first-wins, as with a future: a whole-call failure after some
+        /// entries were already answered must not overturn them.
+        void succeed() {
+            if (state != 0) {
+                return;
+            }
+            state = 1;
+            LockSupport.unpark(caller);
+        }
+
+        void fail(RuntimeException e) {
+            if (state != 0) {
+                return;
+            }
+            error = e;
+            state = 2;
+            LockSupport.unpark(caller);
+        }
     }
 
     private final SqsClient client;
@@ -86,18 +120,25 @@ final class DeleteBatcher {
             throw new IllegalStateException("sqs delete batcher closed: " + identifier);
         }
         startPrimary();
-        Pending p = new Pending(receiptHandle, urgent, new CompletableFuture<>());
+        Pending p = new Pending(receiptHandle, urgent, Thread.currentThread());
         waiting.add(p);
         if (waiting.size() >= MAX_BATCH) {
             startHelper();
         }
-        try {
-            p.done.join();
-        } catch (CompletionException e) {
-            if (e.getCause() instanceof RuntimeException re) {
-                throw re;
+        // Like CompletableFuture#join: an interrupt does not abandon the wait (the
+        // delete is already queued and will happen), it is re-asserted on return.
+        boolean interrupted = false;
+        while (p.state == 0) {
+            LockSupport.park(p);
+            if (Thread.interrupted()) {
+                interrupted = true;
             }
-            throw e;
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        if (p.state == 2) {
+            throw p.error;
         }
     }
 
@@ -200,7 +241,7 @@ final class DeleteBatcher {
         if (stopped) {
             Pending p;
             while ((p = waiting.poll()) != null) {
-                p.done.completeExceptionally(new IllegalStateException("sqs delete batcher closed: " + identifier));
+                p.fail(new IllegalStateException("sqs delete batcher closed: " + identifier));
             }
         }
         live.set(0);
@@ -239,16 +280,16 @@ final class DeleteBatcher {
             for (int i = 0; i < batch.size(); i++) {
                 BatchResultErrorEntry f = failed.get(i);
                 if (f == null) {
-                    batch.get(i).done.complete(null);
+                    batch.get(i).succeed();
                 } else {
-                    batch.get(i).done.completeExceptionally(new IllegalStateException(
+                    batch.get(i).fail(new IllegalStateException(
                             "DeleteMessageBatch entry failed: " + f.code() + " " + f.message()));
                 }
             }
         } catch (RuntimeException e) {
             log.debug("sqs DeleteMessageBatch failed for queue {}: {}", identifier, e.toString());
             for (Pending p : batch) {
-                p.done.completeExceptionally(e);
+                p.fail(e);
             }
         }
     }
