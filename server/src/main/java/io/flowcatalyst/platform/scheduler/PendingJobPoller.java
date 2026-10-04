@@ -96,6 +96,12 @@ public final class PendingJobPoller {
     private final BooleanSupplier leader;
     private final int batchSize;
 
+    /// At most one starvation warning a minute ([#warnIfStarved]); touched
+    /// only by the single scheduler thread.
+    private static final long STARVED_WARN_INTERVAL_NANOS = java.time.Duration.ofMinutes(1).toNanos();
+    private boolean warnedStarved;
+    private long lastStarvedWarnNanos;
+
     public PendingJobPoller(DataSource dataSource, DispatchJobRepository repository,
                              PausedConnectionCache pausedCache, PoolCodeResolver poolCodes,
                              DispatchPublisher publisher, HmacTokenVerifier authVerifier,
@@ -168,6 +174,7 @@ public final class PendingJobPoller {
             // After the commit, never before: an event for a write that then
             // rolls back is a lie in the recording (docs/spec/jfr-events.md).
             recordBatch(claimed, queued.size());
+            warnIfStarved(claimed, queued.size());
             return new PollResult(claimed.claimedCount(), queued.size(), claimed.claimedCount() >= batchSize);
         } catch (SQLException e) {
             throw new PollFailedException(e);
@@ -198,22 +205,28 @@ public final class PendingJobPoller {
     }
 
     /// The result of one claim+filter step.
-    private record Claimed(int claimedCount, List<DispatchJobRepository.ClaimRow> toPublish, int heldBack) {
-        private static final Claimed EMPTY = new Claimed(0, List.of(), 0);
+    private record Claimed(int claimedCount, List<DispatchJobRepository.ClaimRow> toPublish, int heldBack,
+                           int pausedSkipped) {
+        private static final Claimed EMPTY = new Claimed(0, List.of(), 0, 0);
     }
 
     /// Claims and filters inside the caller's transaction (spec §3, steps
     /// 2-3). Marks nothing: `QUEUED` waits for the broker ([#publishAndMark]).
     private Claimed claim(DbTx tx, Set<String> paused) {
-        List<DispatchJobRepository.ClaimRow> claims = repository.claimPending(tx, batchSize);
+        List<DispatchJobRepository.ClaimRow> claims = repository.claimPending(tx, batchSize, paused);
         if (claims.isEmpty()) {
             return Claimed.EMPTY;
         }
         List<DispatchJobRepository.ClaimRow> toPublish = new ArrayList<>(claims.size());
         int heldBack = 0;
+        int pausedSkipped = 0;
         for (DispatchJobRepository.ClaimRow c : claims) {
             if (c.subscriptionId() != null && paused.contains(c.subscriptionId())) {
-                continue; // paused-subscription filter (spec §3, step 3) — left PENDING
+                // The claim query already excludes these (one snapshot serves
+                // both), so this is defence in depth and should count zero; a
+                // non-zero count means the two have drifted apart.
+                pausedSkipped++;
+                continue;
             }
             if (c.mode() == DispatchMode.BLOCK_ON_ERROR
                     && repository.groupHeldBefore(c.messageGroup(), c.sequence(), c.createdAt(), c.id())) {
@@ -222,7 +235,7 @@ public final class PendingJobPoller {
             }
             toPublish.add(c);
         }
-        return new Claimed(claims.size(), toPublish, heldBack);
+        return new Claimed(claims.size(), toPublish, heldBack, pausedSkipped);
     }
 
     /// Publishes the survivors and marks `QUEUED` exactly those the broker
@@ -266,6 +279,29 @@ public final class PendingJobPoller {
         return ids;
     }
 
+    /// A full claim that publishes nothing is the signature of starvation: the
+    /// first `batchSize` rows in claim order are all held back (a
+    /// `BLOCK_ON_ERROR` group behind a failed head), so every tick claims the
+    /// same rows and whatever sorts behind them is never reached — silently.
+    /// Warns, at most once a minute, with the counts that say why.
+    private void warnIfStarved(Claimed claimed, int published) {
+        if (claimed.claimedCount() < batchSize || published > 0) {
+            return;
+        }
+        long now = System.nanoTime();
+        if (warnedStarved && now - lastStarvedWarnNanos < STARVED_WARN_INTERVAL_NANOS) {
+            return;
+        }
+        warnedStarved = true;
+        lastStarvedWarnNanos = now;
+        LOG.atWarn().setMessage("a full claim published nothing; PENDING jobs behind these rows are not being "
+                        + "reached until the held rows move")
+                .addKeyValue("claimed", claimed.claimedCount())
+                .addKeyValue("pausedSkipped", claimed.pausedSkipped())
+                .addKeyValue("heldSkipped", claimed.heldBack())
+                .log();
+    }
+
     private static void rollbackQuietly(Connection conn) {
         try {
             conn.rollback();
@@ -288,6 +324,7 @@ public final class PendingJobPoller {
         event.size = claimed.claimedCount();
         event.published = published;
         event.heldBack = claimed.heldBack();
+        event.pausedSkipped = claimed.pausedSkipped();
         event.commit();
     }
 

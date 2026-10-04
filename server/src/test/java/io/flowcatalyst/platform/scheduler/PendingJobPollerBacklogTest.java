@@ -3,10 +3,19 @@ package io.flowcatalyst.platform.scheduler;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobStatus;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import java.util.function.BooleanSupplier;
 
+import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS;
+import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.DB;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.RUN;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.code;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedWriteRow;
@@ -31,6 +40,14 @@ class PendingJobPollerBacklogTest {
 
     private static PendingJobPoller poller(DispatchPublisher publisher, int batchSize) {
         return poller(REPO, publisher, () -> true, batchSize);
+    }
+
+    /// Each test sees only its own rows: whatever it left PENDING (held,
+    /// paused, refused) would otherwise sort ahead of the next test's.
+    @AfterEach
+    void clearPending() {
+        DB.update(MSG_DISPATCH_JOBS).set(MSG_DISPATCH_JOBS.STATUS, "COMPLETED")
+                .where(MSG_DISPATCH_JOBS.STATUS.eq("PENDING")).execute();
     }
 
     @Test
@@ -65,5 +82,81 @@ class PendingJobPollerBacklogTest {
         var result = poller(REPO, FakeDispatchPublisher.succeeding(), () -> false, 1).pollOnce();
         assertThat(result.claimed()).isZero();
         assertThat(result.drainImmediately()).isFalse();
+    }
+
+    // ── paused subscriptions do not starve the queue ────────────────────────
+
+    /// Batch-size paused jobs sort ahead (group "aaa" before "zzz"); an active
+    /// subscription's job behind them must still be claimed and published. When
+    /// the filter ran after the claim the paused rows filled every batch and
+    /// the job behind them was never reached. Mutant: claim without excluding
+    /// the paused subscriptions.
+    @Test
+    void pausedJobsSortingFirstDoNotStarveAnActiveJobBehindThem() {
+        String pausedSub = SchedulerFixture.subscription(SchedulerFixture.connection("PAUSED"));
+        String activeSub = SchedulerFixture.subscription(SchedulerFixture.connection("ACTIVE"));
+        for (int i = 0; i < 6; i++) {
+            seedWriteRow(Seed.of(code("starve-paused" + i + "-")).withSubscriptionId(pausedSub)
+                    .withMessageGroup("aaa-starve-" + RUN).withSequence(i));
+        }
+        String active = seedWriteRow(Seed.of(code("starve-active-")).withSubscriptionId(activeSub)
+                .withMessageGroup("zzz-starve-" + RUN));
+        String ungrouped = seedWriteRow(Seed.of(code("starve-nosub-")));
+        var publisher = FakeDispatchPublisher.succeeding();
+
+        var result = poller(publisher, 5).pollOnce();
+
+        assertThat(publisher.batches().stream().flatMap(java.util.List::stream).map(PublishedMessage::jobId))
+                .containsExactlyInAnyOrder(active, ungrouped);
+        assertThat(REPO.findById(active).orElseThrow().status()).isEqualTo(DispatchJobStatus.QUEUED);
+        assertThat(result.published()).isEqualTo(2);
+    }
+
+    // ── a full claim that publishes nothing says so ─────────────────────────
+
+    @Test
+    void aFullClaimThatPublishesNothingWarnsOncePerMinuteWithTheCounts() {
+        String group = "000-starved-" + RUN;
+        seedWriteRow(Seed.of(code("held-head-")).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
+                .withSequence(1).withStatus("FAILED"));
+        for (int i = 0; i < 3; i++) {
+            seedWriteRow(Seed.of(code("held" + i + "-")).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
+                    .withSequence(2 + i));
+        }
+        var logger = (Logger) LoggerFactory.getLogger(PendingJobPoller.class);
+        var appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            var poller = poller(FakeDispatchPublisher.succeeding(), 3);
+            var first = poller.pollOnce();
+            poller.pollOnce();
+
+            assertThat(first.published()).isZero();
+            var warnings = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
+            assertThat(warnings).as("once, not once per tick").hasSize(1);
+            assertThat(warnings.getFirst().getKeyValuePairs().toString())
+                    .contains("claimed", "3").contains("heldSkipped").contains("pausedSkipped");
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    @Test
+    void aShortClaimThatPublishesNothingDoesNotWarn() {
+        String group = "000-notstarved-" + RUN;
+        seedWriteRow(Seed.of(code("held2-head-")).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
+                .withSequence(1).withStatus("FAILED"));
+        seedWriteRow(Seed.of(code("held2-")).withMessageGroup(group).withMode("BLOCK_ON_ERROR").withSequence(2));
+        var logger = (Logger) LoggerFactory.getLogger(PendingJobPoller.class);
+        var appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            poller(FakeDispatchPublisher.succeeding(), 100).pollOnce();
+            assertThat(appender.list.stream().filter(e -> e.getLevel() == Level.WARN)).isEmpty();
+        } finally {
+            logger.detachAppender(appender);
+        }
     }
 }

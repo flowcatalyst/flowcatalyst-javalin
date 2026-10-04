@@ -34,6 +34,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS;
 import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS_READ;
@@ -472,12 +473,28 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
     /// the mark-QUEUED [#markQueued] that follows, in the same transaction,
     /// released together at commit.
     public List<ClaimRow> claimPending(DbTx tx, int batchSize) {
+        return claimPending(tx, batchSize, Set.of());
+    }
+
+    /// As [#claimPending(DbTx,int)], leaving rows of the given (paused)
+    /// subscriptions out of the claim itself. Filtering them after the claim
+    /// left them `PENDING`, so the next tick claimed the same rows again, and
+    /// when `batchSize` or more of them sorted first nothing behind them was
+    /// ever published. A row with no subscription is never excluded. The
+    /// `BLOCK_ON_ERROR` hold-back is deliberately NOT here: it stays the
+    /// caller's positional check against [#groupHolding].
+    public List<ClaimRow> claimPending(DbTx tx, int batchSize, Set<String> excludedSubscriptionIds) {
         DSLContext txDsl = DSL.using(tx.connection(), SQLDialect.POSTGRES);
+        Condition notExcluded = excludedSubscriptionIds.isEmpty()
+                ? DSL.trueCondition()
+                : T.SUBSCRIPTION_ID.isNull()
+                        .or(T.SUBSCRIPTION_ID.ne(DSL.all(excludedSubscriptionIds.toArray(String[]::new))));
         return txDsl.select(T.ID, T.SUBSCRIPTION_ID, T.MESSAGE_GROUP, T.MODE, T.DISPATCH_POOL_ID, T.CLIENT_ID,
                         T.CREATED_AT, T.SEQUENCE, T.QUEUE)
                 .from(T)
                 .where(T.STATUS.eq(DispatchJobStatus.PENDING.name()))
                 .and(T.SCHEDULED_FOR.isNull().or(T.SCHEDULED_FOR.le(DSL.currentOffsetDateTime())))
+                .and(notExcluded)
                 .orderBy(T.MESSAGE_GROUP.asc().nullsLast(), T.SEQUENCE.asc(), T.CREATED_AT.asc(), T.ID.asc())
                 .limit(batchSize)
                 .forUpdate()
