@@ -82,26 +82,48 @@ class VisibilityBatcherTest {
     void submitBlocksWhenTheQueueIsFull() throws Exception {
         var gate = new CountDownLatch(1);
         client.gateVisibilityBatches(gate);
-        // Four drainers each hold up to ten in a blocked call; CAPACITY more fit in the queue.
-        int fits = VisibilityBatcher.CAPACITY + VisibilityBatcher.DRAINERS * VisibilityBatcher.MAX_BATCH;
-        try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
-            for (int i = 0; i < fits; i++) {
-                batcher.submit(change(i));
-                if (i == VisibilityBatcher.DRAINERS * VisibilityBatcher.MAX_BATCH) {
-                    Thread.sleep(200); // let the drainers take their ten each
+        // How many fit is not exact: each of the drainers holds between one and ten changes in its
+        // blocked call, depending on what was queued when it woke. So do not assume a number: submit
+        // from another thread until it stops making progress, and check where it stopped.
+        var submitted = new AtomicInteger();
+        int attempts = VisibilityBatcher.CAPACITY + VisibilityBatcher.DRAINERS * VisibilityBatcher.MAX_BATCH + 50;
+        Thread producer = Thread.ofVirtual().start(() -> {
+            try {
+                for (int i = 0; i < attempts; i++) {
+                    batcher.submit(change(i));
+                    submitted.incrementAndGet();
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
-            Future<?> extra = pool.submit(() -> {
-                batcher.submit(change(-1));
-                return null;
-            });
-            Thread.sleep(300);
-            assertThat(extra.isDone()).as("the call after the queue is full must wait").isFalse();
-
+        });
+        try {
+            // Wait until the producer has been stuck at the same count for a while.
+            int last = -1;
+            long stableSince = System.nanoTime();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+            while (System.nanoTime() < deadline) {
+                int now = submitted.get();
+                if (now != last) {
+                    last = now;
+                    stableSince = System.nanoTime();
+                } else if (System.nanoTime() - stableSince > TimeUnit.MILLISECONDS.toNanos(400)) {
+                    break;
+                }
+                Thread.sleep(10);
+            }
+            assertThat(producer.isAlive()).as("the producer must be blocked in submit, not finished").isTrue();
+            assertThat(submitted.get())
+                    .as("bounded: the queue holds CAPACITY, plus at most ten in each drainer's blocked call")
+                    .isGreaterThanOrEqualTo(VisibilityBatcher.CAPACITY)
+                    .isLessThanOrEqualTo(VisibilityBatcher.CAPACITY
+                            + VisibilityBatcher.DRAINERS * VisibilityBatcher.MAX_BATCH);
+        } finally {
             gate.countDown();
-            extra.get(10, TimeUnit.SECONDS);
         }
-        awaitTrue(() -> settled.get() == fits + 1);
+        producer.join(TimeUnit.SECONDS.toMillis(20));
+        assertThat(producer.isAlive()).as("once the broker answers, the blocked submit completes").isFalse();
+        awaitTrue(() -> settled.get() == attempts);
     }
 
     private static void awaitTrue(java.util.function.BooleanSupplier cond) throws InterruptedException {
