@@ -249,7 +249,10 @@ class PendingJobPollerTest {
         DispatchPublisher observing = batch -> {
             // Read on another connection: what a restarted process would see
             // if this one died right now.
-            seenAtPublish.set(REPO.findById(job).orElseThrow().status());
+            // (only the batch that carries the job: another lane's batch of left-over jobs may publish after it was marked)
+            if (batch.stream().anyMatch(m -> m.jobId().equals(job))) {
+                seenAtPublish.compareAndSet(null, REPO.findById(job).orElseThrow().status());
+            }
         };
 
         pollAndSettle(poller(observing, () -> true));

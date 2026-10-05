@@ -306,6 +306,14 @@ class DispatchJobPlanTest {
                 }
             }
         }
+        // the backlog sample over 200,000 PENDING jobs, as the scheduler's pool runs it
+        var scheduler = new DispatchJobRepository(new Source(big, true, false));
+        scheduler.pendingBacklog(); // warm
+        long t0 = System.nanoTime();
+        var backlog = scheduler.pendingBacklog();
+        report.append(String.format("%nbacklog sample at 200,000 PENDING: count %d (cap %d), %.1f ms%n", backlog.count(),
+                DispatchJobRepository.PENDING_BACKLOG_CAP, (System.nanoTime() - t0) / 1e6));
+        assertThat(backlog.count()).as("the count saturates at the cap + 1").isEqualTo(DispatchJobRepository.PENDING_BACKLOG_CAP + 1);
         java.nio.file.Files.writeString(java.nio.file.Path.of("target/dispatch-job-plans.txt"), report.toString());
         System.out.println("dispatch job plans written to target/dispatch-job-plans.txt");
         assertThat(failures).isEmpty();
