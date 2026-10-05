@@ -9,6 +9,7 @@ import java.io.PrintWriter;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
+import java.util.Map;
 import java.util.Objects;
 import java.util.logging.Logger;
 import javax.sql.DataSource;
@@ -57,6 +58,15 @@ public record Pools(GatedDataSource api, GatedDataSource bff, GatedDataSource di
     /// the poller's claim and one for its hold-back query (they run one after
     /// the other, but a lane's own cache refresh must never wait behind them).
     public static final int SCHEDULER_EXTRA_PERMITS = 2;
+
+    /// Server settings of the scheduler's pool, and of no other (dispatch-queue spec step 3b, measured):
+    /// `force_custom_plan` because a generic plan cached while the queue was empty is a seq scan and is
+    /// reused after a burst (850 ms per claim at 200,000 rows) — pgjdbc switches to a server-prepared
+    /// statement after `prepareThreshold` executions, which is where a cached plan comes from;
+    /// `enable_sort = off` because without statistics the planner prefers a seq scan plus sort of the
+    /// whole queue to the ordered index walk the claim is written for.
+    public static final Map<String, String> SCHEDULER_SERVER_SETTINGS = Map.of(
+            "plan_cache_mode", "force_custom_plan", "enable_sort", "off");
 
     /// `scheduler` is `null` when the dispatch scheduler is not enabled: the
     /// pool is then never opened.
@@ -110,7 +120,7 @@ public record Pools(GatedDataSource api, GatedDataSource bff, GatedDataSource di
         GatedDataSource scheduler = null;
         if (schedulerDispatchers > 0) {
             int schedulerSize = sizeFor(reader, "SCHEDULER", schedulerPoolSizeFor(schedulerDispatchers));
-            scheduler = Database.newPool(url, schedulerSize);
+            scheduler = Database.newPool(url, schedulerSize, SCHEDULER_SERVER_SETTINGS);
             if (scheduler.ordinaryPermits() < schedulerDispatchers + SCHEDULER_EXTRA_PERMITS) {
                 java.util.logging.Logger.getLogger(Pools.class.getName()).warning(
                         "FC_DB_POOL_SIZE_SCHEDULER=" + schedulerSize + " leaves " + scheduler.ordinaryPermits()

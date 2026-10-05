@@ -35,6 +35,18 @@ public final class Database {
     ///                    the Go service reads it) or `jdbc:postgresql://…`
     /// @param maxPoolSize maximum connections (Hikari `maximumPoolSize`)
     public static GatedDataSource newPool(String url, int maxPoolSize) {
+        return newPool(url, maxPoolSize, Map.of());
+    }
+
+    /// As [#newPool(String, int)], and every connection of the pool starts with these server settings
+    /// (`SET`-equivalent, per session). Carried as pgjdbc's `options` connection property — libpq's
+    /// startup `options` (`-c name=value`) — rather than Hikari's `connectionInitSql`: the settings are
+    /// part of the connection startup (no extra round trip per new connection, nothing a pool or a
+    /// `RESET`/`DISCARD` of the init statement can lose), and Go (pgx runtime params) and Rust
+    /// (`PgConnectOptions::options`) set them the same way. An `options` already carried by the URL is kept.
+    ///
+    /// @param serverSettings e.g. `plan_cache_mode` -> `force_custom_plan`; empty for none
+    public static GatedDataSource newPool(String url, int maxPoolSize, Map<String, String> serverSettings) {
         var config = new HikariConfig();
         config.setPoolName("fc");
         config.setMaximumPoolSize(maxPoolSize);
@@ -53,6 +65,11 @@ public final class Database {
             config.setPassword(jdbc.password());
         }
         jdbc.properties().forEach(config::addDataSourceProperty);
+        if (!serverSettings.isEmpty()) {
+            var options = new StringBuilder(jdbc.properties().getOrDefault("options", ""));
+            serverSettings.forEach((k, v) -> options.append(options.isEmpty() ? "" : " ").append("-c ").append(k).append('=').append(v));
+            config.addDataSourceProperty("options", options.toString());
+        }
         return GatedDataSource.over(new HikariDataSource(config));
     }
 

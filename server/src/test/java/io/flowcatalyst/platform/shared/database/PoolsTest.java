@@ -12,6 +12,7 @@ import java.io.PrintWriter;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -302,6 +303,27 @@ class PoolsTest {
         @Override
         public boolean isWrapperFor(Class<?> iface) throws SQLException {
             return delegate.isWrapperFor(iface);
+        }
+    }
+
+    private static String show(javax.sql.DataSource ds, String setting) throws Exception {
+        try (var c = ds.getConnection(); var st = c.createStatement(); var rs = st.executeQuery("SHOW " + setting)) {
+            rs.next();
+            return rs.getString(1);
+        }
+    }
+
+    /// The scheduler's pool, and only it, plans with `plan_cache_mode = force_custom_plan` and
+    /// `enable_sort = off` (dispatch-queue spec step 3b §5). Mutant: set them on every pool.
+    @Test
+    void onlyTheSchedulersPoolCarriesThePlannerSettings() throws Exception {
+        try (Pools pools = Pools.open(url(), new EnvReader(Map.of()), 10)) {
+            assertThat(show(pools.scheduler(), "plan_cache_mode")).isEqualTo("force_custom_plan");
+            assertThat(show(pools.scheduler(), "enable_sort")).isEqualTo("off");
+            for (var other : List.of(pools.api(), pools.bff(), pools.dispatch(), pools.background())) {
+                assertThat(show(other, "plan_cache_mode")).isEqualTo("auto");
+                assertThat(show(other, "enable_sort")).isEqualTo("on");
+            }
         }
     }
 }
