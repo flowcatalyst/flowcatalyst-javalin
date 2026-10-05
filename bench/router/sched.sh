@@ -36,9 +36,25 @@
 #   FC_SCHEDULER_DB_MAX_CONNECTIONS (Go, Rust)  FC_DB_POOL_SIZE_SCHEDULER (Java)  JAVA_TOOL_OPTIONS
 #   SAME_CREATED_AT [0] see seed()   PG_STAT [0] 1 = load pg_stat_statements and print the top
 #   statements of the measured window (a diagnostic run: the extension itself costs a little)
-#   PG_EXPLAIN [0] 1 = auto_explain every statement into results/sched-<label>.pg.log (implies PG_STAT)
+#   PG_EXPLAIN [0] 1 = auto_explain every statement into results/sched-<label>.pg.log (implies PG_STAT),
+#   with auto_explain.log_settings=on: each plan lists the planner settings that backend runs
+#   with (that is how plan_cache_mode / enable_sort of the scheduler's connections are verified)
 #   PG_STAT_TOP [6] rows of pg_stat_statements printed
 #   WARMUP [100] ungrouped jobs published first of all, used as the readiness check
+#   QUEUE_TABLE [auto] 1 = the image claims from msg_dispatch_queue: every seed (readiness,
+#   warm-up, measured) inserts the job AND its queue row in one statement, and the run ends with
+#   a check that the queue table is empty. 0 = the older images (no such table): jobs only.
+#   auto = wait until the server's migrations have stopped creating relations, then look.
+#   QUEUE_MAINT [none] what is done to msg_dispatch_queue after the warm-up drained it:
+#     none | analyze (ANALYZE only: pages stay allocated, the planner is told it is empty) |
+#     vacuum-analyze (VACUUM ANALYZE: an empty table is truncated to zero pages)
+#   WARMUP_MAINT also takes analyze-only (ANALYZE, no VACUUM, of each job partition with rows).
+#   QUEUE_AUTOVAC_OFF_WARMUP [0] 1 = autovacuum is disabled on msg_dispatch_queue from start-up
+#   until the warm-up has drained (and re-enabled before QUEUE_MAINT), so the drained table
+#   reliably still has its pages when QUEUE_MAINT=analyze runs; otherwise autovacuum may have
+#   truncated it already. The tabstat lines show which state the seed met.
+#   SEED_WAIT_S [0] seconds to wait after the maintenance before the measured seed.
+#   PERSEC [30] seconds of the per-second rate series printed in the summary.
 #   KEEP [0] leave the containers up afterwards.  Extra ENV=v args after <shape> go to the server.
 #
 # What one run does:
@@ -85,6 +101,7 @@ SQSFIX=bench-sched-sqsfix; SRV=bench-sched-srv; DB=sched
 N=${N:-100000}; TIMEOUT_S=${TIMEOUT_S:-300}; CPUS=${CPUS:-2}; SAMPLE_S=${SAMPLE_S:-0.25}; WARMUP=${WARMUP:-100}
 WARMUP_N=${WARMUP_N:-0}; WARMUP_CHUNK=${WARMUP_CHUNK:-7500}; WARMUP_INTERVAL_S=${WARMUP_INTERVAL_S:-1}
 WARMUP_TIMEOUT_S=${WARMUP_TIMEOUT_S:-300}; WARMUP_MAINT=${WARMUP_MAINT:-analyze-active}
+QUEUE_TABLE=${QUEUE_TABLE:-auto}; QUEUE_MAINT=${QUEUE_MAINT:-none}; SEED_WAIT_S=${SEED_WAIT_S:-0}
 # Host ports: sqsfix /stats and the server's metrics listener, so the sampler reads them without
 # a `docker exec` per sample.
 SQS_HOST_PORT=${SQS_HOST_PORT:-14566}; METRICS_HOST_PORT=${METRICS_HOST_PORT:-19090}
@@ -111,10 +128,38 @@ seed() {
   local prefix=$1 first=$2 count=$3 groups=$4 mode=$5 grp="NULL" created="clock_timestamp()"
   [ "$groups" -gt 0 ] && grp="'g' || lpad((gs % $groups)::text, 5, '0')"
   [ "${SAME_CREATED_AT:-0}" = 1 ] && created="now()"
-  psqlq "INSERT INTO msg_dispatch_jobs (id, kind, code, target_url, mode, message_group, status, payload, created_at)
+  local ins="INSERT INTO msg_dispatch_jobs (id, kind, code, target_url, mode, message_group, status, payload, created_at)
          SELECT '$prefix' || lpad(gs::text, 12, '0'), 'EVENT', 'bench:sched:job:created',
                 'http://172.30.0.11:9000/hook', '$mode', $grp, 'PENDING', '{\"n\":' || gs || '}', $created
-           FROM generate_series($first, $first + $count - 1) AS gs;" >/dev/null
+           FROM generate_series($first, $first + $count - 1) AS gs"
+  if [ "$QUEUE_TABLE" = 1 ]; then
+    # What every implementation's lifecycle create does (Go insertPending, Rust enter_pending /
+    # insert, Java DispatchJobLifecycle): the job and its queue row in ONE statement, the queue
+    # row built from the inserted job (version = the job's updated_at).
+    psqlq "WITH ins AS ($ins
+           RETURNING id, created_at, message_group, sequence, scheduled_for, subscription_id,
+                     dispatch_pool_id, client_id, mode, queue, updated_at)
+         INSERT INTO msg_dispatch_queue (job_id, job_created_at, message_group, sequence, scheduled_for,
+                     subscription_id, dispatch_pool_id, client_id, mode, queue, version)
+         SELECT id, created_at, message_group, sequence, scheduled_for, subscription_id,
+                dispatch_pool_id, client_id, mode, queue, updated_at FROM ins;" >/dev/null
+  else
+    psqlq "$ins;" >/dev/null
+  fi
+}
+
+# tabstat <tag>: size, planner statistics and autovacuum history of the queue table and of every
+# job partition that holds rows, one line each, with the database clock.
+tabstat() {
+  psqlq "SELECT '   tabstat $1 db_now=' || round(extract(epoch FROM clock_timestamp())::numeric, 2) || ' ' || c.relname
+           || ' relpages=' || c.relpages || ' reltuples=' || c.reltuples || ' size_kb=' || pg_relation_size(c.oid) / 1024
+           || ' live=' || s.n_live_tup || ' dead=' || s.n_dead_tup || ' mod_since_analyze=' || s.n_mod_since_analyze
+           || ' autovacuum=' || s.autovacuum_count || '@' || coalesce(round(extract(epoch FROM s.last_autovacuum)::numeric, 2)::text, '-')
+           || ' autoanalyze=' || s.autoanalyze_count || '@' || coalesce(round(extract(epoch FROM s.last_autoanalyze)::numeric, 2)::text, '-')
+           || ' vacuum=' || s.vacuum_count || ' analyze=' || s.analyze_count
+      FROM pg_class c JOIN pg_stat_user_tables s ON s.relid = c.oid
+     WHERE c.relname = 'msg_dispatch_queue' OR (c.relname LIKE 'msg_dispatch_jobs%' AND c.relkind = 'r' AND s.n_live_tup + s.n_dead_tup > 0)
+     ORDER BY c.relname" 2>/dev/null
 }
 
 # snap <label> <start|end>: called by the sampler (sched.py) at the first publish seen and when
@@ -180,7 +225,7 @@ run() {
   # A plan-capture run, not a rate measurement: the instrumentation is expensive.
   [ "${PG_EXPLAIN:-0}" = 1 ] && pgargs=(-c shared_preload_libraries=pg_stat_statements,auto_explain -c pg_stat_statements.track=all
       -c auto_explain.log_min_duration=0 -c auto_explain.log_analyze=on -c auto_explain.log_buffers=on
-      -c auto_explain.log_timing=on -c auto_explain.log_nested_statements=on)
+      -c auto_explain.log_timing=on -c auto_explain.log_nested_statements=on -c auto_explain.log_settings=on)
   # (1) fresh Postgres + sqsfix. pg_isready over TCP: the image's init-time server listens on the
   # unix socket only, so this cannot pass before the real server is up.
   docker run -d --name $PG --network $NET --ip $PG_IP -e POSTGRES_PASSWORD=pg -e POSTGRES_USER=pg \
@@ -211,9 +256,28 @@ run() {
     sleep 0.5
   done
   psqlq "SELECT 1 FROM pg_class WHERE relname = 'msg_dispatch_jobs'" 2>/dev/null | grep -q 1 || fail "migrations (no msg_dispatch_jobs after 120s)"
-  psqlq "INSERT INTO msg_dispatch_jobs (id, kind, code, target_url, mode, status, payload)
-         SELECT 'W' || lpad(gs::text, 12, '0'), 'EVENT', 'bench:sched:warmup', 'http://172.30.0.11:9000/hook',
-                'IMMEDIATE', 'PENDING', '{}' FROM generate_series(1, $WARMUP) AS gs;" >/dev/null || fail "warm-up insert"
+  # Does this image claim from msg_dispatch_queue? The job table exists many migrations before
+  # the queue table does, so `auto` first waits until no relation has appeared for 3 s.
+  if [ "$QUEUE_TABLE" = auto ]; then
+    local nrel=-1 nrel2 stable=0
+    for i in $(seq 1 240); do
+      nrel2=$(psqlq "SELECT count(*) FROM pg_class" 2>/dev/null)
+      if [ "$nrel2" = "$nrel" ]; then stable=$((stable + 1)); else stable=0; nrel=$nrel2; fi
+      [ "$stable" -ge 6 ] && break
+      sleep 0.5
+    done
+    QUEUE_TABLE=0; psqlq "SELECT 1 FROM pg_class WHERE relname = 'msg_dispatch_queue'" 2>/dev/null | grep -q 1 && QUEUE_TABLE=1
+  elif [ "$QUEUE_TABLE" = 1 ]; then
+    for i in $(seq 1 240); do
+      psqlq "SELECT 1 FROM pg_class WHERE relname = 'msg_dispatch_queue'" 2>/dev/null | grep -q 1 && break; sleep 0.5
+    done
+    psqlq "SELECT 1 FROM pg_class WHERE relname = 'msg_dispatch_queue'" 2>/dev/null | grep -q 1 || fail "QUEUE_TABLE=1 but no msg_dispatch_queue after 120s"
+  fi
+  echo "-- queue table (msg_dispatch_queue): $([ "$QUEUE_TABLE" = 1 ] && echo "present, every seed inserts the job and its queue row" || echo "absent, seeding the job table only")"
+  if [ "$QUEUE_TABLE" = 1 ] && [ "${QUEUE_AUTOVAC_OFF_WARMUP:-0}" = 1 ]; then
+    psqlq "ALTER TABLE msg_dispatch_queue SET (autovacuum_enabled = false)" >/dev/null || fail "disable autovacuum on the queue table"
+  fi
+  seed W 1 "$WARMUP" 0 IMMEDIATE || fail "readiness insert"
   local sent=0 calls=0 single=0
   for i in $(seq 1 240); do
     read -r sent calls single <<<"$(sqsstat)"
@@ -260,15 +324,40 @@ run() {
         for part in $(psqlq "SELECT DISTINCT tableoid::regclass FROM msg_dispatch_jobs"); do
           psqlq "VACUUM (ANALYZE) $part" >/dev/null || fail "vacuum analyze $part"
         done ;;
+      analyze-only)
+        local part
+        for part in $(psqlq "SELECT DISTINCT tableoid::regclass FROM msg_dispatch_jobs"); do
+          psqlq "ANALYZE $part" >/dev/null || fail "analyze $part"
+        done ;;
       analyze-all) psqlq "VACUUM (ANALYZE) msg_dispatch_jobs" >/dev/null || fail "vacuum analyze after warm-up" ;;
-      *) fail "WARMUP_MAINT must be none, vacuum, analyze-active or analyze-all" ;;
+      *) fail "WARMUP_MAINT must be none, vacuum, analyze-active, analyze-only or analyze-all" ;;
     esac
+    if [ "$QUEUE_TABLE" = 1 ]; then
+      local qleft; qleft=$(psqlq "SELECT count(*) FROM msg_dispatch_queue")
+      [ "$qleft" = 0 ] || echo "WARNING: $qleft queue rows left after the warm-up drained" >&2
+      if [ "${QUEUE_AUTOVAC_OFF_WARMUP:-0}" = 1 ]; then
+        psqlq "ALTER TABLE msg_dispatch_queue RESET (autovacuum_enabled)" >/dev/null || fail "re-enable autovacuum on the queue table"
+      fi
+      case "$QUEUE_MAINT" in
+        none) ;;
+        analyze) psqlq "ANALYZE msg_dispatch_queue" >/dev/null || fail "analyze queue" ;;
+        vacuum-analyze) psqlq "VACUUM (ANALYZE) msg_dispatch_queue" >/dev/null || fail "vacuum analyze queue" ;;
+        *) fail "QUEUE_MAINT must be none, analyze or vacuum-analyze" ;;
+      esac
+    fi
     sleep 2
     read -r sent calls single <<<"$(sqsstat)"
     base_sent=$sent; base_calls=$calls
     warm_dups=$((base_sent - WARMUP - WARMUP_N))
-    echo "-- warm-up: $WARMUP_N jobs (chunks of $WARMUP_CHUNK every ${WARMUP_INTERVAL_S}s) published in ${warm_s}s, $warm_dups duplicate messages; maintenance=$WARMUP_MAINT"
+    echo "-- warm-up: $WARMUP_N jobs (chunks of $WARMUP_CHUNK every ${WARMUP_INTERVAL_S}s) published in ${warm_s}s, $warm_dups duplicate messages; maintenance=$WARMUP_MAINT queue_maint=$QUEUE_MAINT"
   fi
+  if [ "$SEED_WAIT_S" != 0 ]; then
+    sleep "$SEED_WAIT_S"
+    read -r sent calls single <<<"$(sqsstat)"
+    [ "$sent" = "$base_sent" ] || echo "WARNING: $((sent - base_sent)) messages arrived during the ${SEED_WAIT_S}s wait before the seed" >&2
+    base_sent=$sent; base_calls=$calls
+  fi
+  local tab_before; tab_before=$(tabstat before-seed)
   local base_single=$single
 
   [ "${PG_EXPLAIN:-0}" = 1 ] && PG_STAT=1
@@ -319,6 +408,9 @@ run() {
   sleep 0.5
   read -r sent calls single <<<"$(sqsstat)"
   local pending_final; pending_final=$(psqlq "SELECT count(*) FROM msg_dispatch_jobs WHERE id LIKE 'B%' AND status = 'PENDING'")
+  local queue_left=na
+  [ "$QUEUE_TABLE" = 1 ] && queue_left=$(psqlq "SELECT count(*) FROM msg_dispatch_queue")
+  local tab_after; tab_after=$(tabstat end)
   local statuses; statuses=$(psqlq "SELECT coalesce(string_agg(status || '=' || n, ',' ORDER BY status), 'none') FROM (SELECT status, count(*) AS n FROM msg_dispatch_jobs WHERE id LIKE 'B%' GROUP BY status) s")
   curl -s -m 120 "http://127.0.0.1:$SQS_HOST_PORT/order" > "$out/sched-$label.order.tsv" || echo "WARNING: could not read sqsfix /order" >&2
   local pgstat=""
@@ -334,11 +426,12 @@ run() {
   warns=$(grep -ciE '"level":"warn|(^|[^a-z])warn(ing)?([^a-z]|$)' "$out/sched-$label.server.log")
   errs=$(grep -ciE '"level":"(error|fatal)|(^|[^a-z_])(error|fatal|panic|exception)([^a-z]|$)' "$out/sched-$label.server.log")
   {
-    echo "== $label image=$image shape=$shape groups=$groups mode=$mode cpus=$CPUS n=$N warmup_n=$WARMUP_N warmup_s=$warm_s maint=$WARMUP_MAINT same_created_at=${SAME_CREATED_AT:-0} env='${passed# }'"
-    python3 "$here/sched.py" report "$out" "$label" "$N" "$base_sent" "$base_calls" "$sent" "$calls" "$pending_final" \
+    echo "== $label image=$image shape=$shape groups=$groups mode=$mode cpus=$CPUS n=$N warmup_n=$WARMUP_N warmup_s=$warm_s maint=$WARMUP_MAINT queue_table=$QUEUE_TABLE queue_maint=$QUEUE_MAINT queue_autovac_off_warmup=${QUEUE_AUTOVAC_OFF_WARMUP:-0} seed_wait_s=$SEED_WAIT_S same_created_at=${SAME_CREATED_AT:-0} env='${passed# }'"
+    QUEUE_LEFT="$queue_left" PERSEC="${PERSEC:-30}" python3 "$here/sched.py" report "$out" "$label" "$N" "$base_sent" "$base_calls" "$sent" "$calls" "$pending_final" \
         "$t_seed1" "$SRV" "$PG" "$SQSFIX" "$CPUS" "$statuses" "$warns" "$errs" "$((single - base_single))" "$warm_dups" \
         "image=$image shape=$shape groups=$groups cpus=$CPUS warmup_n=$WARMUP_N env=${passed# }"
-    echo "   seed_insert_s=$seed_s single_SendMessage_calls=$((single - base_single))"
+    echo "   seed_insert_s=$seed_s single_SendMessage_calls=$((single - base_single)) seed_committed_epoch=$t_seed1 (host clock; tabstat times are the database clock)"
+    echo "$tab_before"; echo "$tab_after"
     if [ "$errs" != 0 ] || [ "$warns" != 0 ]; then
       echo "   first warn/error lines of the server log:"
       grep -iE '"level":"(warn|error|fatal)|(^|[^a-z_])(warn|warning|error|fatal|panic|exception)([^a-z]|$)' "$out/sched-$label.server.log" | cut -c1-300 | head -4 | sed 's/^/     /'

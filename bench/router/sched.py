@@ -204,15 +204,30 @@ def pgstat(path):
         q = p[8]
         up = q.upper()
         kind = None
-        if "MSG_DISPATCH_JOBS" not in up:
+        if "GENERATE_SERIES" in up:
+            continue  # the rig's own seed
+        # The queue-table design (the claim is two statements on msg_dispatch_queue).
+        if up.startswith("DELETE FROM MSG_DISPATCH_QUEUE") and "RETURNING" in up:
+            kind = "claim_delete"
+        elif (up.startswith("SELECT") and "FROM MSG_DISPATCH_QUEUE" in up and "ORDER BY" in up and "LIMIT" in up
+              and "MSG_DISPATCH_JOBS" not in up and "LATERAL" not in up and "COUNT(" not in up):
+            kind = "claim_select"
+        elif up.startswith("WITH") and "UPDATE MSG_DISPATCH_JOBS" in up and "MSG_DISPATCH_QUEUE" in up :
+            # leave-PENDING transitions: the job update and the queue delete in one statement;
+            # the busiest one in the window is the mark-QUEUED update.
+            kind = "mark"
+        if kind is None and "MSG_DISPATCH_JOBS" not in up:
             continue
         # pg_stat_statements replaces literals with $n, so the statements are recognised by shape:
         # the busiest UPDATE of the job table in the window is the mark-QUEUED update.
-        if up.startswith("UPDATE MSG_DISPATCH_JOBS"):
+        if kind is not None:
+            pass
+        elif up.startswith("UPDATE MSG_DISPATCH_JOBS"):
             kind = "mark"
         elif "DISTINCT ON" in up:
             kind = "holdback"
-        elif up.startswith(("SELECT", "WITH")) and "SCHEDULED_FOR" in up and "COUNT(" not in up and "EXPLAIN" not in up:
+        elif (up.startswith(("SELECT", "WITH")) and "SCHEDULED_FOR" in up and "COUNT(" not in up and "EXPLAIN" not in up
+              and "MSG_DISPATCH_QUEUE" not in up):
             # The claim: the one SELECT of due PENDING rows (its text can be longer than the
             # 600 characters kept, so the ORDER BY is not relied on).
             kind = "claim"
@@ -378,6 +393,28 @@ def report(out, label, n, base_sent, base_calls, final_sent, final_calls, final_
           + f" all_messages_sent_s={res['all_sent_s']} first_message_seen_s={res['first_publish_s']}")
     print(f"   jobs_per_s_steady={steady:.0f} ({steady_note}; rate = messages arriving at sqsfix)")
     print(f"   SendMessageBatch_calls={calls} sqs_messages_sent={sent} entries_per_call={per:.2f}")
+    # Messages that arrived in each whole second after the seed committed (sent interpolated
+    # linearly between the two samples around each second boundary).
+    nsec = int(os.environ.get("PERSEC", "30") or 0)
+    if nsec > 0:
+        def at(t):
+            prev = (t_seed, 0)
+            for r in rows:
+                if r["t"] >= t:
+                    if r["t"] == prev[0]:
+                        return r["sent"]
+                    return prev[1] + (r["sent"] - prev[1]) * (t - prev[0]) / (r["t"] - prev[0])
+                if r["t"] > t_seed:
+                    prev = (r["t"], r["sent"])
+            return prev[1]
+        per_s = []
+        for k in range(nsec):
+            if t_seed + k > last["t"]:
+                break
+            per_s.append(round(at(t_seed + k + 1) - at(t_seed + k)))
+        res["per_second"] = per_s
+        res["t_seed"] = t_seed
+        print(f"   per_second_after_seed (first {nsec}s, messages arriving in second 1,2,...): " + " ".join(str(v) for v in per_s))
 
     # CPU.
     cg = {name: cg_cpu(out, label, c) for name, c in (("server", srv), ("postgres", pg), ("sqsfix", sqsfix))}
@@ -399,7 +436,7 @@ def report(out, label, n, base_sent, base_calls, final_sent, final_calls, final_
     # pg_stat_statements.
     pgs = pgstat(f"{out}/sched-{label}.pgstat.txt")
     res["pg"] = pgs
-    for kind in ("claim", "mark", "holdback"):
+    for kind in ("claim", "claim_select", "claim_delete", "mark", "holdback"):
         if kind in pgs:
             r = pgs[kind]
             print(f"   pg {kind}: calls={r['calls']} mean_ms={r['mean_ms']} max_ms={r['max_ms']} min_ms={r['min_ms']} "
@@ -418,6 +455,10 @@ def report(out, label, n, base_sent, base_calls, final_sent, final_calls, final_
         problems.append(f"statuses {statuses} (expected QUEUED={n})")
     if final_pending:
         problems.append(f"{final_pending} PENDING")
+    queue_left = os.environ.get("QUEUE_LEFT", "na")
+    res["queue_rows_left"] = None if queue_left in ("", "na") else int(queue_left)
+    if res["queue_rows_left"]:
+        problems.append(f"{queue_left} rows left in msg_dispatch_queue")
     if errs:
         problems.append(f"{errs} error lines in the server log")
     if order is None:
@@ -436,7 +477,7 @@ def report(out, label, n, base_sent, base_calls, final_sent, final_calls, final_
          f"{order['duplicates']} duplicates, {order['missing']} missing, {order['queues']} queue(s)")
     print(f"   correctness: {'OK' if not problems else 'PROBLEMS: ' + '; '.join(problems)}")
     print(f"     messages={sent} N={n} duplicates={dup_by_count} statuses={statuses} warn_lines={warns} error_lines={errs} "
-          f"warmup_duplicates={warm_dups}")
+          f"warmup_duplicates={warm_dups} queue_rows_left={queue_left}")
     print(f"     {o}")
 
     th = thread_table(f"{out}/sched-{label}.threads.start.txt", f"{out}/sched-{label}.threads.end.txt")
