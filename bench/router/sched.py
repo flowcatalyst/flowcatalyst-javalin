@@ -222,7 +222,10 @@ def pgstat(path):
         # the busiest UPDATE of the job table in the window is the mark-QUEUED update.
         if kind is not None:
             pass
-        elif up.startswith("UPDATE MSG_DISPATCH_JOBS"):
+        elif "UPDATED_AT < $1" in up:
+            continue  # stale recovery, not the mark-QUEUED update
+        elif up.startswith("UPDATE MSG_DISPATCH_JOBS") or (up.startswith("WITH PK AS") and "UPDATE MSG_DISPATCH_JOBS" in up):
+            # "WITH pk AS (... LATERAL primary-key lookup ...) UPDATE": Go's mark-QUEUED by primary key
             kind = "mark"
         elif "DISTINCT ON" in up:
             kind = "holdback"
