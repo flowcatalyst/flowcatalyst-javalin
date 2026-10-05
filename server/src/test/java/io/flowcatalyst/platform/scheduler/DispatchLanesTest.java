@@ -567,4 +567,47 @@ class DispatchLanesTest {
 
         assertThat(recorder.released).containsExactlyInAnyOrder("c-j1", "c-j2");
     }
+
+    /// A lane settles only its OWN in-flight entry. The release runs before the batch leaves the in-flight
+    /// set, so a job it released can be claimed again in that window: the new claim's entry must survive the
+    /// old batch's removal, or the copy waiting in the lane is invisible to the poller's doomed check and later
+    /// claims take the group's later jobs past it. Driven deterministically: the hook between the release and
+    /// the removal plays a whole new claim of the released job.
+    /// Mutant: remove the in-flight entry by id alone — it also removes the new claim's entry.
+    @Test
+    void aLaneRemovesOnlyItsOwnInFlightEntryNotTheEntryOfAClaimThatReclaimedTheJob() throws Exception {
+        var recorder = new Recorder();
+        var publisher = new ScriptedPublisher().failOnce("a-j1");
+        var lanes = lanesWith(config(1, 1), publisher, recorder);
+        var reclaimed = new java.util.concurrent.atomic.AtomicBoolean();
+        lanes.afterReleaseHook = () -> {
+            if (reclaimed.compareAndSet(false, true)) {
+                claim(lanes, row("a-j1", "group-a")); // the poller claims the released job again
+            }
+        };
+        var inFlightAfterSettle = new java.util.concurrent.atomic.AtomicInteger(-1);
+        var minGenerationSeen = new java.util.concurrent.atomic.AtomicReference<java.util.Map<String, Long>>();
+        var observed = new java.util.concurrent.CountDownLatch(1);
+        var proceed = new java.util.concurrent.CountDownLatch(1);
+        lanes.afterPoisonHook = () -> {
+            if (inFlightAfterSettle.get() < 0) { // the first settle only: the old batch is settled, the new copy waits
+                inFlightAfterSettle.set(lanes.inFlightCount());
+                minGenerationSeen.set(lanes.inFlightSnapshot().minGeneration());
+                observed.countDown();
+                try {
+                    proceed.await(20, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+
+        claim(lanes, row("a-j1", "group-a"));
+        assertThat(observed.await(15, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        assertThat(inFlightAfterSettle.get()).as("the re-claim's copy is still in flight").isEqualTo(1);
+        assertThat(minGenerationSeen.get()).as("and visible to the doomed check").containsKey("group-a");
+        proceed.countDown();
+        assertThat(lanes.awaitIdle(WAIT)).isTrue();
+        assertThat(lanes.inFlightCount()).isZero();
+    }
 }

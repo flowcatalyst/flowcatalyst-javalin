@@ -139,6 +139,9 @@ final class DispatchLanes implements AutoCloseable {
     /// Test seam: on a lane's thread, after the poison is recorded and before the
     /// permits are released — the lane is then holding doomed jobs in its channel.
     volatile Runnable afterPoisonHook;
+    /// Test seam: on a lane's thread, after the claims are released and before the batch leaves the in-flight set —
+    /// the window in which a released job can be claimed again.
+    volatile Runnable afterReleaseHook;
 
     DispatchLanes(SchedulerConfig config, DispatchJobLifecycle lifecycle, DispatchPublisher publisher,
                   Function<ClaimRow, PublishedMessage> messageBuilder, SchedulerMetrics metrics) {
@@ -258,7 +261,9 @@ final class DispatchLanes implements AutoCloseable {
     /// Hands claimed rows (claim order) to their lanes: adds them to the
     /// in-flight set and stamps them with `generation`. Never blocks: permits
     /// bound what is in the system to the buffer capacity, which is each
-    /// channel's capacity.
+    /// channel's capacity. A claim can return an id still in the set only in the window between a lane's
+    /// release and its removal (the old copy is already processed): the entry is overwritten with the new
+    /// generation, and the lane's removal then leaves it alone ([#settle]).
     void submit(List<ClaimRow> rows, long generation) {
         for (ClaimRow row : rows) {
             synchronized (stateLock) {
@@ -597,9 +602,15 @@ final class DispatchLanes implements AutoCloseable {
                             .log();
                 }
             }
+            Runnable afterRelease = afterReleaseHook;
+            if (afterRelease != null) afterRelease.run();
             synchronized (stateLock) {
+                // Only the entries this batch put there: a job released above may already have been claimed
+                // again, and that claim's entry (a newer generation) must stay, or the copy now waiting in a
+                // lane is invisible to the doomed check.
                 for (Job j : batch) {
-                    inFlight.remove(j.row.id());
+                    InFlight e = inFlight.get(j.row.id());
+                    if (e != null && e.generation == j.generation) inFlight.remove(j.row.id());
                 }
             }
             Runnable hook = betweenRemovalAndPoisonHook;
