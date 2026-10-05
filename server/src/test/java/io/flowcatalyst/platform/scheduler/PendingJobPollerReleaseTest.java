@@ -20,13 +20,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.RUN;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.code;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.queueRow;
-import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedQueued;
+import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedWriteRowOnly;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedWriteRow;
 import static io.flowcatalyst.platform.scheduler.SchedulerFixture.DATA_SOURCE;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// The poller against the queue table: a claim that is not published, is held back, or is left by a dead
-/// claimer is given back and the job is claimed again IN ORDER (dispatch-queue spec §3, §7). Its own class,
+/// The poller against the queue table: a claim (a delete) that is not published or is held back is RESTORED, and a
+/// job a dead claimer left with no row is restored at leader start; the job is claimed again IN ORDER
+/// (dispatch-queue spec step 3b). Its own class,
 /// so its own database — the queue rows here are exact.
 class PendingJobPollerReleaseTest {
 
@@ -59,16 +60,13 @@ class PendingJobPollerReleaseTest {
         return result;
     }
 
-    private static Object claimedAt(String id) {
-        return queueRow(id).get("claimed_at");
-    }
 
     private static Seed seed(String tag, String group, int sequence) {
         return Seed.of(code(tag)).withMode("BLOCK_ON_ERROR").withMessageGroup(group).withSequence(sequence);
     }
 
-    /// A failed publish: the job stays PENDING, its claim is given back, and the NEXT poll publishes it.
-    /// Mutant: no release on failure — the queue row stays claimed and the job is never sent again.
+    /// A failed publish: the job stays PENDING, its queue row is restored, and the NEXT poll publishes it.
+    /// Mutant: no restore on failure — the job has no queue row and is never sent again (until reconcile).
     @Test
     void aFailedPublishGivesTheClaimBackAndTheNextPollPublishesTheJob() {
         String group = "rel-fail-" + RUN;
@@ -77,7 +75,7 @@ class PendingJobPollerReleaseTest {
         pollAndSettle(poller(FakeDispatchPublisher.failing(), () -> true));
 
         assertThat(REPO.findById(id).orElseThrow().status()).isEqualTo(DispatchJobStatus.PENDING);
-        assertThat(claimedAt(id)).as("the claim was released").isNull();
+        assertThat(queueRow(id)).as("the queue row was restored").isNotNull();
 
         var ok = FakeDispatchPublisher.succeeding();
         var second = poller(ok, () -> true);
@@ -107,8 +105,9 @@ class PendingJobPollerReleaseTest {
     }
 
     /// A BLOCK_ON_ERROR job behind a FAILED head is held back: nothing is published, the job stays PENDING and —
-    /// the point here — its claim is released, so it is claimed (and held) again, and goes the moment the head clears.
-    /// Mutant: hold back without releasing — the row stays claimed and never moves again.
+    /// the point here — its queue row is restored, so it is claimed (and held) again, and goes the moment the head
+    /// clears. (The group is remembered as held for 5 seconds, so the second poll skips it: it still goes after.)
+    /// Mutant: hold back without restoring — the job has no queue row and never moves again.
     @Test
     void aHeldBackJobGivesItsClaimBackAndFlowsOnceTheHeadClears() {
         String group = "rel-held-" + RUN;
@@ -122,10 +121,12 @@ class PendingJobPollerReleaseTest {
         assertThat(first.heldBack()).isEqualTo(1);
         assertThat(publisher.batches()).isEmpty();
         assertThat(REPO.findById(held).orElseThrow().status()).isEqualTo(DispatchJobStatus.PENDING);
-        assertThat(claimedAt(held)).as("held, so its claim went back").isNull();
-        assertThat(pollAndSettle(poller).heldBack()).as("claimed and held again: it is still reachable").isEqualTo(1);
+        assertThat(queueRow(held)).as("held, so its queue row went back").isNotNull();
+        assertThat(pollAndSettle(poller).claimed()).as("the group is remembered as held: the claim skips it").isZero();
+        assertThat(queueRow(held)).isNotNull();
 
         DispatchJobFixture.setStatus(head, "COMPLETED"); // the head is resolved
+        poller.heldGroupsForTest().clear();               // (the 5 s memory has not run out; see HeldGroupsTest)
         pollAndSettle(poller);
         assertThat(publisher.batches().stream().flatMap(List::stream).map(PublishedMessage::jobId)).containsExactly(held);
     }
@@ -142,15 +143,14 @@ class PendingJobPollerReleaseTest {
 
         assertThat(result.heldBack()).isEqualTo(1);
         assertThat(publisher.batches()).isEmpty();
-        assertThat(claimedAt(behind)).isNull();
+        assertThat(queueRow(behind)).isNotNull();
     }
 
-    /// The first poll as leader gives back every claim this process does not hold: a job a dead claimer
-    /// left claimed is published at once. Mutant: no release at leader start.
+    /// The first poll as leader restores the queue rows of PENDING jobs a dead claimer left with none, with no age
+    /// guard: a job claimed a moment before the crash is published at once. Mutant: no restore at leader start.
     @Test
-    void theFirstPollAsLeaderReleasesClaimsLeftByADeadClaimer() {
-        String id = seedQueued(Seed.of(code("dead")).withMessageGroup("rel-dead-" + RUN)); // claimed, nobody holds it
-        assertThat(claimedAt(id)).isNotNull();
+    void theFirstPollAsLeaderRestoresJobsADeadClaimerLeftWithNoQueueRow() {
+        String id = seedWriteRowOnly(Seed.of(code("dead")).withMessageGroup("rel-dead-" + RUN)); // PENDING, no row, fresh
         var publisher = FakeDispatchPublisher.succeeding();
 
         pollAndSettle(poller(publisher, () -> true));
@@ -158,16 +158,16 @@ class PendingJobPollerReleaseTest {
         assertThat(publisher.batches().stream().flatMap(List::stream).map(PublishedMessage::jobId)).containsExactly(id);
     }
 
-    /// Not the leader: nothing is released or claimed. Becoming the leader later releases then.
+    /// Not the leader: nothing is restored or claimed. Becoming the leader later restores then.
     @Test
-    void aNonLeaderReleasesNothingUntilItBecomesTheLeader() {
-        String id = seedQueued(Seed.of(code("dead2")).withMessageGroup("rel-dead2-" + RUN));
+    void aNonLeaderRestoresNothingUntilItBecomesTheLeader() {
+        String id = seedWriteRowOnly(Seed.of(code("dead2")).withMessageGroup("rel-dead2-" + RUN));
         var leader = new AtomicBoolean(false);
         var publisher = FakeDispatchPublisher.succeeding();
         var poller = poller(publisher, leader::get);
 
         pollAndSettle(poller);
-        assertThat(claimedAt(id)).as("a standby does not touch claims").isNotNull();
+        assertThat(queueRow(id)).as("a standby does not touch the queue").isNull();
         assertThat(publisher.batches()).isEmpty();
 
         leader.set(true);
@@ -175,10 +175,11 @@ class PendingJobPollerReleaseTest {
         assertThat(publisher.batches().stream().flatMap(List::stream).map(PublishedMessage::jobId)).containsExactly(id);
     }
 
-    /// A job in THIS process's in-flight set is not released when leadership is regained: it is published once.
-    /// Mutant: release every claim at leader start, in-flight ones included — the held job is sent twice.
+    /// A job in THIS process's in-flight set is not restored when leadership is regained: it is published once.
+    /// Mutant: restore every PENDING job without a row at leader start, in-flight ones included — the held job is
+    /// queued, claimed and sent twice.
     @Test
-    void regainingLeadershipDoesNotReleaseAJobThisProcessHolds() throws Exception {
+    void regainingLeadershipDoesNotRestoreAJobThisProcessHolds() throws Exception {
         String held = seedWriteRow(seed("mine", "rel-mine-" + RUN, 1));
         var gate = new CountDownLatch(1);
         var entered = new CountDownLatch(1);
@@ -195,19 +196,44 @@ class PendingJobPollerReleaseTest {
         var leader = new AtomicBoolean(true);
         var poller = poller(publisher, leader::get);
 
-        poller.pollOnce(); // claims `held`; its lane is stuck in the publish
+        poller.pollOnce(); // claims `held` (deletes its row); its lane is stuck in the publish
         assertThat(entered.await(15, TimeUnit.SECONDS)).isTrue();
         assertThat(poller.lanes().inFlightCount()).isEqualTo(1);
 
         leader.set(false);
         poller.pollOnce();
         leader.set(true);
-        poller.pollOnce(); // leader again: releases the claims it does not hold, not `held`
+        poller.pollOnce(); // leader again: restores what it does not hold, not `held`
 
-        assertThat(claimedAt(held)).as("still claimed: this process holds it in memory").isNotNull();
+        assertThat(queueRow(held)).as("still in flight: not re-queued").isNull();
         gate.countDown();
         assertThat(poller.awaitIdle(WAIT)).isTrue();
         assertThat(accepted).containsExactly(held);
         assertThat(Set.copyOf(accepted)).hasSize(accepted.size());
+    }
+
+    /// The starvation test: more than a batch of held rows at the head of the order must not keep an unheld
+    /// group behind them from being published. Without the 5-second held-group memory each claim takes the same
+    /// batch of held rows, finds them held and puts them back, and never reaches the job behind.
+    /// Mutant: remove the held-group memory — the later job is never published.
+    @Test
+    void aBatchOfHeldRowsAtTheHeadDoesNotStarveAnUnheldGroupBehindThem() {
+        var config = SchedulerConfig.DEFAULTS.withBufferCapacity(500).withBatchSize(5);
+        // 8 groups ("aaa..."), each a FAILED head and a held follower: 8 held rows sort ahead of everything
+        for (int i = 0; i < 8; i++) {
+            String g = "aaa-held-" + RUN + "-" + i;
+            seedWriteRow(seed("hh" + i, g, 1).withStatus("FAILED"));
+            seedWriteRow(seed("hf" + i, g, 2));
+        }
+        String free = seedWriteRow(Seed.of(code("free")).withMessageGroup("zzz-free-" + RUN));
+        var publisher = FakeDispatchPublisher.succeeding();
+        var poller = new PendingJobPoller(DATA_SOURCE, REPO, LIFECYCLE, new PausedConnectionCache(DATA_SOURCE),
+                new PoolCodeResolver(DATA_SOURCE), publisher, AUTH, ENDPOINT, () -> true, config);
+        pollers.add(poller);
+
+        for (int i = 0; i < 6; i++) pollAndSettle(poller);
+
+        assertThat(publisher.batches().stream().flatMap(List::stream).map(PublishedMessage::jobId))
+                .as("the free job behind the held rows is reached").containsExactly(free);
     }
 }

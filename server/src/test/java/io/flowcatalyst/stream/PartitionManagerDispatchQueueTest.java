@@ -19,7 +19,7 @@ import java.time.Instant;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.DB;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.code;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.queueRow;
-import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedQueued;
+import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedWriteRow;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// Dropping a `msg_dispatch_jobs` partition also deletes the `msg_dispatch_queue`
@@ -33,7 +33,7 @@ class PartitionManagerDispatchQueueTest {
 
     private static String seedAt(String createdAt) {
         Instant at = Instant.parse(createdAt);
-        return seedQueued(Seed.of(code("part")).withCreatedAt(at).withUpdatedAt(at));
+        return seedWriteRow(Seed.of(code("part")).withCreatedAt(at).withUpdatedAt(at));
     }
 
     @Test
@@ -48,7 +48,7 @@ class PartitionManagerDispatchQueueTest {
         String jan2 = seedAt("2020-01-31T23:59:59Z");
         String feb = seedAt("2020-02-10T10:00:00Z");
         String mar = seedAt("2020-03-10T10:00:00Z");
-        String current = seedQueued(Seed.of(code("part")));
+        String current = seedWriteRow(Seed.of(code("part")));
         for (String id : new String[]{jan1, jan2, feb, mar, current}) assertThat(queueRow(id)).isNotNull();
 
         var logger = (Logger) LoggerFactory.getLogger(PartitionManager.class);

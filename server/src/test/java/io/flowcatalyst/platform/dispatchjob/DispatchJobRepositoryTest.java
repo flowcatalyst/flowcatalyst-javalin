@@ -687,9 +687,9 @@ class DispatchJobRepositoryTest {
 
     /// The claim takes an empty paused-subscription array as "exclude nothing"
     /// (not NULL, which would exclude every row that has a subscription), does
-    /// not return a claimed row again until it is released, and is bounded by
-    /// its limit. (The claim's ordering, concurrency and release have their own
-    /// tests in `DispatchQueueClaimTest`.) Mutant: drop `claimed_at IS NULL`.
+    /// not return a claimed row again until it is restored, and is bounded by
+    /// its limit. (The claim's ordering, concurrency and restore have their own
+    /// tests in `DispatchQueueClaimTest`.)
     @Test
     void claimPendingHonoursItsLimitAndDoesNotReturnAClaimedRowAgain() {
         Instant t = BASE.plusSeconds(200);
@@ -700,15 +700,15 @@ class DispatchJobRepositoryTest {
                     .withSequence(i).withCreatedAt(t.plusSeconds(i))));
         }
 
-        var all = lifecycle.claimPending(5000, java.util.Set.of());
+        var all = lifecycle.claimPending(5000, java.util.Set.of(), java.util.Set.of());
         assertThat(claimIds(all)).as("an empty paused set excludes nothing").containsAll(mine);
-        assertThat(claimIds(lifecycle.claimPending(5000, java.util.Set.of())))
+        assertThat(claimIds(lifecycle.claimPending(5000, java.util.Set.of(), java.util.Set.of())))
                 .as("a claimed row is not returned again").doesNotContainAnyElementsOf(mine);
 
-        lifecycle.releaseClaims(claimIds(all));
-        var ordered = lifecycle.claimPending(2, java.util.Set.of());
+        lifecycle.restore(all);
+        var ordered = lifecycle.claimPending(2, java.util.Set.of(), java.util.Set.of());
         assertThat(ordered).as("LIMIT").hasSize(2);
-        lifecycle.releaseClaims(claimIds(ordered));
+        lifecycle.restore(ordered);
     }
 
     private static List<String> claimIds(List<DispatchJobRepository.ClaimRow> claims) {
@@ -717,11 +717,10 @@ class DispatchJobRepositoryTest {
 
     private static List<DispatchJobRepository.ClaimRow> claimed(String... jobIds) {
         var wanted = java.util.Set.of(jobIds);
-        var everything = lifecycle.claimPending(5000, java.util.Set.of());
+        var everything = lifecycle.claimPending(5000, java.util.Set.of(), java.util.Set.of());
         var rows = everything.stream().filter(c -> wanted.contains(c.id())).toList();
         // the rest of what the claim took goes back, so a later test's claim sees it
-        lifecycle.releaseClaims(everything.stream().map(DispatchJobRepository.ClaimRow::id)
-                .filter(id -> !wanted.contains(id)).toList());
+        lifecycle.restore(everything.stream().filter(c -> !wanted.contains(c.id())).toList());
         assertThat(rows).hasSize(jobIds.length);
         return rows;
     }

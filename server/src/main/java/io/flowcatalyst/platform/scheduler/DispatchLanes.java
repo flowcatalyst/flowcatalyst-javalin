@@ -35,12 +35,13 @@ import java.util.function.LongSupplier;
 /// ```
 ///
 /// No transaction and no row lock spans the publish. The poller claims from
-/// `msg_dispatch_queue` (`claimed_at`), so a claimed row stays out of the next
-/// claim until a lane settles it: published rows leave the queue (the
-/// `QUEUED` update deletes them), every other row's claim is RELEASED
-/// (`releaseClaims`) and the job is claimed again, in order. The in-memory
-/// in-flight set is no longer a claim parameter; it names this process's
-/// unsettled jobs for the doomed check, the stale-claim sweeps and shutdown. A
+/// `msg_dispatch_queue` by DELETING the rows it takes, so a claimed job is out
+/// of the next claim until a lane settles it: a published job becomes `QUEUED`
+/// (nothing to put back), every other job's queue row is RESTORED
+/// (`restoreClaims`, from the job table) and the job is claimed again, in
+/// order. The in-memory in-flight set is no longer a claim parameter; it names
+/// this process's unsettled jobs for the doomed check, the periodic reconcile
+/// (which must not re-queue what is being published) and shutdown. A
 /// double publish is acceptable (the router drops a copy whose original is in
 /// its pipeline; the delivery callback is status-guarded).
 ///
@@ -56,14 +57,14 @@ import java.util.function.LongSupplier;
 ///  1. The poller increments [#claimGeneration] BEFORE it snapshots the
 ///     in-flight set (see [#nextGeneration]); every job it submits carries
 ///     that generation.
-///  2. When a lane leaves a job of `g` unpublished it first RELEASES the claims
+///  2. When a lane leaves a job of `g` unpublished it first RESTORES the queue rows
 ///     of the jobs it is not publishing and removes the whole batch from the
 ///     in-flight set, THEN reads the current generation `P`, THEN records
 ///     `poison[g] = P`.
 ///  3. A job of `g` whose generation is `<= poison[g]` is dropped when it
-///     reaches the lane (not published, its claim released, removed from the
+///     reaches the lane (not published, its row restored, removed from the
 ///     in-flight set, its permit released). A claim that incremented the counter
-///     after `P` was read ran after `j`'s claim was released, so it returns `j`
+///     after `P` was read ran after `j`'s row was restored, so it returns `j`
 ///     again, in order; its jobs have a generation `> P`, pass, and the first
 ///     one that passes clears the entry. (A claim that incremented before `P`
 ///     was read but ran after the release returns `j` too, with a generation
@@ -76,8 +77,8 @@ import java.util.function.LongSupplier;
 ///     every claim against the in-flight snapshot it took for that claim
 ///     ([#withoutGroupsBehindDoomedJobs]): if the snapshot held a doomed job
 ///     of `g` (an in-flight job of `g` whose generation is `<=` the group's
-///     poison), the claim's jobs of `g` are not submitted; their claims are
-///     released and they are claimed again once the doomed job has gone. In-flight entries
+///     poison), the claim's jobs of `g` are not submitted; their rows are
+///     restored and they are claimed again once the doomed job has gone. In-flight entries
 ///     therefore carry `(group, generation)`, and the poison map is shared
 ///     state (one lock) readable by the poller.
 ///
@@ -107,7 +108,7 @@ final class DispatchLanes implements AutoCloseable {
 
     private final SchedulerConfig config;
     private final java.util.function.ToIntFunction<List<ClaimRow>> markQueued;
-    private final java.util.function.Consumer<List<String>> releaseClaims;
+    private final java.util.function.Consumer<List<ClaimRow>> restoreClaims;
     private final DispatchPublisher publisher;
     private final Function<ClaimRow, PublishedMessage> messageBuilder;
     private final SchedulerMetrics metrics;
@@ -151,20 +152,20 @@ final class DispatchLanes implements AutoCloseable {
     DispatchLanes(SchedulerConfig config, DispatchJobLifecycle lifecycle, DispatchPublisher publisher,
                   Function<ClaimRow, PublishedMessage> messageBuilder, SchedulerMetrics metrics,
                   LongSupplier nanoClock) {
-        this(config, Objects.requireNonNull(lifecycle, "lifecycle")::markQueued, lifecycle::releaseClaims, publisher,
+        this(config, Objects.requireNonNull(lifecycle, "lifecycle")::markQueued, lifecycle::restore, publisher,
                 messageBuilder, metrics, nanoClock);
     }
 
-    /// `markQueued` is the bulk status update and `releaseClaims` gives claims
-    /// back (the lifecycle's in production; a test substitutes a model of the
-    /// table that can fail).
+    /// `markQueued` is the bulk status update and `restoreClaims` puts the
+    /// queue rows of unpublished jobs back (the lifecycle's in production; a
+    /// test substitutes a model of the table that can fail).
     DispatchLanes(SchedulerConfig config, java.util.function.ToIntFunction<List<ClaimRow>> markQueued,
-                  java.util.function.Consumer<List<String>> releaseClaims,
+                  java.util.function.Consumer<List<ClaimRow>> restoreClaims,
                   DispatchPublisher publisher, Function<ClaimRow, PublishedMessage> messageBuilder,
                   SchedulerMetrics metrics, LongSupplier nanoClock) {
         this.config = Objects.requireNonNull(config, "config");
         this.markQueued = Objects.requireNonNull(markQueued, "markQueued");
-        this.releaseClaims = Objects.requireNonNull(releaseClaims, "releaseClaims");
+        this.restoreClaims = Objects.requireNonNull(restoreClaims, "restoreClaims");
         this.publisher = Objects.requireNonNull(publisher, "publisher");
         this.messageBuilder = Objects.requireNonNull(messageBuilder, "messageBuilder");
         this.metrics = Objects.requireNonNull(metrics, "metrics");
@@ -219,7 +220,7 @@ final class DispatchLanes implements AutoCloseable {
     record Snapshot(Map<String, Long> minGeneration) {
     }
 
-    private record InFlight(String group, long generation) {
+    private record InFlight(String group, long generation, ClaimRow row) {
     }
 
     /// The in-flight set as it is at this instant, reduced to what the doomed
@@ -267,7 +268,7 @@ final class DispatchLanes implements AutoCloseable {
     void submit(List<ClaimRow> rows, long generation) {
         for (ClaimRow row : rows) {
             synchronized (stateLock) {
-                inFlight.put(row.id(), new InFlight(groupOf(row), generation));
+                inFlight.put(row.id(), new InFlight(groupOf(row), generation, row));
             }
             lane(row).queue.add(new Job(row, generation));
         }
@@ -299,11 +300,19 @@ final class DispatchLanes implements AutoCloseable {
         return true;
     }
 
-    /// The ids claimed by this process and not yet settled: the claims the
-    /// stale-claim sweeps must not release.
+    /// The ids claimed by this process and not yet settled: PENDING with no queue row by design, so the
+    /// periodic reconcile must not re-queue them.
     List<String> inFlightIds() {
         synchronized (stateLock) {
             return new ArrayList<>(inFlight.keySet());
+        }
+    }
+
+    private List<ClaimRow> inFlightRows() {
+        synchronized (stateLock) {
+            List<ClaimRow> rows = new ArrayList<>(inFlight.size());
+            for (InFlight f : inFlight.values()) rows.add(f.row);
+            return rows;
         }
     }
 
@@ -344,8 +353,8 @@ final class DispatchLanes implements AutoCloseable {
 
     /// Stops the lanes: each finishes the batch it is sending and its status
     /// update, then exits. Whatever is still in a channel stays `PENDING`, and its
-    /// claim is released here (best effort: whatever this misses, the next
-    /// leader's start-up release or the stale-claim sweep gives back).
+    /// queue row is restored here (best effort: whatever this misses, the next
+    /// leader's start-up reconcile pass restores).
     @Override
     public void close() {
         closed = true;
@@ -360,13 +369,13 @@ final class DispatchLanes implements AutoCloseable {
                 return;
             }
         }
-        List<String> left = inFlightIds();
+        List<ClaimRow> left = inFlightRows();
         if (!left.isEmpty()) {
             try {
-                releaseClaims.accept(left);
+                restoreClaims.accept(left);
             } catch (RuntimeException e) {
-                LOG.atWarn().setMessage("could not release the claims still held at shutdown; the next leader's "
-                                + "start-up release or the stale-claim sweep gives them back")
+                LOG.atWarn().setMessage("could not restore the queue rows of jobs still in flight at shutdown; the next "
+                                + "leader's start-up reconcile pass restores them")
                         .addKeyValue("count", left.size())
                         .setCause(e)
                         .log();
@@ -436,8 +445,8 @@ final class DispatchLanes implements AutoCloseable {
             long startNanos = System.nanoTime();
             Set<String> poisonGroups = new HashSet<>();
             List<Job> keep = new ArrayList<>(batch.size());
-            // The claims to give back: every job of this batch that is not published.
-            List<String> release = new ArrayList<>();
+            // The jobs whose queue rows go back: every job of this batch that is not published.
+            List<ClaimRow> release = new ArrayList<>();
             int dropped = dropPoisoned(batch, keep, release);
 
             int published = 0;
@@ -461,11 +470,11 @@ final class DispatchLanes implements AutoCloseable {
                         .addKeyValue("batch", keep.size())
                         .setCause(e)
                         .log();
-                release.removeAll(keep.stream().map(j -> j.row.id()).toList());
+                release.removeAll(keep.stream().map(j -> j.row).toList());
                 for (Job j : keep) {
                     String g = groupOf(j.row);
                     if (g != null) poisonGroups.add(g);
-                    release.add(j.row.id());
+                    release.add(j.row);
                 }
                 published = 0;
                 unpublished = keep.size();
@@ -495,7 +504,7 @@ final class DispatchLanes implements AutoCloseable {
         /// Spec step 2: splits the batch into what to publish (`keep`) and what
         /// to drop: a job of a poisoned group whose generation is `<=` the poison.
         /// A drop does not renew the poison; the first job newer than it clears it.
-        private int dropPoisoned(List<Job> batch, List<Job> keep, List<String> release) {
+        private int dropPoisoned(List<Job> batch, List<Job> keep, List<ClaimRow> release) {
             int dropped = 0;
             for (Job j : batch) {
                 String g = groupOf(j.row);
@@ -505,7 +514,7 @@ final class DispatchLanes implements AutoCloseable {
                         if (p != null) {
                             if (j.generation <= p.generation) {
                                 dropped++;
-                                release.add(j.row.id());
+                                release.add(j.row);
                                 continue;
                             }
                             poison.remove(g);
@@ -523,7 +532,7 @@ final class DispatchLanes implements AutoCloseable {
         /// Spec steps 3-5: publishes through the existing publisher, marks the
         /// published ids `QUEUED` in one update, and records the groups of the
         /// unpublished jobs in `poisonGroups`.
-        private Outcome publishAndMark(List<Job> keep, Set<String> poisonGroups, List<String> release) {
+        private Outcome publishAndMark(List<Job> keep, Set<String> poisonGroups, List<ClaimRow> release) {
             List<PublishedMessage> messages = new ArrayList<>(keep.size());
             for (Job j : keep) {
                 messages.add(messageBuilder.apply(j.row));
@@ -553,7 +562,7 @@ final class DispatchLanes implements AutoCloseable {
                 if (unpublishedIds.contains(c.id())) {
                     String g = groupOf(c);
                     if (g != null) poisonGroups.add(g);
-                    release.add(c.id());
+                    release.add(c);
                     continue;
                 }
                 ids.add(c);
@@ -565,12 +574,12 @@ final class DispatchLanes implements AutoCloseable {
                     int updated = markQueued.applyAsInt(ids);
                     notUpdated = ids.size() - updated;
                 } catch (RuntimeException e) {
-                    // Published, still PENDING: its claim is released and a later
+                    // Published, still PENDING: its queue row is restored and a later
                     // claim publishes it again (a harmless duplicate). Not
                     // poisoned: it was published, so its group's later jobs are
                     // not overtaking.
                     markFailed = true;
-                    for (ClaimRow c : ids) release.add(c.id());
+                    release.addAll(ids);
                     LOG.atWarn().setMessage("mark QUEUED failed after publishing; the job(s) stay PENDING "
                                     + "and will be published again")
                             .addKeyValue("lane", index)
@@ -582,20 +591,20 @@ final class DispatchLanes implements AutoCloseable {
             return new Outcome(ids.size(), unpublishedIds.size(), notUpdated, markFailed);
         }
 
-        /// Spec step 6, in this order: give the unpublished jobs' claims back and
-        /// leave the in-flight set, THEN record poison (reading the generation
-        /// after both are done), THEN release the permits. A release that fails
-        /// (the database is down) does not stop the settling: the claims are
-        /// given back by the stale-claim sweep.
-        private void settle(List<Job> batch, Set<String> poisonGroups, boolean failure, List<String> release) {
+        /// Spec step 6, in this order: restore the unpublished jobs' queue rows
+        /// and leave the in-flight set, THEN record poison (reading the generation
+        /// after both are done), THEN release the permits. A restore that fails
+        /// (the database is down) does not stop the settling: the reconcile sweep
+        /// restores the rows.
+        private void settle(List<Job> batch, Set<String> poisonGroups, boolean failure, List<ClaimRow> release) {
             if (!release.isEmpty()) {
                 try {
-                    releaseClaims.accept(release);
-                    metrics.claimsReleased.add(release.size());
+                    restoreClaims.accept(release);
+                    metrics.claimsRestored.add(release.size());
                 } catch (RuntimeException e) {
-                    metrics.releaseErrors.increment();
-                    LOG.atWarn().setMessage("could not release the claims of unpublished jobs; the stale-claim "
-                                    + "sweep gives them back")
+                    metrics.restoreErrors.increment();
+                    LOG.atWarn().setMessage("could not restore the queue rows of unpublished jobs; the reconcile "
+                                    + "sweep restores them")
                             .addKeyValue("lane", index)
                             .addKeyValue("count", release.size())
                             .setCause(e)

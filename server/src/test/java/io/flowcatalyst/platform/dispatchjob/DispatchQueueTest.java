@@ -31,7 +31,7 @@ import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.RUN;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.assertQueueMirrorsJob;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.code;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.queueRow;
-import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedQueued;
+import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedWriteRow;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// `msg_dispatch_queue` (dispatch-queue spec, step 2): the lifecycle keeps it
@@ -53,7 +53,7 @@ class DispatchQueueTest {
         Seed seed = Seed.of(code("dq")).withStatus(status).withMode("BLOCK_ON_ERROR")
                 .withUpdatedAt(Instant.now().minusSeconds(3600));
         if (group != null) seed = seed.withMessageGroup(group).withSequence(sequence);
-        return seedQueued(seed);
+        return seedWriteRow(seed);
     }
 
     private static Instant createdAt(String id) {
@@ -106,11 +106,10 @@ class DispatchQueueTest {
         assertClean(List.of(one.id()), "single insert");
 
         // a duplicate (same id and created_at) is skipped: no queue row added, none changed
-        DB.execute("UPDATE msg_dispatch_queue SET claimed_at = now() WHERE job_id = ?", one.id());
+        DB.execute("UPDATE msg_dispatch_queue SET enqueued_at = now() - interval '1 hour' WHERE job_id = ?", one.id());
         Map<String, Object> before = queueRow(one.id());
         LIFECYCLE.insertBatch(List.of(one));
         assertThat(queueRow(one.id())).as("the skipped duplicate left the queue row byte-identical").isEqualTo(before);
-        DB.execute("UPDATE msg_dispatch_queue SET claimed_at = NULL WHERE job_id = ?", one.id());
         assertThat(DB.fetchCount(MSG_DISPATCH_JOBS, MSG_DISPATCH_JOBS.ID.eq(one.id()))).isEqualTo(1);
 
         // a batch of N gives N rows
@@ -157,13 +156,12 @@ class DispatchQueueTest {
         List<String> ids = jobs.stream().map(FanOutJob::id).toList();
         assertClean(ids, "fan-out");
 
-        DB.execute("UPDATE msg_dispatch_queue SET claimed_at = now() WHERE job_id = ?", ids.get(0));
+        DB.execute("UPDATE msg_dispatch_queue SET enqueued_at = now() - interval '1 hour' WHERE job_id = ?", ids.get(0));
         Map<String, Object> before = queueRow(ids.get(0));
         FanOutJob extra = new FanOutJob(Tsid.generate(), code("fan"), "src", "subj", null, null, null, null, "{}",
                 "https://hook.example/x", false, null, null, null, 1, 30, 3, "IMMEDIATE", null, null, null, "[]", now);
         inTx(tx -> DispatchJobLifecycle.insertFanOut(tx, List.of(jobs.get(0), extra)));
         assertThat(queueRow(ids.get(0))).as("the skipped duplicate changed nothing").isEqualTo(before);
-        DB.execute("UPDATE msg_dispatch_queue SET claimed_at = NULL WHERE job_id = ?", ids.get(0));
         assertClean(List.of(ids.get(0), extra.id()), "fan-out with a duplicate");
     }
 
@@ -482,7 +480,7 @@ class DispatchQueueTest {
             String status = statuses[seedRandom.nextInt(statuses.length)];
             boolean grouped = i % 3 != 0;
             String group = grouped ? groups.get(seedRandom.nextInt(groups.size())) : null;
-            String id = seedQueued(Seed.of(code("rnd")).withStatus(status).withMode("BLOCK_ON_ERROR")
+            String id = seedWriteRow(Seed.of(code("rnd")).withStatus(status).withMode("BLOCK_ON_ERROR")
                     .withUpdatedAt(Instant.now().minusSeconds(3600))
                     .withMessageGroup(group).withSequence(i));
             ids.add(id);

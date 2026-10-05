@@ -287,8 +287,8 @@ derived from it or observed:
    scheduler, mail, the dispatch-job reaper) a fixed small pool of 4 outside `B`'s request share;
    **the dispatch scheduler its own fifth pool** (owner, 2026-10-04: subsystems are deployed
    together or standalone, so it shares nothing), opened only when the scheduler is enabled and
-   sized `dispatchers + 2` ordinary permits plus the gate's probe reservation (`FC_SCHEDULER_DISPATCHERS`,
-   default 10 → 13 connections, 12 ordinary: a poller claim, its hold-back query and one per lane; the leader's queue housekeeping — stale-claim release, reconcile, stale-`QUEUED` recovery, the backlog gauge — runs one short statement at a time on the same pool),
+   sized `dispatchers + 2` ordinary permits plus the gate's probe reservation, and — the only pool that does — started with `plan_cache_mode = force_custom_plan` and `enable_sort = off` (pgjdbc `options`, `Pools.SCHEDULER_SERVER_SETTINGS`; `dispatch-seam.md` §3) (`FC_SCHEDULER_DISPATCHERS`,
+   default 10 → 13 connections, 12 ordinary: a poller claim, its hold-back query and one per lane; the leader's queue housekeeping — reconcile, stale-`QUEUED` recovery, the backlog gauge — runs one short statement at a time on the same pool),
    outside `B`; probes their own reservation (§1); SSE none. A share is by *connection-hold time*, not request count — a group that holds
    a connection across a whole transaction needs more than one that borrows per statement.
    Every group's pool is at least 2. The per-group pool size is the accepted knob for a

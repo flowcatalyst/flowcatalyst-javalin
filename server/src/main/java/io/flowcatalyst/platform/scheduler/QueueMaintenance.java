@@ -19,17 +19,16 @@ import java.util.function.Supplier;
 /// §6): every sweep runs on one thread, only while this instance is the leader,
 /// on the scheduler's own pool (the lifecycle it is given is built over it).
 ///
-///  - **stale claims** (every 60 s): a claim older than 5 minutes that this
-///    process does not hold in memory belongs to a claimer that died between
-///    claim and publish; it is released so the job is claimed again. (The first
-///    poll as leader releases ALL such claims; see [PendingJobPoller].)
 ///  - **stale `QUEUED`** (every 60 s): a job still `QUEUED` 15 minutes after its
 ///    last update (owner ruling 2026-10-04) goes back to `PENDING`; a duplicate
 ///    that causes is dropped by the router or skipped by the delivery callback.
 ///    There is no `PROCESSING` sweep here: the reaper owns that.
 ///  - **reconcile** (every 60 s): [DispatchJobLifecycle#reconcileQueue], bounded
-///    to 5,000 rows per statement. Every non-zero count is a WARN: it means a bug,
-///    or an older binary writing the table.
+///    to 5,000 rows per statement. Pass (a) restores the queue row of a `PENDING`
+///    job that has none (a claimer that died, or a failed restore) once it is 60 s
+///    old, EXCLUDING this process's in-flight ids (those are being published). Every
+///    non-zero count is a WARN: a crash's leftovers, a bug, or an older binary
+///    writing the table. (The leader's start-up pass is [PendingJobPoller]'s.)
 ///  - **backlog gauge** (every 15 s): the depth and the oldest wait of the
 ///    unclaimed due rows.
 ///
@@ -40,11 +39,10 @@ final class QueueMaintenance implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(QueueMaintenance.class);
 
     /// The cadences and thresholds. Tests shorten them.
-    record Timing(Duration sweepInterval, Duration backlogInterval, Duration staleClaimAfter,
-                  Duration staleQueuedAfter, Duration reconcileJobAge, Duration reconcileClaimAge,
-                  int reconcileMaxRows) {
+    record Timing(Duration sweepInterval, Duration backlogInterval, Duration staleQueuedAfter,
+                  Duration reconcileJobAge, int reconcileMaxRows) {
         static final Timing DEFAULTS = new Timing(Duration.ofSeconds(60), Duration.ofSeconds(15),
-                Duration.ofMinutes(5), Duration.ofMinutes(15), Duration.ofSeconds(60), Duration.ofMinutes(5), 5_000);
+                Duration.ofMinutes(15), Duration.ofSeconds(60), 5_000);
     }
 
     private final DispatchJobLifecycle lifecycle;
@@ -80,25 +78,8 @@ final class QueueMaintenance implements AutoCloseable {
     /// The three sweeps, if this instance is the leader. Exposed for tests.
     void sweepAll() {
         if (!leader.getAsBoolean()) return;
-        guarded("stale claims", this::releaseStaleClaims);
         guarded("stale QUEUED", this::recoverStaleQueued);
         guarded("reconcile", this::reconcile);
-    }
-
-    /// Releases the claims older than the threshold that this process does not hold.
-    int releaseStaleClaims() {
-        var event = new QueueSweepEvent();
-        event.begin();
-        int released = lifecycle.releaseStaleClaims(inFlightIds.get(), timing.staleClaimAfter());
-        metrics.staleClaimsReleased.add(released);
-        commit(event, "stale_claims", released);
-        if (released > 0) {
-            LOG.atWarn().setMessage("released claims held by a claimer that is gone; their jobs are claimed again")
-                    .addKeyValue("count", released)
-                    .addKeyValue("olderThan", timing.staleClaimAfter())
-                    .log();
-        }
-        return released;
     }
 
     /// Returns the jobs still `QUEUED` after the threshold to `PENDING`.
@@ -121,7 +102,7 @@ final class QueueMaintenance implements AutoCloseable {
     DispatchJobLifecycle.Reconciled reconcile() {
         var event = new QueueSweepEvent();
         event.begin();
-        var r = lifecycle.reconcileQueue(timing.reconcileMaxRows(), timing.reconcileJobAge(), timing.reconcileClaimAge());
+        var r = lifecycle.reconcileQueue(timing.reconcileMaxRows(), timing.reconcileJobAge(), inFlightIds.get());
         metrics.reconcileInserted.add(r.inserted());
         metrics.reconcileDeleted.add(r.deleted());
         metrics.reconcileRefreshed.add(r.refreshed());
@@ -129,7 +110,7 @@ final class QueueMaintenance implements AutoCloseable {
         if (!r.isClean()) {
             LOG.atWarn().setMessage("the dispatch queue disagreed with the jobs table and was repaired; this means "
                             + "a bug, or an older binary writing msg_dispatch_queue")
-                    .addKeyValue("insertedMissing", r.inserted())
+                    .addKeyValue("restoredMissing", r.inserted())
                     .addKeyValue("deletedOrphaned", r.deleted())
                     .addKeyValue("refreshedStale", r.refreshed())
                     .log();

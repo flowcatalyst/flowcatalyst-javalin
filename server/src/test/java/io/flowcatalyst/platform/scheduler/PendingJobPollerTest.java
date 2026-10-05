@@ -430,7 +430,7 @@ class PendingJobPollerTest {
         seedWriteRow(new Seed(idLow, code("orderlow"), null, "PENDING", t, null, null, null, group,
                 0, null, null, null, null, null, null, null, "IMMEDIATE", 7, t, "EVENT", "exponential", null));
 
-        List<DispatchJobRepository.ClaimRow> claims = LIFECYCLE.claimPending(5000, java.util.Set.of());
+        List<DispatchJobRepository.ClaimRow> claims = LIFECYCLE.claimPending(5000, java.util.Set.of(), java.util.Set.of());
         List<String> myOrder = claims.stream().map(DispatchJobRepository.ClaimRow::id)
                 .filter(id -> id.equals(idLow) || id.equals(idHigh)).toList();
         assertThat(myOrder).as("equal sequence and created_at; the id breaks the tie ascending")

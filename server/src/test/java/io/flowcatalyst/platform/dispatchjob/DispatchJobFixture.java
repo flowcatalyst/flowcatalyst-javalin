@@ -222,7 +222,7 @@ public final class DispatchJobFixture {
     /// Makes `msg_dispatch_queue` exact for these jobs after a test changed them
     /// directly (test-only: production code writes the queue only in the lifecycle):
     /// a job that is not `PENDING` (or no longer exists) has no queue row, and a
-    /// `PENDING` job has one mirroring it — `version = updated_at`, unclaimed. Use
+    /// `PENDING` job has one mirroring it — `version = updated_at` . Use
     /// after any direct insert or update of `msg_dispatch_jobs`.
     public static void syncQueue(java.util.Collection<String> jobIds) {
         if (jobIds.isEmpty()) return;
@@ -238,7 +238,7 @@ public final class DispatchJobFixture {
                 + " message_group = EXCLUDED.message_group, sequence = EXCLUDED.sequence,"
                 + " scheduled_for = EXCLUDED.scheduled_for, subscription_id = EXCLUDED.subscription_id,"
                 + " dispatch_pool_id = EXCLUDED.dispatch_pool_id, client_id = EXCLUDED.client_id, mode = EXCLUDED.mode,"
-                + " queue = EXCLUDED.queue, version = EXCLUDED.version, claimed_at = NULL", (Object) ids);
+                + " queue = EXCLUDED.queue, version = EXCLUDED.version", (Object) ids);
     }
 
     /// Sets a job's status directly (test-only, behind the lifecycle's back) and keeps the
@@ -292,24 +292,6 @@ public final class DispatchJobFixture {
         return s.id();
     }
 
-    /// The write row, and, when it is `PENDING`, the queue row the lifecycle would have
-    /// written for it, CLAIMED (test-only: production code never writes the queue outside
-    /// the lifecycle). `claimed_at` is stamped so a later "re-entering PENDING resets the
-    /// claim" assertion is meaningful. Use this instead of [#seedWriteRow] in any test
-    /// that needs the queue row to start out claimed.
-    public static String seedQueued(Seed s) {
-        insertWriteRow(s);
-        if ("PENDING".equals(s.status())) {
-            DB.execute("INSERT INTO msg_dispatch_queue (job_id, job_created_at, message_group, sequence, scheduled_for,"
-                            + " subscription_id, dispatch_pool_id, client_id, mode, queue, version, claimed_at)"
-                            + " SELECT id, created_at, message_group, sequence, scheduled_for, subscription_id,"
-                            + " dispatch_pool_id, client_id, mode, queue, updated_at, now()"
-                            + " FROM msg_dispatch_jobs WHERE id = ?",
-                    s.id());
-        }
-        return s.id();
-    }
-
     /// The queue row of `jobId` as a column map, or `null` when there is none.
     public static Map<String, Object> queueRow(String jobId) {
         var rec = DB.fetchOne(MSG_DISPATCH_QUEUE, MSG_DISPATCH_QUEUE.JOB_ID.eq(jobId));
@@ -318,15 +300,8 @@ public final class DispatchJobFixture {
 
     /// The invariant for one job: a queue row exists iff the job is `PENDING`, and
     /// when it exists it mirrors the job (`version = updated_at`, `scheduled_for`,
-    /// group, sequence, pool, client, subscription, mode, queue) and is unclaimed.
+    /// group, sequence, pool, client, subscription, mode, queue) and .
     public static void assertQueueMirrorsJob(String jobId, String label) {
-        assertQueueMirrorsJob(jobId, label, true);
-    }
-
-    /// As [#assertQueueMirrorsJob(String, String)]; `unclaimed = false` skips the
-    /// `claimed_at IS NULL` check (a queue row seeded as claimed that a REFUSED
-    /// transition left alone).
-    public static void assertQueueMirrorsJob(String jobId, String label, boolean unclaimed) {
         var job = DB.fetchOne(MSG_DISPATCH_JOBS, MSG_DISPATCH_JOBS.ID.eq(jobId));
         org.assertj.core.api.Assertions.assertThat(job).as(label + ": job exists").isNotNull();
         Map<String, Object> q = queueRow(jobId);
@@ -346,7 +321,6 @@ public final class DispatchJobFixture {
         a.containsEntry("subscription_id", job.getSubscriptionId());
         a.containsEntry("mode", job.getMode());
         a.containsEntry("queue", job.getQueue());
-        if (unclaimed) a.containsEntry("claimed_at", null);
     }
 
     /// The projection row only (`msg_dispatch_jobs_read`): fewer defaults

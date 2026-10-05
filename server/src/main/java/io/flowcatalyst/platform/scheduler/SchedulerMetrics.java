@@ -28,14 +28,15 @@ public final class SchedulerMetrics {
     final LongAdder droppedPoisoned = new LongAdder();
     final LongAdder markNotUpdated = new LongAdder();
     final LongAdder fullBatchClaims = new LongAdder();
-    final LongAdder claimsReleased = new LongAdder();
-    final LongAdder releaseErrors = new LongAdder();
-    final LongAdder staleClaimsReleased = new LongAdder();
+    final LongAdder claimsRestored = new LongAdder();
+    final LongAdder restoreErrors = new LongAdder();
+    final LongAdder leaderStartRestored = new LongAdder();
     final LongAdder staleQueuedRecovered = new LongAdder();
     final LongAdder reconcileInserted = new LongAdder();
     final LongAdder reconcileDeleted = new LongAdder();
     final LongAdder reconcileRefreshed = new LongAdder();
     final LongAdder maintenanceErrors = new LongAdder();
+    private volatile LongSupplier heldGroups = () -> 0;
     private volatile long backlogDepth;
     private volatile double backlogOldestAgeSeconds;
     final LongAdder pollErrors = new LongAdder();
@@ -54,6 +55,10 @@ public final class SchedulerMetrics {
             lanePublishNanos[i] = new LongAdder();
             lanePublishCount[i] = new LongAdder();
         }
+    }
+
+    void heldGroups(LongSupplier heldGroups) {
+        this.heldGroups = heldGroups;
     }
 
     void gauges(LongSupplier bufferInUse, LongSupplier inFlight) {
@@ -129,14 +134,14 @@ public final class SchedulerMetrics {
                     markNotUpdated);
             counter(b, "fc_scheduler_full_batch_claims_total",
                     "Claims that filled everything asked for (a backlog deeper than one claim).", fullBatchClaims);
-            counter(b, "fc_scheduler_claims_released_total",
-                    "Claims given back because the job was not published (failed publish, poisoned drop, doomed or hold-back withhold, failed QUEUED update).",
-                    claimsReleased);
-            counter(b, "fc_scheduler_claim_release_errors_total",
-                    "Claim releases that failed; the stale-claim sweep gives those claims back.", releaseErrors);
-            counter(b, "fc_scheduler_stale_claims_released_total",
-                    "Claims released because their claimer is gone: at start as leader, and by the periodic sweep (claims older than 5 minutes this process does not hold).",
-                    staleClaimsReleased);
+            counter(b, "fc_scheduler_claims_restored_total",
+                    "Queue rows put back because the job was not published (failed publish, poisoned drop, doomed or hold-back withhold, failed QUEUED update, shutdown).",
+                    claimsRestored);
+            counter(b, "fc_scheduler_claim_restore_errors_total",
+                    "Restores that failed; the reconcile sweep restores those rows.", restoreErrors);
+            counter(b, "fc_scheduler_leader_start_restored_total",
+                    "Queue rows restored by the new leader's start-up reconcile pass (jobs a dead claimer left PENDING with no queue row).",
+                    leaderStartRestored);
             counter(b, "fc_scheduler_stale_queued_recovered_total",
                     "Jobs the leader returned from QUEUED to PENDING after the stale threshold (15 minutes).",
                     staleQueuedRecovered);
@@ -176,6 +181,10 @@ public final class SchedulerMetrics {
             }
             b.metricSnapshot(laneSeconds.build());
             b.metricSnapshot(laneCount.build());
+            b.metricSnapshot(GaugeSnapshot.builder().name("fc_scheduler_held_groups")
+                    .help("Groups the poller currently remembers as held back (skipped by the claim for 5 seconds).")
+                    .dataPoint(GaugeSnapshot.GaugeDataPointSnapshot.builder().value(heldGroups.getAsLong()).build())
+                    .build());
             b.metricSnapshot(GaugeSnapshot.builder().name("fc_scheduler_buffer_in_use")
                     .help("Permits held: jobs claimed and not yet settled by a lane.")
                     .dataPoint(GaugeSnapshot.GaugeDataPointSnapshot.builder().value(bufferInUse.getAsLong()).build())

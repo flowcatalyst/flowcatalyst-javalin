@@ -27,17 +27,18 @@ import java.util.function.BooleanSupplier;
 /// One [#pollOnce]:
 ///
 ///  1. not the leader: nothing (the caller waits the poll interval). The first
-///     poll after becoming the leader gives back every claim this process does
-///     not hold in memory (at process start: all of them) — a claimer that died
-///     between claim and publish left them;
+///     poll after becoming the leader restores the queue rows of every `PENDING`
+///     job that has none and this process does not hold in memory (a claimer that
+///     died between claim and publish left them), with no age guard;
 ///  2. acquire one permit (blocking), then up to `batchSize` in all without
 ///     blocking; `wanted` = permits held;
 ///  3. increment the claim generation, THEN snapshot the in-flight set (for the
-///     doomed check), THEN claim `LIMIT wanted` excluding paused subscriptions —
-///     one plain statement, no transaction, no row lock held; the claimed rows
-///     carry `claimed_at`, which is what keeps them out of the next claim;
+///     doomed check), THEN claim `LIMIT wanted` excluding paused subscriptions
+///     and the groups found held in the last 5 seconds — two plain statements,
+///     no transaction, no row lock; the claim DELETES the rows it takes, which is
+///     what keeps them out of the next claim;
 ///  4. apply the `BLOCK_ON_ERROR` hold-back, and the doomed check; the rows they
-///     withhold get their claim RELEASED (they stay in the queue, in order);
+///     withhold are RESTORED to the queue (from the job table, in order);
 ///  5. hand the rest to the lanes (claim order, grouped -> `hash(group) % N`,
 ///     ungrouped -> round-robin) and release the permits not used.
 ///
@@ -46,7 +47,7 @@ import java.util.function.BooleanSupplier;
 /// A claim that holds row locks across the broker round-trips (ten
 /// `SendMessageBatch` calls for a full SQS batch) serialises the whole
 /// scheduler behind its slowest publish. The rows a claim returns are kept out
-/// of the NEXT claim by their `claimed_at` instead. Two outcomes that the locks
+/// of the NEXT claim by being deleted from the queue instead. Two outcomes that the locks
 /// used to prevent are simply accepted, because both are harmless: a job
 /// published and then returned to the queue by a failed status update is
 /// published again (the router drops a copy whose original is in its pipeline,
@@ -95,6 +96,10 @@ public final class PendingJobPoller implements AutoCloseable {
     /// Whether the previous poll saw this instance as the leader; the poller's
     /// thread only. The first poll after it turns true gives the stale claims back.
     private boolean wasLeader;
+    /// Groups found held back in the last 5 seconds, skipped by the claim (poller thread only; its size is
+    /// read by the metrics gauge, so the count is mirrored in a volatile).
+    private final HeldGroups heldGroups = new HeldGroups();
+    private volatile int heldGroupCount;
 
     /// Builds the poller and starts its lanes.
     public PendingJobPoller(DataSource dataSource, DispatchJobRepository repository, DispatchJobLifecycle lifecycle,
@@ -111,6 +116,7 @@ public final class PendingJobPoller implements AutoCloseable {
         this.leader = Objects.requireNonNull(leader, "leader");
         this.config = Objects.requireNonNull(config, "config");
         this.metrics = new SchedulerMetrics(config.dispatchers());
+        this.metrics.heldGroups(() -> heldGroupCount);
         this.lanes = new DispatchLanes(config, Objects.requireNonNull(lifecycle, "lifecycle"), Objects.requireNonNull(publisher, "publisher"),
                 this::buildMessage, metrics);
         this.lanes.start();
@@ -164,7 +170,7 @@ public final class PendingJobPoller implements AutoCloseable {
         int inFlightCount;
         try {
             if (!wasLeader) {
-                releaseClaimsOfDeadClaimers();
+                restoreWhatADeadClaimerLeft();
                 wasLeader = true;
             }
             // Generation FIRST, then the snapshot (DispatchLanes class doc).
@@ -211,26 +217,36 @@ public final class PendingJobPoller implements AutoCloseable {
                            int doomedSkipped) {
     }
 
-    /// The first poll as the leader: every claim this process does not hold in
-    /// memory is a claim whose claimer died between the claim and the publish
-    /// (at process start that is all of them). Gives them back.
-    private void releaseClaimsOfDeadClaimers() {
-        int released = lifecycle.releaseStaleClaims(lanes.inFlightIds(), Duration.ZERO);
-        metrics.staleClaimsReleased.add(released);
-        if (released > 0) {
-            LOG.atInfo().setMessage("became the dispatch leader; released claims no live process holds")
-                    .addKeyValue("count", released)
+    /// The first poll as the leader: a job claimed by a process that died (its queue row deleted, never
+    /// published) is `PENDING` with no queue row. Before the first claim, restore every such job with no age
+    /// guard, repeatedly until a pass inserts nothing (bounded batches). What this process holds in memory
+    /// (nothing at start; the in-flight jobs when leadership is regained) is excluded.
+    private void restoreWhatADeadClaimerLeft() {
+        int total = 0;
+        int inserted;
+        do {
+            inserted = lifecycle.restoreMissing(RESTORE_BATCH, Duration.ZERO, lanes.inFlightIds());
+            total += inserted;
+        } while (inserted >= RESTORE_BATCH);
+        metrics.leaderStartRestored.add(total);
+        if (total > 0) {
+            LOG.atInfo().setMessage("became the dispatch leader; restored queue rows of jobs no live process holds")
+                    .addKeyValue("count", total)
                     .log();
         }
     }
 
+    /// Rows per start-up restore pass.
+    private static final int RESTORE_BATCH = 5_000;
+
     private Claimed claim(int wanted, Set<String> paused, DispatchLanes.Snapshot inFlight) {
-        List<DispatchJobRepository.ClaimRow> claims = lifecycle.claimPending(wanted, paused);
+        List<DispatchJobRepository.ClaimRow> claims = lifecycle.claimPending(wanted, paused, heldGroups.current());
+        heldGroupCount = heldGroups.size();
         if (claims.isEmpty()) {
             return new Claimed(0, List.of(), 0, 0);
         }
         List<DispatchJobRepository.ClaimRow> toSubmit = new ArrayList<>(claims.size());
-        List<String> withheld = new ArrayList<>();
+        List<DispatchJobRepository.ClaimRow> withheld = new ArrayList<>();
         int heldBack = 0;
         List<DispatchJobRepository.ClaimRow> passed;
         try {
@@ -243,44 +259,48 @@ public final class PendingJobPoller implements AutoCloseable {
                 }
             }
             Set<String> held = blockCandidates.isEmpty() ? Set.of() : repository.heldBeforeIds(blockCandidates);
+            Set<String> heldGroupNames = new java.util.HashSet<>();
             for (DispatchJobRepository.ClaimRow c : claims) {
                 if (held.contains(c.id())) {
                     heldBack++;
-                    withheld.add(c.id()); // positional hold-back — stays queued, spec §3 "GroupHolding"
+                    withheld.add(c); // positional hold-back — stays queued, spec §3 "GroupHolding"
+                    heldGroupNames.add(c.messageGroup());
                     continue;
                 }
                 toSubmit.add(c);
             }
-            // The claim skipped in-flight jobs (still claimed); if one of them is DOOMED (a
+            heldGroups.remember(heldGroupNames);
+            heldGroupCount = heldGroups.size();
+            // Jobs of this process that are still in flight were claimed earlier; if one of them is DOOMED (a
             // lane will drop it), the rows behind it in its group must wait (DispatchLanes, point 4).
             passed = lanes.withoutGroupsBehindDoomedJobs(toSubmit, inFlight);
         } catch (RuntimeException e) {
-            // The claim happened and nothing will be submitted: give every claim back.
-            releaseQuietly(claims.stream().map(DispatchJobRepository.ClaimRow::id).toList());
+            // The claim happened and nothing will be submitted: put every row back.
+            restoreQuietly(claims);
             throw e;
         }
         if (passed.size() != toSubmit.size()) {
             Set<String> passedIds = new java.util.HashSet<>(passed.size());
             for (DispatchJobRepository.ClaimRow c : passed) passedIds.add(c.id());
             for (DispatchJobRepository.ClaimRow c : toSubmit) {
-                if (!passedIds.contains(c.id())) withheld.add(c.id());
+                if (!passedIds.contains(c.id())) withheld.add(c);
             }
         }
-        releaseQuietly(withheld);
+        restoreQuietly(withheld);
         return new Claimed(claims.size(), passed, heldBack, toSubmit.size() - passed.size());
     }
 
-    /// Gives claims back; a failure is logged and counted (the stale-claim sweep
-    /// gives them back later) rather than failing a poll that has work to submit.
-    private void releaseQuietly(List<String> ids) {
-        if (ids.isEmpty()) return;
+    /// Puts rows back; a failure is logged and counted (the reconcile sweep restores them later) rather than
+    /// failing a poll that has work to submit.
+    private void restoreQuietly(List<DispatchJobRepository.ClaimRow> rows) {
+        if (rows.isEmpty()) return;
         try {
-            lifecycle.releaseClaims(ids);
-            metrics.claimsReleased.add(ids.size());
+            lifecycle.restore(rows);
+            metrics.claimsRestored.add(rows.size());
         } catch (RuntimeException e) {
-            metrics.releaseErrors.increment();
-            LOG.atWarn().setMessage("could not release claims; the stale-claim sweep gives them back")
-                    .addKeyValue("count", ids.size())
+            metrics.restoreErrors.increment();
+            LOG.atWarn().setMessage("could not restore queue rows; the reconcile sweep restores them")
+                    .addKeyValue("count", rows.size())
                     .setCause(e)
                     .log();
         }
@@ -331,6 +351,10 @@ public final class PendingJobPoller implements AutoCloseable {
     /// permit is back.
     boolean awaitIdle(Duration timeout) {
         return lanes.awaitIdle(timeout);
+    }
+
+    HeldGroups heldGroupsForTest() {
+        return heldGroups;
     }
 
     DispatchLanes lanes() {

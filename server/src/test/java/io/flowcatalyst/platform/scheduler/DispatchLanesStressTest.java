@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// An adversarial multi-threaded run of the poller's claim loop against the
 /// lanes, with a model of the queue table as the "database" (a claim sets
-/// `claimed_at`; a publish removes the row; every other outcome releases the
+/// being deleted; a publish keeps it out; every other outcome restores the
 /// claim): 3,000 jobs in 30 groups,
 /// a buffer of 24, four lanes, claims of 8, lane batches of 5, 3% random publish
 /// failures, 1% random status-update failures, and random jitter in the store
@@ -68,7 +68,7 @@ class DispatchLanesStressTest {
     /// order) and the publisher in front of it.
     private static final class Model implements DispatchPublisher {
         final Map<Integer, TreeSet<Integer>> pending = new TreeMap<>();
-        /// Ids carrying a claim (`claimed_at` set): out of every claim until released.
+        /// Ids whose queue row was deleted by a claim: out of every claim until restored.
         final Set<String> claimed = new HashSet<>();
         final Map<Integer, List<Integer>> received = new TreeMap<>();
         final Map<Integer, Set<Integer>> seen = new TreeMap<>();
@@ -88,7 +88,7 @@ class DispatchLanesStressTest {
             return pending.values().stream().mapToInt(Set::size).sum();
         }
 
-        /// The claim: unclaimed rows in `(group, sequence)` order, which it claims.
+        /// The claim: rows still in the queue, in `(group, sequence)` order, which it deletes.
         List<ClaimRow> claim(int limit) {
             jitter(300);
             synchronized (this) {
@@ -104,11 +104,11 @@ class DispatchLanesStressTest {
             }
         }
 
-        /// The release: the claims go back.
-        void release(List<String> ids) {
+        /// The restore: the rows go back.
+        void release(List<ClaimRow> rows) {
             jitter(200);
             synchronized (this) {
-                claimed.removeAll(ids);
+                for (ClaimRow r : rows) claimed.remove(r.id());
             }
         }
 
@@ -171,7 +171,7 @@ class DispatchLanesStressTest {
             if (submit.size() != rows.size()) {
                 var kept = new HashSet<String>();
                 for (var r : submit) kept.add(r.id());
-                model.release(rows.stream().map(ClaimRow::id).filter(id -> !kept.contains(id)).toList());
+                model.release(rows.stream().filter(r -> !kept.contains(r.id())).toList());
             }
             lanes.submit(submit, generation);
             lanes.releasePermits(want - submit.size());

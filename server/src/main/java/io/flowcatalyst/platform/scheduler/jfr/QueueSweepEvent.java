@@ -5,7 +5,7 @@ import jdk.jfr.Label;
 import jdk.jfr.Name;
 
 /// One housekeeping sweep of the scheduler's leader over `msg_dispatch_queue`
-/// (stale claims released, stale `QUEUED` jobs recovered, reconcile repairs):
+/// (stale `QUEUED` jobs recovered, reconcile repairs):
 /// which sweep, and how many rows it changed. The event's own duration is the
 /// statement(s). Emitted for every sweep that runs, including those that change nothing.
 @Name("io.flowcatalyst.platform.scheduler.QueueSweep")

@@ -450,10 +450,10 @@ class DispatchLanesTest {
             return rows.size();
         }
 
-        void release(List<String> ids) {
+        void release(List<ClaimRow> rows) {
             events.add("release");
             if (failRelease) throw new IllegalStateException("release down");
-            released.addAll(ids);
+            rows.forEach(r -> released.add(r.id()));
         }
     }
 
@@ -481,7 +481,7 @@ class DispatchLanesTest {
         assertThat(publisher.published()).containsExactlyInAnyOrder("g-j1", "o-j1");
         assertThat(recorder.marked).containsExactlyInAnyOrder("g-j1", "o-j1");
         assertThat(recorder.released).as("the failed job and the one behind it").containsExactlyInAnyOrder("g-j2", "g-j3");
-        assertThat(metrics.claimsReleased.sum()).isEqualTo(2);
+        assertThat(metrics.claimsRestored.sum()).isEqualTo(2);
     }
 
     /// The jobs a lane drops because their group was poisoned give their claims back too.
@@ -545,7 +545,7 @@ class DispatchLanesTest {
         claim(lanes, row("r-j1", "group-r"));
         assertThat(lanes.awaitIdle(WAIT)).as("the permits came back").isTrue();
 
-        assertThat(metrics.releaseErrors.sum()).isEqualTo(1);
+        assertThat(metrics.restoreErrors.sum()).isEqualTo(1);
         assertThat(lanes.inFlightCount()).isZero();
         // and the lane still works
         recorder.failRelease = false;

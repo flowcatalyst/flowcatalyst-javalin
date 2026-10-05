@@ -140,7 +140,7 @@ class DispatchJobLifecycleEnforcementTest {
     void theScannerAlsoGuardsTheQueueTable() {
         assertThat(writes("\"INSERT INTO msg_dispatch_queue (job_id) VALUES (?)\"", QUEUE)).isNotNull();
         assertThat(writes("\"WITH moved AS (SELECT 1) DELETE FROM msg_dispatch_queue q USING moved m\"", QUEUE)).isNotNull();
-        assertThat(writes("\"UPDATE msg_dispatch_queue SET claimed_at = now()\"", QUEUE)).isNotNull();
+        assertThat(writes("\"UPDATE msg_dispatch_queue SET version = now()\"", QUEUE)).isNotNull();
         assertThat(writes("\"TRUNCATE msg_dispatch_queue\"", QUEUE)).isNotNull();
         assertThat(writes("dsl.deleteFrom(MSG_DISPATCH_QUEUE).where(x)", QUEUE)).isNotNull();
         assertThat(writes("var Q = Tables.MSG_DISPATCH_QUEUE;\n dsl.insertInto(Q).set(a, b)", QUEUE)).isNotNull();

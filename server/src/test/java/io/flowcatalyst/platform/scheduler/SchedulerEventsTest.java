@@ -71,12 +71,11 @@ class SchedulerEventsTest {
         var maintenance = new QueueMaintenance(new DispatchJobLifecycle(DATA_SOURCE), java.util.List::of, () -> true,
                 new SchedulerMetrics(1), QueueMaintenance.Timing.DEFAULTS);
         List<RecordedEvent> events = Recorded.from(io.flowcatalyst.platform.scheduler.jfr.QueueSweepEvent.class, () -> {
-            maintenance.releaseStaleClaims();
             maintenance.recoverStaleQueued();
             maintenance.reconcile();
         });
 
-        assertThat(events).extracting(e -> e.getString("sweep")).containsExactly("stale_claims", "stale_queued", "reconcile");
+        assertThat(events).extracting(e -> e.getString("sweep")).containsExactly("stale_queued", "reconcile");
         maintenance.close();
     }
 }
