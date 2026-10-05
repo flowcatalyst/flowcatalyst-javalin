@@ -649,24 +649,25 @@ public final class DispatchJobLifecycle implements ProcessingTransitions {
         if (claimed.isEmpty()) return 0;
         String[] ids = new String[claimed.size()];
         String[] createdAts = new String[claimed.size()];
-        Instant spanStart = null;
-        Instant spanEnd = null;
         int i = 0;
         for (ClaimRow c : claimed) {
             ids[i] = c.id();
             createdAts[i++] = c.createdAt().toString();
-            if (spanStart == null || c.createdAt().isBefore(spanStart)) spanStart = c.createdAt();
-            if (spanEnd == null || c.createdAt().isAfter(spanEnd)) spanEnd = c.createdAt();
         }
-        return update(RESTORE_SQL, "restore", ids, createdAts, spanStart, spanEnd);
+        return update(RESTORE_SQL, "restore", ids, createdAts);
     }
 
+    /// One primary-key lookup per (id, created_at) pair, the `status = 'PENDING'` test OUTSIDE the lateral
+    /// sub-select: written as a plain `(id, created_at) IN (SELECT * FROM unnest(...))` join the planner walks
+    /// the status index per job when the job table has no statistics (44-48 ms for 500 jobs); with `OFFSET 0`
+    /// fencing the lookup it is a primary-key probe whatever the statistics say (about 1 ms).
     private static final String RESTORE_SQL = "INSERT INTO msg_dispatch_queue AS q (" + QUEUE_COLUMNS + ")"
             + " SELECT j.id, j.created_at, j.message_group, j.sequence, j.scheduled_for, j.subscription_id,"
             + " j.dispatch_pool_id, j.client_id, j.mode, j.queue, j.updated_at"
-            + " FROM msg_dispatch_jobs j"
-            + " JOIN unnest(?::text[], ?::text[]) AS u(id, created_at) ON j.id = u.id AND j.created_at = u.created_at::timestamptz"
-            + " WHERE j.created_at >= ? AND j.created_at <= ? AND j.status = 'PENDING'"
+            + " FROM unnest(?::text[], ?::text[]) AS u(id, created_at)"
+            + " CROSS JOIN LATERAL (SELECT * FROM msg_dispatch_jobs"
+            + " WHERE id = u.id AND created_at = u.created_at::timestamptz OFFSET 0) j"
+            + " WHERE j.status = 'PENDING'"
             + " ON CONFLICT (job_id) DO NOTHING";
 
     private int update(String sql, String what, Object... params) {
@@ -752,9 +753,16 @@ public final class DispatchJobLifecycle implements ProcessingTransitions {
     /// worth a WARN; a non-zero (a) is a crash's leftovers or a failed restore.
     public Reconciled reconcileQueue(int maxRows, java.time.Duration jobAge, java.util.Collection<String> inFlight) {
         int inserted = restoreMissing(maxRows, jobAge, inFlight);
+        Reconciled rest = reconcileRows(maxRows);
+        return new Reconciled(inserted, rest.deleted(), rest.refreshed());
+    }
+
+    /// Reconcile (b) and (c) only: delete the queue rows of jobs that are not `PENDING`, refresh the ones that
+    /// differ from their job. (Neither depends on what the calling process has in flight.)
+    public Reconciled reconcileRows(int maxRows) {
         int deleted = update(RECONCILE_DELETE_SQL, "reconcile delete", maxRows);
         int refreshed = update(RECONCILE_REFRESH_SQL, "reconcile refresh", maxRows);
-        return new Reconciled(inserted, deleted, refreshed);
+        return new Reconciled(0, deleted, refreshed);
     }
 
     /// The scheduler's backlog, sampled.

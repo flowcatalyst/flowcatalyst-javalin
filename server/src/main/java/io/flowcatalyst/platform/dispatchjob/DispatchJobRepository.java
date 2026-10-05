@@ -286,12 +286,26 @@ public final class DispatchJobRepository implements ProcessingRepository {
     ///
     /// Deliberately excludes `QUEUED`/`PROCESSING` — the ordinary in-flight flow.
     /// Both selects project `(message_group, sequence, created_at, id)`.
+    /// The queue half is ONE ORDERED INDEX PROBE per candidate group (the first backed-off row in the group's
+    /// order, `LIMIT 1` on `idx_dispatch_queue_order`), BOUNDED by the position of the group's last candidate:
+    /// only a holder positioned before a candidate matters, and the due rows before it are few (the claim has
+    /// just deleted the candidates themselves). As a plain `message_group = ANY(...) AND scheduled_for > NOW()`
+    /// read, a custom plan (which the scheduler's pool forces) seq-scanned a 100,000-row queue; as an unbounded
+    /// probe it walks every due row of the group looking for one that is not (22-46 ms for 500 groups of 200
+    /// due rows at 100,000). Arguments: statuses, groups (jobs half), then the groups' last-candidate positions
+    /// (group, sequence, created_at as text, id).
     private static final String HOLDERS_OF_GROUPS_SQL = """
             SELECT message_group, sequence, created_at, id FROM msg_dispatch_jobs
              WHERE status = ANY(?::text[]) AND message_group = ANY(?::text[])
             UNION ALL
-            SELECT message_group, sequence, job_created_at, job_id FROM msg_dispatch_queue
-             WHERE message_group = ANY(?::text[]) AND scheduled_for > NOW()""";
+            SELECT h.message_group, h.sequence, h.job_created_at, h.job_id
+              FROM unnest(?::text[], ?::int[], ?::text[], ?::text[]) AS g(grp, seq, created, id)
+             CROSS JOIN LATERAL (
+                  SELECT message_group, sequence, job_created_at, job_id FROM msg_dispatch_queue
+                   WHERE message_group = g.grp AND scheduled_for > NOW()
+                     AND (sequence, job_created_at, job_id) < (g.seq, g.created::timestamptz, g.id)
+                   ORDER BY sequence, job_created_at, job_id
+                   LIMIT 1) h""";
 
     private static final String GROUP_HELD_BEFORE_SQL = """
             SELECT EXISTS (
@@ -380,7 +394,27 @@ public final class DispatchJobRepository implements ProcessingRepository {
              PreparedStatement ps = conn.prepareStatement(EARLIEST_HOLDERS_SQL)) {
             ps.setArray(1, conn.createArrayOf("text", HOLDING_STATUSES.toArray(String[]::new)));
             ps.setArray(2, conn.createArrayOf("text", groups));
-            ps.setArray(3, conn.createArrayOf("text", groups));
+            // each group's LAST candidate in position order bounds the queue probe
+            Map<String, ClaimRow> last = new HashMap<>();
+            for (ClaimRow c : candidates) {
+                if (c.messageGroup() == null) continue;
+                last.merge(c.messageGroup(), c, (a, b) -> positionedBefore(a, b) ? b : a);
+            }
+            String[] lg = new String[groups.length];
+            Integer[] ls = new Integer[groups.length];
+            String[] lc = new String[groups.length];
+            String[] li = new String[groups.length];
+            for (int i = 0; i < groups.length; i++) {
+                ClaimRow c = last.get(groups[i]);
+                lg[i] = groups[i];
+                ls[i] = c.sequence();
+                lc[i] = c.createdAt().toString();
+                li[i] = c.id();
+            }
+            ps.setArray(3, conn.createArrayOf("text", lg));
+            ps.setArray(4, conn.createArrayOf("int4", ls));
+            ps.setArray(5, conn.createArrayOf("text", lc));
+            ps.setArray(6, conn.createArrayOf("text", li));
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     String group = rs.getString(1);

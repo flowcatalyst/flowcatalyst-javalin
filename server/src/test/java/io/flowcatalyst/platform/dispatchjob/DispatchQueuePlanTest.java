@@ -178,7 +178,7 @@ class DispatchQueuePlanTest {
         return sb.toString();
     }
 
-    private record Statements(String s1, String s2, String restore) {
+    private record Statements(String s1, String s2, String restore, String holdBack, String heldBefore) {
     }
 
     /// The SQL of the claim's two statements and of the restore, as the lifecycle issues them.
@@ -195,6 +195,12 @@ class DispatchQueuePlanTest {
         }
         rec.as("restore");
         lifecycle.restore(List.of(new ClaimRow("J000000000001", null, "grp-1", null, null, null, created, 1, null, created)));
+        rec.as("holdback");
+        var repo = new DispatchJobRepository(rec);
+        repo.heldBeforeIds(List.of(new ClaimRow("J000000000001", null, "grp-1", io.flowcatalyst.platform.shared.dispatch.DispatchMode.BLOCK_ON_ERROR,
+                null, null, created, 1, null, created)));
+        rec.as("heldbefore");
+        repo.groupHeldBefore("grp-1", 5, created, "J000000000001");
         String[] claim = rec.sqlByName.get("claim").split("\n;;\n");
         String s1 = null, s2 = null;
         for (String q : claim) {
@@ -203,7 +209,7 @@ class DispatchQueuePlanTest {
         }
         assertThat(s1).isNotNull();
         assertThat(s2).isNotNull();
-        return new Statements(s1, s2, rec.sqlByName.get("restore"));
+        return new Statements(s1, s2, rec.sqlByName.get("restore"), rec.sqlByName.get("holdback"), rec.sqlByName.get("heldbefore"));
     }
 
     private static String arrayLiteral(List<String> ids) {
@@ -215,7 +221,9 @@ class DispatchQueuePlanTest {
         exec(c, "DEALLOCATE ALL");
         exec(c, "PREPARE dq_s1(text[], text[], int) AS " + generic(st.s1()));
         exec(c, "PREPARE dq_s2(text[]) AS " + generic(st.s2()));
-        exec(c, "PREPARE dq_restore(text[], text[], timestamptz, timestamptz) AS " + generic(st.restore()));
+        exec(c, "PREPARE dq_restore(text[], text[]) AS " + generic(st.restore()));
+        exec(c, "PREPARE dq_hold(text[], text[], text[], int[], text[], text[]) AS " + generic(st.holdBack()));
+        exec(c, "PREPARE dq_before(text[], text, int, timestamptz, text, text, int, timestamptz, text) AS " + generic(st.heldBefore()));
     }
 
     private static String explain(Connection c, String executeCall) throws SQLException {
@@ -233,7 +241,7 @@ class DispatchQueuePlanTest {
         }
         List<String> ordered = new ArrayList<>();
         for (String id : ids) ordered.add("\"" + created.get(id) + "\"");
-        return arrayLiteral(ids) + ", " + arrayLiteral(ordered) + ", '2000-01-01'::timestamptz, now() + interval '1 day'";
+        return arrayLiteral(ids) + ", " + arrayLiteral(ordered);
     }
 
     private static boolean seqScansQueue(String plan) {
@@ -259,7 +267,8 @@ class DispatchQueuePlanTest {
     // ── one scenario ───────────────────────────────────────────────────────
 
     /// Builds the state, then returns the three plans (S1, S2 over the ids S1 returns, restore of those ids) and timings.
-    private record Result(String s1Plan, String s2Plan, String restorePlan, double s1Ms, double s2Ms, double restoreMs) {
+    private record Result(String s1Plan, String s2Plan, String restorePlan, double s1Ms, double s2Ms, double restoreMs,
+                          String holdPlan, double holdMs, String beforePlan) {
     }
 
     private static Result scenario(State state, int n, boolean settings, String db, Statements st) throws Exception {
@@ -326,7 +335,30 @@ class DispatchQueuePlanTest {
             t = System.nanoTime();
             exec(c, "EXECUTE dq_restore(" + restoreArgs + ")");
             double restoreMs = (System.nanoTime() - t) / 1e6;
-            return new Result(s1Plan, s2Plan, restorePlan, s1Ms, s2Ms, restoreMs);
+            // the claim-time hold-back for 500 candidate groups (the scheduler's connection)
+            List<String> groups = new ArrayList<>();
+            for (int g = 1; g <= 500; g++) groups.add("grp-" + g);
+            // each group's last candidate: a position near the head of the group: the claim has just deleted the rows before it
+            List<String> seqs = new ArrayList<>(), creates = new ArrayList<>(), cids = new ArrayList<>();
+            for (int g = 1; g <= 500; g++) {
+                seqs.add("1");
+                creates.add("\"2100-01-01T00:00:00Z\"");
+                cids.add("Jzzzzzzzzzzzz");
+            }
+            String holdArgs = "'{FAILED,ERROR}'::text[], " + arrayLiteral(groups) + ", " + arrayLiteral(groups) + ", '{"
+                    + String.join(",", seqs) + "}'::int[], " + arrayLiteral(creates) + ", " + arrayLiteral(cids);
+            String holdPlan = explain(c, "dq_hold(" + holdArgs + ")");
+            t = System.nanoTime();
+            exec(c, "EXECUTE dq_hold(" + holdArgs + ")");
+            double holdMs = (System.nanoTime() - t) / 1e6;
+            // the delivery-time gate runs on a pool WITHOUT the settings
+            String beforePlan;
+            try (Connection plain = new Source(db, false, true).getConnection()) {
+                prepare(plain, st);
+                beforePlan = explain(plain, "dq_before('{FAILED,ERROR}'::text[], 'grp-1', 50, '2000-01-01'::timestamptz, 'J000000000001',"
+                        + " 'grp-1', 50, '2000-01-01'::timestamptz, 'J000000000001')");
+            }
+            return new Result(s1Plan, s2Plan, restorePlan, s1Ms, s2Ms, restoreMs, holdPlan, holdMs, beforePlan);
         }
     }
 
@@ -347,8 +379,10 @@ class DispatchQueuePlanTest {
                 Result r = scenario(state, n, true, db, st);
                 String where = state + " @" + n;
                 report.append(String.format("%-22s %7d %-9s %9.1f %9.1f %9.1f%n", state, n, "", r.s1Ms(), r.s2Ms(), r.restoreMs()));
+                report.append(String.format("   hold-back (500 groups): %.1f ms%n", r.holdMs()));
                 report.append("--- ").append(where).append(" S1\n").append(r.s1Plan()).append("\n--- S2\n").append(r.s2Plan())
-                        .append("\n--- restore\n").append(r.restorePlan()).append("\n");
+                        .append("\n--- restore\n").append(r.restorePlan()).append("\n--- hold-back\n").append(r.holdPlan())
+                        .append("\n--- delivery-time hold-back (no settings)\n").append(r.beforePlan()).append("\n");
                 if (r.s1Plan().contains("Sort")) failures.add(where + ": S1 has a Sort node");
                 if (seqScansQueue(r.s1Plan())) failures.add(where + ": S1 seq-scans the queue");
                 if (!r.s1Plan().contains("idx_dispatch_queue_order")) failures.add(where + ": S1 does not use the order index");
@@ -361,6 +395,9 @@ class DispatchQueuePlanTest {
                     if (seqScansQueue(r.s2Plan())) failures.add(where + ": S2 seq-scans the queue");
                     if (seqScansPopulatedJobs(r.restorePlan())) failures.add(where + ": restore seq-scans msg_dispatch_jobs");
                     if (!r.restorePlan().contains("_pkey")) failures.add(where + ": restore does not read msg_dispatch_jobs by primary key");
+                    if (r.restorePlan().contains("status_message_group_sequence_cre")) failures.add(where + ": restore walks the status index per job");
+                    if (seqScansQueue(r.holdPlan())) failures.add(where + ": the claim-time hold-back seq-scans the queue");
+                    if (seqScansQueue(r.beforePlan())) failures.add(where + ": the delivery-time hold-back seq-scans the queue");
                 }
             }
         }
