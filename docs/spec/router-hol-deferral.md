@@ -74,6 +74,12 @@ stay green; the 2026-09-17 deferral tests must stay green unmodified.
   redriven — a duplicate to a target that is already broken. Same change in Go
   (`internal/platform/scheduler` stale recovery removed; `reaper.go` 45 → 15) — hand-off owed.
   Lands as its own unit after this one; `docs/spec/dispatch-seam.md` §3/§7 amended then.
+  **AMENDED 2026-10-04 (owner): the stale-`QUEUED` sweep is restored, at 15 minutes** in all three
+  implementations (Java: a leader-only loop, `QueueMaintenance`; no `PROCESSING` sweep there — that
+  stays the reaper's). A message the broker lost or expired after `QUEUED` otherwise leaves the job
+  `QUEUED` for ever; the duplicate the sweep causes for a message the router merely holds is
+  ACK-dropped by the router (`ExternalRequeue`) or skipped by the delivery callback. 15 minutes, not
+  5, is the owner's accepted trade against the second-copy-every-5-minutes problem above.
 
 ## Addendum 2026-09-22 (catch-up slice C4): a deferred copy keeps its in-flight entry
 

@@ -288,7 +288,7 @@ derived from it or observed:
    **the dispatch scheduler its own fifth pool** (owner, 2026-10-04: subsystems are deployed
    together or standalone, so it shares nothing), opened only when the scheduler is enabled and
    sized `dispatchers + 2` ordinary permits plus the gate's probe reservation (`FC_SCHEDULER_DISPATCHERS`,
-   default 10 → 13 connections, 12 ordinary: a poller claim, its hold-back query and one per lane),
+   default 10 → 13 connections, 12 ordinary: a poller claim, its hold-back query and one per lane; the leader's queue housekeeping — stale-claim release, reconcile, stale-`QUEUED` recovery, the backlog gauge — runs one short statement at a time on the same pool),
    outside `B`; probes their own reservation (§1); SSE none. A share is by *connection-hold time*, not request count — a group that holds
    a connection across a whole transaction needs more than one that borrows per statement.
    Every group's pool is at least 2. The per-group pool size is the accepted knob for a
@@ -380,7 +380,7 @@ on their own URI-opened pools), **plus `SCHEDULER`** — a fifth, opened only wh
 `FC_SCHEDULER_ENABLED` (`Pools.open(url, reader, schedulerDispatchers)`; `Pools#scheduler()` is
 `null` otherwise), sized by `Pools#schedulerPoolSizeFor(dispatchers)` — the smallest Hikari size
 whose gate leaves `dispatchers + 2` ordinary permits (default: 13 for 10 dispatchers) — and used by
-the dispatch scheduler's poller, lanes, publisher and caches (`Server#start`'s `schedulerPool`);
+the dispatch scheduler's poller, lanes, publisher and caches and its leader-only queue housekeeping (`QueueMaintenance`) (`Server#start`'s `schedulerPool`);
 the reaper stays on `background`. Its gate series carry `pool="scheduler"`. Per-group override:
 `FC_DB_POOL_SIZE_<GROUP>` (`_API`, `_BFF`, `_DISPATCH`, `_BACKGROUND`, `_SCHEDULER`, floor 2);
 that is the only knob. Probes keep their reservation on the API pool
