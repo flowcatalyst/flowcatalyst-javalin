@@ -1,7 +1,6 @@
 package io.flowcatalyst.platform.dispatchjob;
 
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobs;
-import io.flowcatalyst.db.generated.tables.records.MsgDispatchJobsRecord;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository.ClaimRow;
 import io.flowcatalyst.platform.dispatchjob.jfr.DispatchTransitionRefusedEvent;
 import io.flowcatalyst.platform.dispatchjob.processing.ProcessingTransitions;
@@ -14,7 +13,6 @@ import io.prometheus.metrics.model.snapshots.CounterSnapshot;
 import io.prometheus.metrics.model.snapshots.Labels;
 import io.prometheus.metrics.model.snapshots.MetricSnapshots;
 import org.jooq.DSLContext;
-import org.jooq.JSONB;
 import org.jooq.SQLDialect;
 import org.jooq.exception.DataAccessException;
 import org.jooq.impl.DSL;
@@ -48,8 +46,8 @@ import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS;
 /// ## Two primitives
 ///
 /// Exactly two private primitives decide a job's status with respect to
-/// `PENDING`, and each issues ONE statement that always `RETURNING`s the
-/// columns a later queue table will need ([#RETURNING]):
+/// `PENDING`, and each issues ONE statement that also keeps
+/// `msg_dispatch_queue` exact (dispatch-queue spec, step 2 of 3):
 ///
 /// - [#enterPending] — the single place a job becomes, or is refreshed as,
 ///   `PENDING` (retry, deferral, hold, settled-return, reaper sweep, operator
@@ -62,6 +60,47 @@ import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS;
 /// (which names the statuses it may move FROM), the [Selector] and the extra
 /// columns. Creation (`PENDING` by insert) has no selector and is the INSERT
 /// statements at the bottom of this class — the one place a row is born.
+///
+/// ## The queue table
+///
+/// `msg_dispatch_queue` has exactly one row for every job whose status is
+/// `PENDING` and none for any other job; the row mirrors the job's current
+/// values and its `version` is the job's `updated_at`. It is written ONLY here
+/// (and by the partition manager's drop and `fcdev fresh`, named in
+/// `DispatchJobLifecycleEnforcementTest`), by explicit statements — no
+/// triggers — each ONE SQL statement, a data-modifying CTE, so the job change
+/// and the queue change are atomic with no new transaction and no extra round
+/// trip (a caller that passes a transaction keeps doing so):
+///
+/// - create: `WITH ins AS (INSERT INTO msg_dispatch_jobs … ON CONFLICT DO NOTHING
+///   RETURNING …) INSERT INTO msg_dispatch_queue … SELECT … FROM ins ON CONFLICT
+///   (job_id) DO NOTHING` — only rows actually inserted get a queue row;
+/// - [#enterPending]: `WITH moved AS (UPDATE … RETURNING …) INSERT INTO
+///   msg_dispatch_queue … SELECT … FROM moved ON CONFLICT (job_id) DO UPDATE …
+///   RETURNING …` — entering or re-entering `PENDING` always refreshes `version`
+///   and `scheduled_for` and resets `claimed_at`;
+/// - [#leavePending]: `WITH moved AS (UPDATE … RETURNING …), gone AS (DELETE FROM
+///   msg_dispatch_queue …) SELECT … FROM moved` — delete-if-exists, since a
+///   terminal outcome or a delivery claim may or may not find the job `PENDING`;
+/// - transitions with `PENDING` on neither side (operator cancel / complete from
+///   `FAILED`) write no queue row.
+///
+/// Mark-`QUEUED` additionally removes a queue row at the claimed `version` for a
+/// job in its batch even when the job row itself did not match (its status
+/// moved on without the queue row being refreshed). A queue row whose version
+/// differs (the job re-entered `PENDING` since the claim) is left alone.
+///
+/// **A known, accepted anomaly.** Under READ COMMITTED a statement's CTE sees
+/// the snapshot taken when the statement started. If an *enter* and a *leave*
+/// for the SAME job race, and the leave blocks on the job's row lock behind the
+/// enter, the leave's `DELETE` cannot see the queue row the enter has just
+/// inserted, so a queue row can outlive a job that is no longer `PENDING`. The
+/// opposite error (a `PENDING` job with no queue row, i.e. a lost job) cannot
+/// happen this way: an enter that waits behind a leave re-inserts with `ON
+/// CONFLICT`, which does see committed rows. The stale extra row is harmless
+/// and self-heals — the scheduler's mark-`QUEUED` removes it (rule above), and
+/// step 3 adds a reconcile sweep. The hot paths are deliberately NOT wrapped in
+/// transactions to avoid it. [#queueDrift] counts both kinds of disagreement.
 ///
 /// ## Rules
 ///
@@ -100,6 +139,41 @@ public final class DispatchJobLifecycle implements ProcessingTransitions {
     /// and ordered by. `updated_at` is the new row version.
     static final String RETURNING = "j.id, j.created_at, j.message_group, j.sequence, j.scheduled_for, "
             + "j.subscription_id, j.dispatch_pool_id, j.client_id, j.mode, j.queue, j.updated_at";
+
+    /// [#RETURNING] without the alias, for reading a CTE's rows back (`FROM moved`).
+    private static final String MOVED_COLUMNS = "id, created_at, message_group, sequence, scheduled_for, "
+            + "subscription_id, dispatch_pool_id, client_id, mode, queue, updated_at";
+
+    /// `msg_dispatch_queue`'s columns a job's values fill, in [#MOVED_COLUMNS] order.
+    private static final String QUEUE_COLUMNS = "job_id, job_created_at, message_group, sequence, scheduled_for, "
+            + "subscription_id, dispatch_pool_id, client_id, mode, queue, version";
+
+    /// The same columns as the queue statement returns them, in [Moved]'s order.
+    private static final String QUEUE_RETURNING = "q.job_id, q.job_created_at, q.message_group, q.sequence, "
+            + "q.scheduled_for, q.subscription_id, q.dispatch_pool_id, q.client_id, q.mode, q.queue, q.version";
+
+    /// The tail of every statement that puts a row in the queue from a CTE of
+    /// jobs (`moved` / `ins`): `INSERT INTO msg_dispatch_queue (…) SELECT … FROM <cte>`.
+    private static String queueInsertFrom(String cte) {
+        return "INSERT INTO msg_dispatch_queue AS q (" + QUEUE_COLUMNS + ") SELECT " + MOVED_COLUMNS + " FROM " + cte;
+    }
+
+    /// Entering `PENDING` for a job that may already have a queue row: refresh
+    /// every mirrored value and reset the claim.
+    private static final String QUEUE_UPSERT = " ON CONFLICT (job_id) DO UPDATE SET"
+            + " job_created_at = EXCLUDED.job_created_at, message_group = EXCLUDED.message_group,"
+            + " sequence = EXCLUDED.sequence, scheduled_for = EXCLUDED.scheduled_for,"
+            + " subscription_id = EXCLUDED.subscription_id, dispatch_pool_id = EXCLUDED.dispatch_pool_id,"
+            + " client_id = EXCLUDED.client_id, mode = EXCLUDED.mode, queue = EXCLUDED.queue,"
+            + " version = EXCLUDED.version, claimed_at = NULL";
+
+    /// Leaving `PENDING`: delete the queue row of every job the UPDATE moved, if there is one.
+    private static final Gone GONE_MOVED = new Gone("DELETE FROM msg_dispatch_queue q USING moved m WHERE q.job_id = m.id",
+            List.of());
+
+    /// The statement that removes queue rows when a transition leaves `PENDING`, and its bound values.
+    private record Gone(String sql, List<Object> params) {
+    }
 
     /// A job a primitive changed, as the [#RETURNING] columns read.
     public record Moved(String id, Instant createdAt, String messageGroup, int sequence, Instant scheduledFor,
@@ -257,8 +331,10 @@ public final class DispatchJobLifecycle implements ProcessingTransitions {
 
     /// Which rows a primitive acts on. Fixed SQL fragments plus bound values:
     /// one job by `(id, created_at)`, a list of ids, or a predicate sweep.
+    /// `with` is a leading CTE definition without the `WITH` keyword
+    /// (`name AS (…)`), placed before the primitive's own `moved` CTE.
     /// Parameter order in the statement is `withParams`, `updated_at`, the
-    /// changes' params, `fromParams`, `whereParams`.
+    /// changes' params, `fromParams`, `whereParams`, then the queue delete's.
     private record Selector(String with, List<Object> withParams, String from, List<Object> fromParams,
                             String where, List<Object> whereParams, String id, Instant createdAt, int requested) {
 
@@ -290,29 +366,42 @@ public final class DispatchJobLifecycle implements ProcessingTransitions {
 
     // ── The two primitives ─────────────────────────────────────────────────
 
-    /// The single place a job becomes (or is refreshed as) `PENDING`.
+    /// The single place a job becomes (or is refreshed as) `PENDING`: the job's
+    /// UPDATE and the queue row's upsert are ONE statement.
     private static List<Moved> enterPending(Exec ex, Transition t, Selector sel, Changes changes, Instant updatedAt) {
-        return transition(ex, t, "PENDING", sel, changes, updatedAt);
+        return transition(ex, t, "PENDING", true, GONE_MOVED, sel, changes, updatedAt);
     }
 
-    /// The single place a job stops being `PENDING`.
+    /// The single place a job stops being `PENDING`: the job's UPDATE and the
+    /// queue row's delete are ONE statement. `gone` names which queue rows go.
     private static List<Moved> leavePending(Exec ex, Transition t, String to, Selector sel, Changes changes,
                                             Instant updatedAt) {
-        return transition(ex, t, to, sel, changes, updatedAt);
+        return transition(ex, t, to, false, GONE_MOVED, sel, changes, updatedAt);
     }
 
-    /// One statement: `UPDATE … SET status = <literal>, updated_at = …
-    /// WHERE <selector> AND status <from> RETURNING <columns>`. `updatedAt ==
-    /// null` stamps the database clock.
-    private static List<Moved> transition(Exec ex, Transition t, String to, Selector sel, Changes changes,
-                                          Instant updatedAt) {
-        var sql = new StringBuilder(256);
+    private static List<Moved> leavePending(Exec ex, Transition t, String to, Gone gone, Selector sel,
+                                            Changes changes, Instant updatedAt) {
+        return transition(ex, t, to, false, gone, sel, changes, updatedAt);
+    }
+
+    /// One statement:
+    ///
+    ///     WITH [<selector CTE>,] moved AS (UPDATE msg_dispatch_jobs j SET status = <literal>,
+    ///         updated_at = … WHERE <selector> AND status <from> RETURNING <columns>)
+    ///     entering: INSERT INTO msg_dispatch_queue … SELECT … FROM moved ON CONFLICT (job_id) DO UPDATE … RETURNING …
+    ///     leaving:  , gone AS (DELETE FROM msg_dispatch_queue …) SELECT … FROM moved
+    ///
+    /// `updatedAt == null` stamps the database clock.
+    private static List<Moved> transition(Exec ex, Transition t, String to, boolean enter, Gone gone, Selector sel,
+                                          Changes changes, Instant updatedAt) {
+        var sql = new StringBuilder(512);
         var params = new ArrayList<Object>();
+        sql.append("WITH ");
         if (sel.with() != null) {
-            sql.append(sel.with()).append(' ');
+            sql.append(sel.with()).append(", ");
             params.addAll(sel.withParams());
         }
-        sql.append("UPDATE msg_dispatch_jobs j SET status = '").append(to).append("', updated_at = ");
+        sql.append("moved AS (UPDATE msg_dispatch_jobs j SET status = '").append(to).append("', updated_at = ");
         if (updatedAt == null) {
             sql.append("now()");
         } else {
@@ -329,7 +418,13 @@ public final class DispatchJobLifecycle implements ProcessingTransitions {
         }
         sql.append(" WHERE ").append(sel.where());
         params.addAll(sel.whereParams());
-        sql.append(t.guardSql()).append(" RETURNING ").append(RETURNING);
+        sql.append(t.guardSql()).append(" RETURNING ").append(RETURNING).append(")");
+        if (enter) {
+            sql.append(' ').append(queueInsertFrom("moved")).append(QUEUE_UPSERT).append(" RETURNING ").append(QUEUE_RETURNING);
+        } else {
+            sql.append(", gone AS (").append(gone.sql()).append(") SELECT ").append(MOVED_COLUMNS).append(" FROM moved");
+            params.addAll(gone.params());
+        }
         try {
             return ex.with(conn -> {
                 List<Moved> moved = new ArrayList<>();
@@ -437,7 +532,16 @@ public final class DispatchJobLifecycle implements ProcessingTransitions {
                 "j.id = ANY(?) AND j.id = v.id AND j.updated_at = v.version::timestamptz"
                         + " AND j.created_at >= ? AND j.created_at <= ?",
                 List.of(ids, spanStart, spanEnd), null, null, ids.length);
-        return leavePending(pool(), Transition.MARK_QUEUED, "QUEUED", sel, Changes.NONE, Instant.now()).size();
+        // The queue rows to remove: those of the jobs the UPDATE moved, plus any row
+        // of the batch still at the claimed version (a stale one whose job moved on
+        // without the row being refreshed). A row at another version belongs to a
+        // job that re-entered PENDING since the claim: left alone.
+        var gone = new Gone("DELETE FROM msg_dispatch_queue q USING ("
+                + "SELECT m.id FROM moved m"
+                + " UNION SELECT b.id FROM unnest(?::text[], ?::text[]) AS b(id, version)"
+                + " JOIN msg_dispatch_queue q2 ON q2.job_id = b.id AND q2.version = b.version::timestamptz"
+                + ") d WHERE q.job_id = d.id", List.of(ids, versions));
+        return leavePending(pool(), Transition.MARK_QUEUED, "QUEUED", gone, sel, Changes.NONE, Instant.now()).size();
     }
 
     // ── Delivery callback (ProcessingTransitions) ──────────────────────────
@@ -532,7 +636,7 @@ public final class DispatchJobLifecycle implements ProcessingTransitions {
     }
 
     private static final String SWEEP_STRANDED_CTE = """
-            WITH stranded AS (
+            stranded AS (
                 SELECT s.id, s.created_at
                   FROM msg_dispatch_jobs s
                   JOIN msg_dispatch_jobs h
@@ -643,8 +747,11 @@ public final class DispatchJobLifecycle implements ProcessingTransitions {
     /// [#insertNew] instead. One JDBC batch, one round trip; empty input is a no-op.
     public void insertBatch(List<DispatchJob> jobs) {
         if (jobs.isEmpty()) return;
-        DSLContext dsl = DSL.using(dataSource, SQLDialect.POSTGRES);
-        dsl.batch(jobs.stream().map(j -> insertQuery(dsl, j)).toList()).execute();
+        try (Connection conn = dataSource.getConnection()) {
+            insertJobs(conn, jobs);
+        } catch (SQLException e) {
+            throw new DataAccessException("dispatch job insert failed", e);
+        }
     }
 
     /// Why [#insertNew] wrote nothing.
@@ -690,7 +797,7 @@ public final class DispatchJobLifecycle implements ProcessingTransitions {
             if (!taken.isEmpty()) {
                 return Result.<Integer, InsertRefusal>err(new InsertRefusal.IdsTaken(taken));
             }
-            tx.batch(jobs.stream().map(j -> insertQuery(tx, j)).toList()).execute();
+            tx.connection(conn -> insertJobs(conn, jobs));
             return Result.<Integer, InsertRefusal>ok(jobs.size());
         });
     }
@@ -706,66 +813,127 @@ public final class DispatchJobLifecycle implements ProcessingTransitions {
 
     /// Fan-out's multi-row insert, always `PENDING`, on the caller's open
     /// transaction (the claim of the events and these jobs commit together):
-    /// one statement, `ON CONFLICT (id, created_at) DO NOTHING`. Empty input is a no-op.
+    /// one statement, `ON CONFLICT (id, created_at) DO NOTHING`, and a queue row
+    /// for every job actually inserted (see the class doc). Empty input is a no-op.
     public static void insertFanOut(Connection tx, List<FanOutJob> jobs) {
         if (jobs.isEmpty()) return;
-        DSLContext txDsl = DSL.using(tx, SQLDialect.POSTGRES);
-        var insert = txDsl.insertInto(T, T.ID, T.CODE, T.SOURCE, T.SUBJECT, T.EVENT_ID, T.CORRELATION_ID,
-                T.CLIENT_ID, T.MESSAGE_GROUP, T.PAYLOAD, T.TARGET_URL, T.DATA_ONLY, T.SERVICE_ACCOUNT_ID,
-                T.SUBSCRIPTION_ID, T.DISPATCH_POOL_ID, T.SEQUENCE, T.TIMEOUT_SECONDS, T.MAX_RETRIES, T.MODE,
-                T.PROTOCOL, T.STATUS, T.IDEMPOTENCY_KEY, T.QUEUE, T.DESCRIPTOR, T.METADATA, T.CREATED_AT, T.UPDATED_AT);
-        for (FanOutJob j : jobs) {
-            OffsetDateTime createdAt = utc(j.createdAt());
-            insert = insert.values(j.id(), j.code(), j.source(), j.subject(), j.eventId(), j.correlationId(),
-                    j.clientId(), j.messageGroup(), j.payload(), j.targetUrl(), j.dataOnly(), j.serviceAccountId(),
-                    j.subscriptionId(), j.dispatchPoolId(), j.sequence(), j.timeoutSeconds(), j.maxRetries(),
-                    j.mode(), "HTTP_WEBHOOK", "PENDING", j.idempotencyKey(), j.queue(), j.descriptor(),
-                    JSONB.jsonb(j.metadataJson()), createdAt, createdAt);
+        var sql = new StringBuilder(256 + jobs.size() * 64);
+        sql.append("WITH ins AS (INSERT INTO msg_dispatch_jobs (").append(FAN_OUT_COLUMNS).append(") VALUES ");
+        for (int i = 0; i < jobs.size(); i++) {
+            if (i > 0) sql.append(", ");
+            sql.append(FAN_OUT_VALUES);
         }
-        insert.onConflict(T.ID, T.CREATED_AT).doNothing().execute();
+        sql.append(" ON CONFLICT (id, created_at) DO NOTHING RETURNING ").append(MOVED_COLUMNS).append(") ")
+                .append(queueInsertFrom("ins")).append(" ON CONFLICT (job_id) DO NOTHING");
+        try (PreparedStatement ps = tx.prepareStatement(sql.toString())) {
+            int i = 1;
+            for (FanOutJob j : jobs) {
+                OffsetDateTime createdAt = utc(j.createdAt());
+                Object[] values = {j.id(), j.code(), j.source(), j.subject(), j.eventId(), j.correlationId(),
+                        j.clientId(), j.messageGroup(), j.payload(), j.targetUrl(), j.dataOnly(), j.serviceAccountId(),
+                        j.subscriptionId(), j.dispatchPoolId(), j.sequence(), j.timeoutSeconds(), j.maxRetries(),
+                        j.mode(), j.idempotencyKey(), j.queue(), j.descriptor(), j.metadataJson(), createdAt, createdAt};
+                for (Object v : values) ps.setObject(i++, v);
+            }
+            ps.execute();
+        } catch (SQLException e) {
+            throw new DataAccessException("dispatch job fan-out insert failed", e);
+        }
     }
 
-    private static org.jooq.Insert<MsgDispatchJobsRecord> insertQuery(DSLContext dsl, DispatchJob j) {
-        return dsl.insertInto(T)
-                .set(T.ID, j.id())
-                .set(T.EXTERNAL_ID, j.externalId())
-                .set(T.SOURCE, j.source())
-                .set(T.KIND, j.kind().name())
-                .set(T.CODE, j.code())
-                .set(T.SUBJECT, j.subject())
-                .set(T.EVENT_ID, j.eventId())
-                .set(T.CORRELATION_ID, j.correlationId())
-                .set(T.METADATA, JSONB.jsonb(Json.write(j.metadata())))
-                .set(T.TARGET_URL, j.targetUrl())
-                .set(T.PROTOCOL, j.protocol().name())
-                .set(T.PAYLOAD, j.payload())
-                .set(T.PAYLOAD_CONTENT_TYPE, j.payloadContentType())
-                .set(T.DATA_ONLY, j.dataOnly())
-                .set(T.SERVICE_ACCOUNT_ID, j.serviceAccountId())
-                .set(T.CLIENT_ID, j.clientId())
-                .set(T.SUBSCRIPTION_ID, j.subscriptionId())
-                .set(T.MODE, j.mode().name())
-                .set(T.DISPATCH_POOL_ID, j.dispatchPoolId())
-                .set(T.MESSAGE_GROUP, j.messageGroup())
-                .set(T.SEQUENCE, j.sequence())
-                .set(T.TIMEOUT_SECONDS, j.timeoutSeconds())
-                .set(T.SCHEMA_ID, j.schemaId())
-                .set(T.STATUS, "PENDING")
-                .set(T.MAX_RETRIES, j.maxRetries())
-                .set(T.RETRY_STRATEGY, j.retryStrategy().wire())
-                .set(T.SCHEDULED_FOR, utc(j.scheduledFor()))
-                .set(T.EXPIRES_AT, utc(j.expiresAt()))
-                .set(T.ATTEMPT_COUNT, j.attemptCount())
-                .set(T.LAST_ATTEMPT_AT, utc(j.lastAttemptAt()))
-                .set(T.COMPLETED_AT, utc(j.completedAt()))
-                .set(T.DURATION_MILLIS, j.durationMillis())
-                .set(T.LAST_ERROR, j.lastError())
-                .set(T.IDEMPOTENCY_KEY, j.idempotencyKey())
-                .set(T.DESCRIPTOR, j.descriptor())
-                .set(T.QUEUE, j.queue())
-                .set(T.CREATED_AT, utc(j.createdAt()))
-                .set(T.UPDATED_AT, utc(j.updatedAt()))
-                .onConflict(T.ID, T.CREATED_AT).doNothing();
+    /// The fan-out insert's columns, in order; `protocol` and `status` are
+    /// literals in [#FAN_OUT_VALUES]. Born `PENDING`, always.
+    private static final String FAN_OUT_COLUMNS = "id, code, source, subject, event_id, correlation_id, client_id, "
+            + "message_group, payload, target_url, data_only, service_account_id, subscription_id, dispatch_pool_id, "
+            + "sequence, timeout_seconds, max_retries, mode, protocol, status, idempotency_key, queue, descriptor, "
+            + "metadata, created_at, updated_at";
+
+    /// One fan-out row: 24 bound values (`metadata` cast to `jsonb`) and the two literals.
+    private static final String FAN_OUT_VALUES = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            + "'HTTP_WEBHOOK', 'PENDING', ?, ?, ?, ?::jsonb, ?, ?)";
+
+    /// The single-job insert's columns, in order; `status` is the literal `'PENDING'`.
+    private static final String JOB_COLUMNS = "id, external_id, source, kind, code, subject, event_id, correlation_id, "
+            + "metadata, target_url, protocol, payload, payload_content_type, data_only, service_account_id, client_id, "
+            + "subscription_id, mode, dispatch_pool_id, message_group, sequence, timeout_seconds, schema_id, status, "
+            + "max_retries, retry_strategy, scheduled_for, expires_at, attempt_count, last_attempt_at, completed_at, "
+            + "duration_millis, last_error, idempotency_key, descriptor, queue, created_at, updated_at";
+
+    /// 37 bound values and the `status` literal, in [#JOB_COLUMNS] order.
+    private static final String JOB_VALUES = "(?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            + "'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+    /// The create statement of one job: the insert and the queue row, one statement.
+    private static final String INSERT_JOB_SQL = "WITH ins AS (INSERT INTO msg_dispatch_jobs (" + JOB_COLUMNS
+            + ") VALUES " + JOB_VALUES + " ON CONFLICT (id, created_at) DO NOTHING RETURNING " + MOVED_COLUMNS + ") "
+            + queueInsertFrom("ins") + " ON CONFLICT (job_id) DO NOTHING";
+
+    /// One JDBC batch of [#INSERT_JOB_SQL], one round trip, each statement atomic
+    /// (job and queue row together); on the caller's connection and transaction, if any.
+    private static void insertJobs(Connection conn, List<DispatchJob> jobs) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(INSERT_JOB_SQL)) {
+            for (DispatchJob j : jobs) {
+                Object[] values = {j.id(), j.externalId(), j.source(), j.kind().name(), j.code(), j.subject(),
+                        j.eventId(), j.correlationId(), Json.write(j.metadata()), j.targetUrl(), j.protocol().name(),
+                        j.payload(), j.payloadContentType(), j.dataOnly(), j.serviceAccountId(), j.clientId(),
+                        j.subscriptionId(), j.mode().name(), j.dispatchPoolId(), j.messageGroup(), j.sequence(),
+                        j.timeoutSeconds(), j.schemaId(), j.maxRetries(), j.retryStrategy().wire(),
+                        utc(j.scheduledFor()), utc(j.expiresAt()), j.attemptCount(), utc(j.lastAttemptAt()),
+                        utc(j.completedAt()), j.durationMillis(), j.lastError(), j.idempotencyKey(), j.descriptor(),
+                        j.queue(), utc(j.createdAt()), utc(j.updatedAt())};
+                int i = 1;
+                for (Object v : values) ps.setObject(i++, v);
+                ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+    }
+
+    // ── Queue drift (tests and diagnostics only) ───────────────────────────
+
+    /// What [#queueDrift] counts.
+    ///
+    /// @param missingOrStale `PENDING` jobs with no queue row, or whose queue row's
+    ///                       `version` / `scheduled_for` differs from the job's. A job
+    ///                       the dispatcher can never see — must be zero.
+    /// @param orphaned       queue rows whose job is not `PENDING` or does not exist.
+    ///                       The documented race can leave a few; harmless, self-healing.
+    public record QueueDrift(long missingOrStale, long orphaned) {
+        public boolean isClean() {
+            return missingOrStale == 0 && orphaned == 0;
+        }
+    }
+
+    /// Compares the queue with the jobs, one query each. For tests and
+    /// diagnostics: it scans, and is NOT called on any hot path.
+    public QueueDrift queueDrift() {
+        return queueDrift(null);
+    }
+
+    /// [#queueDrift()] restricted to these job ids (`null` = all).
+    public QueueDrift queueDrift(java.util.Collection<String> jobIds) {
+        String scopeJ = jobIds == null ? "" : " AND j.id = ANY(?)";
+        String scopeQ = jobIds == null ? "" : " AND q.job_id = ANY(?)";
+        String missing = "SELECT count(*) FROM msg_dispatch_jobs j LEFT JOIN msg_dispatch_queue q ON q.job_id = j.id"
+                + " WHERE j.status = 'PENDING'" + scopeJ
+                + " AND (q.job_id IS NULL OR q.version <> j.updated_at OR q.scheduled_for IS DISTINCT FROM j.scheduled_for)";
+        String orphans = "SELECT count(*) FROM msg_dispatch_queue q WHERE NOT EXISTS ("
+                + "SELECT 1 FROM msg_dispatch_jobs j WHERE j.id = q.job_id AND j.status = 'PENDING')" + scopeQ;
+        try (Connection conn = dataSource.getConnection()) {
+            return new QueueDrift(count(conn, missing, jobIds), count(conn, orphans, jobIds));
+        } catch (SQLException e) {
+            throw new DataAccessException("queue drift check failed", e);
+        }
+    }
+
+    private static long count(Connection conn, String sql, java.util.Collection<String> jobIds) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            if (jobIds != null) ps.setArray(1, conn.createArrayOf("text", jobIds.toArray(String[]::new)));
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getLong(1);
+            }
+        }
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────

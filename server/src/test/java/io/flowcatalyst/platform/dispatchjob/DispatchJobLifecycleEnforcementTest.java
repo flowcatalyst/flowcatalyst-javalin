@@ -30,6 +30,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// Comments are ignored. Tests, migrations (`.sql`) and the generated jOOQ
 /// classes are out of scope. Adding a writer anywhere else fails here: route
 /// the change through the lifecycle instead.
+///
+/// The same scan runs for `msg_dispatch_queue` (the waiting jobs, kept exact by
+/// the lifecycle — dispatch-queue spec step 2): only the lifecycle writes it,
+/// plus the two named exceptions in [#QUEUE_EXCEPTIONS].
 class DispatchJobLifecycleEnforcementTest {
 
     /// The deliberate exceptions, each with its reason. Anything not listed
@@ -42,18 +46,42 @@ class DispatchJobLifecycleEnforcementTest {
             "io/flowcatalyst/fcdev/FreshCommand.java",
             "`fcdev fresh` truncates the dev database");
 
+    /// The deliberate exceptions for `msg_dispatch_queue`, each with its reason.
+    static final Map<String, String> QUEUE_EXCEPTIONS = Map.of(
+            "io/flowcatalyst/stream/PartitionManager.java",
+            "dropping a msg_dispatch_jobs partition deletes the queue rows of the jobs in it, in the same transaction",
+            "io/flowcatalyst/fcdev/FreshCommand.java",
+            "`fcdev fresh` truncates the dev database");
+
     private static final String LIFECYCLE = "io/flowcatalyst/platform/dispatchjob/DispatchJobLifecycle.java";
 
-    private static final Pattern SQL_WRITE = Pattern.compile(
-            "(?is)\\b(INSERT\\s+INTO|UPDATE|DELETE\\s+FROM|TRUNCATE(\\s+TABLE)?|DROP\\s+TABLE(\\s+IF\\s+EXISTS)?"
-                    + "|ALTER\\s+TABLE)\\s+(ONLY\\s+)?msg_dispatch_jobs\\b");
-    private static final Pattern TABLE_ALIAS = Pattern.compile(
-            "(\\w+)\\s*=\\s*(?:\\w+\\.)*MSG_DISPATCH_JOBS\\s*;");
-    private static final Pattern DSL_TABLE = Pattern.compile(
-            "(?s)\\b(insertInto|update|deleteFrom|mergeInto)\\(\\s*(?:DSL\\.)?(?:table|name)\\(\\s*\"msg_dispatch_jobs\"");
+    private static Pattern sqlWrite(String table) {
+        return Pattern.compile(
+                "(?is)\\b(INSERT\\s+INTO|UPDATE|DELETE\\s+FROM|TRUNCATE(\\s+TABLE)?|DROP\\s+TABLE(\\s+IF\\s+EXISTS)?"
+                        + "|ALTER\\s+TABLE)\\s+(ONLY\\s+)?" + table + "\\b");
+    }
+    /// One table the lifecycle owns: its SQL name, its generated jOOQ constant, and who else may write it.
+    record Owned(String table, String constant, Map<String, String> exceptions) {
+    }
+
+    static final Owned JOBS = new Owned("msg_dispatch_jobs", "MSG_DISPATCH_JOBS", EXCEPTIONS);
+    static final Owned QUEUE = new Owned("msg_dispatch_queue", "MSG_DISPATCH_QUEUE", QUEUE_EXCEPTIONS);
 
     @Test
     void onlyTheLifecycleWritesTheDispatchJobsTable() throws IOException {
+        assertOnlyTheLifecycleWrites(JOBS, """
+                production code outside DispatchJobLifecycle writes msg_dispatch_jobs; \
+                route the write through the lifecycle (status has ONE owner)""");
+    }
+
+    @Test
+    void onlyTheLifecycleWritesTheDispatchQueueTable() throws IOException {
+        assertOnlyTheLifecycleWrites(QUEUE, """
+                production code outside DispatchJobLifecycle writes msg_dispatch_queue; \
+                the queue is kept exact by the lifecycle's own statements (one row per PENDING job)""");
+    }
+
+    private static void assertOnlyTheLifecycleWrites(Owned owned, String message) throws IOException {
         List<Path> roots = sourceRoots();
         assertThat(roots).as("found the production source roots").isNotEmpty();
 
@@ -70,9 +98,9 @@ class DispatchJobLifecycleEnforcementTest {
                         continue;
                     }
                     String code = stripComments(Files.readString(file));
-                    String hit = writes(code);
+                    String hit = writes(code, owned);
                     if (hit == null) continue;
-                    if (EXCEPTIONS.containsKey(rel)) {
+                    if (owned.exceptions().containsKey(rel)) {
                         seenExceptions.add(rel);
                         continue;
                     }
@@ -81,14 +109,10 @@ class DispatchJobLifecycleEnforcementTest {
             }
         }
         assertThat(sawLifecycle).as("DispatchJobLifecycle.java is where the scan expects it").isTrue();
-        assertThat(violations)
-                .as("""
-                        production code outside DispatchJobLifecycle writes msg_dispatch_jobs; \
-                        route the write through the lifecycle (status has ONE owner)""")
-                .isEmpty();
+        assertThat(violations).as(message).isEmpty();
         // A listed exception that no longer writes the table is a stale entry.
         // The DDL ones build their statements dynamically, so only require the file to exist.
-        for (String exception : EXCEPTIONS.keySet()) {
+        for (String exception : owned.exceptions().keySet()) {
             boolean exists = roots.stream().anyMatch(r -> Files.exists(r.resolve(exception)));
             assertThat(exists).as("exception %s still exists", exception).isTrue();
         }
@@ -111,16 +135,37 @@ class DispatchJobLifecycleEnforcementTest {
                 .doesNotContain("msg_dispatch_jobs");
     }
 
-    /// Which write the source contains, or `null`.
+    /// The same scanner for the queue table, and the two tables are not confused.
+    @Test
+    void theScannerAlsoGuardsTheQueueTable() {
+        assertThat(writes("\"INSERT INTO msg_dispatch_queue (job_id) VALUES (?)\"", QUEUE)).isNotNull();
+        assertThat(writes("\"WITH moved AS (SELECT 1) DELETE FROM msg_dispatch_queue q USING moved m\"", QUEUE)).isNotNull();
+        assertThat(writes("\"UPDATE msg_dispatch_queue SET claimed_at = now()\"", QUEUE)).isNotNull();
+        assertThat(writes("\"TRUNCATE msg_dispatch_queue\"", QUEUE)).isNotNull();
+        assertThat(writes("dsl.deleteFrom(MSG_DISPATCH_QUEUE).where(x)", QUEUE)).isNotNull();
+        assertThat(writes("var Q = Tables.MSG_DISPATCH_QUEUE;\n dsl.insertInto(Q).set(a, b)", QUEUE)).isNotNull();
+        assertThat(writes("dsl.update(DSL.table(\"msg_dispatch_queue\"))", QUEUE)).isNotNull();
+        assertThat(writes("\"SELECT count(*) FROM msg_dispatch_queue WHERE x\"", QUEUE)).as("a read").isNull();
+        assertThat(writes("dsl.selectFrom(MSG_DISPATCH_QUEUE).fetch()", QUEUE)).as("a read").isNull();
+        assertThat(writes("\"UPDATE msg_dispatch_jobs SET status = 'X'\"", QUEUE)).as("the jobs table is the other scan").isNull();
+        assertThat(writes("\"DELETE FROM msg_dispatch_queue\"", JOBS)).as("the queue table is the other scan").isNull();
+    }
+
     static String writes(String code) {
-        Matcher sql = SQL_WRITE.matcher(code);
+        return writes(code, JOBS);
+    }
+
+    /// Which write to `owned` the source contains, or `null`.
+    static String writes(String code, Owned owned) {
+        Matcher sql = sqlWrite(owned.table()).matcher(code);
         if (sql.find()) return "SQL `" + sql.group().replaceAll("\\s+", " ") + "`";
-        Matcher dsl = DSL_TABLE.matcher(code);
+        Matcher dsl = Pattern.compile("(?s)\\b(insertInto|update|deleteFrom|mergeInto)\\(\\s*(?:DSL\\.)?(?:table|name)\\(\\s*\""
+                + owned.table() + "\"").matcher(code);
         if (dsl.find()) return "jOOQ `" + dsl.group().replaceAll("\\s+", " ") + "`";
         Set<String> names = new LinkedHashSet<>();
-        names.add("MSG_DISPATCH_JOBS");
-        names.add("Tables.MSG_DISPATCH_JOBS");
-        Matcher alias = TABLE_ALIAS.matcher(code);
+        names.add(owned.constant());
+        names.add("Tables." + owned.constant());
+        Matcher alias = Pattern.compile("(\\w+)\\s*=\\s*(?:\\w+\\.)*" + owned.constant() + "\\s*;").matcher(code);
         while (alias.find()) names.add(alias.group(1));
         for (String name : names) {
             Matcher w = Pattern.compile("\\b(insertInto|update|deleteFrom|mergeInto)\\(\\s*" + Pattern.quote(name) + "\\s*[,)]")
