@@ -65,10 +65,19 @@ class SchemaFingerprintTest {
             "INDEX\tmsg_dispatch_jobs\tidx_dispatch_jobs_blocked_groups\tCREATE INDEX idx_dispatch_jobs_blocked_groups ON ONLY public.msg_dispatch_jobs USING btree (message_group, status) WHERE ((status) = ANY (ARRAY['FAILED', 'ERROR']))\ttrue",
             "INDEX\tmsg_dispatch_jobs\tidx_dispatch_jobs_pending_poll\tCREATE INDEX idx_dispatch_jobs_pending_poll ON ONLY public.msg_dispatch_jobs USING btree (message_group, sequence, created_at) WHERE ((status) = 'PENDING')\ttrue",
             "INDEX\tmsg_dispatch_jobs\tidx_dispatch_jobs_stale_queued\tCREATE INDEX idx_dispatch_jobs_stale_queued ON ONLY public.msg_dispatch_jobs USING btree (queued_at) WHERE ((status) = 'QUEUED')\ttrue");
+    /// What V20 created and V22 (Go 067) dropped again: the Java schema must hold NONE of these.
     static final List<String> SCHEDULER_INDEXES_V20 = List.of(
             "INDEX\tmsg_dispatch_jobs\tidx_dispatch_jobs_group_holders\tCREATE INDEX idx_dispatch_jobs_group_holders ON ONLY public.msg_dispatch_jobs USING btree (message_group, sequence, created_at, id) WHERE ((message_group IS NOT NULL) AND (((status) = ANY (ARRAY['FAILED', 'ERROR'])) OR (((status) = 'PENDING') AND (scheduled_for IS NOT NULL))))\ttrue",
             "INDEX\tmsg_dispatch_jobs\tidx_dispatch_jobs_in_flight\tCREATE INDEX idx_dispatch_jobs_in_flight ON ONLY public.msg_dispatch_jobs USING btree (status, updated_at) WHERE ((status) = ANY (ARRAY['QUEUED', 'PROCESSING']))\ttrue",
             "INDEX\tmsg_dispatch_jobs\tidx_dispatch_jobs_pending_poll\tCREATE INDEX idx_dispatch_jobs_pending_poll ON ONLY public.msg_dispatch_jobs USING btree (message_group, sequence, created_at, id) WHERE ((status) = 'PENDING')\ttrue");
+
+    /// V22 (Go `067_dispatch_queue_claim.sql`, dispatch-queue spec step 3) drops all of
+    /// V20's partial indexes and adds one ordinary index. After it the Java table has
+    /// exactly this one index line where the fixture (goose 57) has the three in
+    /// [#SCHEDULER_INDEXES_GO_057]. Drop both lists when the fixture is next
+    /// re-captured from a Go database at 067 or later.
+    static final List<String> SCHEDULER_INDEXES_V22 = List.of(
+            "INDEX\tmsg_dispatch_jobs\tidx_dispatch_jobs_status_group\tCREATE INDEX idx_dispatch_jobs_status_group ON ONLY public.msg_dispatch_jobs USING btree (status, message_group, sequence, created_at, id)\ttrue");
 
     /// V21 (`msg_dispatch_queue`, dispatch-queue spec step 2) is a NEW table that
     /// Go and Rust carry the identical DDL for, but the Go fixture is captured at
@@ -183,10 +192,13 @@ class SchemaFingerprintTest {
         assertThat(javaLines).as("aud_logs.entity_id widened by V18, exactly").contains(WIDENED_COLUMN_JAVA);
         javaLines = javaLines.stream().map(l -> l.equals(WIDENED_COLUMN_JAVA) ? WIDENED_COLUMN_GO : l).toList();
 
-        // The named, exact index allowance (V20 = Go 065, which the fixture predates):
-        // Java has exactly the three new indexes and none of the three they replace.
-        assertThat(javaLines).as("msg_dispatch_jobs indexes replaced by V20, exactly")
-                .containsAll(SCHEDULER_INDEXES_V20).doesNotContainAnyElementsOf(SCHEDULER_INDEXES_GO_057);
+        // The named, exact index allowance (V20 = Go 065 and V22 = Go 067, which the fixture
+        // predates): Java has exactly the one new index and none of the fixture's three, nor
+        // any of the partial indexes V20 added and V22 dropped.
+        assertThat(javaLines).as("msg_dispatch_jobs indexes after V22, exactly")
+                .containsAll(SCHEDULER_INDEXES_V22)
+                .doesNotContainAnyElementsOf(SCHEDULER_INDEXES_GO_057)
+                .doesNotContainAnyElementsOf(SCHEDULER_INDEXES_V20);
         assertThat(expected.lines().toList()).as("the fixture predates Go 065").containsAll(SCHEDULER_INDEXES_GO_057);
 
         // V21's new table: exactly the spec's DDL on the Java side, not in the fixture.
@@ -197,7 +209,7 @@ class SchemaFingerprintTest {
 
         var javaLinesExceptDivergent = javaLines.stream().filter(l -> !isDivergentConstraintLine(l))
                 .filter(l -> !isDispatchQueueLine(l))
-                .filter(l -> !SCHEDULER_INDEXES_V20.contains(l)).toList();
+                .filter(l -> !SCHEDULER_INDEXES_V22.contains(l)).toList();
         var expectedLinesExceptDivergent = expected.lines().filter(l -> !isDivergentConstraintLine(l))
                 .filter(l -> !SCHEDULER_INDEXES_GO_057.contains(l)).toList();
         assertThat(javaLinesExceptDivergent)

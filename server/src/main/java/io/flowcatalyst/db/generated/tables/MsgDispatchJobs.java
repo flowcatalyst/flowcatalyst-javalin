@@ -293,7 +293,7 @@ public class MsgDispatchJobs extends TableImpl<MsgDispatchJobsRecord> {
 
     @Override
     public List<Index> getIndexes() {
-        return Arrays.asList(Indexes.IDX_DISPATCH_JOBS_GROUP_HOLDERS, Indexes.IDX_DISPATCH_JOBS_IN_FLIGHT, Indexes.IDX_DISPATCH_JOBS_PENDING_POLL, Indexes.IDX_MSG_DISPATCH_JOBS_DIRTY);
+        return Arrays.asList(Indexes.IDX_DISPATCH_JOBS_STATUS_GROUP, Indexes.IDX_MSG_DISPATCH_JOBS_DIRTY);
     }
 
     @Override

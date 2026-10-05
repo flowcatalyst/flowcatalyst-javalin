@@ -19,3 +19,4 @@ V18__aud_logs_entity_id_width.sql
 V19__idp_allowed_tenants.sql
 V20__dispatch_job_scheduler_indexes.sql
 V21__dispatch_queue.sql
+V22__dispatch_queue_claim.sql
