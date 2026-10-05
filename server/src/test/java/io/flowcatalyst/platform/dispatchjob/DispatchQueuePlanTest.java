@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// node and reads about as many rows as it returns; nothing seq-scans
 /// `msg_dispatch_jobs` except where the statement is meant to read a large share
 /// of a status (the stale sweeps); the hold-back reads the one plain index. The
-/// plans and timings are printed (and written to `target/dispatch-queue-plans.txt`).
+/// plans and timings are written to `target/dispatch-queue-plans.txt`.
 class DispatchQueuePlanTest {
 
     /// The mix. Defaults keep the test to seconds; `-Dplan.completed=900000 -Dplan.queued=100000 ...`
@@ -371,7 +371,7 @@ class DispatchQueuePlanTest {
             exec(ds, "UPDATE msg_dispatch_jobs SET status = 'QUEUED', updated_at = now() WHERE status = 'PENDING' AND id <= 'J000000350000'");
         }
         java.nio.file.Files.writeString(java.nio.file.Path.of("target/dispatch-queue-plans.txt"), report.toString());
-        System.out.println(report);
+        System.out.println("dispatch queue plans written to target/dispatch-queue-plans.txt");
         assertThat(failures).isEmpty();
     }
 }
