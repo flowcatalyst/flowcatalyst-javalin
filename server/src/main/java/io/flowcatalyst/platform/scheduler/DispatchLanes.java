@@ -335,9 +335,8 @@ final class DispatchLanes implements AutoCloseable {
     }
 
     /// Stops the lanes: each finishes the batch it is sending and its status
-    /// update, then exits. Whatever is still in a channel stays `PENDING`, and its
-    /// queue row is restored here (best effort: whatever this misses, the next
-    /// leader's start-up reconcile pass restores).
+    /// update, then exits. Whatever is still in a channel stays `PENDING` in the table
+    /// and is simply claimed again; nothing is restored.
     @Override
     public void close() {
         closed = true;

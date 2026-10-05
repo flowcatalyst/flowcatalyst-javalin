@@ -468,12 +468,22 @@ public final class DispatchJobLifecycle implements ProcessingTransitions {
         // looks each pair up by (id, created_at) ALONE — a status test inside it lets the planner walk the
         // status index instead — and the version and the status are checked on what it returns; the UPDATE joins
         // the few matches back by the same key. The status guard of the UPDATE itself is opaque (see Transition).
+        //
+        // The VERSION is checked again in the UPDATE's own WHERE, on the row being updated. The lateral reads the
+        // row in the statement's snapshot; under READ COMMITTED an UPDATE that waits on a row lock held by a
+        // concurrent re-enter (the callback rescheduling, retrying or deferring the job back to PENDING at a NEW
+        // updated_at) re-evaluates ONLY its own WHERE on the new row version, so a check made only in the lateral
+        // would mark the new version QUEUED with no message published for it. It is a correlated sub-query on the
+        // claimed version, not a join clause: as a join clause the planner hash-joined it over a seq scan of the
+        // job table (up to 3.5 s at 200,000 PENDING).
         var sel = new Selector(PK_CLAIMED_CTE, List.of(ids, createdAts, versions), "pk", List.of(),
-                "j.id = pk.id AND j.created_at = pk.created_at", List.of(), null, null, ids.length, true);
+                "j.id = pk.id AND j.created_at = pk.created_at AND j.updated_at = "
+                        + "(SELECT k.v FROM pk k WHERE k.id = j.id AND k.created_at = j.created_at LIMIT 1)",
+                List.of(), null, null, ids.length, true);
         return leavePending(pool(), Transition.MARK_QUEUED, "QUEUED", sel, Changes.NONE, Instant.now()).size();
     }
 
-    private static final String PK_CLAIMED_CTE = "pk AS (SELECT p.id, p.created_at"
+    private static final String PK_CLAIMED_CTE = "pk AS (SELECT p.id, p.created_at, c.v::timestamptz AS v"
             + " FROM unnest(?::text[], ?::text[], ?::text[]) AS c(id, created_at, v)"
             + " CROSS JOIN LATERAL (SELECT id, created_at, updated_at, status FROM msg_dispatch_jobs"
             + " WHERE id = c.id AND created_at = c.created_at::timestamptz OFFSET 0) p"
@@ -577,8 +587,12 @@ public final class DispatchJobLifecycle implements ProcessingTransitions {
     /// [DispatchJobRepository#HOLDING_STATUSES_SQL], the same fragment the
     /// claim-time gate is built from, so the two cannot drift. Returns the ids reset.
     public List<String> sweepStrandedSiblings(Instant processingLiveBefore, String reason) {
+        // The PROCESSING age is checked again on the row being updated: the CTE read it in the statement's snapshot,
+        // and an UPDATE that waits on a row lock re-evaluates only its own WHERE on the new row version (a delivery
+        // claim that just refreshed updated_at must not be swept as stale). Same class as mark-QUEUED's version check.
         var sel = new Selector(SWEEP_STRANDED_CTE, List.of(processingLiveBefore), "stranded st", List.of(),
-                "j.id = st.id AND j.created_at = st.created_at", List.of(), null, null, Integer.MAX_VALUE);
+                "j.id = st.id AND j.created_at = st.created_at AND (j.status <> 'PROCESSING' OR j.updated_at < ?::timestamptz)",
+                List.of(processingLiveBefore), null, null, Integer.MAX_VALUE);
         return enterPending(pool(), Transition.SWEEP_STRANDED, sel,
                 Changes.of("scheduled_for = NULL, last_error = ?::text", reason), null)
                 .stream().map(Moved::id).toList();
