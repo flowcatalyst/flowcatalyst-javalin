@@ -47,6 +47,7 @@ import io.flowcatalyst.db.generated.tables.MsgDispatchJobProjectionFeed;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobs;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobsRead;
 import io.flowcatalyst.db.generated.tables.MsgDispatchPools;
+import io.flowcatalyst.db.generated.tables.MsgDispatchQueue;
 import io.flowcatalyst.db.generated.tables.MsgEventProjectionFeed;
 import io.flowcatalyst.db.generated.tables.MsgEventTypeSpecVersions;
 import io.flowcatalyst.db.generated.tables.MsgEventTypes;
@@ -325,6 +326,11 @@ public class Public extends SchemaImpl {
     public final MsgDispatchPools MSG_DISPATCH_POOLS = MsgDispatchPools.MSG_DISPATCH_POOLS;
 
     /**
+     * The table <code>public.msg_dispatch_queue</code>.
+     */
+    public final MsgDispatchQueue MSG_DISPATCH_QUEUE = MsgDispatchQueue.MSG_DISPATCH_QUEUE;
+
+    /**
      * The table <code>public.msg_event_projection_feed</code>.
      */
     public final MsgEventProjectionFeed MSG_EVENT_PROJECTION_FEED = MsgEventProjectionFeed.MSG_EVENT_PROJECTION_FEED;
@@ -579,6 +585,7 @@ public class Public extends SchemaImpl {
             MsgDispatchJobs.MSG_DISPATCH_JOBS,
             MsgDispatchJobsRead.MSG_DISPATCH_JOBS_READ,
             MsgDispatchPools.MSG_DISPATCH_POOLS,
+            MsgDispatchQueue.MSG_DISPATCH_QUEUE,
             MsgEventProjectionFeed.MSG_EVENT_PROJECTION_FEED,
             MsgEventTypeSpecVersions.MSG_EVENT_TYPE_SPEC_VERSIONS,
             MsgEventTypes.MSG_EVENT_TYPES,

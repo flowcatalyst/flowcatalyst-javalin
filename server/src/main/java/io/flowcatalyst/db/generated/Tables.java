@@ -47,6 +47,7 @@ import io.flowcatalyst.db.generated.tables.MsgDispatchJobProjectionFeed;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobs;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobsRead;
 import io.flowcatalyst.db.generated.tables.MsgDispatchPools;
+import io.flowcatalyst.db.generated.tables.MsgDispatchQueue;
 import io.flowcatalyst.db.generated.tables.MsgEventProjectionFeed;
 import io.flowcatalyst.db.generated.tables.MsgEventTypeSpecVersions;
 import io.flowcatalyst.db.generated.tables.MsgEventTypes;
@@ -308,6 +309,11 @@ public class Tables {
      * The table <code>public.msg_dispatch_pools</code>.
      */
     public static final MsgDispatchPools MSG_DISPATCH_POOLS = MsgDispatchPools.MSG_DISPATCH_POOLS;
+
+    /**
+     * The table <code>public.msg_dispatch_queue</code>.
+     */
+    public static final MsgDispatchQueue MSG_DISPATCH_QUEUE = MsgDispatchQueue.MSG_DISPATCH_QUEUE;
 
     /**
      * The table <code>public.msg_event_projection_feed</code>.
