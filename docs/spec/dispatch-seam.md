@@ -296,150 +296,117 @@ Pinned by `PendingJobPollerTest` (`whenThePublisherRunsTheJobIsNotYetCommittedQu
 `theDuplicateCopyAPublishThenDeathLeavesIsDiscardedByTheDeliveryClaim`,
 `aJobRefusedAsNotYetDueIsPublishedAndClaimableOnceDue`; `ProcessingApiTest.aStaleCopyDoesNotMakeAScheduledRetryEarly`).
 
-**Java since 2026-10-05: the scheduler claims from `msg_dispatch_queue`
-(dispatch-queue spec, steps 3 and 3b — supersedes the claim statement, the
-in-flight exclusion and the "nothing needs recovery" note of the 2026-10-04
-section below; the poller/lane structure, permits, generations, poison and the
-doomed check are unchanged).** Owner rulings: no partial indexes, no triggers,
-no transaction or row lock held across a publish, queries that work with bind
-parameters, a double publish is acceptable but a lost or out-of-order job is not.
+**Java since 2026-10-05 (dispatch step 4): the scheduler claims from `msg_dispatch_jobs`
+again; the queue table is retired.** This restores the claim shape of the 2026-10-04
+section below and keeps what the week of queue-table work proved. Owner rulings: no
+partial indexes, no triggers, no transaction or row lock held across a publish,
+queries that work with bind parameters, a double publish is acceptable but a lost or
+out-of-order job is not.
 
-- **The queue table.** `msg_dispatch_queue` holds one row per `PENDING` job that
-  is waiting, and none for any other (V21; `DispatchJobLifecycle` keeps it exact
-  in the same SQL statement as every status write; `queueDrift()` reports
-  mismatches). V22 (Go 067) dropped the three partial indexes the dispatch path
-  used, added `idx_dispatch_jobs_status_group (status, message_group, sequence,
-  created_at, id)`, set the queue table's `fillfactor = 70` and row-count
-  autovacuum thresholds. The one partial index left on `msg_dispatch_jobs` is the
-  projector's `idx_msg_dispatch_jobs_dirty`. `claimed_at` is unused (always NULL;
-  to be dropped).
-- **The claim deletes** (step 3b; `DispatchJobLifecycle#claimPending`, two plain
-  statements on one pooled connection, autocommit, no transaction, no locking
-  clause). S1: `SELECT job_id FROM msg_dispatch_queue WHERE (scheduled_for IS NULL
-  OR scheduled_for <= NOW()) AND (subscription_id IS NULL OR subscription_id <>
-  ALL($paused)) AND (message_group IS NULL OR message_group <> ALL($held)) ORDER BY
-  message_group NULLS LAST, sequence, job_created_at, job_id LIMIT $n`. S2:
-  `DELETE FROM msg_dispatch_queue WHERE job_id = ANY($ids) AND (scheduled_for IS
-  NULL OR scheduled_for <= NOW()) RETURNING ...` — the rows S2 RETURNS are the
-  claim, so two claimers never both get a row, and a row refreshed to a future
-  `scheduled_for` between the statements is not taken. The result is sorted in
-  memory by the claim's key. It never reads `msg_dispatch_jobs`. Arrays are always
-  bound, empty when there is nothing to exclude. `version` (the job's `updated_at`
-  when the row was written) is what `markQueued` guards on.
-- **Why two statements and not one** (Postgres experiment, owner decision
-  2026-10-05; six statistics states x three sizes x three plan modes): every
-  single-statement claim (`WITH c AS (SELECT ... LIMIT) UPDATE/DELETE ... FROM c`)
-  is planned as a quadratic nested loop when the queue has been drained and then
-  analysed with its pages still allocated (240 ms / 2.4 s / 10 s per claim at
-  5k / 50k / 200k rows) — an idle queue followed by a burst is the normal case;
-  `claimed_at IS NULL` is mis-estimated without statistics; a hold-back sub-query
-  inside the claim costs seconds; and a generic plan cached while the queue is
-  empty is a seq scan, reused after a burst (850 ms per claim at 200k).
+**Why the queue table went.** `msg_dispatch_queue` (V21; one row per `PENDING` job)
+was built so the claim would read a small table. A small table that swings between
+empty and very full is the planner's worst case: when the statistics say "empty", every
+statement that joins it is planned as a scan. In the scenario it was built for — a burst
+into a drained, analysed queue — Go fell to 1.7-9k jobs/s (from ~48k) and Java and Rust
+stopped publishing (459 messages then nothing for 240 s; mark statements over 10 s). The
+big partitioned job table never has that failure: Postgres never believes it is free to
+scan it. V23 (Go 068) drops the table.
+
+- **Kept** (V22, step 3): the plain index `idx_dispatch_jobs_status_group (status,
+  message_group, sequence, created_at, id)` and the removal of the three partial indexes
+  (the one partial index left on `msg_dispatch_jobs` is the projector's
+  `idx_msg_dispatch_jobs_dirty`); the scheduler pool's `plan_cache_mode =
+  force_custom_plan` and `enable_sort = off` (below); the held-group memory; the bounded
+  hold-back probe; the 15-minute stale-`QUEUED` recovery; the optimistic `updated_at`
+  version check on mark-`QUEUED`; "a lane settles only its own in-flight entry".
+- **The claim** (`DispatchJobRepository#claimPending`): ONE plain SELECT, no lock, no
+  transaction, no write:
+  `SELECT id, created_at, message_group, sequence, scheduled_for, subscription_id,
+  dispatch_pool_id, client_id, mode, queue, updated_at FROM msg_dispatch_jobs WHERE
+  status = 'PENDING' AND (scheduled_for IS NULL OR scheduled_for <= NOW()) AND
+  (subscription_id IS NULL OR subscription_id <> ALL($paused)) AND (message_group IS NULL
+  OR message_group <> ALL($held)) AND id <> ALL($inflight) ORDER BY message_group NULLS
+  LAST, sequence, created_at, id LIMIT $n`. It walks the plain index in order (the status
+  equality prefix, then the index's own order; a Merge Append across the partitions) with
+  no Sort. `status = 'PENDING'` is a literal; under `force_custom_plan` a bind gives the
+  same plan. Arrays are never NULL. The result is sorted in memory by the claim's key.
+- **No claim marking, no restore, no reconcile.** A claimed job stays `PENDING` and is
+  kept out of the next claim only by the in-memory in-flight set (passed as `$inflight`,
+  bounded by the buffer capacity). "Release" is removing the id from the in-flight set —
+  in a lane, before the poison generation is read, own entry only. A process that dies
+  leaves its unpublished jobs `PENDING`: crash recovery needs nothing. A row the claim
+  returns that is already in flight (it cannot happen: the claim excludes them) is dropped
+  and counted (`fc_scheduler_claims_already_in_flight_total`).
+- **The lifecycle is single-table again.** No statement references `msg_dispatch_queue`
+  (`DispatchJobLifecycleEnforcementTest` fails the build if production code names it).
+  create = plain INSERT; enterPending/leavePending = one guarded `UPDATE ... RETURNING`.
+  mark-`QUEUED` reads each claimed `(id, created_at)` pair by PRIMARY KEY — a LATERAL
+  sub-select per pair, fenced with `OFFSET 0`, looking up by `(id, created_at)` alone — and
+  checks the claimed version and `status = 'PENDING'` on what it returns; the UPDATE joins
+  the few matches back by the same key.
+- **The opaque status guard.** In every statement that already pins its rows by primary
+  key (mark-`QUEUED`, the by-key transitions, the by-id sweeps) the guard is written
+  `status || '' = 'PENDING'` (and `status || '' IN (...)`) so it cannot be an index
+  condition: a sargable guard let the planner walk the status index instead when the
+  active partition had been analysed while no job was `PENDING` (the statistics said
+  `PENDING` was absent, so it estimated one row and read every `PENDING` job: mark-`QUEUED`
+  took 6.1 s at 200,000 `PENDING`, found by Go's plan tests). Statements that SELECT BY
+  status (the claim, the stale sweep, the reaper, hold-back) keep the plain sargable form.
+  The callback's transitions run on the dispatch pool WITHOUT the planner settings, so they
+  are plan-tested as generic plans on a pool without them.
+- **Hold-back reads the job table only.** `FAILED`/`ERROR` holders by `status = ANY($statuses)
+  AND message_group = ANY($groups)`; `PENDING`-with-a-future-`scheduled_for` holders as one
+  ordered index probe per candidate group on the plain index (`status = 'PENDING' AND
+  message_group = g AND scheduled_for > NOW() AND (sequence, created_at, id) < the group's
+  last candidate ORDER BY ... LIMIT 1`) — bounded by the position of the group's last
+  candidate, because only a holder before a candidate matters and an unbounded probe walks
+  every due row of a deep group. The delivery-time `groupHeldBefore` is the same two reads.
+  A group found held is remembered for 5 seconds (an in-memory map capped at 10,000 groups,
+  the oldest dropped; `HeldGroups`) and passed to the claim as `$held`, so a batch-full of
+  held rows at the head of the order does not starve everything behind it
+  (`fc_scheduler_held_groups`).
 - **Planner settings on the scheduler's pool only** (`Pools.SCHEDULER_SERVER_SETTINGS`):
-  `plan_cache_mode = force_custom_plan` (pgjdbc moves to a server-prepared
-  statement after `prepareThreshold` executions, which is where a cached generic
-  plan comes from; `prepareThreshold` is unchanged) and `enable_sort = off`
-  (without statistics the planner prefers a seq scan plus sort to the ordered index
-  walk). Carried as pgjdbc's `options` connection property (libpq startup `-c
-  name=value`), not Hikari's `connectionInitSql`: part of the connection startup,
-  no extra round trip, the same mechanism as Go (pgx runtime params) and Rust
-  (`PgConnectOptions::options`). The api, bff, dispatch and background pools do
-  not get them (`PoolsTest`). Worst claim measured: 34 ms (200,000 rows, drained
-  state); otherwise 0.1-0.3 ms per statement.
-- **Restore** (`DispatchJobLifecycle#restore`, one statement): a job claimed but
-  not published — failed publish, failed mark-`QUEUED`, poisoned drop, doomed or
-  hold-back withhold, lane close — gets its queue row back, created FROM THE JOB
-  TABLE (`INSERT ... SELECT ... FROM unnest(ids, created_ats) CROSS JOIN LATERAL
-  (SELECT * FROM msg_dispatch_jobs WHERE id = u.id AND created_at = u.created_at
-  OFFSET 0) j WHERE j.status = 'PENDING' ON CONFLICT (job_id) DO NOTHING`), so a
-  job that has moved on is not resurrected and a newer queue row is not
-  overwritten. The primary-key lookup is fenced in the lateral sub-select with the
-  status test outside it: as a plain `(id, created_at) IN (SELECT * FROM unnest(...))`
-  join the planner walked the status index per job when the job table had no
-  statistics (44-109 ms for 500 jobs; 3-5 ms now). In a lane
-  it happens in `settle` immediately BEFORE the batch leaves the in-flight set and
-  the poison generation is read; a lane removes only its OWN in-flight entry (the
-  generation it carries); the poller restores what the hold-back and the doomed
-  check withhold at once. A restore that fails is counted
-  (`fc_scheduler_claim_restore_errors_total`) and logged; the reconcile sweep
-  restores those rows.
-- **The claim lock and the claim window.** Between a claim's DELETE and its jobs
-  entering the in-memory in-flight set (the hold-back lookup happens in between) a
-  claimed job is `PENDING` with no queue row and not in flight — and a backlog job is
-  far older than the 60 s age guard. The poller holds a lock from a claim's first
-  statement until its jobs are in flight or restored; the periodic reconcile takes
-  the same lock around "read the in-flight ids + insert missing queue rows", so it
-  cannot re-queue a job being claimed right now. A claim that returns a job this
-  process STILL HAS IN FLIGHT (its row came back by an old copy's restore or by
-  reconcile) does not submit it again: it is restored, and so are the rest of its
-  group in that claim (they are behind it); `fc_scheduler_claims_already_in_flight_total`.
-- **Crash recovery is reconcile "insert missing".** A job claimed (row deleted) by a
-  process that died is `PENDING` with no queue row. The first poll after this
-  instance becomes leader runs the pass with NO age guard, repeatedly until it
-  inserts nothing (5,000-row batches; `fc_scheduler_leader_start_restored_total`).
-  The periodic reconcile (leader, every 60 s) restores such jobs once they are 60 s
-  old, EXCLUDING this process's in-flight ids (bound as an array — those are being
-  published). The invariant: every queue row belongs to a `PENDING` job (same
-  values); a `PENDING` job without a row is in the leader's in-flight set or will be
-  restored by reconcile (`queueDrift(ids, ignore)` takes the in-flight ids).
-- **Hold-back** keeps its meaning: a `BLOCK_ON_ERROR` job is held when an earlier
-  job of its group (positional, `(sequence, created_at, id)`) is `FAILED`/`ERROR`
-  or `PENDING` with a future `scheduled_for`. One query per claim (and the
-  delivery callback's `groupHeldBefore`), two sources joined by `UNION ALL`:
-  `FAILED`/`ERROR` holders from `msg_dispatch_jobs` by `status = ANY($statuses) AND
-  message_group = ANY($groups)` (`idx_dispatch_jobs_status_group`), backed-off
-  `PENDING` holders from the queue — one ordered index probe per candidate group
-  (`LATERAL`, `ORDER BY sequence, job_created_at, job_id LIMIT 1` on
-  `idx_dispatch_queue_order`) for the first row with `scheduled_for > NOW()`, bounded
-  by the position of the group's last candidate (only a holder before a candidate
-  matters). A plain `message_group = ANY(...) AND scheduled_for > NOW()` read
-  seq-scanned a 100,000-row queue under the scheduler pool's forced custom plans,
-  and an unbounded probe walks every due row of a deep group (22-46 ms for 500
-  groups); bounded it is 3-5 ms. Held rows are restored. **Held-group memory:** the poller remembers each group it
-  has just found held for 5 seconds (an in-memory map capped at 10,000 groups, the
-  oldest dropped) and passes them to S1 as `$held`, so a batch-full of held rows at
-  the head of the order is no longer claimed and restored on every pass (the
-  starvation that left jobs behind them unpublished); after 5 seconds the group is
-  tried again. `fc_scheduler_held_groups` gauges the map; the WARN for a full
-  claim that submits nothing stays.
-- **Stale-`QUEUED` recovery restored, at 15 minutes** (owner ruling 2026-10-04,
-  reversing 2026-09-22): the leader returns jobs still `QUEUED` 15 minutes after
-  their last update to `PENDING` through the lifecycle's `enterPending` (every 60 s,
-  `fc_scheduler_stale_queued_recovered_total`, WARN when > 0). A message the broker
-  lost or expired after `QUEUED` would otherwise leave the job `QUEUED` for ever;
-  the duplicate for a message the router merely holds is dropped by the router
-  (`ExternalRequeue`) or skipped by the delivery callback. No `PROCESSING` sweep in
-  the scheduler: that is the reaper's (15 min).
-- **Reconcile sweep** (leader, every 60 s, 5,000 rows per statement): (a) restore
-  missing (above); (b) delete a queue row whose job is missing or not `PENDING`;
-  (c) refresh a queue row whose `version` (or `scheduled_for`) differs from its
-  job's. A non-zero (b) or (c) is a WARN (a bug, or an older binary writing the
-  table); (a) non-zero is a crash's leftovers or a failed restore.
-  `fc_scheduler_queue_reconcile_{inserted,deleted,refreshed}_total`. The statements
-  compare whole tables by design (~0.3 s per pass at 120,000 `PENDING` jobs).
-- **Backlog gauge** (leader, every 15 s): `fc_dispatch_queue_backlog_jobs` and
-  `fc_dispatch_queue_oldest_waiting_seconds` — the count and the age of the oldest
-  due queue row. JFR: `QueueSweep` (one per sweep).
-- **Plans** (`DispatchQueuePlanTest`, the scheduler's two settings applied, six
-  statistics states at 5,000 and 100,000 queue rows — never analysed; analysed
-  while empty; drained then analysed then a burst; freshly analysed; analysed when
-  every row was scheduled for the future; and a plan cached on one connection while
-  the queue was empty, then the burst): S1 walks `idx_dispatch_queue_order` with no
-  Sort and no Seq Scan; at 100,000 rows S2 is an index scan (the primary key; the
-  order index in the drained state) and the restore reads `msg_dispatch_jobs` by
-  primary key. The negative control repeats the cached-plan case WITHOUT the
-  settings and gets Seq Scan + Sort for S1 and a seq scan for S2 (S2 400 ms at
-  100,000 rows).
-- Pinned by `DispatchQueueClaimTest` (order, due/paused/held filters, a row made
-  not-due between the statements, concurrent claimers, restore, reconcile and
-  crash recovery, stale-`QUEUED`, backlog), `PendingJobPollerReleaseTest` (failed
-  publish, order after failure, hold-back, leader-start restore, regained
-  leadership, held-group starvation), `HeldGroupsTest`, `QueueMaintenanceTest`,
-  `DispatchLanesTest` (restore on every path, before the poison read; a lane
-  removes only its own entry), `PoolsTest`, `DispatchQueuePlanTest`.
+  `plan_cache_mode = force_custom_plan` (pgjdbc moves to a server-prepared statement after
+  `prepareThreshold` executions, which is where a cached generic plan comes from; the
+  threshold is unchanged) and `enable_sort = off`. Carried as pgjdbc's `options` connection
+  property (libpq startup `-c name=value`), not Hikari's `connectionInitSql`: part of
+  connection startup, no extra round trip, the same mechanism as Go (pgx runtime params)
+  and Rust (`PgConnectOptions::options`). The api, bff, dispatch and background pools do
+  not get them (`PoolsTest`).
+- **Stale-`QUEUED` recovery restored, at 15 minutes** (owner ruling 2026-10-04, reversing
+  2026-09-22): the leader returns jobs still `QUEUED` 15 minutes after their last update to
+  `PENDING` through the lifecycle's `enterPending` (every 60 s,
+  `fc_scheduler_stale_queued_recovered_total`, WARN when > 0). A message the broker lost
+  or expired after `QUEUED` would otherwise leave the job `QUEUED` for ever; the duplicate
+  for a message the router merely holds is dropped by the router (`ExternalRequeue`) or
+  skipped by the delivery callback. No `PROCESSING` sweep in the scheduler: the reaper's.
+- **Backlog gauge** (leader, every 30 s): `fc_dispatch_queue_backlog_jobs` =
+  `SELECT count(*) FROM (SELECT 1 FROM msg_dispatch_jobs WHERE status = 'PENDING' LIMIT
+  100001) s` (an index range of at most 100,001 entries, so the gauge saturates at
+  "100,000+" instead of scanning a huge backlog) and `fc_dispatch_queue_oldest_waiting_seconds`
+  = the `created_at` age of the first due job in claim order. JFR: `QueueSweep` (one per
+  stale-`QUEUED` sweep).
+- **Tests.** `DispatchJobPlanTest`: the claim, mark-`QUEUED`, hold-back, the sweeps, the
+  backlog sample and the callback's transitions, at about 5,000 and 200,000 `PENDING` jobs
+  in a mostly-`COMPLETED` job table over four partitions, in eight statistics states
+  (freshly analysed; never analysed; the ACTIVE partition analysed while it held no
+  pending job, then a burst; the empty forward partitions VACUUMed and ANALYZEd; all pending
+  rows tied on `created_at` and `sequence`; a plan cached on one connection while there were
+  no pending jobs, then the burst; an in-flight array of 1,000 and of 5,000 ids that are the
+  first rows of the walk). Asserted: SHAPE — the claim has no Sort and no Seq Scan and uses
+  the plain index; mark-`QUEUED` and every by-key transition read by primary key and never
+  seq-scan a populated partition or walk the status index (a sargable guard fails it); the
+  negative control repeats the cached-plan, burst and VACUUMed-partition cases without the
+  settings. `SchedulerConcurrencyTest`: 10 lanes marking batches while the poller claims 500
+  at a time and two callback-like workers move jobs `PENDING` -> `PROCESSING` -> `COMPLETED`
+  on a second pool without the settings, on a real database with a burst of 200,000 in the
+  active-partition-analysed-while-empty state: no statement over 250 ms on either pool,
+  throughput floor, nothing lost, nothing published twice or out of order.
+  `DispatchLanesStressTest` (200 iterations by default) and `DispatchJobLifecycleRandomTest`
+  (60) run hundreds of iterations in the normal build; the test data source is pooled.
 
 **Java since 2026-10-04: a decoupled poller and dispatcher lanes (owner
-decision).** (Claim statement, release and in-flight exclusion: see the 2026-10-05 section above.) The poller never waits for a publish, and nothing holds a
+decision).** (The claim statement and the in-flight exclusion are those of this section again — see the 2026-10-05 section above.) The poller never waits for a publish, and nothing holds a
 transaction or a row lock across one.
 
 ```
@@ -515,9 +482,8 @@ copy that arrives before the lane's update wins, after which the lane's update
 matches no row of the version it claimed and changes nothing (counted in
 `fc_scheduler_mark_queued_not_updated_total`). *Shutdown:* the poller stops
 claiming; each lane finishes the batch it is sending and its update, then
-exits; whatever is still buffered stays `PENDING` (its claim released). A
-crash leaves jobs with no queue row, which the next leader's start-up
-reconcile pass restores (2026-10-05 section above).
+exits; whatever is still buffered stays `PENDING` and is claimed again. A crash
+leaves nothing to recover: unpublished jobs are still `PENDING` (2026-10-05 section above).
 
 Sizes (`SchedulerConfig`): `BufferCapacity` 1000, `Dispatchers` 10,
 `BatchSize` 500, `LaneBatch` 100, `PollInterval` 1s; the first three are
@@ -589,7 +555,7 @@ func filterByDispatchMode(claims []dispatchClaim, holders map[string]jobKey) []d
 | `Config.BatchSize` | 100 (Go); **500 (Java since 2026-10-04: max rows per claim; `FC_SCHEDULER_BATCH_SIZE`)** | `scheduler.go:63` | Load-bearing — bounds the rows one claim returns; SQS chunks to 10/`SendMessageBatch` regardless (`dispatcher.go:14-16`). Java adds `BufferCapacity` 1000 (`FC_SCHEDULER_BUFFER_CAPACITY`), `Dispatchers` 10 (`FC_SCHEDULER_DISPATCHERS`), `LaneBatch` 100 — see the 2026-10-04 section above |
 | `Config.PausedCacheTTL` | 60s | `scheduler.go:64` | Load-bearing but soft — bounds staleness of the paused-connection *and* pool-code caches (shared TTL, `poller.go:113-114`); a stale read costs at most one TTL of misrouting |
 | `Config.StaleAfter` | ~~5 minutes~~ ~~removed~~ **15 minutes for `QUEUED`** | `scheduler.go:65` | **Owner ruling 2026-09-22** removed the sweep ("a broker-held job is the broker's"; it re-published every message the router deferred for a full pool, every 5 minutes); **owner ruling 2026-10-04 restores it at 15 minutes in all three implementations** — a message the broker lost leaves the job `QUEUED` for ever otherwise, and the duplicate is ACK-dropped by the router or skipped by the callback. Java: leader-only `QueueMaintenance` loop through the lifecycle's `enterPending`; no `PROCESSING` sweep (the reaper's) |
-| `Config.StaleScanInterval` | 60s | `scheduler.go:66` | Java: `QueueMaintenance` sweep interval (stale `QUEUED`, reconcile); the backlog gauge samples every 15 s |
+| `Config.StaleScanInterval` | 60s | `scheduler.go:66` | Java: `QueueMaintenance` sweep interval (stale `QUEUED`); the backlog gauge samples every 30 s |
 | `DefaultReaperInterval` | 2 minutes | `reaper.go:38` | Load-bearing but deliberately loose — "a backstop for a rare failure... not a hot path"; chosen as double the purger's 1-minute cadence since this sweep self-joins across partitions (`reaper.go:32-38`) |
 | `DefaultProcessingLiveAfter` | ~~45~~ **15 minutes** | `reaper.go:62` | **Owner ruling 2026-09-22**: the old system's value; the platform's only automatic redrive of `PROCESSING` jobs (stale `QUEUED` is the scheduler's, 15 min). Was sized above the mediator's 15-min-per-attempt × 3; the owner accepts redriving a second attempt still hanging (a duplicate to a target already broken) |
 | Retry backoff ladder (processing endpoint) | 5s, 15s, 30s, 60s, 120s (attempt 1‑5, clamped) | `processing.go:66-72,284-293` | Load-bearing — the platform's own retry curve for a genuinely-failed delivery, independent of the router-spec's own retry-policy table (§9's endpoint answers the router `ack:true` regardless, so router-spec §4.3's curve never applies to a dispatch job) |
@@ -1089,12 +1055,12 @@ const GroupHoldingStatusSQL = `status IN ('FAILED', 'ERROR') ` +
   because "this group contains a held job" would include the held job
   itself the moment its own backoff expired, and the group would never
   move again.
-- **Java since 2026-10-05: two sources, one meaning.** A `FAILED`/`ERROR` holder
-  is a row of `msg_dispatch_jobs` (read by `status = ANY($statuses) AND
-  message_group = ANY($groups)`, `idx_dispatch_jobs_status_group`); a backed-off
-  `PENDING` holder is a row of `msg_dispatch_queue` (read by `message_group` with
-  `scheduled_for > NOW()`), because a `PENDING` job is exactly a queue row. Both
-  consuming sites (`heldBeforeIds`, `groupHeldBefore`) read both, `UNION ALL`.
+- **Java since 2026-10-05 (dispatch step 4): one table, two reads.** Both kinds of
+  holder are rows of `msg_dispatch_jobs`, read through `idx_dispatch_jobs_status_group`: a
+  `FAILED`/`ERROR` holder by `status = ANY($statuses) AND message_group = ANY($groups)`; a
+  backed-off `PENDING` holder as one ordered probe per group (`status = 'PENDING' AND
+  message_group = g AND scheduled_for > NOW()`, bounded by the group's last candidate).
+  Both consuming sites (`heldBeforeIds`, `groupHeldBefore`) read both, `UNION ALL`.
 - **Both consuming sites must agree** — the scheduler's claim-time filter
   and the processing endpoint's delivery-time gate are two independent
   call sites reading the *same* SQL fragment; a job held at one and waved
