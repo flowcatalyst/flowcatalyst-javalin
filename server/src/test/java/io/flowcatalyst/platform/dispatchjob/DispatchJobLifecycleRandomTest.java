@@ -29,6 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///
 ///  - no operation fails (a deadlock victim, which Postgres chooses between multi-row statements that lock jobs
 ///    in different orders, is the one tolerated outcome: its statement rolled back whole);
+///  - no job is lost or duplicated;
 ///  - every job ends in a status the schema admits;
 ///  - a COMPLETED job never leaves COMPLETED (only an operator requeue may, and set A is never requeued);
 ///  - a mark-QUEUED carrying a STALE version never marks a job (the optimistic check), whatever the status.
@@ -124,6 +125,8 @@ class DispatchJobLifecycleRandomTest {
             pool.shutdown();
         }
         for (int k = 0; k < jobsN; k++) {
+            long rows = DB.fetchOne("SELECT count(*) FROM msg_dispatch_jobs WHERE id = ?", ids.get(k)).get(0, Long.class);
+            if (rows != 1) failures.add("iteration " + iteration + ": " + ids.get(k) + " has " + rows + " rows (lost or duplicated)");
             String st = status(ids.get(k));
             if (!LEGAL.contains(st)) failures.add("iteration " + iteration + ": " + ids.get(k) + " is " + st);
         }
