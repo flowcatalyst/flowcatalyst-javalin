@@ -236,4 +236,85 @@ class PendingJobPollerReleaseTest {
         assertThat(publisher.batches().stream().flatMap(List::stream).map(PublishedMessage::jobId))
                 .as("the free job behind the held rows is reached").containsExactly(free);
     }
+
+    private static DispatchPublisher held(CountDownLatch entered, CountDownLatch gate, List<String> accepted) {
+        return batch -> {
+            entered.countDown();
+            try {
+                if (!gate.await(20, TimeUnit.SECONDS)) throw new IllegalStateException("never opened");
+            } catch (InterruptedException e) {
+                throw new IllegalStateException(e);
+            }
+            batch.forEach(m -> accepted.add(m.jobId()));
+        };
+    }
+
+    /// The claim window: between a claim's DELETE and its jobs entering the in-flight set the job is PENDING with
+    /// no queue row and not in flight — an old job, far past the reconcile's age guard. The periodic reconcile
+    /// must not re-queue it: it takes the poller's claim lock to read the in-flight ids and insert. Deterministic:
+    /// the hook between the claim and the in-flight insert starts a reconcile pass and gives it time to run.
+    /// Mutant: reconcile without the claim lock — the job is re-queued (and would be claimed and sent twice).
+    @Test
+    void theReconcilePassCannotRequeueAJobThatIsBeingClaimedRightNow() throws Exception {
+        String id = seedWriteRow(seed("win", "rel-win-" + RUN, 1).withUpdatedAt(java.time.Instant.now().minusSeconds(3600)));
+        var entered = new CountDownLatch(1);
+        var gate = new CountDownLatch(1);
+        var accepted = java.util.Collections.synchronizedList(new ArrayList<String>());
+        var poller = poller(held(entered, gate, accepted), () -> true);
+        var metrics = new SchedulerMetrics(1);
+        var maintenance = new QueueMaintenance(LIFECYCLE, () -> poller.lanes().inFlightIds(), () -> true, metrics,
+                QueueMaintenance.Timing.DEFAULTS, poller.claimLock());
+        var reconcile = new java.util.concurrent.atomic.AtomicReference<Thread>();
+        poller.afterClaimHook = () -> {
+            var t = new Thread(maintenance::reconcile, "reconcile-during-claim");
+            reconcile.set(t);
+            t.start();
+            try {
+                Thread.sleep(600); // long enough for an unlocked reconcile to have run
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+
+        poller.pollOnce();
+        reconcile.get().join(15_000);
+        maintenance.close();
+
+        assertThat(queueRow(id)).as("claimed and in flight: not re-queued by the reconcile").isNull();
+        assertThat(metrics.reconcileInserted.sum()).isZero();
+        gate.countDown();
+        assertThat(poller.awaitIdle(WAIT)).isTrue();
+        assertThat(accepted).containsExactly(id);
+    }
+
+    /// A claim that returns a job this process still has in flight (its row came back) must not submit it again,
+    /// and must put back the rest of its group in that claim (they are behind it). Other groups flow.
+    /// Mutant: overwrite the entry and submit — the job is published twice.
+    @Test
+    void aClaimThatReturnsAJobAlreadyInFlightPutsItBackAndWithholdsItsGroup() throws Exception {
+        String group = "rel-again-" + RUN;
+        String j1 = seedWriteRow(seed("ag1", group, 1));
+        var entered = new CountDownLatch(1);
+        var gate = new CountDownLatch(1);
+        var accepted = java.util.Collections.synchronizedList(new ArrayList<String>());
+        var poller = poller(held(entered, gate, accepted), () -> true);
+
+        poller.pollOnce(); // j1 is claimed; its lane is stuck in the publish
+        assertThat(entered.await(15, TimeUnit.SECONDS)).isTrue();
+        assertThat(queueRow(j1)).isNull();
+
+        String j4 = seedWriteRow(seed("ag4", group, 4));                  // behind j1 in the same group
+        String other = seedWriteRow(Seed.of(code("ag5")).withMessageGroup("zzz-other-" + RUN)); // another group
+        DispatchJobFixture.syncQueue(List.of(j1));                         // j1's row comes back (a reconcile, a restore)
+        var second = poller.pollOnce();
+
+        assertThat(poller.metrics().alreadyInFlight.sum()).isEqualTo(1);
+        assertThat(second.submitted()).as("only the other group's job").isEqualTo(1);
+        assertThat(queueRow(j1)).as("put back, not submitted twice").isNotNull();
+        assertThat(queueRow(j4)).as("behind it in the claim: withheld, put back").isNotNull();
+        gate.countDown();
+        assertThat(poller.awaitIdle(WAIT)).isTrue();
+        assertThat(accepted).containsExactlyInAnyOrder(j1, other);
+        assertThat(accepted).doesNotContain(j4);
+    }
 }

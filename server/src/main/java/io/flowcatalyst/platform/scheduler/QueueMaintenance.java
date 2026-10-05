@@ -50,10 +50,19 @@ final class QueueMaintenance implements AutoCloseable {
     private final BooleanSupplier leader;
     private final SchedulerMetrics metrics;
     private final Timing timing;
+    /// The poller's claim lock: held around "read the in-flight ids + insert missing queue rows" so a job being
+    /// claimed right now (PENDING, no row, not yet in flight) is not mistaken for a crashed claimer's leftover.
+    private final java.util.concurrent.locks.Lock claimLock;
     private final ScheduledExecutorService executor;
 
     QueueMaintenance(DispatchJobLifecycle lifecycle, Supplier<List<String>> inFlightIds, BooleanSupplier leader,
                      SchedulerMetrics metrics, Timing timing) {
+        this(lifecycle, inFlightIds, leader, metrics, timing, new java.util.concurrent.locks.ReentrantLock());
+    }
+
+    QueueMaintenance(DispatchJobLifecycle lifecycle, Supplier<List<String>> inFlightIds, BooleanSupplier leader,
+                     SchedulerMetrics metrics, Timing timing, java.util.concurrent.locks.Lock claimLock) {
+        this.claimLock = Objects.requireNonNull(claimLock, "claimLock");
         this.lifecycle = Objects.requireNonNull(lifecycle, "lifecycle");
         this.inFlightIds = Objects.requireNonNull(inFlightIds, "inFlightIds");
         this.leader = Objects.requireNonNull(leader, "leader");
@@ -102,7 +111,15 @@ final class QueueMaintenance implements AutoCloseable {
     DispatchJobLifecycle.Reconciled reconcile() {
         var event = new QueueSweepEvent();
         event.begin();
-        var r = lifecycle.reconcileQueue(timing.reconcileMaxRows(), timing.reconcileJobAge(), inFlightIds.get());
+        int inserted;
+        claimLock.lock();
+        try {
+            inserted = lifecycle.restoreMissing(timing.reconcileMaxRows(), timing.reconcileJobAge(), inFlightIds.get());
+        } finally {
+            claimLock.unlock();
+        }
+        var rest = lifecycle.reconcileRows(timing.reconcileMaxRows());
+        var r = new DispatchJobLifecycle.Reconciled(inserted, rest.deleted(), rest.refreshed());
         metrics.reconcileInserted.add(r.inserted());
         metrics.reconcileDeleted.add(r.deleted());
         metrics.reconcileRefreshed.add(r.refreshed());

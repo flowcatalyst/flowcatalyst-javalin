@@ -30,6 +30,7 @@ public final class SchedulerMetrics {
     final LongAdder fullBatchClaims = new LongAdder();
     final LongAdder claimsRestored = new LongAdder();
     final LongAdder restoreErrors = new LongAdder();
+    final LongAdder alreadyInFlight = new LongAdder();
     final LongAdder leaderStartRestored = new LongAdder();
     final LongAdder staleQueuedRecovered = new LongAdder();
     final LongAdder reconcileInserted = new LongAdder();
@@ -139,6 +140,9 @@ public final class SchedulerMetrics {
                     claimsRestored);
             counter(b, "fc_scheduler_claim_restore_errors_total",
                     "Restores that failed; the reconcile sweep restores those rows.", restoreErrors);
+            counter(b, "fc_scheduler_claims_already_in_flight_total",
+                    "Claimed jobs this process still had in flight (a restored or refreshed row claimed again): put back, not submitted twice.",
+                    alreadyInFlight);
             counter(b, "fc_scheduler_leader_start_restored_total",
                     "Queue rows restored by the new leader's start-up reconcile pass (jobs a dead claimer left PENDING with no queue row).",
                     leaderStartRestored);

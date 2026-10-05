@@ -316,6 +316,12 @@ final class DispatchLanes implements AutoCloseable {
         }
     }
 
+    boolean inFlightContains(String id) {
+        synchronized (stateLock) {
+            return inFlight.containsKey(id);
+        }
+    }
+
     int inFlightCount() {
         synchronized (stateLock) {
             return inFlight.size();

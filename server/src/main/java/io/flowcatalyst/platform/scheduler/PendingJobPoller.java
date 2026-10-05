@@ -100,6 +100,15 @@ public final class PendingJobPoller implements AutoCloseable {
     /// read by the metrics gauge, so the count is mirrored in a volatile).
     private final HeldGroups heldGroups = new HeldGroups();
     private volatile int heldGroupCount;
+    private final java.util.concurrent.locks.ReentrantLock claimLock = new java.util.concurrent.locks.ReentrantLock();
+    /// Test seam: runs on the poller's thread after a claim has returned and before its jobs enter the in-flight set.
+    volatile Runnable afterClaimHook;
+
+    /// Held by a claim from its first statement until its jobs are in flight or restored, and by the periodic
+    /// reconcile around "read the in-flight ids + insert missing queue rows" ([QueueMaintenance]).
+    java.util.concurrent.locks.Lock claimLock() {
+        return claimLock;
+    }
 
     /// Builds the poller and starts its lanes.
     public PendingJobPoller(DataSource dataSource, DispatchJobRepository repository, DispatchJobLifecycle lifecycle,
@@ -168,26 +177,37 @@ public final class PendingJobPoller implements AutoCloseable {
         event.begin();
         long startNanos = System.nanoTime();
         int inFlightCount;
+        // Held from the claim's first statement until its jobs are in the in-flight set (or restored): between
+        // the claim's DELETE and the in-flight insert a claimed job is PENDING with no queue row and not yet in
+        // flight, which the periodic reconcile (it takes this lock to read the in-flight ids and insert) would
+        // take for a crashed claimer's leftover and re-queue.
+        claimLock.lock();
         try {
-            if (!wasLeader) {
-                restoreWhatADeadClaimerLeft();
-                wasLeader = true;
+            try {
+                if (!wasLeader) {
+                    restoreWhatADeadClaimerLeft();
+                    wasLeader = true;
+                }
+                // Generation FIRST, then the snapshot (DispatchLanes class doc).
+                generation = lanes.nextGeneration();
+                DispatchLanes.Snapshot inFlight = lanes.inFlightSnapshot();
+                inFlightCount = lanes.inFlightCount();
+                Set<String> paused = pausedCache.pausedSubscriptionIds();
+                claimed = claim(wanted, paused, inFlight);
+            } catch (RuntimeException e) {
+                metrics.pollErrors.increment();
+                lanes.releasePermits(wanted);
+                throw e;
             }
-            // Generation FIRST, then the snapshot (DispatchLanes class doc).
-            generation = lanes.nextGeneration();
-            DispatchLanes.Snapshot inFlight = lanes.inFlightSnapshot();
-            inFlightCount = lanes.inFlightCount();
-            Set<String> paused = pausedCache.pausedSubscriptionIds();
-            claimed = claim(wanted, paused, inFlight);
-        } catch (RuntimeException e) {
-            metrics.pollErrors.increment();
-            lanes.releasePermits(wanted);
-            throw e;
-        }
-        metrics.claimNanos.add(System.nanoTime() - startNanos);
-        metrics.claimCount.increment();
+            Runnable afterClaim = afterClaimHook;
+            if (afterClaim != null) afterClaim.run();
+            metrics.claimNanos.add(System.nanoTime() - startNanos);
+            metrics.claimCount.increment();
 
-        lanes.submit(claimed.toSubmit(), generation);
+            lanes.submit(claimed.toSubmit(), generation);
+        } finally {
+            claimLock.unlock();
+        }
         lanes.releasePermits(wanted - claimed.toSubmit().size());
 
         int submitted = claimed.toSubmit().size();
@@ -245,6 +265,37 @@ public final class PendingJobPoller implements AutoCloseable {
         if (claims.isEmpty()) {
             return new Claimed(0, List.of(), 0, 0);
         }
+        // A claim can return a job this process still has in flight: its row was restored (by the old copy's
+        // own restore, or by reconcile) or refreshed after the copy in flight was claimed. That copy is not
+        // known to be finished, so this one is NOT submitted — it is put back, and so are the rest of its group
+        // in this claim (they are behind it).
+        List<DispatchJobRepository.ClaimRow> again = new ArrayList<>();
+        Set<String> againGroups = new java.util.HashSet<>();
+        for (DispatchJobRepository.ClaimRow c : claims) {
+            if (lanes.inFlightContains(c.id())) {
+                again.add(c);
+                if (c.messageGroup() != null) againGroups.add(c.messageGroup());
+            }
+        }
+        if (!again.isEmpty()) {
+            List<DispatchJobRepository.ClaimRow> back = new ArrayList<>();
+            List<DispatchJobRepository.ClaimRow> rest = new ArrayList<>();
+            for (DispatchJobRepository.ClaimRow c : claims) {
+                boolean behind = lanes.inFlightContains(c.id())
+                        || (c.messageGroup() != null && againGroups.contains(c.messageGroup()));
+                (behind ? back : rest).add(c);
+            }
+            metrics.alreadyInFlight.add(again.size());
+            restoreQuietly(back);
+            if (rest.isEmpty()) return new Claimed(claims.size(), List.of(), 0, 0);
+            Claimed r = claimRest(rest, inFlight);
+            return new Claimed(claims.size(), r.toSubmit(), r.heldBack(), r.doomedSkipped());
+        }
+        return claimRest(claims, inFlight);
+    }
+
+    /// The hold-back and the doomed check over claimed rows none of which is already in flight.
+    private Claimed claimRest(List<DispatchJobRepository.ClaimRow> claims, DispatchLanes.Snapshot inFlight) {
         List<DispatchJobRepository.ClaimRow> toSubmit = new ArrayList<>(claims.size());
         List<DispatchJobRepository.ClaimRow> withheld = new ArrayList<>();
         int heldBack = 0;
