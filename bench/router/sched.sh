@@ -54,6 +54,11 @@
 #   reliably still has its pages when QUEUE_MAINT=analyze runs; otherwise autovacuum may have
 #   truncated it already. The tabstat lines show which state the seed met.
 #   SEED_WAIT_S [0] seconds to wait after the maintenance before the measured seed.
+#   LAT_RATE [0] jobs/s: instead of one bulk seed, feed N = LAT_RATE x LAT_SECONDS [60] jobs of
+#   the shape at that rate (one INSERT of LAT_RATE/10 rows every 100 ms, each its own
+#   transaction, one psql session) and report the distribution of (arrival at sqsfix - the
+#   job's created_at). N is overridden. IDLE_SAMPLES [0] with it: afterwards, that many single
+#   jobs inserted 2-3 s apart into the idle system, reported the same way (poll-interval cost).
 #   PERSEC [30] seconds of the per-second rate series printed in the summary.
 #   KEEP [0] leave the containers up afterwards.  Extra ENV=v args after <shape> go to the server.
 #
@@ -181,8 +186,27 @@ snap() {
   wait
 }
 
+# seed_paced <rate> <seconds> <groups> <mode>: 10 INSERTs a second, each rate/10 rows and its
+# own transaction, paced against the database clock inside ONE psql session.
+seed_paced() {
+  local rate=$1 secs=$2 groups=$3 mode=$4 grp="NULL" chunk=$(( $1 / 10 )) k
+  [ "$groups" -gt 0 ] && grp="'g' || lpad((gs % $groups)::text, 5, '0')"
+  { echo "SELECT extract(epoch FROM clock_timestamp()) AS t0 \\gset"
+    for k in $(seq 0 $((secs * 10 - 1))); do
+      echo "INSERT INTO msg_dispatch_jobs (id, kind, code, target_url, mode, message_group, status, payload, created_at)
+            SELECT 'B' || lpad(gs::text, 12, '0'), 'EVENT', 'bench:sched:job:created', 'http://172.30.0.11:9000/hook', '$mode', $grp, 'PENDING', '{\"n\":' || gs || '}', clock_timestamp()
+              FROM generate_series($((k * chunk + 1)), $(((k + 1) * chunk))) AS gs;"
+      echo "SELECT pg_sleep(greatest(0, :t0 + $((k + 1)) * 0.1 - extract(epoch FROM clock_timestamp())));"
+    done
+  } | docker exec -i $PG psql -U pg -d $DB -q -v ON_ERROR_STOP=1 >/dev/null
+}
+
 run() {
   local label=$1 image=$2 shape=$3; shift 3
+  local LAT_RATE=${LAT_RATE:-0} LAT_SECONDS=${LAT_SECONDS:-60} IDLE_SAMPLES=${IDLE_SAMPLES:-0}
+  [ "$LAT_RATE" -gt 0 ] && N=$((LAT_RATE / 10 * 10 * LAT_SECONDS))
+  local host_load; host_load=$(uptime | sed 's/.*load averages*: *//')
+  echo "-- host load averages before the run: $host_load"
   local groups mode
   case "$shape" in
     A) groups=0; mode=IMMEDIATE ;;
@@ -386,8 +410,16 @@ run() {
 
   # (4) the measured seed.
   local t_seed0; t_seed0=$(now)
-  seed B 1 "$N" "$groups" "$mode" || fail "seed"
+  if [ "$LAT_RATE" -gt 0 ]; then
+    [ "$QUEUE_TABLE" = 1 ] && fail "LAT_RATE is not implemented for the queue-table seeding"
+    seed_paced "$LAT_RATE" "$LAT_SECONDS" "$groups" "$mode" || fail "paced seed"
+  else
+    seed B 1 "$N" "$groups" "$mode" || fail "seed"
+  fi
   local t_seed1; t_seed1=$(now)
+  # With a paced feed the "seed" lasts LAT_SECONDS; rates in the summary are then relative to
+  # the START of the feed.
+  [ "$LAT_RATE" -gt 0 ] && t_seed1=$t_seed0
   local seed_s; seed_s=$(python3 -c "print(round($t_seed1-$t_seed0,2))")
   echo "-- seeded $N PENDING jobs (shape $shape, groups=$groups, mode=$mode) in ${seed_s}s, one INSERT, server running; sampling"
 
@@ -399,14 +431,30 @@ run() {
     docker cp $SRV:/tmp/bench.jfr "$out/sched-$label.jfr" >/dev/null 2>&1 || echo "WARNING: no JFR file" >&2
   fi
 
+  local idle_n=0
+  if [ "$LAT_RATE" -gt 0 ] && [ "$IDLE_SAMPLES" -gt 0 ]; then
+    for i in $(seq 1 "$IDLE_SAMPLES"); do
+      sleep "$(python3 -c 'import random;print(round(2+random.random(),3))')"
+      psqlq "INSERT INTO msg_dispatch_jobs (id, kind, code, target_url, mode, status, payload, created_at)
+             VALUES ('S' || lpad('$i', 12, '0'), 'EVENT', 'bench:sched:job:created', 'http://172.30.0.11:9000/hook', 'IMMEDIATE', 'PENDING', '{}', clock_timestamp())" >/dev/null || fail "single insert"
+    done
+    idle_n=$IDLE_SAMPLES; sleep 3
+  fi
   # Settle (a late duplicate publish would show up here), then freeze the server and read the
   # queue counters and the job table as one pair. After a timeout the server is still
   # publishing, so the pair can differ by the one claim that was published but not yet committed
   # when it was frozen; after a full drain nothing is in flight and the two must be equal.
   sleep 3
+  local mem_peak; mem_peak=$(docker exec $SRV sh -c 'cat /sys/fs/cgroup/memory.peak' 2>/dev/null || echo 0)
   docker pause $SRV >/dev/null 2>&1
   sleep 0.5
   read -r sent calls single <<<"$(sqsstat)"
+  sent=$((sent - idle_n))   # the IDLE_SAMPLES singles are not part of N
+  local lat_file=""
+  if [ "$LAT_RATE" -gt 0 ]; then
+    lat_file="$out/.sched-$label.created"
+    psqlq "SELECT id || '|' || round(extract(epoch FROM created_at) * 1000, 3) FROM msg_dispatch_jobs WHERE id LIKE 'B%' OR id LIKE 'S%'" > "$lat_file"
+  fi
   local pending_final; pending_final=$(psqlq "SELECT count(*) FROM msg_dispatch_jobs WHERE id LIKE 'B%' AND status = 'PENDING'")
   local queue_left=na
   [ "$QUEUE_TABLE" = 1 ] && queue_left=$(psqlq "SELECT count(*) FROM msg_dispatch_queue")
@@ -427,10 +475,11 @@ run() {
   errs=$(grep -ciE '"level":"(error|fatal)|(^|[^a-z_])(error|fatal|panic|exception)([^a-z]|$)' "$out/sched-$label.server.log")
   {
     echo "== $label image=$image shape=$shape groups=$groups mode=$mode cpus=$CPUS n=$N warmup_n=$WARMUP_N warmup_s=$warm_s maint=$WARMUP_MAINT queue_table=$QUEUE_TABLE queue_maint=$QUEUE_MAINT queue_autovac_off_warmup=${QUEUE_AUTOVAC_OFF_WARMUP:-0} seed_wait_s=$SEED_WAIT_S same_created_at=${SAME_CREATED_AT:-0} env='${passed# }'"
-    QUEUE_LEFT="$queue_left" PERSEC="${PERSEC:-30}" python3 "$here/sched.py" report "$out" "$label" "$N" "$base_sent" "$base_calls" "$sent" "$calls" "$pending_final" \
+    LAT_FILE="$lat_file" QUEUE_LEFT="$queue_left" PERSEC="${PERSEC:-30}" python3 "$here/sched.py" report "$out" "$label" "$N" "$base_sent" "$base_calls" "$sent" "$calls" "$pending_final" \
         "$t_seed1" "$SRV" "$PG" "$SQSFIX" "$CPUS" "$statuses" "$warns" "$errs" "$((single - base_single))" "$warm_dups" \
         "image=$image shape=$shape groups=$groups cpus=$CPUS warmup_n=$WARMUP_N env=${passed# }"
     echo "   seed_insert_s=$seed_s single_SendMessage_calls=$((single - base_single)) seed_committed_epoch=$t_seed1 (host clock; tabstat times are the database clock)"
+    echo "   server_cgroup_memory_peak_mb=$(( ${mem_peak:-0} / 1048576 )) (memory.peak of the server container: its whole life, warm-up included) host_load_before='$host_load' lat_rate=$LAT_RATE"
     echo "$tab_before"; echo "$tab_after"
     if [ "$errs" != 0 ] || [ "$warns" != 0 ]; then
       echo "   first warn/error lines of the server log:"
@@ -438,7 +487,7 @@ run() {
     fi
     [ -n "$pgstat" ] && { echo "   pg_stat_statements, top statements by total time (reset just before the seed):"; echo "$pgstat"; }
   } | tee "$out/sched-$label.log"
-  rm -f "$cpufile" "$out"/.sched-"$label".cg.* "$out/sched-$label.order.tsv"
+  rm -f "$cpufile" "$out"/.sched-"$label".cg.* "$out/sched-$label.order.tsv" "$out/.sched-$label.created"
 
   [ "${KEEP:-0}" = 1 ] || clean
 }

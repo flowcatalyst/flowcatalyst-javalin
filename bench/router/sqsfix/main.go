@@ -7,7 +7,7 @@
 // ReceiveMessage (long poll, visibility timeout) DeleteMessage DeleteMessageBatch
 // ChangeMessageVisibility ChangeMessageVisibilityBatch PurgeQueue. GET /stats for counters.
 // GET /order lists every message still on a queue in the order it was SENT (one line each:
-// queue, MessageGroupId, batch entry Id, the body's "id"), for the scheduler bench's
+// queue, MessageGroupId, batch entry Id, the body's "id", arrival time in Unix ms), for the scheduler bench's
 // per-group order check. It costs the send path two string fields; the body is parsed only
 // when /order is read.
 package main
@@ -441,7 +441,9 @@ func (s *server) stats(w http.ResponseWriter) {
 }
 
 // order writes every message still READY (never received) on every queue, in send order:
-// "<queue>\t<MessageGroupId>\t<entry Id>\t<body id>\n". Send order is the order of
+// "<queue>\t<MessageGroupId>\t<entry Id>\t<body id>\t<arrival Unix ms>\n" (the arrival time is
+// the fixture's clock when send() accepted the message; the latency measurement of the
+// scheduler bench subtracts the job's created_at from it). Send order is the order of
 // q.ready, which send() appends to under the queue lock, so for requests that did not
 // overlap it is arrival order; the entries of one SendMessageBatch keep their order in the
 // request. Only meaningful while nothing consumes the queue (the scheduler bench).
@@ -463,7 +465,7 @@ func (s *server) order(w http.ResponseWriter) {
 				ID string `json:"id"`
 			}
 			_ = json.Unmarshal([]byte(m.body), &body)
-			fmt.Fprintf(&b, "%s\t%s\t%s\t%s\n", q.name, m.group, m.entryID, body.ID)
+			fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t%d\n", q.name, m.group, m.entryID, body.ID, m.sentMs)
 			if i%4096 == 4095 {
 				fmt.Fprint(w, b.String())
 				b.Reset()

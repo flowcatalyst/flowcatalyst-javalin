@@ -265,7 +265,7 @@ def verify_order(path, n):
         p = line.rstrip("\n").split("\t")
         if len(p) < 4:
             continue
-        q, group, entry, bid = p
+        q, group, entry, bid = p[:4]
         jid = bid or entry
         if not jid.startswith("B"):
             continue
@@ -482,6 +482,38 @@ def report(out, label, n, base_sent, base_calls, final_sent, final_calls, final_
     print(f"     messages={sent} N={n} duplicates={dup_by_count} statuses={statuses} warn_lines={warns} error_lines={errs} "
           f"warmup_duplicates={warm_dups} queue_rows_left={queue_left}")
     print(f"     {o}")
+
+    # Latency (LAT_FILE: "id|created_at epoch ms" of the jobs, from the database): arrival time
+    # at sqsfix (5th column of /order, the fixture's clock, ms) minus the job's created_at
+    # (Postgres clock_timestamp() of the insert; both containers share the Docker VM's clock).
+    lat_file = os.environ.get("LAT_FILE", "")
+    if lat_file and os.path.exists(lat_file):
+        created = {}
+        for line in open(lat_file):
+            p = line.strip().split("|")
+            if len(p) == 2:
+                created[p[0]] = float(p[1])
+        lat = {"B": [], "S": []}
+        try:
+            for line in open(f"{out}/sched-{label}.order.tsv"):
+                p = line.rstrip("\n").split("\t")
+                if len(p) >= 5 and p[3] in created and p[3][:1] in lat:
+                    lat[p[3][:1]].append(float(p[4]) - created[p[3]])
+        except OSError:
+            pass
+        def pct(v, q):
+            return v[min(len(v) - 1, int(q * len(v)))]
+        res["latency_ms"] = {}
+        for key, name in (("B", "paced feed"), ("S", "single job into an idle system")):
+            v = sorted(lat[key])
+            if not v:
+                continue
+            d = {"n": len(v), "min": v[0], "p50": pct(v, 0.50), "p90": pct(v, 0.90), "p99": pct(v, 0.99), "max": v[-1],
+                 "mean": round(sum(v) / len(v), 1)}
+            res["latency_ms"][key] = d
+            print(f"   latency_ms ({name}; sqsfix arrival - job created_at): n={d['n']} min={d['min']:.0f} p50={d['p50']:.0f} "
+                  f"p90={d['p90']:.0f} p99={d['p99']:.0f} max={d['max']:.0f} mean={d['mean']}"
+                  + (" samples=" + " ".join(f"{x:.0f}" for x in lat[key]) if key == "S" else ""))
 
     th = thread_table(f"{out}/sched-{label}.threads.start.txt", f"{out}/sched-{label}.threads.end.txt")
     if th:
