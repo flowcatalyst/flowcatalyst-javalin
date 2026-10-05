@@ -1,6 +1,7 @@
 package io.flowcatalyst.platform.dispatchjob.operations;
 
 import io.flowcatalyst.platform.dispatchjob.DispatchJob;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.operations.DispatchJobEvents.DispatchJobRequeued;
 import io.flowcatalyst.platform.dispatchjob.operations.DispatchJobEvents.DispatchJobsRequeued;
@@ -55,7 +56,7 @@ public final class RequeueDispatchJobs {
                         saves.add(new SyncSave<>(before.requeue(), DispatchJobRequeued.of(ec, before)));
                         requeued.add(before.id());
                     }
-                    return Plan.sync(repo, saves, List.of(), DispatchJobsRequeued.of(ec, Tsid.generate(), requeued));
+                    return Plan.sync(DispatchJobLifecycle.requeueWriter(), saves, List.of(), DispatchJobsRequeued.of(ec, Tsid.generate(), requeued));
                 });
     }
 }

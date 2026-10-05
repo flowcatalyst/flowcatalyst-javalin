@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.dispatchjob.settled;
 import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.dispatchjob.DispatchJob;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobStatus;
 import io.flowcatalyst.platform.shared.TestHttp;
@@ -39,7 +40,7 @@ class SettledApiTest {
         verifier = HmacTokenVerifier.fromAppKey(APP_KEY);
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
-            SettledApi.register(routes, new SettledApi.State(repo, verifier));
+            SettledApi.register(routes, new SettledApi.State(new DispatchJobLifecycle(DS), verifier));
         });
     }
 

@@ -38,6 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class DispatchJobRepositoryTest {
 
     private static final DispatchJobRepository repo = new DispatchJobRepository(DS);
+    private static final DispatchJobLifecycle lifecycle = new DispatchJobLifecycle(DS);
     private static final UnitOfWork uow = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
 
     private static final String CLIENT_A = "cli_a" + RUN;
@@ -257,17 +258,21 @@ class DispatchJobRepositoryTest {
         assertThat(repo.attemptsByJob(Tsid.generate())).isEmpty();
     }
 
-    // ── Persist (spec §9) ──────────────────────────────────────────────────
+    // ── Operator requeue writer (the former generic persist) ───────────────
 
     @Test
-    void persistUpsertsByIdAndCreatedAtAndRoundTripsEveryColumn() {
+    void requeueWriterResetsOnlyTheRetryColumnsAndLeavesEveryOtherColumnAlone() {
         String id = seedWriteRow(Seed.of(code("persist")).withClientId(CLIENT_A).withMessageGroup("g")
                 .withMetadataJson("[{\"key\":\"k\",\"value\":\"v\"}]").failed(2, "err"));
         DispatchJob before = repo.findById(id).orElseThrow();
         DispatchJob after = before.requeue();
 
         uow.inTransaction(tx -> {
-            repo.persist(after, tx.dbTx());
+            try {
+                DispatchJobLifecycle.requeueWriter().persist(after, tx.dbTx());
+            } catch (java.sql.SQLException e) {
+                throw new IllegalStateException(e);
+            }
             return null;
         });
 
@@ -280,21 +285,10 @@ class DispatchJobRepositoryTest {
         assertThat(stored.lastError()).isNull();
         assertThat(stored.metadata()).containsExactly(new DispatchJob.Metadata("k", "v"));
         assertThat(stored.createdAt()).isEqualTo(before.createdAt());
-        assertThat(stored.updatedAt()).as("stamped at persist time").isAfter(before.updatedAt());
+        assertThat(stored.updatedAt()).as("stamped at write time").isAfter(before.updatedAt());
         assertThat(stored.clientId()).isEqualTo(CLIENT_A);
         assertThat(stored.messageGroup()).isEqualTo("g");
-        assertThat(DB.fetchCount(MSG_DISPATCH_JOBS, MSG_DISPATCH_JOBS.ID.eq(id))).as("upsert, not a second row").isEqualTo(1);
-    }
-
-    @Test
-    void deleteRemovesTheRowByItsFullKey() {
-        String id = seedWriteRow(Seed.of(code("delete")));
-        DispatchJob j = repo.findById(id).orElseThrow();
-        uow.inTransaction(tx -> {
-            repo.delete(j, tx.dbTx());
-            return null;
-        });
-        assertThat(repo.findById(id)).isEmpty();
+        assertThat(DB.fetchCount(MSG_DISPATCH_JOBS, MSG_DISPATCH_JOBS.ID.eq(id))).as("update, not a second row").isEqualTo(1);
     }
 
     // ── X-06: corrupt status fails loudly (spec §4, §15) ────────────────────
@@ -485,7 +479,7 @@ class DispatchJobRepositoryTest {
     void claimForDeliveryFlipsQueuedToProcessingAndStampsLastAttemptAt() {
         String id = seedWriteRow(Seed.of(code("mip")).withStatus("QUEUED"));
         DispatchJob before = repo.findById(id).orElseThrow();
-        assertThat(repo.claimForDelivery(id, before.createdAt())).isTrue();
+        assertThat(lifecycle.claimForDelivery(id, before.createdAt())).isTrue();
         DispatchJob after = repo.findById(id).orElseThrow();
         assertThat(after.status()).isEqualTo(DispatchJobStatus.PROCESSING);
         assertThat(after.lastAttemptAt()).isNotNull();
@@ -496,7 +490,7 @@ class DispatchJobRepositoryTest {
         String id = seedWriteRow(Seed.of(code("claimpend")));
         DispatchJob before = repo.findById(id).orElseThrow();
         assertThat(before.status()).isEqualTo(DispatchJobStatus.PENDING);
-        assertThat(repo.claimForDelivery(id, before.createdAt())).isTrue();
+        assertThat(lifecycle.claimForDelivery(id, before.createdAt())).isTrue();
     }
 
     /// Review 2026-09-28: not before it is due. A past `scheduled_for` (a
@@ -514,10 +508,10 @@ class DispatchJobRepositoryTest {
                         java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC).minusMinutes(1))
                 .where(MSG_DISPATCH_JOBS.ID.eq(past)).execute();
 
-        assertThat(repo.claimForDelivery(future, repo.findById(future).orElseThrow().createdAt()))
+        assertThat(lifecycle.claimForDelivery(future, repo.findById(future).orElseThrow().createdAt()))
                 .as("mutant: no scheduled_for guard").isFalse();
         assertThat(repo.findById(future).orElseThrow().status()).isEqualTo(DispatchJobStatus.PENDING);
-        assertThat(repo.claimForDelivery(past, repo.findById(past).orElseThrow().createdAt())).isTrue();
+        assertThat(lifecycle.claimForDelivery(past, repo.findById(past).orElseThrow().createdAt())).isTrue();
     }
 
     /// The whole point of the guard: the row count, not the caller's earlier
@@ -528,10 +522,10 @@ class DispatchJobRepositoryTest {
         String id = seedWriteRow(Seed.of(code("claimonce")).withStatus("QUEUED"));
         DispatchJob before = repo.findById(id).orElseThrow();
 
-        assertThat(repo.claimForDelivery(id, before.createdAt())).as("first caller wins").isTrue();
-        assertThat(repo.claimForDelivery(id, before.createdAt()))
+        assertThat(lifecycle.claimForDelivery(id, before.createdAt())).as("first caller wins").isTrue();
+        assertThat(lifecycle.claimForDelivery(id, before.createdAt()))
                 .as("a job already PROCESSING belongs to a delivery in flight").isFalse();
-        assertThat(repo.claimForDelivery(id, before.createdAt())).as("and stays unclaimable").isFalse();
+        assertThat(lifecycle.claimForDelivery(id, before.createdAt())).as("and stays unclaimable").isFalse();
     }
 
     /// `isTerminal()` covers these in the handler, but only from an unlocked
@@ -542,7 +536,7 @@ class DispatchJobRepositoryTest {
             String id = seedWriteRow(Seed.of(code("claim" + terminal)).withStatus(terminal));
             DispatchJob before = repo.findById(id).orElseThrow();
 
-            assertThat(repo.claimForDelivery(id, before.createdAt()))
+            assertThat(lifecycle.claimForDelivery(id, before.createdAt()))
                     .as("%s is not claimable", terminal).isFalse();
             assertThat(repo.findById(id).orElseThrow().status().name())
                     .as("%s row untouched", terminal).isEqualTo(terminal);
@@ -556,7 +550,7 @@ class DispatchJobRepositoryTest {
         String id = seedWriteRow(Seed.of(code("claimpart")).withStatus("QUEUED"));
         DispatchJob before = repo.findById(id).orElseThrow();
 
-        assertThat(repo.claimForDelivery(id, before.createdAt().minusSeconds(86_400))).isFalse();
+        assertThat(lifecycle.claimForDelivery(id, before.createdAt().minusSeconds(86_400))).isFalse();
         assertThat(repo.findById(id).orElseThrow().status()).isEqualTo(DispatchJobStatus.QUEUED);
     }
 
@@ -565,7 +559,7 @@ class DispatchJobRepositoryTest {
         String id = seedWriteRow(Seed.of(code("mc")).withStatus("PROCESSING"));
         DispatchJob before = repo.findById(id).orElseThrow();
         Instant completedAt = Instant.now();
-        repo.markCompleted(id, before.createdAt(), completedAt, 123L);
+        lifecycle.markCompleted(id, before.createdAt(), completedAt, 123L);
         DispatchJob after = repo.findById(id).orElseThrow();
         assertThat(after.status()).isEqualTo(DispatchJobStatus.COMPLETED);
         assertThat(after.durationMillis()).isEqualTo(123L);
@@ -576,7 +570,7 @@ class DispatchJobRepositoryTest {
     void markFailedRecordsTheError() {
         String id = seedWriteRow(Seed.of(code("mf")).withStatus("PROCESSING"));
         DispatchJob before = repo.findById(id).orElseThrow();
-        repo.markFailed(id, before.createdAt(), "budget exhausted");
+        lifecycle.markFailed(id, before.createdAt(), "budget exhausted");
         DispatchJob after = repo.findById(id).orElseThrow();
         assertThat(after.status()).isEqualTo(DispatchJobStatus.FAILED);
         assertThat(after.lastError()).isEqualTo("budget exhausted");
@@ -587,7 +581,7 @@ class DispatchJobRepositoryTest {
         String id = seedWriteRow(Seed.of(code("sr")).withStatus("PROCESSING"));
         DispatchJob before = repo.findById(id).orElseThrow();
         Instant scheduledFor = Instant.now().plusSeconds(30);
-        repo.scheduleRetry(id, before.createdAt(), scheduledFor, 2, "http 500");
+        lifecycle.scheduleRetry(id, before.createdAt(), scheduledFor, 2, "http 500");
         DispatchJob after = repo.findById(id).orElseThrow();
         assertThat(after.status()).isEqualTo(DispatchJobStatus.PENDING);
         assertThat(after.attemptCount()).isEqualTo(2);
@@ -600,7 +594,7 @@ class DispatchJobRepositoryTest {
         String id = seedWriteRow(Seed.of(code("resched")).withStatus("PROCESSING"));
         DispatchJob before = repo.findById(id).orElseThrow();
         Instant scheduledFor = Instant.now().plusSeconds(5);
-        repo.reschedule(id, before.createdAt(), scheduledFor);
+        lifecycle.reschedule(id, before.createdAt(), scheduledFor);
         DispatchJob after = repo.findById(id).orElseThrow();
         assertThat(after.status()).isEqualTo(DispatchJobStatus.PENDING);
         assertThat(after.attemptCount()).as("no budget spend — hold-back/deferral, not a failure").isEqualTo(before.attemptCount());
@@ -614,7 +608,7 @@ class DispatchJobRepositoryTest {
         String processing = seedWriteRow(Seed.of(code("settle")).withStatus("PROCESSING"));
         String completed = seedWriteRow(Seed.of(code("settle")).withStatus("COMPLETED"));
 
-        List<String> settled = repo.settleAcked(List.of(queued, processing, completed), "settled: test reason");
+        List<String> settled = lifecycle.settleAcked(List.of(queued, processing, completed), "settled: test reason");
         assertThat(settled).containsExactlyInAnyOrder(queued, processing);
 
         DispatchJob q = repo.findById(queued).orElseThrow();
@@ -625,8 +619,8 @@ class DispatchJobRepositoryTest {
                 .as("a terminal row is never resurrected").isEqualTo(DispatchJobStatus.COMPLETED);
 
         // idempotent: the same call again settles nothing more, since both rows already left QUEUED/PROCESSING
-        assertThat(repo.settleAcked(List.of(queued, processing, completed), "settled: test reason")).isEmpty();
-        assertThat(repo.settleAcked(List.of(), "unused")).isEmpty();
+        assertThat(lifecycle.settleAcked(List.of(queued, processing, completed), "settled: test reason")).isEmpty();
+        assertThat(lifecycle.settleAcked(List.of(), "unused")).isEmpty();
     }
 
     // ── sweepStrandedSiblings — the reaper's predicate (spec §7) ────────────
@@ -653,7 +647,7 @@ class DispatchJobRepositoryTest {
         String aheadOfHead = seedWriteRow(Seed.of(sweepCode).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
                 .withSequence(0).withCreatedAt(t.minusSeconds(1)).withStatus("QUEUED"));
 
-        List<String> reset = repo.sweepStrandedSiblings(liveBefore, "reaper: test sweep");
+        List<String> reset = lifecycle.sweepStrandedSiblings(liveBefore, "reaper: test sweep");
 
         assertThat(reset).as("QUEUED regardless of age, and stale PROCESSING")
                 .containsExactlyInAnyOrder(queuedSibling, staleProcessing);
@@ -669,7 +663,7 @@ class DispatchJobRepositoryTest {
         assertThat(head).isNotNull();
 
         // idempotent: sweeping again resets nothing more
-        assertThat(repo.sweepStrandedSiblings(liveBefore, "reaper: test sweep")).isEmpty();
+        assertThat(lifecycle.sweepStrandedSiblings(liveBefore, "reaper: test sweep")).isEmpty();
     }
 
     @Test
@@ -682,7 +676,7 @@ class DispatchJobRepositoryTest {
         String sibling = seedWriteRow(Seed.of(legacyCode).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
                 .withSequence(2).withCreatedAt(t.plusSeconds(1)).withStatus("QUEUED"));
 
-        List<String> reset = repo.sweepStrandedSiblings(Instant.now().minusSeconds(60), "reaper: legacy");
+        List<String> reset = lifecycle.sweepStrandedSiblings(Instant.now().minusSeconds(60), "reaper: legacy");
         assertThat(reset).containsExactly(sibling);
     }
 
@@ -742,17 +736,17 @@ class DispatchJobRepositoryTest {
         var rows = claimed(pending, processing, completed);
 
         // The callback gets there first for two of them.
-        assertThat(repo.claimForDelivery(processing, t.plusSeconds(1))).isTrue();
-        assertThat(repo.claimForDelivery(completed, t.plusSeconds(2))).isTrue();
-        repo.markCompleted(completed, t.plusSeconds(2), Instant.now(), 5L);
+        assertThat(lifecycle.claimForDelivery(processing, t.plusSeconds(1))).isTrue();
+        assertThat(lifecycle.claimForDelivery(completed, t.plusSeconds(2))).isTrue();
+        lifecycle.markCompleted(completed, t.plusSeconds(2), Instant.now(), 5L);
 
-        int updated = repo.markQueued(rows);
+        int updated = lifecycle.markQueued(rows);
 
         assertThat(updated).as("only the row nothing touched matched").isEqualTo(1);
         assertThat(repo.findById(pending).orElseThrow().status()).isEqualTo(DispatchJobStatus.QUEUED);
         assertThat(repo.findById(processing).orElseThrow().status()).isEqualTo(DispatchJobStatus.PROCESSING);
         assertThat(repo.findById(completed).orElseThrow().status()).isEqualTo(DispatchJobStatus.COMPLETED);
-        assertThat(repo.markQueued(List.of())).isZero();
+        assertThat(lifecycle.markQueued(List.of())).isZero();
     }
 
     /// The race a status guard alone cannot see: the lane publishes, the router
@@ -772,16 +766,16 @@ class DispatchJobRepositoryTest {
         String untouched = seedWriteRow(Seed.of(code("mq-untouched-")).withCreatedAt(t.plusSeconds(4)));
         var rows = claimed(deferred, retried, held, settled, untouched);
 
-        assertThat(repo.claimForDelivery(deferred, t)).isTrue();
-        repo.reschedule(deferred, t, Instant.now().minusSeconds(1));                       // cooperative deferral
-        assertThat(repo.claimForDelivery(retried, t.plusSeconds(1))).isTrue();
-        repo.scheduleRetry(retried, t.plusSeconds(1), Instant.now().minusSeconds(1), 1, "boom"); // failed attempt
-        assertThat(repo.claimForDelivery(held, t.plusSeconds(2))).isTrue();
-        repo.reschedule(held, t.plusSeconds(2), Instant.now());                            // BLOCK_ON_ERROR hold
-        assertThat(repo.claimForDelivery(settled, t.plusSeconds(3))).isTrue();
-        assertThat(repo.settleAcked(List.of(settled), "router acked")).containsExactly(settled);
+        assertThat(lifecycle.claimForDelivery(deferred, t)).isTrue();
+        lifecycle.reschedule(deferred, t, Instant.now().minusSeconds(1));                       // cooperative deferral
+        assertThat(lifecycle.claimForDelivery(retried, t.plusSeconds(1))).isTrue();
+        lifecycle.scheduleRetry(retried, t.plusSeconds(1), Instant.now().minusSeconds(1), 1, "boom"); // failed attempt
+        assertThat(lifecycle.claimForDelivery(held, t.plusSeconds(2))).isTrue();
+        lifecycle.reschedule(held, t.plusSeconds(2), Instant.now());                            // BLOCK_ON_ERROR hold
+        assertThat(lifecycle.claimForDelivery(settled, t.plusSeconds(3))).isTrue();
+        assertThat(lifecycle.settleAcked(List.of(settled), "router acked")).containsExactly(settled);
 
-        int updated = repo.markQueued(rows);
+        int updated = lifecycle.markQueued(rows);
 
         assertThat(updated).as("only the untouched row is marked").isEqualTo(1);
         for (String id : List.of(deferred, retried, held, settled)) {
@@ -804,7 +798,7 @@ class DispatchJobRepositoryTest {
         var claimRow = new DispatchJobRepository.ClaimRow(id, null, null, null, null, null, row.createdAt(), 0, null,
                 row.updatedAt());
 
-        assertThat(repo.markQueued(List.of(claimRow))).isZero();
+        assertThat(lifecycle.markQueued(List.of(claimRow))).isZero();
         assertThat(repo.findById(id).orElseThrow().status()).isEqualTo(DispatchJobStatus.PROCESSING);
     }
 
@@ -819,7 +813,7 @@ class DispatchJobRepositoryTest {
         String id2 = seedWriteRow(Seed.of(code("mq-precise2-")).withCreatedAt(t.plusSeconds(1))
                 .withUpdatedAt(Instant.parse("2026-10-04T10:15:30.100000Z")));
 
-        assertThat(repo.markQueued(claimed(id, id2))).isEqualTo(2);
+        assertThat(lifecycle.markQueued(claimed(id, id2))).isEqualTo(2);
         assertThat(repo.findById(id).orElseThrow().status()).isEqualTo(DispatchJobStatus.QUEUED);
     }
 }

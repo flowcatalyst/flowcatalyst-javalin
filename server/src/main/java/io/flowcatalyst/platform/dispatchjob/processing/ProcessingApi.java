@@ -64,25 +64,28 @@ public final class ProcessingApi {
     private ProcessingApi() {
     }
 
-    /// The handler's dependencies. `repo` is typed as [ProcessingRepository]
+    /// The handler's dependencies. `transitions` is the lifecycle's callback
+    /// transitions (the only writer of a job's status). `repo` is typed as [ProcessingRepository]
     /// — the handful of methods this handler actually calls — rather than
     /// the concrete `DispatchJobRepository`, so a test can inject a failure
     /// at exactly one call without mocking the whole repository (audit
     /// finding, test-gap). `credentials` defaults to
     /// [DeliveryCredentials#none] and `clock` to [Clock#systemUTC] — both
     /// overridable for tests.
-    public record State(ProcessingRepository repo, HmacTokenVerifier verifier, SubscriberDelivery delivery,
-                         DeliveryCredentials credentials, Clock clock) {
+    public record State(ProcessingRepository repo, ProcessingTransitions transitions, HmacTokenVerifier verifier,
+                         SubscriberDelivery delivery, DeliveryCredentials credentials, Clock clock) {
         public State {
             Objects.requireNonNull(repo, "repo");
+            Objects.requireNonNull(transitions, "transitions");
             Objects.requireNonNull(verifier, "verifier");
             Objects.requireNonNull(delivery, "delivery");
             Objects.requireNonNull(credentials, "credentials");
             Objects.requireNonNull(clock, "clock");
         }
 
-        public State(ProcessingRepository repo, HmacTokenVerifier verifier, SubscriberDelivery delivery) {
-            this(repo, verifier, delivery, DeliveryCredentials.none(), Clock.systemUTC());
+        public State(ProcessingRepository repo, ProcessingTransitions transitions, HmacTokenVerifier verifier,
+                     SubscriberDelivery delivery) {
+            this(repo, transitions, verifier, delivery, DeliveryCredentials.none(), Clock.systemUTC());
         }
     }
 
@@ -201,7 +204,7 @@ public final class ProcessingApi {
         try {
             // Revert to PENDING, immediately re-eligible once the group
             // unblocks — no retry budget spent (spec §9's second invariant).
-            s.repo().reschedule(job.id(), job.createdAt(), Instant.now(s.clock()));
+            s.transitions().reschedule(job.id(), job.createdAt(), Instant.now(s.clock()));
         } catch (RuntimeException e) {
             // Revert failed: NACK, not ack, or the job would sit QUEUED with
             // no queue message until stale recovery (spec §5, §9's first
@@ -226,7 +229,7 @@ public final class ProcessingApi {
         // poller publishes it again once it is due.
         boolean claimed;
         try {
-            claimed = s.repo().claimForDelivery(job.id(), job.createdAt());
+            claimed = s.transitions().claimForDelivery(job.id(), job.createdAt());
         } catch (RuntimeException e) {
             // NOT best-effort any more: a failed claim leaves ownership
             // unknown, and delivering anyway is exactly the duplicate this
@@ -325,7 +328,7 @@ public final class ProcessingApi {
         switch (result) {
             case DeliveryResult.Delivered ignored -> {
                 try {
-                    s.repo().markCompleted(job.id(), job.createdAt(), Instant.now(s.clock()), durationMillis);
+                    s.transitions().markCompleted(job.id(), job.createdAt(), Instant.now(s.clock()), durationMillis);
                 } catch (RuntimeException e) {
                     LOG.atWarn().setMessage("dispatch process: mark completed failed")
                             .addKeyValue("job_id", job.id())
@@ -337,7 +340,7 @@ public final class ProcessingApi {
                 try {
                     // No retry budget spent — cooperative back-pressure, not
                     // a failure (spec §4, §9's second invariant).
-                    s.repo().reschedule(job.id(), job.createdAt(),
+                    s.transitions().reschedule(job.id(), job.createdAt(),
                             Instant.now(s.clock()).plusSeconds(deferred.delaySeconds()));
                 } catch (RuntimeException e) {
                     LOG.atWarn().setMessage("dispatch process: reschedule failed")
@@ -355,7 +358,7 @@ public final class ProcessingApi {
                     // would leave it (not bumped by markFailed) — a requeue does not reset
                     // it, so bumping here would make a requeued job fail immediately.
                     try {
-                        s.repo().markFailed(job.id(), job.createdAt(), failed.message());
+                        s.transitions().markFailed(job.id(), job.createdAt(), failed.message());
                     } catch (RuntimeException e) {
                         LOG.atWarn().setMessage("dispatch process: mark failed failed")
                                 .addKeyValue("job_id", job.id())
@@ -369,7 +372,7 @@ public final class ProcessingApi {
                             .log();
                 } else if (attemptNumber >= job.maxRetries()) {
                     try {
-                        s.repo().markFailed(job.id(), job.createdAt(), failed.message());
+                        s.transitions().markFailed(job.id(), job.createdAt(), failed.message());
                     } catch (RuntimeException e) {
                         LOG.atWarn().setMessage("dispatch process: mark failed failed")
                                 .addKeyValue("job_id", job.id())
@@ -379,7 +382,7 @@ public final class ProcessingApi {
                 } else {
                     Instant scheduledFor = Instant.now(s.clock()).plusSeconds(backoffFor(attemptNumber));
                     try {
-                        s.repo().scheduleRetry(job.id(), job.createdAt(), scheduledFor, attemptNumber, failed.message());
+                        s.transitions().scheduleRetry(job.id(), job.createdAt(), scheduledFor, attemptNumber, failed.message());
                     } catch (RuntimeException e) {
                         LOG.atWarn().setMessage("dispatch process: schedule retry failed")
                                 .addKeyValue("job_id", job.id())

@@ -1,0 +1,780 @@
+package io.flowcatalyst.platform.dispatchjob;
+
+import io.flowcatalyst.db.generated.tables.MsgDispatchJobs;
+import io.flowcatalyst.db.generated.tables.records.MsgDispatchJobsRecord;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository.ClaimRow;
+import io.flowcatalyst.platform.dispatchjob.jfr.DispatchTransitionRefusedEvent;
+import io.flowcatalyst.platform.dispatchjob.processing.ProcessingTransitions;
+import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.sdk.result.Result;
+import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
+import io.flowcatalyst.sdk.usecase.jdbc.Persist;
+import io.prometheus.metrics.model.registry.MultiCollector;
+import io.prometheus.metrics.model.snapshots.CounterSnapshot;
+import io.prometheus.metrics.model.snapshots.Labels;
+import io.prometheus.metrics.model.snapshots.MetricSnapshots;
+import org.jooq.DSLContext;
+import org.jooq.JSONB;
+import org.jooq.SQLDialect;
+import org.jooq.exception.DataAccessException;
+import org.jooq.impl.DSL;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.EnumMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.atomic.LongAdder;
+
+import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS;
+
+/// The ONE owner of `msg_dispatch_jobs.status` (lifecycle spec, step 1 of 3).
+/// Every insert into the table and every write of its `status` column lives in
+/// this file; fan-out, API ingest, the delivery callback, the scheduler, the
+/// reaper, the settled hook and the operator actions all call it.
+/// [DispatchJobRepository] keeps the reads. `DispatchJobLifecycleEnforcementTest`
+/// fails the build when any other production file writes the table.
+///
+/// ## Two primitives
+///
+/// Exactly two private primitives decide a job's status with respect to
+/// `PENDING`, and each issues ONE statement that always `RETURNING`s the
+/// columns a later queue table will need ([#RETURNING]):
+///
+/// - [#enterPending] — the single place a job becomes, or is refreshed as,
+///   `PENDING` (retry, deferral, hold, settled-return, reaper sweep, operator
+///   requeue).
+/// - [#leavePending] — the single place a job stops being `PENDING` (scheduler
+///   mark-`QUEUED`, callback claim-for-delivery, a terminal outcome that may
+///   find the job `PENDING`).
+///
+/// The public operations are thin, named wrappers that pick the [Transition]
+/// (which names the statuses it may move FROM), the [Selector] and the extra
+/// columns. Creation (`PENDING` by insert) has no selector and is the INSERT
+/// statements at the bottom of this class — the one place a row is born.
+///
+/// ## Rules
+///
+/// 1. Every transition names its FROM statuses in the SQL `WHERE`
+///    ([Transition#from]); the table of [Transition] constants IS the
+///    lifecycle. A callback outcome moves a job only from a LIVE status, so a
+///    late callback never overwrites or resurrects a settled job. Operator
+///    requeue is the one transition allowed from any status; operator
+///    cancel/complete move from `FAILED` (and its legacy alias `ERROR`) only.
+/// 2. A transition that matches no row is not an error: it is counted
+///    (`fc_dispatch_job_transition_refused_total{transition}`), logged at
+///    debug, and emitted as a JFR event.
+/// 3. Every transition stamps `updated_at`.
+/// 4. No generic "save the entity" path writes status.
+///
+/// ## Statement text
+///
+/// Hot-path statements are plain JDBC with the status literals in the SQL
+/// text (never bound): the partial indexes the scheduler relies on are only
+/// provable from the text, and a constant text keeps one server-prepared
+/// statement per connection (see the long note in [DispatchJobRepository]).
+/// The statements are assembled from fixed fragments in this file — never from
+/// request input; every value is bound.
+///
+/// The `executor` of the primitives is either a pooled connection (the
+/// instance methods; the pool this lifecycle was built over — the routed data
+/// source, or the scheduler's own pool) or a caller's open transaction (the
+/// `Connection` overloads, the unit-of-work writers).
+public final class DispatchJobLifecycle implements ProcessingTransitions {
+
+    private static final Logger LOG = LoggerFactory.getLogger(DispatchJobLifecycle.class);
+
+    private static final MsgDispatchJobs T = MSG_DISPATCH_JOBS;
+
+    /// The columns every primitive returns: what a queue table would be keyed
+    /// and ordered by. `updated_at` is the new row version.
+    static final String RETURNING = "j.id, j.created_at, j.message_group, j.sequence, j.scheduled_for, "
+            + "j.subscription_id, j.dispatch_pool_id, j.client_id, j.mode, j.queue, j.updated_at";
+
+    /// A job a primitive changed, as the [#RETURNING] columns read.
+    public record Moved(String id, Instant createdAt, String messageGroup, int sequence, Instant scheduledFor,
+                        String subscriptionId, String dispatchPoolId, String clientId, String mode, String queue,
+                        Instant updatedAt) {
+    }
+
+    /// Status sets, in a holder of their own so the [Transition] constants can read
+    /// them without initialising this class from inside its own static initialiser.
+    private static final class Statuses {
+        /// PENDING, QUEUED, PROCESSING, plus the legacy alias IN_PROGRESS of PROCESSING.
+        static final List<String> LIVE = List.of("PENDING", "QUEUED", "PROCESSING", "IN_PROGRESS");
+        /// FAILED, plus the legacy alias ERROR.
+        static final List<String> FAILED_HEADS = List.of("FAILED", "ERROR");
+    }
+
+    /// Every status transition of the table, with the statuses it may move a
+    /// job FROM (`null` = any) and the status it ends in. This is the
+    /// lifecycle in one place; `DispatchJobLifecycleTest` pins every
+    /// (transition, from-status) pair.
+    public enum Transition {
+        /// Birth by insert (no from-status; never touches an existing row).
+        CREATE(null, "PENDING"),
+        /// Scheduler: the broker accepted the job. Optimistic on the claimed version as well.
+        MARK_QUEUED(List.of("PENDING"), "QUEUED"),
+        /// Callback: one delivery claim. Not before `scheduled_for`.
+        CLAIM_FOR_DELIVERY(List.of("PENDING", "QUEUED"), "PROCESSING"),
+        /// Callback outcome: delivered.
+        COMPLETE(Statuses.LIVE, "COMPLETED"),
+        /// Callback outcome: retries exhausted / credentials refused.
+        FAIL(Statuses.LIVE, "FAILED"),
+        /// Callback outcome: retryable failure, budget remains.
+        SCHEDULE_RETRY(Statuses.LIVE, "PENDING"),
+        /// Callback outcome: cooperative deferral, or the delivery-time hold-back revert.
+        RESCHEDULE(Statuses.LIVE, "PENDING"),
+        /// Settled endpoint: the router acked the head; return siblings to PENDING.
+        SETTLE_ACKED(List.of("QUEUED", "PROCESSING"), "PENDING"),
+        /// Reaper: siblings stranded behind a failed head.
+        SWEEP_STRANDED(List.of("QUEUED", "PROCESSING"), "PENDING"),
+        /// Operator resend: from any status.
+        REQUEUE(null, "PENDING"),
+        /// Operator ignore: a failed job becomes cancelled.
+        CANCEL(Statuses.FAILED_HEADS, "CANCELLED"),
+        /// Operator "handled out of band": a failed job becomes completed.
+        OPERATOR_COMPLETE(Statuses.FAILED_HEADS, "COMPLETED");
+
+        private final List<String> from;
+        private final String to;
+
+        Transition(List<String> from, String to) {
+            this.from = from;
+            this.to = to;
+        }
+
+        /// The statuses this transition may move a job from; empty = any status.
+        public List<String> from() {
+            return from == null ? List.of() : from;
+        }
+
+        public boolean fromAnyStatus() {
+            return from == null;
+        }
+
+        /// The status a job ends in.
+        public String to() {
+            return to;
+        }
+
+        boolean allows(String status) {
+            return from == null || from.contains(status);
+        }
+
+        /// ` AND j.status = 'X'` / ` AND j.status IN ('X', 'Y')`; empty for any status.
+        String guardSql() {
+            if (from == null) return "";
+            if (from.size() == 1) return " AND j.status = '" + from.get(0) + "'";
+            var sb = new StringBuilder(" AND j.status IN (");
+            for (int i = 0; i < from.size(); i++) {
+                if (i > 0) sb.append(", ");
+                sb.append('\'').append(from.get(i)).append('\'');
+            }
+            return sb.append(')').toString();
+        }
+    }
+
+    // ── Process-global refusal counters ────────────────────────────────────
+
+    private static final Map<Transition, LongAdder> REFUSED = new EnumMap<>(Transition.class);
+
+    static {
+        for (Transition t : Transition.values()) REFUSED.put(t, new LongAdder());
+    }
+
+    /// Transitions refused (matched no row) since the process started.
+    public static long refused(Transition t) {
+        return REFUSED.get(t).sum();
+    }
+
+    /// `fc_dispatch_job_transition_refused_total{transition}`: a late callback
+    /// meeting a settled job, a claim that lost its race, a stale
+    /// mark-`QUEUED`. Process-global like every Prometheus counter.
+    public static MultiCollector collector() {
+        return () -> {
+            var b = CounterSnapshot.builder().name("fc_dispatch_job_transition_refused_total")
+                    .help("Dispatch job status transitions that matched no row (job in a status the transition may not leave, or already moved on).");
+            for (Transition t : Transition.values()) {
+                b.dataPoint(CounterSnapshot.CounterDataPointSnapshot.builder()
+                        .labels(Labels.of("transition", t.name().toLowerCase(java.util.Locale.ROOT)))
+                        .value(REFUSED.get(t).sum()).build());
+            }
+            return MetricSnapshots.builder().metricSnapshot(b.build()).build();
+        };
+    }
+
+    // ── Construction ───────────────────────────────────────────────────────
+
+    private final DataSource dataSource;
+
+    /// `dataSource`: whatever pool the caller owns — the routed source, a
+    /// background pool, or the scheduler's own pool.
+    public DispatchJobLifecycle(DataSource dataSource) {
+        this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
+    }
+
+    // ── Executor and selector ──────────────────────────────────────────────
+
+    private interface SqlWork<R> {
+        R run(Connection conn) throws SQLException;
+    }
+
+    /// Where a statement runs: a pooled connection, or the caller's open transaction.
+    private interface Exec {
+        <R> R with(SqlWork<R> work) throws SQLException;
+    }
+
+    private Exec pool() {
+        return new Exec() {
+            @Override
+            public <R> R with(SqlWork<R> work) throws SQLException {
+                try (Connection c = dataSource.getConnection()) {
+                    return work.run(c);
+                }
+            }
+        };
+    }
+
+    private static Exec on(Connection tx) {
+        return new Exec() {
+            @Override
+            public <R> R with(SqlWork<R> work) throws SQLException {
+                return work.run(tx);
+            }
+        };
+    }
+
+    /// Which rows a primitive acts on. Fixed SQL fragments plus bound values:
+    /// one job by `(id, created_at)`, a list of ids, or a predicate sweep.
+    /// Parameter order in the statement is `withParams`, `updated_at`, the
+    /// changes' params, `fromParams`, `whereParams`.
+    private record Selector(String with, List<Object> withParams, String from, List<Object> fromParams,
+                            String where, List<Object> whereParams, String id, Instant createdAt, int requested) {
+
+        static Selector one(String id, Instant createdAt) {
+            return new Selector(null, List.of(), null, List.of(), "j.id = ? AND j.created_at = ?",
+                    List.of(id, utc(createdAt)), id, createdAt, 1);
+        }
+
+        static Selector ids(List<String> ids) {
+            return new Selector(null, List.of(), null, List.of(), "j.id = ANY(?)",
+                    List.of((Object) ids.toArray(String[]::new)), null, null, ids.size());
+        }
+
+        Selector and(String condition) {
+            return new Selector(with, withParams, from, fromParams, where + " AND " + condition, whereParams,
+                    id, createdAt, requested);
+        }
+    }
+
+    /// Extra columns a transition writes besides `status` and `updated_at`:
+    /// a fixed `SET` fragment and its bound values.
+    private record Changes(String sql, List<Object> params) {
+        static final Changes NONE = new Changes("", List.of());
+
+        static Changes of(String sql, Object... params) {
+            return new Changes(sql, java.util.Arrays.asList(params));
+        }
+    }
+
+    // ── The two primitives ─────────────────────────────────────────────────
+
+    /// The single place a job becomes (or is refreshed as) `PENDING`.
+    private static List<Moved> enterPending(Exec ex, Transition t, Selector sel, Changes changes, Instant updatedAt) {
+        return transition(ex, t, "PENDING", sel, changes, updatedAt);
+    }
+
+    /// The single place a job stops being `PENDING`.
+    private static List<Moved> leavePending(Exec ex, Transition t, String to, Selector sel, Changes changes,
+                                            Instant updatedAt) {
+        return transition(ex, t, to, sel, changes, updatedAt);
+    }
+
+    /// One statement: `UPDATE … SET status = <literal>, updated_at = …
+    /// WHERE <selector> AND status <from> RETURNING <columns>`. `updatedAt ==
+    /// null` stamps the database clock.
+    private static List<Moved> transition(Exec ex, Transition t, String to, Selector sel, Changes changes,
+                                          Instant updatedAt) {
+        var sql = new StringBuilder(256);
+        var params = new ArrayList<Object>();
+        if (sel.with() != null) {
+            sql.append(sel.with()).append(' ');
+            params.addAll(sel.withParams());
+        }
+        sql.append("UPDATE msg_dispatch_jobs j SET status = '").append(to).append("', updated_at = ");
+        if (updatedAt == null) {
+            sql.append("now()");
+        } else {
+            sql.append('?');
+            params.add(updatedAt);
+        }
+        if (!changes.sql().isEmpty()) {
+            sql.append(", ").append(changes.sql());
+            params.addAll(changes.params());
+        }
+        if (sel.from() != null) {
+            sql.append(" FROM ").append(sel.from());
+            params.addAll(sel.fromParams());
+        }
+        sql.append(" WHERE ").append(sel.where());
+        params.addAll(sel.whereParams());
+        sql.append(t.guardSql()).append(" RETURNING ").append(RETURNING);
+        try {
+            return ex.with(conn -> {
+                List<Moved> moved = new ArrayList<>();
+                try (PreparedStatement ps = conn.prepareStatement(sql.toString())) {
+                    bind(conn, ps, params);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) moved.add(moved(rs));
+                    }
+                }
+                if (moved.size() < sel.requested() && sel.requested() != Integer.MAX_VALUE) {
+                    refusedRows(conn, t, sel, sel.requested() - moved.size());
+                }
+                return moved;
+            });
+        } catch (SQLException e) {
+            throw new DataAccessException("dispatch job " + t.name().toLowerCase(java.util.Locale.ROOT) + " failed", e);
+        }
+    }
+
+    private static void bind(Connection conn, PreparedStatement ps, List<Object> params) throws SQLException {
+        int i = 1;
+        for (Object p : params) {
+            switch (p) {
+                case String[] a -> ps.setArray(i, conn.createArrayOf("text", a));
+                case Instant ts -> ps.setObject(i, utc(ts));
+                case null -> ps.setObject(i, null);
+                default -> ps.setObject(i, p);
+            }
+            i++;
+        }
+    }
+
+    private static Moved moved(ResultSet rs) throws SQLException {
+        return new Moved(rs.getString(1), rs.getObject(2, OffsetDateTime.class).toInstant(), rs.getString(3),
+                rs.getInt(4), instant(rs.getObject(5, OffsetDateTime.class)), rs.getString(6), rs.getString(7),
+                rs.getString(8), rs.getString(9), rs.getString(10), rs.getObject(11, OffsetDateTime.class).toInstant());
+    }
+
+    /// A transition matched fewer rows than it was asked for: count it, log it
+    /// (with the status found when it is one job and debug is on), emit JFR.
+    private static void refusedRows(Connection conn, Transition t, Selector sel, int n) {
+        REFUSED.get(t).add(n);
+        String found = null;
+        if (sel.id() != null && LOG.isDebugEnabled()) {
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT status FROM msg_dispatch_jobs WHERE id = ? AND created_at = ?")) {
+                ps.setString(1, sel.id());
+                ps.setObject(2, utc(sel.createdAt()));
+                try (ResultSet rs = ps.executeQuery()) {
+                    found = rs.next() ? rs.getString(1) : "(no such job)";
+                }
+            } catch (SQLException ignored) {
+                // best effort: only for the log line
+            }
+        }
+        LOG.atDebug().setMessage("dispatch job transition refused")
+                .addKeyValue("transition", t.name())
+                .addKeyValue("job_id", sel.id())
+                .addKeyValue("status_found", found)
+                .addKeyValue("refused", n)
+                .log();
+        var event = new DispatchTransitionRefusedEvent();
+        if (event.shouldCommit()) {
+            event.transition = t.name();
+            event.jobId = sel.id();
+            event.refused = n;
+            event.commit();
+        }
+    }
+
+    // ── Scheduler ──────────────────────────────────────────────────────────
+
+    /// Marks jobs the broker accepted `QUEUED`, in bulk, on a pooled
+    /// connection with no transaction. Bounded by the batch's own `created_at`
+    /// span so the `created_at`-partitioned table prunes to the partitions the
+    /// rows span.
+    ///
+    /// **Optimistic on the version the claim read** (`status = 'PENDING' AND
+    /// updated_at = claimed updated_at`). The claim holds no lock, so the
+    /// router can deliver a job and the callback can move it on before this
+    /// statement runs — and not only forward: it can reschedule it back to
+    /// `PENDING` (a retry, a deferral, a `BLOCK_ON_ERROR` hold). A status guard
+    /// alone would then mark a job `QUEUED` whose message is already gone, and
+    /// nothing recovers `QUEUED`. Every transition here stamps `updated_at`,
+    /// so the version differs after any of them.
+    ///
+    /// @param published rows exactly as [DispatchJobRepository#claimPending] returned them
+    /// @return the rows actually updated — fewer than `published.size()` when
+    ///         some had already moved on
+    public int markQueued(List<ClaimRow> published) {
+        if (published.isEmpty()) return 0;
+        String[] ids = new String[published.size()];
+        String[] versions = new String[published.size()];
+        Instant spanStart = null;
+        Instant spanEnd = null;
+        for (int i = 0; i < ids.length; i++) {
+            ClaimRow c = published.get(i);
+            ids[i] = c.id();
+            versions[i] = c.updatedAt().toString();
+            if (spanStart == null || c.createdAt().isBefore(spanStart)) spanStart = c.createdAt();
+            if (spanEnd == null || c.createdAt().isAfter(spanEnd)) spanEnd = c.createdAt();
+        }
+        var sel = new Selector(null, List.of(), "unnest(?::text[], ?::text[]) AS v(id, version)",
+                List.of(ids, versions),
+                "j.id = ANY(?) AND j.id = v.id AND j.updated_at = v.version::timestamptz"
+                        + " AND j.created_at >= ? AND j.created_at <= ?",
+                List.of(ids, spanStart, spanEnd), null, null, ids.length);
+        return leavePending(pool(), Transition.MARK_QUEUED, "QUEUED", sel, Changes.NONE, Instant.now()).size();
+    }
+
+    // ── Delivery callback (ProcessingTransitions) ──────────────────────────
+
+    /// Atomically claims a job for one delivery: `PENDING`/`QUEUED` →
+    /// `PROCESSING`, so the answer to "did I win this delivery?" is whether a
+    /// row changed. A positive status list: an unrecognised stored value is
+    /// un-claimable rather than deliverable.
+    ///
+    /// **Not before it is due**: a row whose `scheduled_for` is still in the
+    /// future is not claimable either. The scheduler publishes a batch before
+    /// marking it `QUEUED` (and holds no lock meanwhile), so a failed mark after
+    /// the publish leaves the row `PENDING` with a copy at the broker; if the
+    /// first copy's attempt then fails and schedules a retry, a stale copy
+    /// would otherwise claim the `PENDING` row at once and make the retry
+    /// early, skipping its backoff. Refusing it cannot strand the job: the next
+    /// poller tick publishes it again once due.
+    ///
+    /// @return `true` when this call won the claim (exactly one row updated)
+    @Override
+    public boolean claimForDelivery(String id, Instant createdAt) {
+        Instant now = Instant.now();
+        var sel = Selector.one(id, createdAt).and("(j.scheduled_for IS NULL OR j.scheduled_for <= now())");
+        return !leavePending(pool(), Transition.CLAIM_FOR_DELIVERY, "PROCESSING", sel,
+                Changes.of("last_attempt_at = ?", now), now).isEmpty();
+    }
+
+    /// Delivery succeeded: a live job → `COMPLETED`, stamps `completed_at` / `duration_millis`.
+    @Override
+    public void markCompleted(String id, Instant createdAt, Instant completedAt, Long durationMillis) {
+        leavePending(pool(), Transition.COMPLETE, "COMPLETED", Selector.one(id, createdAt),
+                Changes.of("completed_at = ?, duration_millis = ?", completedAt, durationMillis), Instant.now());
+    }
+
+    /// Retries exhausted (or credentials refused): a live job → `FAILED`, records `lastError`.
+    @Override
+    public void markFailed(String id, Instant createdAt, String lastError) {
+        leavePending(pool(), Transition.FAIL, "FAILED", Selector.one(id, createdAt),
+                Changes.of("last_error = ?", lastError), Instant.now());
+    }
+
+    /// Retryable failure, budget remains: a live job → `PENDING` at `scheduledFor`,
+    /// bumps `attempt_count` and records `lastError` — unlike [#reschedule], this
+    /// DOES spend retry budget.
+    @Override
+    public void scheduleRetry(String id, Instant createdAt, Instant scheduledFor, int attemptCount, String lastError) {
+        enterPending(pool(), Transition.SCHEDULE_RETRY, Selector.one(id, createdAt),
+                Changes.of("scheduled_for = ?, attempt_count = ?, last_error = ?", scheduledFor, attemptCount, lastError),
+                Instant.now());
+    }
+
+    /// Cooperative deferral, or the delivery-time hold-back revert: a live job
+    /// → `PENDING` at `scheduledFor`. **No** `attempt_count` bump — back-pressure
+    /// or hold-back, not a failure.
+    @Override
+    public void reschedule(String id, Instant createdAt, Instant scheduledFor) {
+        enterPending(pool(), Transition.RESCHEDULE, Selector.one(id, createdAt),
+                Changes.of("scheduled_for = ?", scheduledFor), Instant.now());
+    }
+
+    // ── Settled hook and reaper ────────────────────────────────────────────
+
+    /// The settled endpoint's idempotent batch reset: every id in
+    /// `QUEUED`/`PROCESSING` flips to `PENDING` with `scheduled_for` cleared
+    /// and `last_error = reason`; a row already advanced past those two
+    /// statuses (settled, or the reaper beat this call to it) is left
+    /// untouched — the from-status guard is the whole idempotency contract.
+    /// Stamps `updated_at` (database clock). Returns the ids actually changed.
+    public List<String> settleAcked(List<String> ids, String reason) {
+        if (ids.isEmpty()) return List.of();
+        return enterPending(pool(), Transition.SETTLE_ACKED, Selector.ids(ids),
+                Changes.of("scheduled_for = NULL, last_error = ?::text", reason), null)
+                .stream().map(Moved::id).toList();
+    }
+
+    /// The reaper's backstop sweep: every `BLOCK_ON_ERROR` row in
+    /// `QUEUED`/`PROCESSING` whose `message_group` has an earlier
+    /// `FAILED`/legacy-`ERROR` head — positional over `(sequence, created_at,
+    /// id)`, so a sibling positioned BEFORE the head is never touched — is
+    /// reset to `PENDING`. A `QUEUED` sibling is reset regardless of age; a
+    /// `PROCESSING` sibling only once `updated_at` is older than
+    /// `processingLiveBefore`. `NEXT_ON_ERROR`/`IMMEDIATE` rows are never
+    /// matched. Idempotent. The holder predicate is built from
+    /// [DispatchJobRepository#HOLDING_STATUSES_SQL], the same fragment the
+    /// claim-time gate is built from, so the two cannot drift. Returns the ids reset.
+    public List<String> sweepStrandedSiblings(Instant processingLiveBefore, String reason) {
+        var sel = new Selector(SWEEP_STRANDED_CTE, List.of(processingLiveBefore), "stranded st", List.of(),
+                "j.id = st.id AND j.created_at = st.created_at", List.of(), null, null, Integer.MAX_VALUE);
+        return enterPending(pool(), Transition.SWEEP_STRANDED, sel,
+                Changes.of("scheduled_for = NULL, last_error = ?::text", reason), null)
+                .stream().map(Moved::id).toList();
+    }
+
+    private static final String SWEEP_STRANDED_CTE = """
+            WITH stranded AS (
+                SELECT s.id, s.created_at
+                  FROM msg_dispatch_jobs s
+                  JOIN msg_dispatch_jobs h
+                    ON h.message_group = s.message_group
+                   AND h.status IN (%s)
+                   AND (h.sequence, h.created_at, h.id) < (s.sequence, s.created_at, s.id)
+                 WHERE s.mode = 'BLOCK_ON_ERROR'
+                   AND s.message_group IS NOT NULL
+                   AND s.status IN ('QUEUED', 'PROCESSING')
+                   AND (s.status <> 'PROCESSING' OR s.updated_at < ?::timestamptz)
+            )""".formatted(DispatchJobRepository.HOLDING_STATUSES_SQL);
+
+    // ── Operator actions (inside the unit of work's transaction) ───────────
+
+    /// A [Persist] for the operator's resend: the job returns to `PENDING`
+    /// with a full retry budget — `attempt_count = 0`, `last_error`,
+    /// `scheduled_for`, `completed_at` and `duration_millis` cleared — from
+    /// ANY status, in the unit of work's transaction beside its event and
+    /// audit rows. Writes nothing but those columns and `updated_at`.
+    public static Persist<DispatchJob> requeueWriter() {
+        return new TxWriter("requeue") {
+            @Override
+            void write(DispatchJob j, Connection conn) {
+                requeue(conn, j.id(), j.createdAt());
+            }
+        };
+    }
+
+    /// A [Persist] for the operator's ignore: `FAILED` (or legacy `ERROR`) →
+    /// `CANCELLED`, stamping `completed_at`. A job that is not `FAILED` any
+    /// more fails the write and rolls the unit of work back — the check the
+    /// operation made in memory now holds in the SQL.
+    public static Persist<DispatchJob> cancelWriter() {
+        return new TxWriter("cancel") {
+            @Override
+            void write(DispatchJob j, Connection conn) {
+                settleFailed(conn, Transition.CANCEL, j.id(), j.createdAt());
+            }
+        };
+    }
+
+    /// A [Persist] for the operator's "handled out of band": `FAILED` (or
+    /// legacy `ERROR`) → `COMPLETED`; same shape as [#cancelWriter].
+    public static Persist<DispatchJob> completeWriter() {
+        return new TxWriter("complete") {
+            @Override
+            void write(DispatchJob j, Connection conn) {
+                settleFailed(conn, Transition.OPERATOR_COMPLETE, j.id(), j.createdAt());
+            }
+        };
+    }
+
+    private abstract static class TxWriter implements Persist<DispatchJob> {
+        private final String what;
+
+        TxWriter(String what) {
+            this.what = what;
+        }
+
+        abstract void write(DispatchJob j, Connection conn);
+
+        @Override
+        public void persist(DispatchJob j, DbTx tx) {
+            write(j, tx.connection());
+        }
+
+        @Override
+        public void delete(DispatchJob j, DbTx tx) {
+            throw new UnsupportedOperationException("dispatch jobs are not deleted (" + what + " writer)");
+        }
+    }
+
+    /// Operator requeue on the caller's transaction. Returns whether a row changed.
+    static boolean requeue(Connection tx, String id, Instant createdAt) {
+        return !enterPending(on(tx), Transition.REQUEUE, Selector.one(id, createdAt),
+                Changes.of("attempt_count = 0, last_error = NULL, scheduled_for = NULL, completed_at = NULL, duration_millis = NULL"),
+                Instant.now()).isEmpty();
+    }
+
+    /// `FAILED`/`ERROR` → `CANCELLED` or `COMPLETED` on the caller's
+    /// transaction. Not a primitive call: neither side is `PENDING`.
+    private static void settleFailed(Connection tx, Transition t, String id, Instant createdAt) {
+        Instant now = Instant.now();
+        String sql = "UPDATE msg_dispatch_jobs j SET status = '" + t.to() + "', completed_at = ?, updated_at = ?"
+                + " WHERE j.id = ? AND j.created_at = ?" + t.guardSql() + " RETURNING " + RETURNING;
+        try (PreparedStatement ps = tx.prepareStatement(sql)) {
+            ps.setObject(1, utc(now));
+            ps.setObject(2, utc(now));
+            ps.setString(3, id);
+            ps.setObject(4, utc(createdAt));
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return;
+            }
+        } catch (SQLException e) {
+            throw new DataAccessException("dispatch job " + t.name().toLowerCase(java.util.Locale.ROOT) + " failed", e);
+        }
+        refusedRows(tx, t, Selector.one(id, createdAt), 1);
+        throw new IllegalStateException("dispatch job " + id + " is not FAILED; " + t.name() + " refused");
+    }
+
+    // ── Creation ───────────────────────────────────────────────────────────
+
+    /// One batch insert of server-minted jobs, always `PENDING`:
+    /// `ON CONFLICT (id, created_at) DO NOTHING` — the table is partitioned on
+    /// `created_at`, so the conflict target names both halves of the primary
+    /// key. That target does **not** stop a second row with an existing `id`
+    /// and a later `created_at`: a caller-supplied id goes through
+    /// [#insertNew] instead. One JDBC batch, one round trip; empty input is a no-op.
+    public void insertBatch(List<DispatchJob> jobs) {
+        if (jobs.isEmpty()) return;
+        DSLContext dsl = DSL.using(dataSource, SQLDialect.POSTGRES);
+        dsl.batch(jobs.stream().map(j -> insertQuery(dsl, j)).toList()).execute();
+    }
+
+    /// Why [#insertNew] wrote nothing.
+    public sealed interface InsertRefusal {
+        /// These caller-supplied ids already name a job.
+        record IdsTaken(List<String> ids) implements InsertRefusal {
+            public IdsTaken {
+                ids = List.copyOf(ids);
+            }
+        }
+    }
+
+    /// The advisory-lock class [#insertNew] serialises supplied ids under
+    /// (`pg_advisory_xact_lock(int, int)`'s first key; the second is the
+    /// id's `hashtext`).
+    static final int SUPPLIED_ID_LOCK_CLASS = 0x646A6964; // "djid"
+
+    /// `POST /api/dispatch-jobs/batch` with caller-supplied ids
+    /// (`docs/spec/security-fixes-2026-09-24.md` S3.3): refuses the whole
+    /// batch when any of `suppliedIds` already names a job, so an id can
+    /// never name two rows — [DispatchJobRepository#findById] reads it with
+    /// `fetchOptional`, and a second row would make the first job unreadable
+    /// for ever. The primary key is `(id, created_at)` (the table is
+    /// partitioned on `created_at`), so the database cannot enforce this
+    /// itself; instead, in one transaction, each supplied id's advisory lock
+    /// is taken (two concurrent requests supplying the same new id serialise
+    /// here), the ids are looked up across every partition, and only then is
+    /// the batch inserted. `suppliedIds` must already be free of duplicates
+    /// within the batch (the caller refuses those itself).
+    public Result<Integer, InsertRefusal> insertNew(List<DispatchJob> jobs, List<String> suppliedIds) {
+        if (jobs.isEmpty()) return Result.ok(0);
+        if (suppliedIds.isEmpty()) {
+            insertBatch(jobs);
+            return Result.ok(jobs.size());
+        }
+        String[] ids = suppliedIds.stream().distinct().sorted().toArray(String[]::new);
+        return DSL.using(dataSource, SQLDialect.POSTGRES).transactionResult(cfg -> {
+            DSLContext tx = DSL.using(cfg);
+            // Locks in hash order: two batches sharing several ids take them in the same order.
+            tx.fetch("SELECT pg_advisory_xact_lock(?, k) FROM (SELECT DISTINCT hashtext(x) AS k FROM unnest(?::text[]) AS x) s ORDER BY k",
+                    SUPPLIED_ID_LOCK_CLASS, ids);
+            List<String> taken = tx.selectDistinct(T.ID).from(T).where(T.ID.in(ids)).orderBy(T.ID).fetch(T.ID);
+            if (!taken.isEmpty()) {
+                return Result.<Integer, InsertRefusal>err(new InsertRefusal.IdsTaken(taken));
+            }
+            tx.batch(jobs.stream().map(j -> insertQuery(tx, j)).toList()).execute();
+            return Result.<Integer, InsertRefusal>ok(jobs.size());
+        });
+    }
+
+    /// One job fan-out raised for one (event, subscription) match.
+    public record FanOutJob(String id, String code, String source, String subject, String eventId,
+                            String correlationId, String clientId, String messageGroup, String payload,
+                            String targetUrl, boolean dataOnly, String serviceAccountId, String subscriptionId,
+                            String dispatchPoolId, int sequence, int timeoutSeconds, int maxRetries, String mode,
+                            String idempotencyKey, String queue, String descriptor, String metadataJson,
+                            Instant createdAt) {
+    }
+
+    /// Fan-out's multi-row insert, always `PENDING`, on the caller's open
+    /// transaction (the claim of the events and these jobs commit together):
+    /// one statement, `ON CONFLICT (id, created_at) DO NOTHING`. Empty input is a no-op.
+    public static void insertFanOut(Connection tx, List<FanOutJob> jobs) {
+        if (jobs.isEmpty()) return;
+        DSLContext txDsl = DSL.using(tx, SQLDialect.POSTGRES);
+        var insert = txDsl.insertInto(T, T.ID, T.CODE, T.SOURCE, T.SUBJECT, T.EVENT_ID, T.CORRELATION_ID,
+                T.CLIENT_ID, T.MESSAGE_GROUP, T.PAYLOAD, T.TARGET_URL, T.DATA_ONLY, T.SERVICE_ACCOUNT_ID,
+                T.SUBSCRIPTION_ID, T.DISPATCH_POOL_ID, T.SEQUENCE, T.TIMEOUT_SECONDS, T.MAX_RETRIES, T.MODE,
+                T.PROTOCOL, T.STATUS, T.IDEMPOTENCY_KEY, T.QUEUE, T.DESCRIPTOR, T.METADATA, T.CREATED_AT, T.UPDATED_AT);
+        for (FanOutJob j : jobs) {
+            OffsetDateTime createdAt = utc(j.createdAt());
+            insert = insert.values(j.id(), j.code(), j.source(), j.subject(), j.eventId(), j.correlationId(),
+                    j.clientId(), j.messageGroup(), j.payload(), j.targetUrl(), j.dataOnly(), j.serviceAccountId(),
+                    j.subscriptionId(), j.dispatchPoolId(), j.sequence(), j.timeoutSeconds(), j.maxRetries(),
+                    j.mode(), "HTTP_WEBHOOK", "PENDING", j.idempotencyKey(), j.queue(), j.descriptor(),
+                    JSONB.jsonb(j.metadataJson()), createdAt, createdAt);
+        }
+        insert.onConflict(T.ID, T.CREATED_AT).doNothing().execute();
+    }
+
+    private static org.jooq.Insert<MsgDispatchJobsRecord> insertQuery(DSLContext dsl, DispatchJob j) {
+        return dsl.insertInto(T)
+                .set(T.ID, j.id())
+                .set(T.EXTERNAL_ID, j.externalId())
+                .set(T.SOURCE, j.source())
+                .set(T.KIND, j.kind().name())
+                .set(T.CODE, j.code())
+                .set(T.SUBJECT, j.subject())
+                .set(T.EVENT_ID, j.eventId())
+                .set(T.CORRELATION_ID, j.correlationId())
+                .set(T.METADATA, JSONB.jsonb(Json.write(j.metadata())))
+                .set(T.TARGET_URL, j.targetUrl())
+                .set(T.PROTOCOL, j.protocol().name())
+                .set(T.PAYLOAD, j.payload())
+                .set(T.PAYLOAD_CONTENT_TYPE, j.payloadContentType())
+                .set(T.DATA_ONLY, j.dataOnly())
+                .set(T.SERVICE_ACCOUNT_ID, j.serviceAccountId())
+                .set(T.CLIENT_ID, j.clientId())
+                .set(T.SUBSCRIPTION_ID, j.subscriptionId())
+                .set(T.MODE, j.mode().name())
+                .set(T.DISPATCH_POOL_ID, j.dispatchPoolId())
+                .set(T.MESSAGE_GROUP, j.messageGroup())
+                .set(T.SEQUENCE, j.sequence())
+                .set(T.TIMEOUT_SECONDS, j.timeoutSeconds())
+                .set(T.SCHEMA_ID, j.schemaId())
+                .set(T.STATUS, "PENDING")
+                .set(T.MAX_RETRIES, j.maxRetries())
+                .set(T.RETRY_STRATEGY, j.retryStrategy().wire())
+                .set(T.SCHEDULED_FOR, utc(j.scheduledFor()))
+                .set(T.EXPIRES_AT, utc(j.expiresAt()))
+                .set(T.ATTEMPT_COUNT, j.attemptCount())
+                .set(T.LAST_ATTEMPT_AT, utc(j.lastAttemptAt()))
+                .set(T.COMPLETED_AT, utc(j.completedAt()))
+                .set(T.DURATION_MILLIS, j.durationMillis())
+                .set(T.LAST_ERROR, j.lastError())
+                .set(T.IDEMPOTENCY_KEY, j.idempotencyKey())
+                .set(T.DESCRIPTOR, j.descriptor())
+                .set(T.QUEUE, j.queue())
+                .set(T.CREATED_AT, utc(j.createdAt()))
+                .set(T.UPDATED_AT, utc(j.updatedAt()))
+                .onConflict(T.ID, T.CREATED_AT).doNothing();
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────
+
+    private static OffsetDateTime utc(Instant instant) {
+        return instant == null ? null : instant.atOffset(ZoneOffset.UTC);
+    }
+
+    private static Instant instant(OffsetDateTime odt) {
+        return odt == null ? null : odt.toInstant();
+    }
+}

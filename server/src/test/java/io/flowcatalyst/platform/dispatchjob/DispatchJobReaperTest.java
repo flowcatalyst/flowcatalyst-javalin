@@ -42,7 +42,7 @@ class DispatchJobReaperTest {
                 .withUpdatedAt(Instant.now().minusSeconds(10)));
 
         // A 5-second liveness cutoff: a row updated 10s ago is stale by that cutoff and gets swept.
-        var reaper = new DispatchJobReaper(repo, Duration.ofMinutes(2), Duration.ofSeconds(5));
+        var reaper = new DispatchJobReaper(new DispatchJobLifecycle(DS), Duration.ofMinutes(2), Duration.ofSeconds(5));
         List<String> reset = reaper.sweepOnce();
         assertThat(reset).contains(tenSecondsStale);
         assertThat(repo.findById(tenSecondsStale).orElseThrow().status()).isEqualTo(DispatchJobStatus.PENDING);
@@ -58,7 +58,7 @@ class DispatchJobReaperTest {
         String stranded = seedWriteRow(Seed.of(startCode).withMessageGroup(group).withMode("BLOCK_ON_ERROR")
                 .withSequence(2).withCreatedAt(t.plusSeconds(1)).withStatus("QUEUED"));
 
-        try (var reaper = new DispatchJobReaper(repo, Duration.ofMillis(50), Duration.ofMinutes(45))) {
+        try (var reaper = new DispatchJobReaper(new DispatchJobLifecycle(DS), Duration.ofMillis(50), Duration.ofMinutes(45))) {
             reaper.start();
             // Poll briefly for the background sweep to land — no explicit sweepOnce() call here.
             long deadline = System.currentTimeMillis() + 5000;

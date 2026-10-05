@@ -1,6 +1,5 @@
 package io.flowcatalyst.platform.dispatchjob;
 
-import io.flowcatalyst.sdk.result.Result;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobAttempts;
@@ -15,8 +14,6 @@ import io.flowcatalyst.platform.shared.database.VisibilitySql;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
 import io.flowcatalyst.sdk.tsid.Tsid;
-import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
-import io.flowcatalyst.sdk.usecase.jdbc.Persist;
 import org.jooq.Condition;
 import org.jooq.DSLContext;
 import org.jooq.Field;
@@ -49,16 +46,17 @@ import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS;
 import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS_READ;
 import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOB_ATTEMPTS;
 
-/// `msg_dispatch_jobs` (detail reads + [Persist]), `msg_dispatch_jobs_read`
-/// (list / by-event / facet reads) and `msg_dispatch_job_attempts` (history)
-/// via jOOQ (spec §9). The status flips owned by the scheduler and the
-/// processing endpoint are **not** here (spec §10). Pure CRUD — no domain
-/// decisions live here.
+/// `msg_dispatch_jobs` (detail reads), `msg_dispatch_jobs_read`
+/// (list / by-event / facet reads) and `msg_dispatch_job_attempts` (history
+/// reads and the attempt row) via jOOQ (spec §9). Every insert into
+/// `msg_dispatch_jobs` and every write of its `status` is in
+/// [DispatchJobLifecycle], the one owner of the status column; this class
+/// only reads the table. No domain decisions live here.
 /// `asText()`/`isTextual()` are deprecated in Jackson 3 for `stringValue()`/
 /// `isString()`, which are NOT equivalent (throws on non-string, `null` not
 /// `""` for JSON `null`) — kept deliberately, suppressed rather than migrated.
 @SuppressWarnings("deprecation")
-public final class DispatchJobRepository implements Persist<DispatchJob>, ProcessingRepository {
+public final class DispatchJobRepository implements ProcessingRepository {
 
     private static final MsgDispatchJobs T = MSG_DISPATCH_JOBS;
     private static final MsgDispatchJobsRead R = MSG_DISPATCH_JOBS_READ;
@@ -243,177 +241,6 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 .fetch(DispatchJobRepository::toAttempt);
     }
 
-    // ── Writes (inside the unit of work's transaction only) ────────────────
-
-    /// Upserts the row `ON CONFLICT (id, created_at)` — the partition key is
-    /// half the primary key, so the statement prunes to one partition. `id`
-    /// and `created_at` are insert-only; `updated_at` is stamped `now()` here
-    /// (which marks the row dirty for the projector); `queued_at` /
-    /// `projected_at` are not listed and therefore untouched (spec §9).
-    @Override
-    public void persist(DispatchJob j, DbTx tx) {
-        DSLContext txDsl = DSL.using(tx.connection(), SQLDialect.POSTGRES);
-        var row = new LinkedHashMap<Field<?>, Object>();
-        row.put(T.EXTERNAL_ID, j.externalId());
-        row.put(T.SOURCE, j.source());
-        row.put(T.KIND, j.kind().name());
-        row.put(T.CODE, j.code());
-        row.put(T.SUBJECT, j.subject());
-        row.put(T.EVENT_ID, j.eventId());
-        row.put(T.CORRELATION_ID, j.correlationId());
-        row.put(T.METADATA, toJsonb(j.metadata()));
-        row.put(T.TARGET_URL, j.targetUrl());
-        row.put(T.PROTOCOL, j.protocol().name());
-        row.put(T.PAYLOAD, j.payload());
-        row.put(T.PAYLOAD_CONTENT_TYPE, j.payloadContentType());
-        row.put(T.DATA_ONLY, j.dataOnly());
-        row.put(T.SERVICE_ACCOUNT_ID, j.serviceAccountId());
-        row.put(T.CLIENT_ID, j.clientId());
-        row.put(T.SUBSCRIPTION_ID, j.subscriptionId());
-        row.put(T.MODE, j.mode().name());
-        row.put(T.DISPATCH_POOL_ID, j.dispatchPoolId());
-        row.put(T.MESSAGE_GROUP, j.messageGroup());
-        row.put(T.SEQUENCE, j.sequence());
-        row.put(T.TIMEOUT_SECONDS, j.timeoutSeconds());
-        row.put(T.SCHEMA_ID, j.schemaId());
-        row.put(T.STATUS, j.status().name());
-        row.put(T.MAX_RETRIES, j.maxRetries());
-        row.put(T.RETRY_STRATEGY, j.retryStrategy().wire());
-        row.put(T.SCHEDULED_FOR, utc(j.scheduledFor()));
-        row.put(T.EXPIRES_AT, utc(j.expiresAt()));
-        row.put(T.ATTEMPT_COUNT, j.attemptCount());
-        row.put(T.LAST_ATTEMPT_AT, utc(j.lastAttemptAt()));
-        row.put(T.COMPLETED_AT, utc(j.completedAt()));
-        row.put(T.DURATION_MILLIS, j.durationMillis());
-        row.put(T.LAST_ERROR, j.lastError());
-        row.put(T.IDEMPOTENCY_KEY, j.idempotencyKey());
-        row.put(T.DESCRIPTOR, j.descriptor());
-        row.put(T.QUEUE, j.queue());
-        row.put(T.UPDATED_AT, utc(Instant.now()));
-        txDsl.insertInto(T)
-                .set(T.ID, j.id())
-                .set(T.CREATED_AT, utc(j.createdAt()))
-                .set(row)
-                .onConflict(T.ID, T.CREATED_AT).doUpdate().set(row)
-                .execute();
-    }
-
-    /// Removes the row by its full primary key (partition-pruned). No
-    /// operation deletes jobs today (spec §9).
-    @Override
-    public void delete(DispatchJob j, DbTx tx) {
-        DSL.using(tx.connection(), SQLDialect.POSTGRES)
-                .deleteFrom(T).where(T.ID.eq(j.id())).and(T.CREATED_AT.eq(utc(j.createdAt())))
-                .execute();
-    }
-
-    // ── Writes (infra ingest — no unit of work, sdk-ingest spec §1/§4) ──────
-
-    /// One batch insert of server-minted jobs:
-    /// `ON CONFLICT (id, created_at) DO NOTHING` (spec §4.1) — the table is
-    /// partitioned on `created_at`, so the conflict target names both halves
-    /// of the primary key. That target does **not** stop a second row with
-    /// an existing `id` and a later `created_at`: a caller-supplied id goes
-    /// through [#insertNew] instead. One JDBC batch, one round trip; empty
-    /// input is a no-op.
-    public void insertBatch(List<DispatchJob> jobs) {
-        if (jobs.isEmpty()) return;
-        var queries = jobs.stream().map(j -> insertQuery(dsl, j)).toList();
-        dsl.batch(queries).execute();
-    }
-
-    /// Why [#insertNew] wrote nothing.
-    public sealed interface InsertRefusal {
-        /// These caller-supplied ids already name a job.
-        record IdsTaken(List<String> ids) implements InsertRefusal {
-            public IdsTaken {
-                ids = List.copyOf(ids);
-            }
-        }
-    }
-
-    /// The advisory-lock class [#insertNew] serialises supplied ids under
-    /// (`pg_advisory_xact_lock(int, int)`'s first key; the second is the
-    /// id's `hashtext`).
-    static final int SUPPLIED_ID_LOCK_CLASS = 0x646A6964; // "djid"
-
-    /// `POST /api/dispatch-jobs/batch` with caller-supplied ids
-    /// (`docs/spec/security-fixes-2026-09-24.md` S3.3): refuses the whole
-    /// batch when any of `suppliedIds` already names a job, so an id can
-    /// never name two rows — [#findById] reads it with `fetchOptional`, and a
-    /// second row would make the first job unreadable for ever. The primary
-    /// key is `(id, created_at)` (the table is partitioned on `created_at`),
-    /// so the database cannot enforce this itself; instead, in one
-    /// transaction, each supplied id's advisory lock is taken (two concurrent
-    /// requests supplying the same new id serialise here — without it both
-    /// would see no row and both insert), the ids are looked up across every
-    /// partition, and only then is the batch inserted. `suppliedIds` must
-    /// already be free of duplicates within the batch (the caller refuses
-    /// those itself).
-    public Result<Integer, InsertRefusal> insertNew(List<DispatchJob> jobs, List<String> suppliedIds) {
-        if (jobs.isEmpty()) return Result.ok(0);
-        if (suppliedIds.isEmpty()) {
-            insertBatch(jobs);
-            return Result.ok(jobs.size());
-        }
-        String[] ids = suppliedIds.stream().distinct().sorted().toArray(String[]::new);
-        return dsl.transactionResult(cfg -> {
-            DSLContext tx = DSL.using(cfg);
-            // Locks in hash order: two batches sharing several ids take them in the same order.
-            tx.fetch("SELECT pg_advisory_xact_lock(?, k) FROM (SELECT DISTINCT hashtext(x) AS k FROM unnest(?::text[]) AS x) s ORDER BY k",
-                    SUPPLIED_ID_LOCK_CLASS, ids);
-            List<String> taken = tx.selectDistinct(T.ID).from(T).where(T.ID.in(ids)).orderBy(T.ID).fetch(T.ID);
-            if (!taken.isEmpty()) {
-                return Result.<Integer, InsertRefusal>err(new InsertRefusal.IdsTaken(taken));
-            }
-            tx.batch(jobs.stream().map(j -> insertQuery(tx, j)).toList()).execute();
-            return Result.<Integer, InsertRefusal>ok(jobs.size());
-        });
-    }
-
-    private static org.jooq.Insert<MsgDispatchJobsRecord> insertQuery(DSLContext dsl, DispatchJob j) {
-        return dsl.insertInto(T)
-                .set(T.ID, j.id())
-                .set(T.EXTERNAL_ID, j.externalId())
-                .set(T.SOURCE, j.source())
-                .set(T.KIND, j.kind().name())
-                .set(T.CODE, j.code())
-                .set(T.SUBJECT, j.subject())
-                .set(T.EVENT_ID, j.eventId())
-                .set(T.CORRELATION_ID, j.correlationId())
-                .set(T.METADATA, toJsonb(j.metadata()))
-                .set(T.TARGET_URL, j.targetUrl())
-                .set(T.PROTOCOL, j.protocol().name())
-                .set(T.PAYLOAD, j.payload())
-                .set(T.PAYLOAD_CONTENT_TYPE, j.payloadContentType())
-                .set(T.DATA_ONLY, j.dataOnly())
-                .set(T.SERVICE_ACCOUNT_ID, j.serviceAccountId())
-                .set(T.CLIENT_ID, j.clientId())
-                .set(T.SUBSCRIPTION_ID, j.subscriptionId())
-                .set(T.MODE, j.mode().name())
-                .set(T.DISPATCH_POOL_ID, j.dispatchPoolId())
-                .set(T.MESSAGE_GROUP, j.messageGroup())
-                .set(T.SEQUENCE, j.sequence())
-                .set(T.TIMEOUT_SECONDS, j.timeoutSeconds())
-                .set(T.SCHEMA_ID, j.schemaId())
-                .set(T.STATUS, j.status().name())
-                .set(T.MAX_RETRIES, j.maxRetries())
-                .set(T.RETRY_STRATEGY, j.retryStrategy().wire())
-                .set(T.SCHEDULED_FOR, utc(j.scheduledFor()))
-                .set(T.EXPIRES_AT, utc(j.expiresAt()))
-                .set(T.ATTEMPT_COUNT, j.attemptCount())
-                .set(T.LAST_ATTEMPT_AT, utc(j.lastAttemptAt()))
-                .set(T.COMPLETED_AT, utc(j.completedAt()))
-                .set(T.DURATION_MILLIS, j.durationMillis())
-                .set(T.LAST_ERROR, j.lastError())
-                .set(T.IDEMPOTENCY_KEY, j.idempotencyKey())
-                .set(T.DESCRIPTOR, j.descriptor())
-                .set(T.QUEUE, j.queue())
-                .set(T.CREATED_AT, utc(j.createdAt()))
-                .set(T.UPDATED_AT, utc(j.updatedAt()))
-                .onConflict(T.ID, T.CREATED_AT).doNothing();
-    }
-
     // ── Infra writes (direct SQL, outside the use-case envelope) ───────────
     //
     // The scheduler / processing-endpoint / settled-endpoint / reaper writes
@@ -458,7 +285,7 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
     /// legacy `ERROR` head, since that head still blocks at claim time.
     /// Literals, not a bound array: `idx_dispatch_jobs_group_holders` is
     /// partial on exactly this predicate.
-    private static final String HOLDING_STATUSES_SQL = "'FAILED', 'ERROR'";
+    static final String HOLDING_STATUSES_SQL = "'FAILED', 'ERROR'";
 
     /// `GroupHolding` (spec §9): the ONE status predicate shared by every
     /// enforcement point that decides whether a row holds the rest of its
@@ -497,24 +324,6 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                AND id <> ALL(?::text[])
              ORDER BY message_group ASC NULLS LAST, sequence ASC, created_at ASC, id ASC
              LIMIT ?
-            """;
-
-    /// Optimistic on the row version the claim read: `id = ANY(?)` keeps the
-    /// access path an index lookup per id, and the join to the claimed
-    /// `(id, updated_at)` pairs (the version travels as ISO-8601 text, which
-    /// Postgres parses to the exact microsecond it was read at) lets only a row
-    /// nothing has touched since the claim through. `status = 'PENDING'` alone
-    /// is not enough: a job the callback delivered and RESCHEDULED back to
-    /// `PENDING` before this runs is `PENDING` again, but its message is
-    /// gone — marking it `QUEUED` would strand it (nothing recovers `QUEUED`).
-    private static final String MARK_QUEUED_SQL = """
-            UPDATE msg_dispatch_jobs j SET status = 'QUEUED', updated_at = ?
-              FROM unnest(?::text[], ?::text[]) AS v(id, version)
-             WHERE j.id = ANY(?)
-               AND j.id = v.id
-               AND j.updated_at = v.version::timestamptz
-               AND j.status = 'PENDING'
-               AND j.created_at >= ? AND j.created_at <= ?
             """;
 
     /// A JDBC failure in one of the plain-JDBC statements, as the same
@@ -671,140 +480,6 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
         }
     }
 
-    /// Marks jobs the broker accepted `QUEUED`, in bulk, on a pooled
-    /// connection with no transaction. Bounded by the batch's own `created_at`
-    /// span so the `created_at`-partitioned table prunes to the partitions the
-    /// rows actually span.
-    ///
-    /// **Optimistic on the version the claim read** (`status = 'PENDING' AND
-    /// updated_at = claimed updated_at`). The claim holds no lock, so the
-    /// router can deliver a job and the callback can move it on before this
-    /// statement runs — and not only forward: it can reschedule it back to
-    /// `PENDING` (a retry, a deferral, a `BLOCK_ON_ERROR` hold). A status guard
-    /// alone would then mark a job `QUEUED` whose message is already gone, and
-    /// nothing recovers `QUEUED`. Every transition of this table that the
-    /// callback makes (`claimForDelivery`, `markCompleted`, `markFailed`,
-    /// `reschedule`, `scheduleRetry`) writes `updated_at`, so the version
-    /// differs; `settleAcked` (`QUEUED`/`PROCESSING` → `PENDING`) does not, but
-    /// it can only follow a transition that did.
-    ///
-    /// @param published rows exactly as [#claimPending] returned them
-    /// @return the rows actually updated — fewer than `published.size()` when
-    ///         some had already moved on
-    public int markQueued(List<ClaimRow> published) {
-        if (published.isEmpty()) return 0;
-        String[] ids = new String[published.size()];
-        String[] versions = new String[published.size()];
-        Instant spanStart = null;
-        Instant spanEnd = null;
-        for (int i = 0; i < ids.length; i++) {
-            ClaimRow c = published.get(i);
-            ids[i] = c.id();
-            versions[i] = c.updatedAt().toString();
-            if (spanStart == null || c.createdAt().isBefore(spanStart)) spanStart = c.createdAt();
-            if (spanEnd == null || c.createdAt().isAfter(spanEnd)) spanEnd = c.createdAt();
-        }
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement ps = conn.prepareStatement(MARK_QUEUED_SQL)) {
-            java.sql.Array idArray = conn.createArrayOf("text", ids);
-            ps.setObject(1, utc(Instant.now()));
-            ps.setArray(2, idArray);
-            ps.setArray(3, conn.createArrayOf("text", versions));
-            ps.setArray(4, idArray);
-            ps.setObject(5, utc(spanStart));
-            ps.setObject(6, utc(spanEnd));
-            return ps.executeUpdate();
-        } catch (SQLException e) {
-            throw failed("mark QUEUED", e);
-        }
-    }
-
-    /// Atomically claims a job for one delivery (dispatch-seam spec §5): the
-    /// same `PROCESSING` flip [#markInProgress] used to do, but guarded on the
-    /// status it is flipping FROM, so the row count answers "did I win this
-    /// delivery?". Only `PENDING`/`QUEUED` is claimable — a row already
-    /// `PROCESSING` belongs to a delivery still in flight, and a terminal row
-    /// is finished — so a concurrent redelivery of the same job updates no row
-    /// and its caller must not call the subscriber. A positive status list
-    /// rather than an exclusion list: an unrecognised stored value is then
-    /// un-claimable rather than deliverable.
-    ///
-    /// **Not before it is due** (review 2026-09-28): a row whose
-    /// `scheduled_for` is still in the future is not claimable either. The
-    /// scheduler publishes a batch before marking it `QUEUED` (and holds no
-    /// lock meanwhile), so a failed mark after the publish leaves the row
-    /// `PENDING` with a copy at the broker, which the next claim publishes
-    /// again — a second copy; if the first copy's attempt then fails and schedules a retry,
-    /// that stale copy would otherwise claim the `PENDING` row at once and
-    /// make the retry early, skipping its backoff. Refusing it cannot strand
-    /// the job. Only `markQueued` writes `QUEUED`, and only for a row the
-    /// claim query found due — against the same database clock this compares
-    /// with, which only moves forward — so the copy that publish sent is
-    /// always claimable. A row that is `PENDING` and not yet due is exactly
-    /// what the next poller tick publishes once it is due.
-    ///
-    /// @return `true` when this call won the claim (exactly one row updated)
-    public boolean claimForDelivery(String id, Instant createdAt) {
-        Instant now = Instant.now();
-        return dsl.update(T)
-                .set(T.STATUS, DispatchJobStatus.PROCESSING.name())
-                .set(T.LAST_ATTEMPT_AT, utc(now))
-                .set(T.UPDATED_AT, utc(now))
-                .where(T.ID.eq(id))
-                .and(T.CREATED_AT.eq(utc(createdAt)))
-                .and(T.STATUS.in(DispatchJobStatus.PENDING.name(), DispatchJobStatus.QUEUED.name()))
-                .and(T.SCHEDULED_FOR.isNull().or(T.SCHEDULED_FOR.le(DSL.currentOffsetDateTime())))
-                .execute() == 1;
-    }
-
-    /// Delivery succeeded (spec §4): `PROCESSING` → `COMPLETED`, stamps
-    /// `completed_at`/`duration_millis`.
-    public void markCompleted(String id, Instant createdAt, Instant completedAt, Long durationMillis) {
-        dsl.update(T)
-                .set(T.STATUS, DispatchJobStatus.COMPLETED.name())
-                .set(T.COMPLETED_AT, utc(completedAt))
-                .set(T.DURATION_MILLIS, durationMillis)
-                .set(T.UPDATED_AT, utc(Instant.now()))
-                .where(T.ID.eq(id)).and(T.CREATED_AT.eq(utc(createdAt)))
-                .execute();
-    }
-
-    /// Retries exhausted (spec §4): `PROCESSING` → `FAILED`, records `lastError`.
-    public void markFailed(String id, Instant createdAt, String lastError) {
-        dsl.update(T)
-                .set(T.STATUS, DispatchJobStatus.FAILED.name())
-                .set(T.LAST_ERROR, lastError)
-                .set(T.UPDATED_AT, utc(Instant.now()))
-                .where(T.ID.eq(id)).and(T.CREATED_AT.eq(utc(createdAt)))
-                .execute();
-    }
-
-    /// Retryable failure, budget remains (spec §4): `PROCESSING` → `PENDING`,
-    /// bumps `attempt_count` and records `lastError` — unlike [#reschedule],
-    /// this DOES spend retry budget.
-    public void scheduleRetry(String id, Instant createdAt, Instant scheduledFor, int attemptCount, String lastError) {
-        dsl.update(T)
-                .set(T.STATUS, DispatchJobStatus.PENDING.name())
-                .set(T.SCHEDULED_FOR, utc(scheduledFor))
-                .set(T.ATTEMPT_COUNT, attemptCount)
-                .set(T.LAST_ERROR, lastError)
-                .set(T.UPDATED_AT, utc(Instant.now()))
-                .where(T.ID.eq(id)).and(T.CREATED_AT.eq(utc(createdAt)))
-                .execute();
-    }
-
-    /// Cooperative deferral, or the delivery-time hold-back revert (spec §4,
-    /// §5): `PROCESSING`/`QUEUED` → `PENDING` at `scheduledFor`. **No**
-    /// `attempt_count` bump — back-pressure/hold-back, not a failure.
-    public void reschedule(String id, Instant createdAt, Instant scheduledFor) {
-        dsl.update(T)
-                .set(T.STATUS, DispatchJobStatus.PENDING.name())
-                .set(T.SCHEDULED_FOR, utc(scheduledFor))
-                .set(T.UPDATED_AT, utc(Instant.now()))
-                .where(T.ID.eq(id)).and(T.CREATED_AT.eq(utc(createdAt)))
-                .execute();
-    }
-
     /// Records one delivery attempt (dispatch-seam spec §5 "Attempt
     /// recording", Go `RecordAttempt`): one row of `msg_dispatch_job_attempts`
     /// keyed by an untyped TSID. `success` derives the stored `status`
@@ -833,71 +508,6 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
                 .set(A.CREATED_AT, utc(attemptedAt))
                 .execute();
     }
-
-    /// The settled endpoint's idempotent batch reset (spec §6, Go
-    /// `SettleAcked`): every id in `QUEUED`/`PROCESSING` flips to `PENDING`
-    /// with `scheduled_for` cleared and `last_error = reason`; a row already
-    /// advanced past those two statuses (already settled, or the reaper beat
-    /// this call to it) is left untouched — that `status IN (...)` guard is
-    /// the whole idempotency contract, shared verbatim with
-    /// [#sweepStrandedSiblings]. Returns the ids actually changed.
-    public List<String> settleAcked(List<String> ids, String reason) {
-        if (ids.isEmpty()) return List.of();
-        return dsl.update(T)
-                .set(T.STATUS, DispatchJobStatus.PENDING.name())
-                .set(T.SCHEDULED_FOR, (OffsetDateTime) null)
-                .set(T.LAST_ERROR, reason)
-                .where(T.ID.in(ids))
-                .and(T.STATUS.in("QUEUED", "PROCESSING"))
-                .returning(T.ID)
-                .fetch(T.ID);
-    }
-
-    /// The reaper's backstop sweep (spec §7, Go
-    /// `DispatchJobSweepStrandedSiblings`): every `BLOCK_ON_ERROR` row in
-    /// `QUEUED`/`PROCESSING` whose `message_group` has an earlier
-    /// `FAILED`/legacy-`ERROR` head — positional over `(sequence, created_at,
-    /// id)`, so a sibling positioned BEFORE the head is never touched — is
-    /// reset to `PENDING`. A `QUEUED` sibling is reset regardless of age; a
-    /// `PROCESSING` sibling only once `updated_at` is older than
-    /// `processingLiveBefore` (a fresh `PROCESSING` row is presumed a
-    /// genuine in-flight delivery). `NEXT_ON_ERROR`/`IMMEDIATE` rows are
-    /// never matched. Idempotent — a row already reset no longer matches
-    /// `status IN ('QUEUED','PROCESSING')`. Returns the ids reset.
-    ///
-    /// Note the join checks `h.status IN (...)` built from
-    /// [#HOLDING_STATUSES_SQL] — the same fragment [#GROUP_HOLDING_SQL] is
-    /// built from — not a second, independently-typed `'FAILED', 'ERROR'`
-    /// literal; the two gates share one Java constant so they cannot drift
-    /// (spec §7, §9). Written into the SQL text rather than bound, so the
-    /// partial index on the holders is usable. Not the full
-    /// [#GROUP_HOLDING_SQL] predicate — a head mid-backoff (`PENDING` +
-    /// future `scheduled_for`) self-resolves once that timer fires and needs
-    /// no reaper.
-    public List<String> sweepStrandedSiblings(Instant processingLiveBefore, String reason) {
-        return dsl.fetch(SWEEP_STRANDED_SIBLINGS_SQL, utc(processingLiveBefore), reason)
-                .getValues(T.ID.getName(), String.class);
-    }
-
-    private static final String SWEEP_STRANDED_SIBLINGS_SQL = """
-            WITH stranded AS (
-                SELECT s.id, s.created_at
-                  FROM msg_dispatch_jobs s
-                  JOIN msg_dispatch_jobs h
-                    ON h.message_group = s.message_group
-                   AND h.status IN (%s)
-                   AND (h.sequence, h.created_at, h.id) < (s.sequence, s.created_at, s.id)
-                 WHERE s.mode = 'BLOCK_ON_ERROR'
-                   AND s.message_group IS NOT NULL
-                   AND s.status IN ('QUEUED', 'PROCESSING')
-                   AND (s.status <> 'PROCESSING' OR s.updated_at < ?::timestamptz)
-            )
-            UPDATE msg_dispatch_jobs j
-               SET status = 'PENDING', scheduled_for = NULL, last_error = ?::text, updated_at = now()
-              FROM stranded st
-             WHERE j.id = st.id AND j.created_at = st.created_at
-            RETURNING j.id
-            """.formatted(HOLDING_STATUSES_SQL);
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -1016,11 +626,6 @@ public final class DispatchJobRepository implements Persist<DispatchJob>, Proces
         } catch (JacksonException e) {
             return null;
         }
-    }
-
-    /// The metadata list as the SDK's JSON array of `{key, value}` pairs; `[]` when empty.
-    private static JSONB toJsonb(List<DispatchJob.Metadata> metadata) {
-        return JSONB.jsonb(Json.write(metadata));
     }
 
     /// `NULL`, empty, or any non-array document reads as no metadata; a pair

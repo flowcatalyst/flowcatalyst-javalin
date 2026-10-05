@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.scheduler;
 
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
 import io.flowcatalyst.platform.scheduler.jfr.ClaimedBatchEvent;
@@ -46,7 +47,7 @@ import java.util.function.BooleanSupplier;
 /// returned to `PENDING` by a failed status update is published again (the
 /// router drops a copy whose original is in its pipeline, and
 /// `/api/dispatch/process` owns a delivery only by winning the status-guarded
-/// [DispatchJobRepository#claimForDelivery], so the copy that arrives second
+/// [DispatchJobLifecycle#claimForDelivery], so the copy that arrives second
 /// finds the job moved on and is acked without calling the subscriber); and a
 /// copy can reach `/process` while the row is still `PENDING`, which
 /// `claimForDelivery` accepts (`PENDING`/`QUEUED` -> `PROCESSING`), after
@@ -89,7 +90,7 @@ public final class PendingJobPoller implements AutoCloseable {
     private long lastStarvedWarnNanos;
 
     /// Builds the poller and starts its lanes.
-    public PendingJobPoller(DataSource dataSource, DispatchJobRepository repository,
+    public PendingJobPoller(DataSource dataSource, DispatchJobRepository repository, DispatchJobLifecycle lifecycle,
                              PausedConnectionCache pausedCache, PoolCodeResolver poolCodes,
                              DispatchPublisher publisher, HmacTokenVerifier authVerifier,
                              String processingEndpoint, BooleanSupplier leader, SchedulerConfig config) {
@@ -102,7 +103,7 @@ public final class PendingJobPoller implements AutoCloseable {
         this.leader = Objects.requireNonNull(leader, "leader");
         this.config = Objects.requireNonNull(config, "config");
         this.metrics = new SchedulerMetrics(config.dispatchers());
-        this.lanes = new DispatchLanes(config, repository, Objects.requireNonNull(publisher, "publisher"),
+        this.lanes = new DispatchLanes(config, Objects.requireNonNull(lifecycle, "lifecycle"), Objects.requireNonNull(publisher, "publisher"),
                 this::buildMessage, metrics);
         this.lanes.start();
     }

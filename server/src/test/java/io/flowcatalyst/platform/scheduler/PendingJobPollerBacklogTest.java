@@ -1,6 +1,7 @@
 package io.flowcatalyst.platform.scheduler;
 
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
 import ch.qos.logback.classic.Level;
@@ -39,7 +40,7 @@ class PendingJobPollerBacklogTest {
 
     private PendingJobPoller poller(DispatchJobRepository repo, DispatchPublisher publisher,
                                     BooleanSupplier leader, int batchSize) {
-        var poller = new PendingJobPoller(DATA_SOURCE, repo, new PausedConnectionCache(DATA_SOURCE),
+        var poller = new PendingJobPoller(DATA_SOURCE, repo, new DispatchJobLifecycle(DATA_SOURCE), new PausedConnectionCache(DATA_SOURCE),
                 new PoolCodeResolver(DATA_SOURCE), publisher, AUTH, ENDPOINT, leader,
                 SchedulerConfig.DEFAULTS.withBatchSize(batchSize));
         pollers.add(poller);

@@ -2,6 +2,7 @@ package io.flowcatalyst.platform.scheduler;
 
 import io.flowcatalyst.platform.dispatch.DispatchQueueSettings;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobStatus;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
@@ -45,6 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PendingJobPollerTest {
 
     private static final DispatchJobRepository REPO = new DispatchJobRepository(DATA_SOURCE);
+    private static final DispatchJobLifecycle LIFECYCLE = new DispatchJobLifecycle(DATA_SOURCE);
     private static final String APP_KEY = "test-app-key-" + RUN;
     private static final HmacTokenVerifier AUTH = HmacTokenVerifier.fromAppKey(APP_KEY);
     private static final String PROCESSING_ENDPOINT = "http://localhost:18080/api/dispatch/process";
@@ -65,7 +67,7 @@ class PendingJobPollerTest {
     private final List<PendingJobPoller> pollers = new ArrayList<>();
 
     private PendingJobPoller poller(DispatchPublisher publisher, BooleanSupplier leader) {
-        var poller = new PendingJobPoller(DATA_SOURCE, REPO, new PausedConnectionCache(DATA_SOURCE),
+        var poller = new PendingJobPoller(DATA_SOURCE, REPO, LIFECYCLE, new PausedConnectionCache(DATA_SOURCE),
                 new PoolCodeResolver(DATA_SOURCE), publisher, AUTH, PROCESSING_ENDPOINT, leader, CONFIG);
         pollers.add(poller);
         return poller;
@@ -295,7 +297,7 @@ class PendingJobPollerTest {
         var claimedByCallback = new java.util.concurrent.atomic.AtomicBoolean();
         DispatchPublisher callbackArrivesBeforeTheUpdate = batch -> {
             if (batch.stream().anyMatch(m -> m.jobId().equals(job))) {
-                claimedByCallback.set(REPO.claimForDelivery(job, createdAt));
+                claimedByCallback.set(LIFECYCLE.claimForDelivery(job, createdAt));
             }
         };
         var poller = poller(callbackArrivesBeforeTheUpdate, () -> true);
@@ -319,8 +321,8 @@ class PendingJobPollerTest {
         var createdAt = REPO.findById(job).orElseThrow().createdAt();
         DispatchPublisher callbackRunsAndRetries = batch -> {
             if (batch.stream().anyMatch(m -> m.jobId().equals(job))) {
-                assertThat(REPO.claimForDelivery(job, createdAt)).isTrue();
-                REPO.scheduleRetry(job, createdAt, Instant.now().minusSeconds(1), 1, "subscriber 500");
+                assertThat(LIFECYCLE.claimForDelivery(job, createdAt)).isTrue();
+                LIFECYCLE.scheduleRetry(job, createdAt, Instant.now().minusSeconds(1), 1, "subscriber 500");
             }
         };
         var poller = poller(callbackRunsAndRetries, () -> true);
@@ -342,9 +344,9 @@ class PendingJobPollerTest {
         pollAndSettle(poller(FakeDispatchPublisher.succeeding(), () -> true));
         var row = REPO.findById(job).orElseThrow();
 
-        boolean firstCopy = REPO.claimForDelivery(job, row.createdAt());
-        REPO.markCompleted(job, row.createdAt(), Instant.now(), 5L);
-        boolean secondCopy = REPO.claimForDelivery(job, row.createdAt());
+        boolean firstCopy = LIFECYCLE.claimForDelivery(job, row.createdAt());
+        LIFECYCLE.markCompleted(job, row.createdAt(), Instant.now(), 5L);
+        boolean secondCopy = LIFECYCLE.claimForDelivery(job, row.createdAt());
 
         assertThat(firstCopy).isTrue();
         assertThat(secondCopy).as("the second copy is acked without a delivery").isFalse();
@@ -362,7 +364,7 @@ class PendingJobPollerTest {
         String job = seedWithScheduledFor(Seed.of(code("notyetdue")), Instant.now().plusSeconds(600));
         var row = REPO.findById(job).orElseThrow();
 
-        assertThat(REPO.claimForDelivery(job, row.createdAt())).as("a stale copy before it is due").isFalse();
+        assertThat(LIFECYCLE.claimForDelivery(job, row.createdAt())).as("a stale copy before it is due").isFalse();
         assertThat(REPO.findById(job).orElseThrow().status()).isEqualTo(DispatchJobStatus.PENDING);
         var early = FakeDispatchPublisher.succeeding();
         pollAndSettle(poller(early, () -> true));
@@ -376,7 +378,7 @@ class PendingJobPollerTest {
         pollAndSettle(poller(due, () -> true));
 
         assertThat(due.batches().stream().flatMap(List::stream).map(PublishedMessage::jobId)).contains(job);
-        assertThat(REPO.claimForDelivery(job, row.createdAt())).as("the copy published once due is delivered")
+        assertThat(LIFECYCLE.claimForDelivery(job, row.createdAt())).as("the copy published once due is delivered")
                 .isTrue();
     }
 

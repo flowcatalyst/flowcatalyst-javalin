@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.scheduler;
 
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
 import io.prometheus.metrics.model.registry.MultiCollector;
@@ -80,9 +81,10 @@ public final class DispatchScheduler implements AutoCloseable {
             return null;
         }
         var repository = new DispatchJobRepository(pool);
+        var lifecycle = new DispatchJobLifecycle(pool);
         var pausedCache = new PausedConnectionCache(pool);
         var poolCodes = new PoolCodeResolver(pool);
-        var poller = new PendingJobPoller(pool, repository, pausedCache, poolCodes, publisher, authVerifier,
+        var poller = new PendingJobPoller(pool, repository, lifecycle, pausedCache, poolCodes, publisher, authVerifier,
                 processingEndpoint, leader, config);
         var scheduler = new DispatchScheduler(poller, config);
         scheduler.thread.start();

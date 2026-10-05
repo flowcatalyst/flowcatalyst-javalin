@@ -1,6 +1,7 @@
 package io.flowcatalyst.platform.dispatchjob.operations;
 
 import io.flowcatalyst.platform.dispatchjob.DispatchJob;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.operations.DispatchJobEvents.DispatchJobCompleted;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
@@ -23,7 +24,7 @@ public final class CompleteDispatchJob {
                 .authorize(Operation.Authorize.publicAccess()) // per-resource check is in Access.loadOwn
                 .execute((cmd, ec) -> {
                     DispatchJob j = StatusFlip.requireFailed(Access.loadOwn(repo, cmd.id())).complete();
-                    return Plan.save(j, repo, DispatchJobCompleted.of(ec, j));
+                    return Plan.save(j, DispatchJobLifecycle.completeWriter(), DispatchJobCompleted.of(ec, j));
                 });
     }
 }

@@ -625,7 +625,7 @@ class FunctionHostListenerIntegrationTest {
                 subscription.dispatchPoolId(), null, "IMMEDIATE", 0, null, 30, 3, null, List.of(), null,
                 /* descriptor */ null, /* queue */ null);
         DispatchJob job = DispatchJobIngestMapper.toJob(mapper);
-        new DispatchJobRepository(DS).insertBatch(List.of(job));
+        new io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle(DS).insertBatch(List.of(job));
         return job.id();
     }
 

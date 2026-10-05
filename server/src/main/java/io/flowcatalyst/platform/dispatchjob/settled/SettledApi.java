@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.dispatchjob.settled;
 
-import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.http.Exchange;
 import io.flowcatalyst.http.Routes;
@@ -48,9 +48,9 @@ public final class SettledApi {
     }
 
     /// The handler's dependencies.
-    public record State(DispatchJobRepository repo, HmacTokenVerifier verifier) {
+    public record State(DispatchJobLifecycle lifecycle, HmacTokenVerifier verifier) {
         public State {
-            Objects.requireNonNull(repo, "repo");
+            Objects.requireNonNull(lifecycle, "lifecycle");
             Objects.requireNonNull(verifier, "verifier");
         }
     }
@@ -114,7 +114,7 @@ public final class SettledApi {
             return;
         }
 
-        List<String> settled = s.repo().settleAcked(ids, reason);
+        List<String> settled = s.lifecycle().settleAcked(ids, reason);
         if (!settled.isEmpty()) {
             LOG.atInfo().setMessage("dispatch settled: siblings marked PENDING")
                     .addKeyValue("count", settled.size())

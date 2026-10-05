@@ -17,6 +17,7 @@ import io.flowcatalyst.platform.dispatchjob.AttemptErrorType;
 import io.flowcatalyst.platform.dispatchjob.DispatchJob;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobStatus;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
@@ -80,6 +81,7 @@ class ProcessingApiTest {
     private static TestHttp http;
     private static HmacTokenVerifier verifier;
     private static DispatchJobRepository repo;
+    private static DispatchJobLifecycle lifecycle;
     private static ClientRepository clientRepo;
     /// A second registration of the same route, wired with a real
     /// [ClientCodeResolver] over [#clientRepo] instead of
@@ -115,6 +117,7 @@ class ProcessingApiTest {
     @BeforeAll
     static void start() throws IOException {
         repo = new DispatchJobRepository(DS);
+        lifecycle = new DispatchJobLifecycle(DS);
         verifier = HmacTokenVerifier.fromAppKey(APP_KEY);
         clientRepo = new ClientRepository(DS);
         applicationRepo = new ApplicationRepository(DS);
@@ -122,11 +125,11 @@ class ProcessingApiTest {
         connectionRepo = new io.flowcatalyst.platform.connection.ConnectionRepository(DS);
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
-            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier, new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none())));
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, lifecycle, verifier, new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none())));
         });
         clientCodeHttp = TestHttp.routes(routes -> {
             HttpError.install(routes);
-            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, lifecycle, verifier,
                     new SubscriberDelivery(SubscriberDelivery.defaultClient(), new ClientCodeResolver(clientRepo::findById)),
                     DeliveryCredentials.none(), Clock.systemUTC()));
         });
@@ -689,7 +692,7 @@ class ProcessingApiTest {
         DeliveryCredentials creds = job -> new DeliveryCredentials.Resolved("bearer-token-value", secret);
         try (TestHttp signedHttp = TestHttp.routes(routes -> {
             HttpError.install(routes);
-            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, lifecycle, verifier,
                     new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()), creds, Clock.systemUTC()));
         })) {
             String id = seedJob(Seed.of(code("proc-signed")));
@@ -750,7 +753,7 @@ class ProcessingApiTest {
 
         try (TestHttp s1Http = TestHttp.routes(routes -> {
             HttpError.install(routes);
-            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, lifecycle, verifier,
                     new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()),
                     realDeliveryCredentials(), Clock.systemUTC()));
         })) {
@@ -801,7 +804,7 @@ class ProcessingApiTest {
         DeliveryCredentials creds = job -> new DeliveryCredentials.Resolved(token, null);
         try (TestHttp s5Http = TestHttp.routes(routes -> {
             HttpError.install(routes);
-            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, lifecycle, verifier,
                     new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()), creds, Clock.systemUTC()));
         })) {
             String id = seedJob(Seed.of(code("proc-s5-tokenonly")));
@@ -827,7 +830,7 @@ class ProcessingApiTest {
         DeliveryCredentials creds = job -> new DeliveryCredentials.Resolved(null, secret);
         try (TestHttp s5Http = TestHttp.routes(routes -> {
             HttpError.install(routes);
-            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, lifecycle, verifier,
                     new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()), creds, Clock.systemUTC()));
         })) {
             String id = seedJob(Seed.of(code("proc-s5-secretonly")));
@@ -878,7 +881,7 @@ class ProcessingApiTest {
         log.addAppender(captured);
         try (TestHttp throwingHttp = TestHttp.routes(routes -> {
             HttpError.install(routes);
-            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, lifecycle, verifier,
                     new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()),
                     throwing, Clock.systemUTC()));
         })) {
@@ -926,7 +929,7 @@ class ProcessingApiTest {
         DeliveryCredentials bare = job -> DeliveryCredentials.Resolved.bare("test reason for t6");
         try (TestHttp t6Http = TestHttp.routes(routes -> {
             HttpError.install(routes);
-            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, lifecycle, verifier,
                     new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()), bare, Clock.systemUTC()));
         })) {
             var r = process(t6Http, id);
@@ -952,7 +955,7 @@ class ProcessingApiTest {
         DeliveryCredentials bare = job -> DeliveryCredentials.Resolved.bare("test reason for t6 success");
         try (TestHttp t6Http = TestHttp.routes(routes -> {
             HttpError.install(routes);
-            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, lifecycle, verifier,
                     new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()), bare, Clock.systemUTC()));
         })) {
             var r = process(t6Http, id);
@@ -979,7 +982,7 @@ class ProcessingApiTest {
         status.set(200);
         try (TestHttp t7Http = TestHttp.routes(routes -> {
             HttpError.install(routes);
-            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, lifecycle, verifier,
                     new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()), creds, Clock.systemUTC()));
         })) {
             var r = process(t7Http, id);
@@ -1089,7 +1092,7 @@ class ProcessingApiTest {
         DeliveryCredentials creds = job -> DeliveryCredentials.Resolved.signed(null, secret, "t9-sa");
         try (TestHttp t9Http = TestHttp.routes(routes -> {
             HttpError.install(routes);
-            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, lifecycle, verifier,
                     new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none()), creds, fixedClock));
         })) {
             lastHeaders.clear();
@@ -1237,15 +1240,17 @@ class ProcessingApiTest {
     /// against a real database instead of only reasoned about from reading
     /// the code — the three prior audit finding was that nothing could make
     /// any of them actually happen.
-    private static final class FailingRepo implements ProcessingRepository {
+    private static final class FailingRepo implements ProcessingRepository, ProcessingTransitions {
         private final ProcessingRepository delegate;
+        private final ProcessingTransitions transitions;
         boolean failFindById;
         boolean failGroupHeldBefore;
         boolean failReschedule;
         boolean failClaim;
 
-        FailingRepo(ProcessingRepository delegate) {
+        FailingRepo(ProcessingRepository delegate, ProcessingTransitions transitions) {
             this.delegate = delegate;
+            this.transitions = transitions;
         }
 
         @Override
@@ -1263,13 +1268,13 @@ class ProcessingApiTest {
         @Override
         public void reschedule(String id, Instant createdAt, Instant scheduledFor) {
             if (failReschedule) throw new RuntimeException("injected: reschedule failed");
-            delegate.reschedule(id, createdAt, scheduledFor);
+            transitions.reschedule(id, createdAt, scheduledFor);
         }
 
         @Override
         public boolean claimForDelivery(String id, Instant createdAt) {
             if (failClaim) throw new RuntimeException("injected: claim failed");
-            return delegate.claimForDelivery(id, createdAt);
+            return transitions.claimForDelivery(id, createdAt);
         }
 
         @Override
@@ -1283,17 +1288,17 @@ class ProcessingApiTest {
 
         @Override
         public void markCompleted(String id, Instant createdAt, Instant completedAt, Long durationMillis) {
-            delegate.markCompleted(id, createdAt, completedAt, durationMillis);
+            transitions.markCompleted(id, createdAt, completedAt, durationMillis);
         }
 
         @Override
         public void scheduleRetry(String id, Instant createdAt, Instant scheduledFor, int attemptCount, String lastError) {
-            delegate.scheduleRetry(id, createdAt, scheduledFor, attemptCount, lastError);
+            transitions.scheduleRetry(id, createdAt, scheduledFor, attemptCount, lastError);
         }
 
         @Override
         public void markFailed(String id, Instant createdAt, String lastError) {
-            delegate.markFailed(id, createdAt, lastError);
+            transitions.markFailed(id, createdAt, lastError);
         }
     }
 
@@ -1301,13 +1306,13 @@ class ProcessingApiTest {
         return TestHttp.routes(routes -> {
             HttpError.install(routes);
             ProcessingApi.register(routes,
-                    new ProcessingApi.State(failing, verifier, new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none())));
+                    new ProcessingApi.State(failing, failing, verifier, new SubscriberDelivery(SubscriberDelivery.defaultClient(), ClientCodeResolver.none())));
         });
     }
 
     @Test
     void loadFailureIsA500ThatNacksWithoutDelivering() {
-        var failing = new FailingRepo(repo);
+        var failing = new FailingRepo(repo, lifecycle);
         failing.failFindById = true;
         try (TestHttp failingHttp = httpOver(failing)) {
             String id = seedJob(Seed.of(code("proc-loadfail")));
@@ -1323,7 +1328,7 @@ class ProcessingApiTest {
 
     @Test
     void groupHeldBeforeFailureIsA500ThatNacksAndLeavesTheJobUntouched() {
-        var failing = new FailingRepo(repo);
+        var failing = new FailingRepo(repo, lifecycle);
         failing.failGroupHeldBefore = true;
         try (TestHttp failingHttp = httpOver(failing)) {
             String group = "grp-checkfail-" + RUN;
@@ -1342,7 +1347,7 @@ class ProcessingApiTest {
 
     @Test
     void rescheduleFailureWhileHeldIsA500ThatNacksAndLeavesTheJobUntouched() {
-        var failing = new FailingRepo(repo);
+        var failing = new FailingRepo(repo, lifecycle);
         failing.failReschedule = true;
         try (TestHttp failingHttp = httpOver(failing)) {
             // A backed-off PENDING sibling (not a FAILED one) holds the group for
@@ -1382,7 +1387,7 @@ class ProcessingApiTest {
     /// before) and both the 500 and the zero hit count fail.
     @Test
     void claimFailureIsA500ThatNacksWithoutDelivering() {
-        var failing = new FailingRepo(repo);
+        var failing = new FailingRepo(repo, lifecycle);
         failing.failClaim = true;
         try (TestHttp failingHttp = httpOver(failing)) {
             String id = seedJob(Seed.of(code("proc-claimfail")));
@@ -1516,7 +1521,7 @@ class ProcessingApiTest {
         var lookup = new CountingLookup();
         try (TestHttp countingHttp = TestHttp.routes(routes -> {
             HttpError.install(routes);
-            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, lifecycle, verifier,
                     new SubscriberDelivery(SubscriberDelivery.defaultClient(), new ClientCodeResolver(lookup)),
                     DeliveryCredentials.none(), Clock.systemUTC()));
         })) {
@@ -1577,7 +1582,7 @@ class ProcessingApiTest {
         String clientId = insertClient(identifier);
         try (TestHttp signedHttp = TestHttp.routes(routes -> {
             HttpError.install(routes);
-            ProcessingApi.register(routes, new ProcessingApi.State(repo, verifier,
+            ProcessingApi.register(routes, new ProcessingApi.State(repo, lifecycle, verifier,
                     new SubscriberDelivery(SubscriberDelivery.defaultClient(), new ClientCodeResolver(clientRepo::findById)),
                     creds, Clock.systemUTC()));
         })) {

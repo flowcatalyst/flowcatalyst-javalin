@@ -1,13 +1,12 @@
 package io.flowcatalyst.stream;
 
-import io.flowcatalyst.db.generated.tables.MsgDispatchJobs;
 import io.flowcatalyst.db.generated.tables.MsgEvents;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.subscription.Subscription;
 import io.flowcatalyst.sdk.tsid.Tsid;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
 import io.flowcatalyst.stream.jfr.FanOutBatchEvent;
 import org.jooq.DSLContext;
-import org.jooq.JSONB;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
 import org.slf4j.Logger;
@@ -19,11 +18,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
 
-import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS;
 import static io.flowcatalyst.db.generated.Tables.MSG_EVENTS;
 
 /// `event_fan_out` (stream spec §3): claims unfanned `msg_events` rows and,
@@ -36,7 +35,6 @@ public final class FanOut implements Projector.Step {
     private static final Logger LOG = LoggerFactory.getLogger(FanOut.class);
 
     private static final MsgEvents E = MSG_EVENTS;
-    private static final MsgDispatchJobs D = MSG_DISPATCH_JOBS;
 
     /// The exclusive-claim statement (stream spec §3 step 2): one `UPDATE …
     /// FROM (SELECT … FOR UPDATE SKIP LOCKED)` so two concurrent steps can
@@ -168,17 +166,12 @@ public final class FanOut implements Projector.Step {
         List<ClaimedEvent> claimed = claim(txDsl, batchSize);
         if (claimed.isEmpty()) return new FanOutResult(0, 0);
 
-        var insert = txDsl.insertInto(D, D.ID, D.CODE, D.SOURCE, D.SUBJECT, D.EVENT_ID, D.CORRELATION_ID,
-                D.CLIENT_ID, D.MESSAGE_GROUP, D.PAYLOAD, D.TARGET_URL, D.DATA_ONLY, D.SERVICE_ACCOUNT_ID,
-                D.SUBSCRIPTION_ID, D.DISPATCH_POOL_ID, D.SEQUENCE, D.TIMEOUT_SECONDS, D.MAX_RETRIES, D.MODE,
-                D.PROTOCOL, D.STATUS, D.IDEMPOTENCY_KEY, D.QUEUE, D.DESCRIPTOR, D.METADATA, D.CREATED_AT, D.UPDATED_AT);
-        int jobCount = 0;
+        var jobs = new ArrayList<DispatchJobLifecycle.FanOutJob>();
         for (ClaimedEvent event : claimed) {
             for (Subscription sub : subs) {
                 if (!sub.matchesClient(event.clientId()) || !sub.matchesEventType(event.type())) {
                     continue;
                 }
-                OffsetDateTime createdAt = event.createdAt().atOffset(ZoneOffset.UTC);
                 // The raising subscription's queue is copied verbatim onto the job
                 // (dispatch-job-priority spec R2) — including `null`, and including
                 // legacy text the read side alone tolerates (spec R4).
@@ -186,18 +179,17 @@ public final class FanOut implements Projector.Step {
                 // C1, Go fan_out.go `descriptorFor`); metadata is the raising event's
                 // context_data, copied verbatim — same `[{key,value}]` shape (spec §3,
                 // Go `newJob.Metadata`).
-                insert = insert.values(Tsid.generate(), event.type(), event.source(), event.subject(), event.id(),
-                        event.correlationId(), event.clientId(), event.messageGroup(), payloadOf(event.data()),
-                        sub.endpoint(), sub.dataOnly(), sub.serviceAccountId(), sub.id(), sub.dispatchPoolId(),
-                        sub.sequence(), sub.timeoutSeconds(), sub.maxRetries(), sub.mode().name(), "HTTP_WEBHOOK",
-                        "PENDING", event.id() + ":" + sub.id(), sub.queue(), descriptorFor(sub.name()),
-                        JSONB.jsonb(metadataOf(event.contextData())), createdAt, createdAt);
-                jobCount++;
+                jobs.add(new DispatchJobLifecycle.FanOutJob(Tsid.generate(), event.type(), event.source(),
+                        event.subject(), event.id(), event.correlationId(), event.clientId(), event.messageGroup(),
+                        payloadOf(event.data()), sub.endpoint(), sub.dataOnly(), sub.serviceAccountId(), sub.id(),
+                        sub.dispatchPoolId(), sub.sequence(), sub.timeoutSeconds(), sub.maxRetries(),
+                        sub.mode().name(), event.id() + ":" + sub.id(), sub.queue(), descriptorFor(sub.name()),
+                        metadataOf(event.contextData()), event.createdAt()));
             }
         }
-        if (jobCount > 0) {
-            insert.onConflict(D.ID, D.CREATED_AT).doNothing().execute();
-        }
+        // Born PENDING, in the same transaction as the events' fanned_out_at stamp.
+        DispatchJobLifecycle.insertFanOut(tx.connection(), jobs);
+        int jobCount = jobs.size();
         return new FanOutResult(claimed.size(), jobCount);
     }
 

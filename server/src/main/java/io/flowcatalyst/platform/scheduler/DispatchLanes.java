@@ -1,6 +1,6 @@
 package io.flowcatalyst.platform.scheduler;
 
-import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository.ClaimRow;
 import io.flowcatalyst.platform.scheduler.jfr.LanePublishEvent;
 import org.slf4j.Logger;
@@ -132,19 +132,19 @@ final class DispatchLanes implements AutoCloseable {
     /// permits are released — the lane is then holding doomed jobs in its channel.
     volatile Runnable afterPoisonHook;
 
-    DispatchLanes(SchedulerConfig config, DispatchJobRepository repository, DispatchPublisher publisher,
+    DispatchLanes(SchedulerConfig config, DispatchJobLifecycle lifecycle, DispatchPublisher publisher,
                   Function<ClaimRow, PublishedMessage> messageBuilder, SchedulerMetrics metrics) {
-        this(config, repository, publisher, messageBuilder, metrics, System::nanoTime);
+        this(config, lifecycle, publisher, messageBuilder, metrics, System::nanoTime);
     }
 
-    DispatchLanes(SchedulerConfig config, DispatchJobRepository repository, DispatchPublisher publisher,
+    DispatchLanes(SchedulerConfig config, DispatchJobLifecycle lifecycle, DispatchPublisher publisher,
                   Function<ClaimRow, PublishedMessage> messageBuilder, SchedulerMetrics metrics,
                   LongSupplier nanoClock) {
-        this(config, Objects.requireNonNull(repository, "repository")::markQueued, publisher, messageBuilder,
+        this(config, Objects.requireNonNull(lifecycle, "lifecycle")::markQueued, publisher, messageBuilder,
                 metrics, nanoClock);
     }
 
-    /// `markQueued` is the bulk status update (the repository's in production;
+    /// `markQueued` is the bulk status update (the lifecycle's in production;
     /// a test substitutes a model of the table that can fail).
     DispatchLanes(SchedulerConfig config, java.util.function.ToIntFunction<List<ClaimRow>> markQueued,
                   DispatchPublisher publisher, Function<ClaimRow, PublishedMessage> messageBuilder,
@@ -375,7 +375,10 @@ final class DispatchLanes implements AutoCloseable {
                 try {
                     process(batch);
                 } catch (RuntimeException e) {
-                    LOG.error("dispatch lane {} failed a batch; its jobs stay PENDING", index, e);
+                    LOG.atError().setMessage("dispatch lane failed a batch; its jobs stay PENDING")
+                            .addKeyValue("lane", index)
+                            .setCause(e)
+                            .log();
                 }
             }
         }
@@ -413,8 +416,11 @@ final class DispatchLanes implements AutoCloseable {
             } catch (RuntimeException e) {
                 // Building a message or the publisher itself blew up: nothing
                 // here is known to be published, so every kept job stays PENDING.
-                LOG.warn("dispatch lane {} could not publish a batch of {}; the jobs stay PENDING",
-                        index, keep.size(), e);
+                LOG.atWarn().setMessage("dispatch lane could not publish a batch; the jobs stay PENDING")
+                        .addKeyValue("lane", index)
+                        .addKeyValue("batch", keep.size())
+                        .setCause(e)
+                        .log();
                 for (Job j : keep) {
                     String g = groupOf(j.row);
                     if (g != null) poisonGroups.add(g);

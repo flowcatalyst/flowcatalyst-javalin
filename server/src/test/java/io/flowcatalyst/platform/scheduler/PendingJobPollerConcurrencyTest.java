@@ -1,6 +1,7 @@
 package io.flowcatalyst.platform.scheduler;
 
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobStatus;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
@@ -28,6 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PendingJobPollerConcurrencyTest {
 
     private static final DispatchJobRepository REPO = new DispatchJobRepository(DATA_SOURCE);
+    private static final DispatchJobLifecycle LIFECYCLE = new DispatchJobLifecycle(DATA_SOURCE);
     private static final HmacTokenVerifier AUTH = HmacTokenVerifier.fromAppKey("test-app-key-" + RUN);
     private static final String ENDPOINT = "http://localhost:18080/api/dispatch/process";
     private static final Duration WAIT = Duration.ofSeconds(15);
@@ -35,7 +37,7 @@ class PendingJobPollerConcurrencyTest {
     private final List<PendingJobPoller> pollers = new ArrayList<>();
 
     private PendingJobPoller poller(DispatchPublisher publisher, SchedulerConfig config) {
-        var poller = new PendingJobPoller(DATA_SOURCE, REPO, new PausedConnectionCache(DATA_SOURCE),
+        var poller = new PendingJobPoller(DATA_SOURCE, REPO, LIFECYCLE, new PausedConnectionCache(DATA_SOURCE),
                 new PoolCodeResolver(DATA_SOURCE), publisher, AUTH, ENDPOINT, () -> true, config);
         pollers.add(poller);
         return poller;

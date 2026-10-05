@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit;
 /// [io.flowcatalyst.platform.dispatchjob.settled.SettledApi] misses (a
 /// dropped `/api/dispatch/settled` call, or a router that crashes between
 /// ACKing the siblings and reporting them) by periodically sweeping
-/// [DispatchJobRepository#sweepStrandedSiblings].
+/// [DispatchJobLifecycle#sweepStrandedSiblings].
 ///
 /// **Not leader-gated** (spec §7, §12): every sweep is one idempotent,
 /// status-guarded `UPDATE`, safe under concurrent execution from multiple
@@ -44,16 +44,16 @@ public final class DispatchJobReaper implements AutoCloseable {
     /// reset from a settled-hook reset or a human resend (spec §7).
     static final String REASON = "reaper: swept as a stranded BLOCK_ON_ERROR sibling behind a failed head";
 
-    private final DispatchJobRepository repo;
+    private final DispatchJobLifecycle repo;
     private final Duration interval;
     private final Duration processingLiveAfter;
     private final ScheduledExecutorService executor;
 
-    public DispatchJobReaper(DispatchJobRepository repo) {
+    public DispatchJobReaper(DispatchJobLifecycle repo) {
         this(repo, DEFAULT_INTERVAL, DEFAULT_PROCESSING_LIVE_AFTER);
     }
 
-    public DispatchJobReaper(DispatchJobRepository repo, Duration interval, Duration processingLiveAfter) {
+    public DispatchJobReaper(DispatchJobLifecycle repo, Duration interval, Duration processingLiveAfter) {
         this.repo = Objects.requireNonNull(repo, "repo");
         this.interval = Objects.requireNonNull(interval, "interval");
         this.processingLiveAfter = Objects.requireNonNull(processingLiveAfter, "processingLiveAfter");

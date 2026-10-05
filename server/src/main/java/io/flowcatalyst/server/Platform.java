@@ -80,6 +80,7 @@ import io.flowcatalyst.platform.dispatch.DispatchQueueSettings;
 import io.flowcatalyst.platform.dispatch.RouterConfigDocumentBuilder;
 import io.flowcatalyst.platform.dispatch.api.RouterConfigApi;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobReaper;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.api.DispatchJobApi;
 import io.flowcatalyst.platform.dispatchjob.processing.ClientCodeResolver;
@@ -440,6 +441,9 @@ public final class Platform {
                 ClientSecretEncryption.of(Encryption.fromKeys(env.appKey(), env.appKeyPrevious())), oidcClients::invalidate));
         LoginAttemptApi.register(routes, new LoginAttemptApi.State(new LoginAttemptRepository(pool)));
         var dispatchJobRepo = new DispatchJobRepository(pool);
+        // The one owner of the dispatch-job status column (and of every insert into the table);
+        // the repository above only reads. Over the same routed pool.
+        var dispatchJobLifecycle = new DispatchJobLifecycle(pool);
         // ClientCodeResolver over `clientRepo` (already built above for ClientApi) — the same
         // seam ProcessingApi's own SubscriberDelivery uses, wired here so the list DTOs'
         // `clientIdentifier` (catch-up-2026-09-22.md C1) is never a second implementation.
@@ -453,7 +457,7 @@ public final class Platform {
         // independent `DispatchJobRepository` over the same table as `dispatchJobRepo`
         // above (the repositories are stateless jOOQ wrappers, so a second instance is
         // just a different physical connection pool, not a different view of the data).
-        var dispatchJobReaper = new DispatchJobReaper(new DispatchJobRepository(pools.background())).start();
+        var dispatchJobReaper = new DispatchJobReaper(new DispatchJobLifecycle(pools.background())).start();
         // /api/dispatch/settled and /api/dispatch/process (dispatch-seam spec §5, §6, §11):
         // public routes, registered below via Platform.isPublicPath; fail-closed on a missing
         // FLOWCATALYST_APP_KEY, matching Go's scheduler + processing/settled mount ("refuses to
@@ -514,8 +518,8 @@ public final class Platform {
 
         if (env.appKey() != null && !env.appKey().isBlank()) {
             var dispatchAuthVerifier = HmacTokenVerifier.fromAppKey(env.appKey());
-            SettledApi.register(routes.in(Group.DISPATCH), new SettledApi.State(dispatchJobRepo, dispatchAuthVerifier));
-            ProcessingApi.register(routes.in(Group.DISPATCH), new ProcessingApi.State(dispatchJobRepo, dispatchAuthVerifier,
+            SettledApi.register(routes.in(Group.DISPATCH), new SettledApi.State(dispatchJobLifecycle, dispatchAuthVerifier));
+            ProcessingApi.register(routes.in(Group.DISPATCH), new ProcessingApi.State(dispatchJobRepo, dispatchJobLifecycle, dispatchAuthVerifier,
                     subscriberDelivery, deliveryCredentials, Clock.systemUTC()));
         } else {
             LOG.warn("FLOWCATALYST_APP_KEY not configured; /api/dispatch/settled and /api/dispatch/process are not mounted");
@@ -534,7 +538,7 @@ public final class Platform {
         // `applicationRepo`, already built over `pool` above) correctly resolve DISPATCH's
         // physical pool for one mount and BFF's for the other, so nothing here needs its
         // own pools.dispatch()-bound copy any more.
-        var ingestState = IngestApi.State.of(eventRepo, dispatchJobRepo,
+        var ingestState = IngestApi.State.of(eventRepo, dispatchJobLifecycle,
                 new AuditLogRepository(pool), clientRepo, applicationRepo, deliverySigningGuard);
         IngestApi.register(routes.in(Group.DISPATCH), ingestState);
         var principalRepo = new PrincipalRepository(pool);

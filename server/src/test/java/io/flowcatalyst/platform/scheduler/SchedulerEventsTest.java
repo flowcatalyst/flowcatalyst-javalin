@@ -1,6 +1,7 @@
 package io.flowcatalyst.platform.scheduler;
 
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.settled.HmacTokenVerifier;
 import io.flowcatalyst.platform.scheduler.jfr.ClaimedBatchEvent;
@@ -24,7 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SchedulerEventsTest {
 
     private static PendingJobPoller poller(DispatchPublisher publisher) {
-        return new PendingJobPoller(DATA_SOURCE, new DispatchJobRepository(DATA_SOURCE),
+        return new PendingJobPoller(DATA_SOURCE, new DispatchJobRepository(DATA_SOURCE), new DispatchJobLifecycle(DATA_SOURCE),
                 new PausedConnectionCache(DATA_SOURCE), new PoolCodeResolver(DATA_SOURCE), publisher,
                 HmacTokenVerifier.fromAppKey("test-app-key-" + RUN), "http://localhost:18080/api/dispatch/process",
                 () -> true, SchedulerConfig.DEFAULTS.withDispatchers(1).withBatchSize(100));

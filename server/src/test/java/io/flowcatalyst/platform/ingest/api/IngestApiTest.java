@@ -13,6 +13,7 @@ import io.flowcatalyst.platform.client.Client;
 import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJob;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobKind;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobStatus;
 import io.flowcatalyst.platform.dispatchjob.Protocol;
@@ -102,6 +103,7 @@ class IngestApiTest {
     private static CountingLookup<Application> applicationLookup;
     private static EventRepository eventRepo;
     private static DispatchJobRepository dispatchJobRepo;
+    private static DispatchJobLifecycle dispatchJobLifecycle;
     private static AuditLogRepository auditLogRepo;
     private static TestHttp http;
 
@@ -115,12 +117,13 @@ class IngestApiTest {
 
         eventRepo = new EventRepository(DB.ds);
         dispatchJobRepo = new DispatchJobRepository(DB.ds);
+        dispatchJobLifecycle = new DispatchJobLifecycle(DB.ds);
         auditLogRepo = new AuditLogRepository(DB.ds);
         var clientRepo = new ClientRepository(DB.ds);
         var applicationRepo = new ApplicationRepository(DB.ds);
         clientLookup = new CountingLookup<>(clientRepo::findByIdentifier);
         applicationLookup = new CountingLookup<>(applicationRepo::findByCode);
-        var state = new IngestApi.State(eventRepo, dispatchJobRepo, auditLogRepo, clientLookup, applicationLookup,
+        var state = new IngestApi.State(eventRepo, dispatchJobLifecycle, auditLogRepo, clientLookup, applicationLookup,
                 new DeliverySigningGuard(new SubscriptionRepository(DB.ds)::findById,
                         new ConnectionRepository(DB.ds)::findById, SigningAccounts.reach(DB.ds)));
 
@@ -518,7 +521,7 @@ class IngestApiTest {
         String code = uniqueType("djdupe");
         var first = job(id, code, sharedCreatedAt);
         var second = job(id, code, sharedCreatedAt); // same id + createdAt: the conflict target
-        dispatchJobRepo.insertBatch(List.of(first, second));
+        dispatchJobLifecycle.insertBatch(List.of(first, second));
         assertThat(countJobsByCode(code)).as("ON CONFLICT (id, created_at) DO NOTHING drops the second row").isEqualTo(1);
     }
 
@@ -581,7 +584,7 @@ class IngestApiTest {
                 for (int w = 0; w < writers; w++) {
                     outcomes.add(pool.submit(() -> {
                         barrier.await();
-                        var result = dispatchJobRepo.insertNew(List.of(job(id, code, Instant.now())), List.of(id));
+                        var result = dispatchJobLifecycle.insertNew(List.of(job(id, code, Instant.now())), List.of(id));
                         return result instanceof io.flowcatalyst.sdk.result.Result.Ok<?, ?>;
                     }));
                 }

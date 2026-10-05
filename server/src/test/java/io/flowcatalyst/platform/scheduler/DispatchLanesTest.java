@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.scheduler;
 
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository.ClaimRow;
 import io.flowcatalyst.platform.shared.dispatch.DispatchMode;
@@ -47,7 +48,7 @@ class DispatchLanesTest {
     private DispatchLanes lanes(SchedulerConfig config, DispatchPublisher publisher,
                                 java.util.function.LongSupplier clock) {
         metrics = new SchedulerMetrics(config.dispatchers());
-        var lanes = new DispatchLanes(config, new DispatchJobRepository(DATA_SOURCE), publisher,
+        var lanes = new DispatchLanes(config, new DispatchJobLifecycle(DATA_SOURCE), publisher,
                 DispatchLanesTest::message, metrics, clock);
         lanes.start();
         toClose.add(lanes);

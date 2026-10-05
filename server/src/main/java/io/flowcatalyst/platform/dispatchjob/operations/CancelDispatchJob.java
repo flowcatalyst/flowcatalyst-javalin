@@ -1,6 +1,7 @@
 package io.flowcatalyst.platform.dispatchjob.operations;
 
 import io.flowcatalyst.platform.dispatchjob.DispatchJob;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.operations.DispatchJobEvents.DispatchJobCancelled;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
@@ -24,7 +25,7 @@ public final class CancelDispatchJob {
                 .authorize(Operation.Authorize.publicAccess()) // per-resource check is in Access.loadOwn
                 .execute((cmd, ec) -> {
                     DispatchJob j = StatusFlip.requireFailed(Access.loadOwn(repo, cmd.id())).cancel();
-                    return Plan.save(j, repo, DispatchJobCancelled.of(ec, j));
+                    return Plan.save(j, DispatchJobLifecycle.cancelWriter(), DispatchJobCancelled.of(ec, j));
                 });
     }
 }

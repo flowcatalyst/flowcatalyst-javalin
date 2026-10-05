@@ -12,7 +12,7 @@ import io.flowcatalyst.platform.audit.AuditLogRepository;
 import io.flowcatalyst.platform.client.Client;
 import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJob;
-import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.event.Event;
 import io.flowcatalyst.platform.event.EventRepository;
 import io.flowcatalyst.platform.event.api.EventApi.ContextEntryDTO;
@@ -69,24 +69,24 @@ public final class IngestApi {
     /// dispatch job some identity will sign (security-fixes S3.2).
     public record State(
             EventRepository eventRepo,
-            DispatchJobRepository dispatchJobRepo,
+            DispatchJobLifecycle dispatchJobs,
             AuditLogRepository auditLogRepo,
             Function<String, Optional<Client>> clientLookup,
             Function<String, Optional<Application>> applicationLookup,
             DeliverySigningGuard signing) {
         public State {
             Objects.requireNonNull(eventRepo, "eventRepo");
-            Objects.requireNonNull(dispatchJobRepo, "dispatchJobRepo");
+            Objects.requireNonNull(dispatchJobs, "dispatchJobs");
             Objects.requireNonNull(auditLogRepo, "auditLogRepo");
             Objects.requireNonNull(clientLookup, "clientLookup");
             Objects.requireNonNull(applicationLookup, "applicationLookup");
             Objects.requireNonNull(signing, "signing");
         }
 
-        public static State of(EventRepository eventRepo, DispatchJobRepository dispatchJobRepo,
+        public static State of(EventRepository eventRepo, DispatchJobLifecycle dispatchJobs,
                                 AuditLogRepository auditLogRepo, ClientRepository clientRepo,
                                 ApplicationRepository applicationRepo, DeliverySigningGuard signing) {
-            return new State(eventRepo, dispatchJobRepo, auditLogRepo,
+            return new State(eventRepo, dispatchJobs, auditLogRepo,
                     clientRepo::findByIdentifier, applicationRepo::findByCode, signing);
         }
     }
@@ -212,7 +212,7 @@ public final class IngestApi {
                 req.mode(), 0, req.sequence(), req.timeoutSeconds(), req.maxRetries(), req.retryStrategy(),
                 metadataFromMap(req.metadata()), req.idempotencyKey(), req.descriptor(), req.queue()));
         requireSignable(s.signing().perRequest(), ac, job);
-        s.dispatchJobRepo().insertBatch(List.of(job));
+        s.dispatchJobs().insertBatch(List.of(job));
         ctx.status(201).json(new CreatedResponse(job.id()));
     }
 
@@ -243,11 +243,11 @@ public final class IngestApi {
             }
             jobs.add(job);
         }
-        switch (s.dispatchJobRepo().insertNew(jobs, List.copyOf(suppliedIds))) {
-            case Result.Ok<Integer, DispatchJobRepository.InsertRefusal> ok -> {
+        switch (s.dispatchJobs().insertNew(jobs, List.copyOf(suppliedIds))) {
+            case Result.Ok<Integer, DispatchJobLifecycle.InsertRefusal> ok -> {
             }
-            case Result.Err<Integer, DispatchJobRepository.InsertRefusal>(
-                    DispatchJobRepository.InsertRefusal.IdsTaken(var taken)) ->
+            case Result.Err<Integer, DispatchJobLifecycle.InsertRefusal>(
+                    DispatchJobLifecycle.InsertRefusal.IdsTaken(var taken)) ->
                     throw HttpError.conflict("DUPLICATE_ID", "dispatch job id already exists: " + String.join(", ", taken));
         }
         var response = new BatchResponse(jobs.stream().map(j -> new BatchResultItem(j.id(), "SUCCESS", null)).toList());

@@ -21,6 +21,7 @@ import java.time.Instant;
 import io.flowcatalyst.platform.loginattempt.LoginAttemptRepository;
 import io.flowcatalyst.platform.auth.ratelimit.RateLimit;
 import io.flowcatalyst.platform.auth.login.AuthAlarms;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.shared.auth.SigningKeys;
 import io.flowcatalyst.mcp.McpConfig;
 import io.flowcatalyst.mcp.McpServer;
@@ -532,6 +533,7 @@ public record Server(Env env, Mode mode, Spa spa, PrometheusRegistry registry) {
             }
             if (scheduler != null) registry.register(scheduler.collector());
             registry.register(AuthAlarms.collector());
+            registry.register(DispatchJobLifecycle.collector());
             if (router != null) registry.register(router.mediationHttpVersionCollector());
             switch (mode) {
                 case Mode.Platform(var pools) -> pools.registerCollectors(registry);
