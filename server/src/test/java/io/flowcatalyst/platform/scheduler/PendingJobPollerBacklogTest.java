@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.scheduler;
 
+import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
@@ -63,8 +64,7 @@ class PendingJobPollerBacklogTest {
     void clearPending() {
         pollers.forEach(PendingJobPoller::close);
         pollers.clear();
-        DB.update(MSG_DISPATCH_JOBS).set(MSG_DISPATCH_JOBS.STATUS, "COMPLETED")
-                .where(MSG_DISPATCH_JOBS.STATUS.eq("PENDING")).execute();
+        DispatchJobFixture.setStatusWhere("COMPLETED", "PENDING");
     }
 
     @Test

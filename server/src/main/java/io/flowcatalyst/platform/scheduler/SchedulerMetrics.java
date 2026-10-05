@@ -28,6 +28,16 @@ public final class SchedulerMetrics {
     final LongAdder droppedPoisoned = new LongAdder();
     final LongAdder markNotUpdated = new LongAdder();
     final LongAdder fullBatchClaims = new LongAdder();
+    final LongAdder claimsReleased = new LongAdder();
+    final LongAdder releaseErrors = new LongAdder();
+    final LongAdder staleClaimsReleased = new LongAdder();
+    final LongAdder staleQueuedRecovered = new LongAdder();
+    final LongAdder reconcileInserted = new LongAdder();
+    final LongAdder reconcileDeleted = new LongAdder();
+    final LongAdder reconcileRefreshed = new LongAdder();
+    final LongAdder maintenanceErrors = new LongAdder();
+    private volatile long backlogDepth;
+    private volatile double backlogOldestAgeSeconds;
     final LongAdder pollErrors = new LongAdder();
     final LongAdder claimNanos = new LongAdder();
     final LongAdder claimCount = new LongAdder();
@@ -49,6 +59,12 @@ public final class SchedulerMetrics {
     void gauges(LongSupplier bufferInUse, LongSupplier inFlight) {
         this.bufferInUse = bufferInUse;
         this.inFlight = inFlight;
+    }
+
+    /// The last sample of the queue backlog (the leader samples it every 15 s).
+    void backlog(long depth, double oldestAgeSeconds) {
+        this.backlogDepth = depth;
+        this.backlogOldestAgeSeconds = oldestAgeSeconds;
     }
 
     void lanePublish(int lane, long nanos) {
@@ -113,6 +129,37 @@ public final class SchedulerMetrics {
                     markNotUpdated);
             counter(b, "fc_scheduler_full_batch_claims_total",
                     "Claims that filled everything asked for (a backlog deeper than one claim).", fullBatchClaims);
+            counter(b, "fc_scheduler_claims_released_total",
+                    "Claims given back because the job was not published (failed publish, poisoned drop, doomed or hold-back withhold, failed QUEUED update).",
+                    claimsReleased);
+            counter(b, "fc_scheduler_claim_release_errors_total",
+                    "Claim releases that failed; the stale-claim sweep gives those claims back.", releaseErrors);
+            counter(b, "fc_scheduler_stale_claims_released_total",
+                    "Claims released because their claimer is gone: at start as leader, and by the periodic sweep (claims older than 5 minutes this process does not hold).",
+                    staleClaimsReleased);
+            counter(b, "fc_scheduler_stale_queued_recovered_total",
+                    "Jobs the leader returned from QUEUED to PENDING after the stale threshold (15 minutes).",
+                    staleQueuedRecovered);
+            counter(b, "fc_scheduler_queue_reconcile_inserted_total",
+                    "PENDING jobs the reconcile sweep found with no queue row and gave one (a bug or an old binary writing the table).",
+                    reconcileInserted);
+            counter(b, "fc_scheduler_queue_reconcile_deleted_total",
+                    "Queue rows the reconcile sweep deleted because their job is missing or not PENDING.",
+                    reconcileDeleted);
+            counter(b, "fc_scheduler_queue_reconcile_refreshed_total",
+                    "Queue rows the reconcile sweep refreshed because they differed from their job.",
+                    reconcileRefreshed);
+            counter(b, "fc_scheduler_maintenance_errors_total",
+                    "Maintenance sweeps (stale claims, reconcile, stale QUEUED, backlog sample) that ended in an error.",
+                    maintenanceErrors);
+            b.metricSnapshot(GaugeSnapshot.builder().name("fc_dispatch_queue_backlog_jobs")
+                    .help("Jobs waiting in msg_dispatch_queue: unclaimed and due. Sampled by the leader every 15 s.")
+                    .dataPoint(GaugeSnapshot.GaugeDataPointSnapshot.builder().value(backlogDepth).build())
+                    .build());
+            b.metricSnapshot(GaugeSnapshot.builder().name("fc_dispatch_queue_oldest_waiting_seconds")
+                    .help("Age of the oldest unclaimed due job in msg_dispatch_queue (0 when none). Sampled by the leader every 15 s.")
+                    .dataPoint(GaugeSnapshot.GaugeDataPointSnapshot.builder().value(backlogOldestAgeSeconds).build())
+                    .build());
             counter(b, "fc_scheduler_poll_errors_total", "Polls that ended in an error.", pollErrors);
             counter(b, "fc_scheduler_claim_seconds_total", "Total time spent in the claim query.", claimNanos, 1e-9);
             counter(b, "fc_scheduler_claims_total", "Claim queries run.", claimCount);

@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// The scheduler's flight-recorder events, read back out of a real recording
 /// (`docs/spec/jfr-events.md`): `ClaimedBatch` once per claim, `LanePublish`
-/// once per dispatcher-lane batch.
+/// once per dispatcher-lane batch, `QueueSweep` once per leader housekeeping sweep.
 class SchedulerEventsTest {
 
     private static PendingJobPoller poller(DispatchPublisher publisher) {
@@ -64,5 +64,19 @@ class SchedulerEventsTest {
             assertThat(events.stream().mapToInt(e -> e.getInt("unpublished")).sum()).isZero();
             assertThat(events).allSatisfy(e -> assertThat(e.getInt("lane")).isZero());
         }
+    }
+
+    @Test
+    void aMaintenanceSweepRecordsOneQueueSweepEvent() throws Exception {
+        var maintenance = new QueueMaintenance(new DispatchJobLifecycle(DATA_SOURCE), java.util.List::of, () -> true,
+                new SchedulerMetrics(1), QueueMaintenance.Timing.DEFAULTS);
+        List<RecordedEvent> events = Recorded.from(io.flowcatalyst.platform.scheduler.jfr.QueueSweepEvent.class, () -> {
+            maintenance.releaseStaleClaims();
+            maintenance.recoverStaleQueued();
+            maintenance.reconcile();
+        });
+
+        assertThat(events).extracting(e -> e.getString("sweep")).containsExactly("stale_claims", "stale_queued", "reconcile");
+        maintenance.close();
     }
 }

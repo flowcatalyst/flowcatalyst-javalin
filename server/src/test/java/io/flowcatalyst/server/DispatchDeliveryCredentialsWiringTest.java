@@ -109,6 +109,7 @@ class DispatchDeliveryCredentialsWiringTest {
         subscriber.stop(0);
         if (!insertedJobs.isEmpty()) {
             DB.deleteFrom(Tables.MSG_DISPATCH_JOBS).where(Tables.MSG_DISPATCH_JOBS.ID.in(insertedJobs)).execute();
+            DispatchJobFixture.syncQueue(insertedJobs);
         }
         if (!insertedServiceAccounts.isEmpty()) {
             DB.deleteFrom(Tables.IAM_SERVICE_ACCOUNTS).where(Tables.IAM_SERVICE_ACCOUNTS.ID.in(insertedServiceAccounts)).execute();

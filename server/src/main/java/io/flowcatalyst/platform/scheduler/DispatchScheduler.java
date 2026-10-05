@@ -19,7 +19,8 @@ import java.util.function.BooleanSupplier;
 /// poller never waits for a publish — it blocks only when the buffer
 /// (`FC_SCHEDULER_BUFFER_CAPACITY` claimed-and-unsettled jobs) is full — and
 /// sleeps the poll interval only when it has nothing to do (see
-/// [PendingJobPoller.PollResult#backOff]). [#close] stops the loop and the
+/// [PendingJobPoller.PollResult#backOff]). A second thread runs the leader's
+/// queue housekeeping ([QueueMaintenance]). [#close] stops the loop and the
 /// lanes (CONVENTIONS §5: an explicit stop signal, no fire-and-forget thread).
 ///
 /// Sizes are [SchedulerConfig]: the defaults are the spec's, and three are
@@ -34,23 +35,28 @@ public final class DispatchScheduler implements AutoCloseable {
 
     private final PendingJobPoller poller;
     private final SchedulerConfig config;
+    private final QueueMaintenance maintenance;
     private final Thread thread;
     private volatile boolean closed;
 
-    /// No stale-`QUEUED` recovery loop (owner ruling 2026-09-22,
-    /// `docs/spec/router-hol-deferral.md` §Owner rulings): a job the broker
-    /// holds is the broker's until the router delivers it. The 5-minute revert
-    /// that used to run here re-published every message the router had
-    /// deferred for a full pool — a second copy every 5 minutes for up to an
-    /// hour — and the old PHP mediator it was written for is gone. A message
-    /// the broker expires is simply gone; the reaper still redrives
-    /// `PROCESSING` rows the mediator abandoned
+    /// The leader's housekeeping over the queue ([QueueMaintenance]), including
+    /// the stale-`QUEUED` recovery loop.
+    ///
+    /// Stale-`QUEUED` recovery (owner ruling 2026-10-04, reversing 2026-09-22):
+    /// the sweep is restored, at 15 minutes. A message the broker lost or expired
+    /// after the job was marked `QUEUED` would otherwise leave the job `QUEUED`
+    /// for ever (the reaper only redrives `PROCESSING` rows). The duplicate the
+    /// sweep can cause for a message the router is merely holding (a deferral for
+    /// a full pool) is cheap: the router ACK-drops a copy whose original is in its
+    /// pipeline, and the delivery callback skips a job that has moved on. The
+    /// 5-minute revert the 2026-09-22 ruling removed re-published a deferred
+    /// message every 5 minutes for up to an hour; 15 minutes is the owner's
+    /// accepted trade. There is no `PROCESSING` sweep here: that is the reaper's
     /// ([io.flowcatalyst.platform.dispatchjob.DispatchJobReaper], 15 min).
-    /// Nothing needs recovering after a crash either: a job is `QUEUED` only
-    /// once the broker has accepted it, and everything else is still `PENDING`.
-    DispatchScheduler(PendingJobPoller poller, SchedulerConfig config) {
+    DispatchScheduler(PendingJobPoller poller, SchedulerConfig config, QueueMaintenance maintenance) {
         this.poller = Objects.requireNonNull(poller, "poller");
         this.config = Objects.requireNonNull(config, "config");
+        this.maintenance = Objects.requireNonNull(maintenance, "maintenance");
         this.thread = new Thread(this::loop, "dispatch-scheduler-" + THREAD_COUNT.getAndIncrement());
         this.thread.setDaemon(true);
     }
@@ -86,8 +92,11 @@ public final class DispatchScheduler implements AutoCloseable {
         var poolCodes = new PoolCodeResolver(pool);
         var poller = new PendingJobPoller(pool, repository, lifecycle, pausedCache, poolCodes, publisher, authVerifier,
                 processingEndpoint, leader, config);
-        var scheduler = new DispatchScheduler(poller, config);
+        var maintenance = new QueueMaintenance(lifecycle, () -> poller.lanes().inFlightIds(), leader, poller.metrics(),
+                QueueMaintenance.Timing.DEFAULTS);
+        var scheduler = new DispatchScheduler(poller, config, maintenance);
         scheduler.thread.start();
+        maintenance.start();
         LOG.atInfo().setMessage("dispatch scheduler started")
                 .addKeyValue("interval", config.pollInterval())
                 .addKeyValue("bufferCapacity", config.bufferCapacity())
@@ -139,6 +148,11 @@ public final class DispatchScheduler implements AutoCloseable {
     }
 
     /// Exposed for tests.
+    QueueMaintenance maintenance() {
+        return maintenance;
+    }
+
+    /// Exposed for tests.
     PendingJobPoller poller() {
         return poller;
     }
@@ -152,6 +166,7 @@ public final class DispatchScheduler implements AutoCloseable {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+        maintenance.close();
         poller.close();
     }
 }

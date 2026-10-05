@@ -30,8 +30,9 @@ import java.util.concurrent.TimeUnit;
 /// **15 minutes** (owner ruling 2026-09-22, the old system's value — was 45,
 /// sized above the mediator's 15-min-per-attempt × 3 attempts; the owner
 /// accepts that a delivery still hanging on its second attempt is redriven —
-/// a duplicate to a target that is already broken). With the stale-`QUEUED`
-/// sweep gone, this is the platform's only automatic redrive.
+/// a duplicate to a target that is already broken). It is the platform's only
+/// automatic redrive of `PROCESSING` jobs; the scheduler's leader owns the
+/// stale-`QUEUED` recovery (15 minutes, [io.flowcatalyst.platform.scheduler.DispatchScheduler]).
 public final class DispatchJobReaper implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(DispatchJobReaper.class);

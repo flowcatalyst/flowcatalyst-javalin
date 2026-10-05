@@ -20,7 +20,9 @@ import java.util.concurrent.ThreadLocalRandom;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// An adversarial multi-threaded run of the poller's claim loop against the
-/// lanes, with a model of the table as the "database": 3,000 jobs in 30 groups,
+/// lanes, with a model of the queue table as the "database" (a claim sets
+/// `claimed_at`; a publish removes the row; every other outcome releases the
+/// claim): 3,000 jobs in 30 groups,
 /// a buffer of 24, four lanes, claims of 8, lane batches of 5, 3% random publish
 /// failures, 1% random status-update failures, and random jitter in the store
 /// and the publisher. Every job must eventually be published (within 30 s — a
@@ -66,6 +68,8 @@ class DispatchLanesStressTest {
     /// order) and the publisher in front of it.
     private static final class Model implements DispatchPublisher {
         final Map<Integer, TreeSet<Integer>> pending = new TreeMap<>();
+        /// Ids carrying a claim (`claimed_at` set): out of every claim until released.
+        final Set<String> claimed = new HashSet<>();
         final Map<Integer, List<Integer>> received = new TreeMap<>();
         final Map<Integer, Set<Integer>> seen = new TreeMap<>();
         final List<String> orderViolations = new ArrayList<>();
@@ -84,18 +88,27 @@ class DispatchLanesStressTest {
             return pending.values().stream().mapToInt(Set::size).sum();
         }
 
-        /// The claim query: pending rows in `(group, sequence)` order, minus the excluded ids.
-        List<ClaimRow> claim(int limit, Set<String> inFlight) {
+        /// The claim: unclaimed rows in `(group, sequence)` order, which it claims.
+        List<ClaimRow> claim(int limit) {
             jitter(300);
             synchronized (this) {
                 var rows = new ArrayList<ClaimRow>();
                 for (var e : pending.entrySet()) {
                     for (int seq : e.getValue()) {
                         if (rows.size() >= limit) return rows;
-                        if (!inFlight.contains(id(e.getKey(), seq))) rows.add(row(e.getKey(), seq));
+                        String id = id(e.getKey(), seq);
+                        if (claimed.add(id)) rows.add(row(e.getKey(), seq));
                     }
                 }
                 return rows;
+            }
+        }
+
+        /// The release: the claims go back.
+        void release(List<String> ids) {
+            jitter(200);
+            synchronized (this) {
+                claimed.removeAll(ids);
             }
         }
 
@@ -108,6 +121,7 @@ class DispatchLanesStressTest {
                 for (ClaimRow r : rows) {
                     int g = Integer.parseInt(r.id().substring(2, 4));
                     if (pending.get(g).remove(Integer.parseInt(r.id().substring(5)))) n++;
+                    claimed.remove(r.id());
                 }
                 return n;
             }
@@ -152,8 +166,13 @@ class DispatchLanesStressTest {
             int want = lanes.acquirePermits(batch);
             long generation = lanes.nextGeneration();
             var snapshot = lanes.inFlightSnapshot();
-            var rows = model.claim(want, new HashSet<>(snapshot.ids()));
+            var rows = model.claim(want);
             var submit = lanes.withoutGroupsBehindDoomedJobs(rows, snapshot);
+            if (submit.size() != rows.size()) {
+                var kept = new HashSet<String>();
+                for (var r : submit) kept.add(r.id());
+                model.release(rows.stream().map(ClaimRow::id).filter(id -> !kept.contains(id)).toList());
+            }
             lanes.submit(submit, generation);
             lanes.releasePermits(want - submit.size());
             if (rows.size() < want) Thread.sleep(1);
@@ -169,7 +188,7 @@ class DispatchLanesStressTest {
             var config = SchedulerConfig.DEFAULTS.withBufferCapacity(24).withDispatchers(4).withLaneBatch(5);
             var metrics = new SchedulerMetrics(config.dispatchers());
             long claims = 0;
-            try (var lanes = new DispatchLanes(config, model::mark, model, DispatchLanesStressTest::message,
+            try (var lanes = new DispatchLanes(config, model::mark, model::release, model, DispatchLanesStressTest::message,
                     metrics, System::nanoTime)) {
                 lanes.start();
                 var poller = new Thread(() -> {

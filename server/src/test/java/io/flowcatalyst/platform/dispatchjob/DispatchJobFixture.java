@@ -83,6 +83,12 @@ public final class DispatchJobFixture {
                     mode, sequence, updatedAt, kind, retryStrategy, descriptor);
         }
 
+        public Seed withScheduledFor(Instant v) {
+            return new Seed(id, code, clientId, status, createdAt, eventId, subscriptionId, dispatchPoolId, messageGroup,
+                    attemptCount, v, completedAt, durationMillis, lastError, payload, metadataJson, source,
+                    mode, sequence, updatedAt, kind, retryStrategy, descriptor);
+        }
+
         public Seed withStatus(String v) {
             return new Seed(id, code, clientId, v, createdAt, eventId, subscriptionId, dispatchPoolId, messageGroup,
                     attemptCount, scheduledFor, completedAt, durationMillis, lastError, payload, metadataJson, source,
@@ -202,10 +208,61 @@ public final class DispatchJobFixture {
         return s.id();
     }
 
-    /// The write-table row only (`msg_dispatch_jobs`): `id`, `code`,
+    /// The write-table row (`msg_dispatch_jobs`): `id`, `code`,
     /// `target_url`, `created_at`, `updated_at` are the mandatory columns; the
-    /// rest default or are nullable (spec §9).
+    /// rest default or are nullable (spec §9). When the row is `PENDING` its queue
+    /// row is written too, unclaimed ([#syncQueue]) — the queue is exact whatever
+    /// a test seeds, so the scheduler can claim what a test seeded.
     public static String seedWriteRow(Seed s) {
+        insertWriteRow(s);
+        syncQueue(java.util.List.of(s.id()));
+        return s.id();
+    }
+
+    /// Makes `msg_dispatch_queue` exact for these jobs after a test changed them
+    /// directly (test-only: production code writes the queue only in the lifecycle):
+    /// a job that is not `PENDING` (or no longer exists) has no queue row, and a
+    /// `PENDING` job has one mirroring it — `version = updated_at`, unclaimed. Use
+    /// after any direct insert or update of `msg_dispatch_jobs`.
+    public static void syncQueue(java.util.Collection<String> jobIds) {
+        if (jobIds.isEmpty()) return;
+        String[] ids = jobIds.toArray(String[]::new);
+        DB.execute("DELETE FROM msg_dispatch_queue q WHERE q.job_id = ANY(?::text[]) AND NOT EXISTS ("
+                + "SELECT 1 FROM msg_dispatch_jobs j WHERE j.id = q.job_id AND j.created_at = q.job_created_at"
+                + " AND j.status = 'PENDING')", (Object) ids);
+        DB.execute("INSERT INTO msg_dispatch_queue AS q (job_id, job_created_at, message_group, sequence, scheduled_for,"
+                + " subscription_id, dispatch_pool_id, client_id, mode, queue, version)"
+                + " SELECT id, created_at, message_group, sequence, scheduled_for, subscription_id, dispatch_pool_id,"
+                + " client_id, mode, queue, updated_at FROM msg_dispatch_jobs WHERE id = ANY(?::text[]) AND status = 'PENDING'"
+                + " ON CONFLICT (job_id) DO UPDATE SET job_created_at = EXCLUDED.job_created_at,"
+                + " message_group = EXCLUDED.message_group, sequence = EXCLUDED.sequence,"
+                + " scheduled_for = EXCLUDED.scheduled_for, subscription_id = EXCLUDED.subscription_id,"
+                + " dispatch_pool_id = EXCLUDED.dispatch_pool_id, client_id = EXCLUDED.client_id, mode = EXCLUDED.mode,"
+                + " queue = EXCLUDED.queue, version = EXCLUDED.version, claimed_at = NULL", (Object) ids);
+    }
+
+    /// Sets a job's status directly (test-only, behind the lifecycle's back) and keeps the
+    /// queue exact; `updated_at` is bumped, as every lifecycle transition does.
+    public static void setStatus(String jobId, String status) {
+        DB.execute("UPDATE msg_dispatch_jobs SET status = ?, updated_at = now() WHERE id = ?", status, jobId);
+        syncQueue(java.util.List.of(jobId));
+    }
+
+    /// The write row ALONE, with no queue row, whatever its status: the table as an older
+    /// binary (or the migration's backfill test) leaves it.
+    public static String seedWriteRowOnly(Seed s) {
+        return insertWriteRow(s);
+    }
+
+    /// Sets every job currently in one of `fromStatuses` to `status` directly (test-only) and
+    /// keeps the queue exact; a test's cleanup between cases.
+    public static void setStatusWhere(String status, String... fromStatuses) {
+        var ids = DB.fetch("UPDATE msg_dispatch_jobs SET status = ?, updated_at = now() WHERE status = ANY(?::text[]) RETURNING id",
+                status, (Object) fromStatuses).getValues(0, String.class);
+        syncQueue(ids);
+    }
+
+    private static String insertWriteRow(Seed s) {
         DB.insertInto(MSG_DISPATCH_JOBS)
                 .set(MSG_DISPATCH_JOBS.ID, s.id())
                 .set(MSG_DISPATCH_JOBS.CODE, s.code())
@@ -236,12 +293,12 @@ public final class DispatchJobFixture {
     }
 
     /// The write row, and, when it is `PENDING`, the queue row the lifecycle would have
-    /// written for it (test-only: production code never writes the queue outside the
-    /// lifecycle). `claimed_at` is stamped so a later "re-entering PENDING resets the
+    /// written for it, CLAIMED (test-only: production code never writes the queue outside
+    /// the lifecycle). `claimed_at` is stamped so a later "re-entering PENDING resets the
     /// claim" assertion is meaningful. Use this instead of [#seedWriteRow] in any test
-    /// whose jobs go through the lifecycle and then check the queue.
+    /// that needs the queue row to start out claimed.
     public static String seedQueued(Seed s) {
-        seedWriteRow(s);
+        insertWriteRow(s);
         if ("PENDING".equals(s.status())) {
             DB.execute("INSERT INTO msg_dispatch_queue (job_id, job_created_at, message_group, sequence, scheduled_for,"
                             + " subscription_id, dispatch_pool_id, client_id, mode, queue, version, claimed_at)"

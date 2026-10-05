@@ -45,7 +45,7 @@ import java.util.UUID;
 /// A claimed job (surfaced here as [PublishedMessage]) carries only
 /// `clientId` / `subscriptionId`, never the tenant identifier or priority
 /// themselves — the claim query
-/// ([io.flowcatalyst.platform.dispatchjob.DispatchJobRepository#claimPending])
+/// ([io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle#claimPending])
 /// is deliberately join-free. [#destinationFor] delegates the whole
 /// resolution to [DispatchDestinationResolver] — the SAME collaborator
 /// [PostgresQueuePublisher] uses, so the two publishers cannot independently
@@ -82,7 +82,7 @@ import java.util.UUID;
 /// ### No two jobs of the same group ever share a chunk — this is NOT merely
 /// defensive
 ///
-/// `claimPending` orders by `message_group, sequence, created_at, id`
+/// `claimPending` orders by `message_group, sequence, job_created_at, job_id`
 /// (`docs/spec/deployed-dispatch.md` §3), so two jobs in the same message
 /// group are ADJACENT in claim order and, absent this rule, would routinely
 /// land in the same 10-entry chunk. SQS reports `SendMessageBatch` failures

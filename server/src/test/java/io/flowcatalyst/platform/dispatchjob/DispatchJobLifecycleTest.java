@@ -52,6 +52,7 @@ class DispatchJobLifecycleTest {
         LIFECYCLE_TABLE.put(Transition.RESCHEDULE, live("PENDING"));
         LIFECYCLE_TABLE.put(Transition.SETTLE_ACKED, Map.of("QUEUED", "PENDING", "PROCESSING", "PENDING"));
         LIFECYCLE_TABLE.put(Transition.SWEEP_STRANDED, Map.of("QUEUED", "PENDING", "PROCESSING", "PENDING"));
+        LIFECYCLE_TABLE.put(Transition.STALE_QUEUED, Map.of("QUEUED", "PENDING"));
         LIFECYCLE_TABLE.put(Transition.REQUEUE, Map.of("PENDING", "PENDING", "QUEUED", "PENDING",
                 "PROCESSING", "PENDING", "IN_PROGRESS", "PENDING", "COMPLETED", "PENDING", "FAILED", "PENDING",
                 "ERROR", "PENDING", "CANCELLED", "PENDING", "EXPIRED", "PENDING"));
@@ -110,6 +111,7 @@ class DispatchJobLifecycleTest {
             case RESCHEDULE -> (c, ignored) -> LIFECYCLE.reschedule(c.id(), c.createdAt(), Instant.now().plusSeconds(60));
             case SETTLE_ACKED -> (c, ignored) -> LIFECYCLE.settleAcked(List.of(c.id()), "settled: test");
             case SWEEP_STRANDED -> (c, ignored) -> LIFECYCLE.sweepStrandedSiblings(Instant.now().plusSeconds(60), "reaper: test");
+            case STALE_QUEUED -> (c, ignored) -> LIFECYCLE.recoverStaleQueued(Instant.now().plusSeconds(60));
             case REQUEUE -> (c, ignored) -> inTx(tx -> {
                 try {
                     DispatchJobLifecycle.requeueWriter().persist(REPO.findById(c.id()).orElseThrow(), tx);
@@ -172,7 +174,7 @@ class DispatchJobLifecycleTest {
                             .isEqualTo(before);
                     assertThat(queueRow(c.id())).as(label + ": refused, queue row untouched (byte-identical, or still absent)")
                             .isEqualTo(queueBefore);
-                    if (t != Transition.SWEEP_STRANDED) {
+                    if (t != Transition.SWEEP_STRANDED && t != Transition.STALE_QUEUED) {
                         assertThat(DispatchJobLifecycle.refused(t)).as(label + ": refusal counted")
                                 .isEqualTo(refusedBefore + 1);
                     }

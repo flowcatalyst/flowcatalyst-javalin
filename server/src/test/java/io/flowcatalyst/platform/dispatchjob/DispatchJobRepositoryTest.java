@@ -133,6 +133,7 @@ class DispatchJobRepositoryTest {
         } finally {
             DB.deleteFrom(MSG_DISPATCH_JOBS_READ).where(MSG_DISPATCH_JOBS_READ.ID.in(withGroup, otherGroup)).execute();
             DB.deleteFrom(MSG_DISPATCH_JOBS).where(MSG_DISPATCH_JOBS.ID.in(withGroup, otherGroup)).execute();
+            DispatchJobFixture.syncQueue(List.of(withGroup, otherGroup));
         }
     }
 
@@ -452,6 +453,7 @@ class DispatchJobRepositoryTest {
                 .set(MSG_DISPATCH_JOBS.SCHEDULED_FOR, Instant.now().plusSeconds(60).atOffset(ZoneOffset.UTC))
                 .where(MSG_DISPATCH_JOBS.ID.eq(midBackoff))
                 .execute();
+        DispatchJobFixture.syncQueue(List.of(midBackoff)); // the backoff holder is read from the queue table
         String behind = seedWriteRow(Seed.of(bckCode).withMessageGroup(group).withSequence(2).withCreatedAt(t.plusSeconds(1)));
         assertThat(repo.groupHeldBefore(repo.findById(behind).orElseThrow()))
                 .as("PENDING with a FUTURE scheduled_for still holds — the easy-to-miss disjunct").isTrue();
@@ -507,6 +509,7 @@ class DispatchJobRepositoryTest {
                 .set(MSG_DISPATCH_JOBS.SCHEDULED_FOR,
                         java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC).minusMinutes(1))
                 .where(MSG_DISPATCH_JOBS.ID.eq(past)).execute();
+        DispatchJobFixture.syncQueue(List.of(future, past));
 
         assertThat(lifecycle.claimForDelivery(future, repo.findById(future).orElseThrow().createdAt()))
                 .as("mutant: no scheduled_for guard").isFalse();
@@ -682,12 +685,13 @@ class DispatchJobRepositoryTest {
 
     // ── the scheduler's claim and mark-QUEUED statements ───────────────────
 
-    /// The claim excludes the ids it is given (`id <> ALL`), takes an empty
-    /// array as "exclude nothing" (not NULL, which would exclude every row),
-    /// holds no lock (a second claim sees the same rows), and is bounded by
-    /// its limit. Mutant: ignore the in-flight ids.
+    /// The claim takes an empty paused-subscription array as "exclude nothing"
+    /// (not NULL, which would exclude every row that has a subscription), does
+    /// not return a claimed row again until it is released, and is bounded by
+    /// its limit. (The claim's ordering, concurrency and release have their own
+    /// tests in `DispatchQueueClaimTest`.) Mutant: drop `claimed_at IS NULL`.
     @Test
-    void claimPendingExcludesTheInFlightIdsHoldsNoLockAndHonoursItsLimit() {
+    void claimPendingHonoursItsLimitAndDoesNotReturnAClaimedRowAgain() {
         Instant t = BASE.plusSeconds(200);
         String group = "000-claim-" + RUN;
         var mine = new java.util.ArrayList<String>();
@@ -696,20 +700,15 @@ class DispatchJobRepositoryTest {
                     .withSequence(i).withCreatedAt(t.plusSeconds(i))));
         }
 
-        var all = claimIds(repo.claimPending(5000, java.util.Set.of(), List.of()));
-        assertThat(all).as("an empty exclusion array excludes nothing").containsAll(mine);
-        var again = claimIds(repo.claimPending(5000, java.util.Set.of(), List.of()));
-        assertThat(again).as("no lock, no SKIP LOCKED: the same rows come back").containsAll(mine);
+        var all = lifecycle.claimPending(5000, java.util.Set.of());
+        assertThat(claimIds(all)).as("an empty paused set excludes nothing").containsAll(mine);
+        assertThat(claimIds(lifecycle.claimPending(5000, java.util.Set.of())))
+                .as("a claimed row is not returned again").doesNotContainAnyElementsOf(mine);
 
-        var withoutFirstTwo = claimIds(repo.claimPending(5000, java.util.Set.of(), List.of(mine.get(0), mine.get(1))));
-        assertThat(withoutFirstTwo).doesNotContain(mine.get(0), mine.get(1)).contains(mine.get(2), mine.get(3));
-
-        var ordered = repo.claimPending(2, java.util.Set.of(), List.of());
+        lifecycle.releaseClaims(claimIds(all));
+        var ordered = lifecycle.claimPending(2, java.util.Set.of());
         assertThat(ordered).as("LIMIT").hasSize(2);
-
-        var bigExclusion = new java.util.ArrayList<String>();
-        for (int i = 0; i < 5000; i++) bigExclusion.add("not-a-job-" + i);
-        assertThat(claimIds(repo.claimPending(5000, java.util.Set.of(), bigExclusion))).containsAll(mine);
+        lifecycle.releaseClaims(claimIds(ordered));
     }
 
     private static List<String> claimIds(List<DispatchJobRepository.ClaimRow> claims) {
@@ -718,8 +717,11 @@ class DispatchJobRepositoryTest {
 
     private static List<DispatchJobRepository.ClaimRow> claimed(String... jobIds) {
         var wanted = java.util.Set.of(jobIds);
-        var rows = repo.claimPending(5000, java.util.Set.of(), List.of()).stream()
-                .filter(c -> wanted.contains(c.id())).toList();
+        var everything = lifecycle.claimPending(5000, java.util.Set.of());
+        var rows = everything.stream().filter(c -> wanted.contains(c.id())).toList();
+        // the rest of what the claim took goes back, so a later test's claim sees it
+        lifecycle.releaseClaims(everything.stream().map(DispatchJobRepository.ClaimRow::id)
+                .filter(id -> !wanted.contains(id)).toList());
         assertThat(rows).hasSize(jobIds.length);
         return rows;
     }

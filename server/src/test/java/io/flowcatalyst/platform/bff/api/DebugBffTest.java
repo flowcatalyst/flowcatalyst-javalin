@@ -290,6 +290,7 @@ class DebugBffTest {
                 .set(MSG_DISPATCH_JOBS.CREATED_AT, NOW.minusSeconds(30).atOffset(ZoneOffset.UTC))
                 .set(MSG_DISPATCH_JOBS.UPDATED_AT, NOW.minusSeconds(30).atOffset(ZoneOffset.UTC))
                 .execute();
+        DispatchJobFixture.syncQueue(List.of(minimalJob)); // PENDING by default: its queue row
 
         fullJob = Tsid.generate();
         DispatchJobFixture.DB.insertInto(MSG_DISPATCH_JOBS)
@@ -395,8 +396,10 @@ class DebugBffTest {
 
     private static void seedJobSizeFloor() {
         List<Query> batch = new ArrayList<>();
+        List<String> jobIds = new ArrayList<>();
         for (int i = 0; i < SIZE_FLOOR; i++) {
             String id = Tsid.generate();
+            jobIds.add(id);
             batch.add(DispatchJobFixture.DB.insertInto(MSG_DISPATCH_JOBS)
                     .set(MSG_DISPATCH_JOBS.ID, id)
                     .set(MSG_DISPATCH_JOBS.CODE, JOB_CODE)
@@ -405,6 +408,7 @@ class DebugBffTest {
                     .set(MSG_DISPATCH_JOBS.UPDATED_AT, NOW.minusSeconds(100).plusMillis(i).atOffset(ZoneOffset.UTC)));
         }
         DispatchJobFixture.DB.batch(batch).execute();
+        DispatchJobFixture.syncQueue(jobIds); // PENDING by default: their queue rows
     }
 
     @Test

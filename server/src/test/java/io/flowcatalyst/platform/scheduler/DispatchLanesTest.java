@@ -433,4 +433,138 @@ class DispatchLanesTest {
         publisher.published().forEach(id -> counts.merge(id, 1, Integer::sum));
         assertThat(counts.values()).allMatch(n -> n == 1);
     }
+
+    // ── releasing the claims of what is not published ───────────────────────
+
+    /// What the lanes asked to release, in order, and what they asked to mark `QUEUED`.
+    private static final class Recorder {
+        final List<String> released = java.util.Collections.synchronizedList(new ArrayList<>());
+        final List<String> marked = java.util.Collections.synchronizedList(new ArrayList<>());
+        final List<String> events = java.util.Collections.synchronizedList(new ArrayList<>());
+        volatile boolean failMark;
+        volatile boolean failRelease;
+
+        int mark(List<ClaimRow> rows) {
+            if (failMark) throw new IllegalStateException("mark down");
+            rows.forEach(r -> marked.add(r.id()));
+            return rows.size();
+        }
+
+        void release(List<String> ids) {
+            events.add("release");
+            if (failRelease) throw new IllegalStateException("release down");
+            released.addAll(ids);
+        }
+    }
+
+    private DispatchLanes lanesWith(SchedulerConfig config, DispatchPublisher publisher, Recorder recorder) {
+        metrics = new SchedulerMetrics(config.dispatchers());
+        var lanes = new DispatchLanes(config, recorder::mark, recorder::release, publisher, DispatchLanesTest::message,
+                metrics, System::nanoTime);
+        lanes.start();
+        toClose.add(lanes);
+        return lanes;
+    }
+
+    /// Published jobs leave the queue (the QUEUED update deletes their rows) and are NOT released; a job
+    /// the broker did not accept, and the later jobs of its group that the publisher withheld, are.
+    /// Mutant: no release on a failed publish — the failed job is never claimed again.
+    @Test
+    void aFailedPublishReleasesTheClaimsOfTheUnpublishedJobsOnly() throws Exception {
+        var recorder = new Recorder();
+        var publisher = new ScriptedPublisher().failOnce("g-j2");
+        var lanes = lanesWith(config(1, 100), publisher, recorder);
+
+        claim(lanes, row("g-j1", "group-g"), row("g-j2", "group-g"), row("g-j3", "group-g"), row("o-j1", "group-o"));
+        assertThat(lanes.awaitIdle(WAIT)).isTrue();
+
+        assertThat(publisher.published()).containsExactlyInAnyOrder("g-j1", "o-j1");
+        assertThat(recorder.marked).containsExactlyInAnyOrder("g-j1", "o-j1");
+        assertThat(recorder.released).as("the failed job and the one behind it").containsExactlyInAnyOrder("g-j2", "g-j3");
+        assertThat(metrics.claimsReleased.sum()).isEqualTo(2);
+    }
+
+    /// The jobs a lane drops because their group was poisoned give their claims back too.
+    /// Mutant: drop without releasing — the dropped rows stay claimed until the stale sweep.
+    @Test
+    void aPoisonedDropReleasesTheDroppedJobsClaims() throws Exception {
+        var recorder = new Recorder();
+        var publisher = new ScriptedPublisher().failOnce("a-j03").gate("a-j00");
+        var lanes = lanesWith(config(1, 1), publisher, recorder);
+        var first = new ArrayList<ClaimRow>();
+        for (int i = 0; i < 10; i++) first.add(row("a-j0" + i, "group-a"));
+        claim(lanes, first.toArray(ClaimRow[]::new));
+        assertThat(publisher.awaitEntered("a-j00")).isTrue();
+        publisher.open("a-j00");
+        assertThat(lanes.awaitIdle(WAIT)).isTrue();
+
+        assertThat(recorder.marked).containsExactly("a-j00", "a-j01", "a-j02");
+        assertThat(recorder.released).as("3 failed; 4..9 were dropped: every one of them is claimed again")
+                .containsExactlyInAnyOrder("a-j03", "a-j04", "a-j05", "a-j06", "a-j07", "a-j08", "a-j09");
+        assertThat(metrics.droppedPoisoned()).isEqualTo(6);
+    }
+
+    /// A job published but whose QUEUED update failed is still PENDING: its claim goes back, so it is
+    /// published again (a harmless duplicate). Mutant: leave it claimed — it is never sent again.
+    @Test
+    void aFailedQueuedUpdateReleasesTheClaimsOfTheJobsItWasMarking() throws Exception {
+        var recorder = new Recorder();
+        recorder.failMark = true;
+        var lanes = lanesWith(config(1, 100), new ScriptedPublisher(), recorder);
+
+        claim(lanes, row("m-j1", "group-m"), row("m-j2", "group-m"));
+        assertThat(lanes.awaitIdle(WAIT)).isTrue();
+
+        assertThat(recorder.released).containsExactlyInAnyOrder("m-j1", "m-j2");
+        assertThat(lanes.poisonedGroups()).as("published, so nothing overtakes: not poisoned").isZero();
+    }
+
+    /// The release comes BEFORE the poison generation is read (the ordering rule): by the time the
+    /// between-removal-and-poison hook runs, the claims are already back. Mutant: release after the poison.
+    @Test
+    void theClaimsAreReleasedBeforeThePoisonGenerationIsRead() throws Exception {
+        var recorder = new Recorder();
+        var lanes = lanesWith(config(1, 100), new ScriptedPublisher().failOnce("o-j1"), recorder);
+        lanes.betweenRemovalAndPoisonHook = () -> recorder.events.add("hook");
+
+        claim(lanes, row("o-j1", "group-o"));
+        assertThat(lanes.awaitIdle(WAIT)).isTrue();
+
+        assertThat(recorder.events).containsExactly("release", "hook");
+        assertThat(lanes.inFlightCount()).isZero();
+    }
+
+    /// A release that fails (database down) must not stall the lane: permits come back, the failure
+    /// is counted, and the stale-claim sweep gives the claims back later.
+    @Test
+    void aFailingReleaseIsCountedAndDoesNotStallTheLane() throws Exception {
+        var recorder = new Recorder();
+        recorder.failRelease = true;
+        var lanes = lanesWith(config(1, 100), new ScriptedPublisher().failOnce("r-j1"), recorder);
+
+        claim(lanes, row("r-j1", "group-r"));
+        assertThat(lanes.awaitIdle(WAIT)).as("the permits came back").isTrue();
+
+        assertThat(metrics.releaseErrors.sum()).isEqualTo(1);
+        assertThat(lanes.inFlightCount()).isZero();
+        // and the lane still works
+        recorder.failRelease = false;
+        claim(lanes, row("r-j2", "group-r"));
+        assertThat(lanes.awaitIdle(WAIT)).isTrue();
+        assertThat(recorder.marked).contains("r-j2");
+    }
+
+    /// Closing the lanes gives back the claims of everything still in flight (best effort).
+    @Test
+    void closingReleasesTheClaimsStillInFlight() {
+        var recorder = new Recorder();
+        metrics = new SchedulerMetrics(1);
+        var lanes = new DispatchLanes(config(1, 100), recorder::mark, recorder::release, new ScriptedPublisher(),
+                DispatchLanesTest::message, metrics, System::nanoTime); // never started: the jobs sit in the channel
+        claim(lanes, row("c-j1", "group-c"), row("c-j2", null));
+
+        lanes.close();
+
+        assertThat(recorder.released).containsExactlyInAnyOrder("c-j1", "c-j2");
+    }
 }

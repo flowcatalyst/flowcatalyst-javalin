@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.scheduler;
 
+import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobStatus;
@@ -132,8 +133,7 @@ class DispatchSchedulerTest {
             assertThat(attempts.get()).as("nothing more inside the same interval").isEqualTo(early);
         } finally {
             for (String id : ids) { // leave nothing PENDING for the other tests
-                DB.update(MSG_DISPATCH_JOBS).set(MSG_DISPATCH_JOBS.STATUS, "COMPLETED")
-                        .where(MSG_DISPATCH_JOBS.ID.eq(id)).execute();
+                DispatchJobFixture.setStatus(id, "COMPLETED");
             }
         }
     }
@@ -218,8 +218,7 @@ class DispatchSchedulerTest {
         } finally {
             open.countDown();
             for (String id : ids) {
-                DB.update(MSG_DISPATCH_JOBS).set(MSG_DISPATCH_JOBS.STATUS, "COMPLETED")
-                        .where(MSG_DISPATCH_JOBS.ID.eq(id)).execute();
+                DispatchJobFixture.setStatus(id, "COMPLETED");
             }
         }
     }
@@ -237,8 +236,7 @@ class DispatchSchedulerTest {
             assertThat(checks.get()).as("one leadership check, then the fixed delay").isEqualTo(1);
         } finally {
             assertThat(REPO.findById(id).orElseThrow().status()).isEqualTo(DispatchJobStatus.PENDING);
-            DB.update(MSG_DISPATCH_JOBS).set(MSG_DISPATCH_JOBS.STATUS, "COMPLETED")
-                    .where(MSG_DISPATCH_JOBS.ID.eq(id)).execute();
+            DispatchJobFixture.setStatus(id, "COMPLETED");
         }
         assertThat(publisher.batches()).isEmpty();
     }

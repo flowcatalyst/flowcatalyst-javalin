@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.scheduler;
 
+import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
@@ -47,8 +48,7 @@ class PendingJobPollerConcurrencyTest {
     void cleanUp() {
         pollers.forEach(PendingJobPoller::close);
         pollers.clear();
-        DB.update(MSG_DISPATCH_JOBS).set(MSG_DISPATCH_JOBS.STATUS, "COMPLETED")
-                .where(MSG_DISPATCH_JOBS.STATUS.in("PENDING", "QUEUED")).execute();
+        DispatchJobFixture.setStatusWhere("COMPLETED", "PENDING", "QUEUED");
     }
 
     private static List<String> seed(int n, String tag) {
@@ -261,6 +261,9 @@ class PendingJobPollerConcurrencyTest {
         assertThat(second.submitted()).as("nothing behind the doomed j2 is submitted").isZero();
         assertThat(second.backOff()).as("it will be claimable again in moments: no sleep").isFalse();
         assertThat(poller.metrics().skippedDoomed()).isEqualTo(2);
+        assertThat(DispatchJobFixture.queueRow(j1).get("claimed_at")).as("withheld: its claim went back").isNull();
+        assertThat(DispatchJobFixture.queueRow(ids.get(2)).get("claimed_at")).as("withheld: its claim went back").isNull();
+        assertThat(DispatchJobFixture.queueRow(ids.get(1)).get("claimed_at")).as("j2 is still held in a lane").isNotNull();
 
         poller.lanes().afterPoisonHook = null;
         release.countDown();

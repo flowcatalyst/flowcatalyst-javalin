@@ -32,7 +32,6 @@ import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.assertQueu
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.code;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.queueRow;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedQueued;
-import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedWriteRow;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// `msg_dispatch_queue` (dispatch-queue spec, step 2): the lifecycle keeps it
@@ -304,11 +303,11 @@ class DispatchQueueTest {
         List<String> pending = new ArrayList<>();
         List<String> other = new ArrayList<>();
         for (int i = 0; i < 6; i++) {
-            pending.add(seedWriteRow(Seed.of(code("mig")).withStatus("PENDING").withMessageGroup(i % 2 == 0 ? "dq-" + RUN + "-m" : null)
+            pending.add(DispatchJobFixture.seedWriteRowOnly(Seed.of(code("mig")).withStatus("PENDING").withMessageGroup(i % 2 == 0 ? "dq-" + RUN + "-m" : null)
                     .withSequence(i).withMode("BLOCK_ON_ERROR")));
         }
         for (String s : List.of("QUEUED", "PROCESSING", "COMPLETED", "FAILED", "CANCELLED", "EXPIRED"))
-            other.add(seedWriteRow(Seed.of(code("mig")).withStatus(s)));
+            other.add(DispatchJobFixture.seedWriteRowOnly(Seed.of(code("mig")).withStatus(s)));
 
         String sql;
         try (var in = getClass().getResourceAsStream("/db/migration/V21__dispatch_queue.sql")) {

@@ -1,6 +1,7 @@
 package io.flowcatalyst.platform.scheduler;
 
 import io.flowcatalyst.platform.dispatch.DispatchQueueSettings;
+import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.Seed;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobLifecycle;
 import io.flowcatalyst.platform.dispatchjob.DispatchJobRepository;
@@ -94,6 +95,7 @@ class PendingJobPollerTest {
         String id = seedWriteRow(s);
         DB.update(MSG_DISPATCH_JOBS).set(MSG_DISPATCH_JOBS.SCHEDULED_FOR, scheduledFor.atOffset(ZoneOffset.UTC))
                 .where(MSG_DISPATCH_JOBS.ID.eq(id)).execute();
+        DispatchJobFixture.syncQueue(List.of(id));
         return id;
     }
 
@@ -374,6 +376,7 @@ class PendingJobPollerTest {
         DB.update(MSG_DISPATCH_JOBS)
                 .set(MSG_DISPATCH_JOBS.SCHEDULED_FOR, Instant.now().minusSeconds(1).atOffset(ZoneOffset.UTC))
                 .where(MSG_DISPATCH_JOBS.ID.eq(job)).execute();
+        DispatchJobFixture.syncQueue(List.of(job));
         var due = FakeDispatchPublisher.succeeding();
         pollAndSettle(poller(due, () -> true));
 
@@ -427,7 +430,7 @@ class PendingJobPollerTest {
         seedWriteRow(new Seed(idLow, code("orderlow"), null, "PENDING", t, null, null, null, group,
                 0, null, null, null, null, null, null, null, "IMMEDIATE", 7, t, "EVENT", "exponential", null));
 
-        List<DispatchJobRepository.ClaimRow> claims = REPO.claimPending(5000, java.util.Set.of(), List.of());
+        List<DispatchJobRepository.ClaimRow> claims = LIFECYCLE.claimPending(5000, java.util.Set.of());
         List<String> myOrder = claims.stream().map(DispatchJobRepository.ClaimRow::id)
                 .filter(id -> id.equals(idLow) || id.equals(idHigh)).toList();
         assertThat(myOrder).as("equal sequence and created_at; the id breaks the tie ascending")

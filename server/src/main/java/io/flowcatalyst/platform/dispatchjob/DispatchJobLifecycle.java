@@ -99,8 +99,19 @@ import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS;
 /// happen this way: an enter that waits behind a leave re-inserts with `ON
 /// CONFLICT`, which does see committed rows. The stale extra row is harmless
 /// and self-heals — the scheduler's mark-`QUEUED` removes it (rule above), and
-/// step 3 adds a reconcile sweep. The hot paths are deliberately NOT wrapped in
+/// [#reconcileQueue] sweeps it. The hot paths are deliberately NOT wrapped in
 /// transactions to avoid it. [#queueDrift] counts both kinds of disagreement.
+///
+/// ## The claim (dispatch-queue spec, step 3 of 3)
+///
+/// The scheduler claims from this table, not from `msg_dispatch_jobs`:
+/// [#claimPending] sets `claimed_at` on the due, unclaimed, unpaused rows in
+/// order (one statement, no transaction held open); the claimed rows leave the
+/// table when [#markQueued] publishes them, or get their claim back through
+/// [#releaseClaims] when they are not published (and [#releaseStaleClaims] when
+/// the process that claimed them is gone). Entering `PENDING` always resets
+/// `claimed_at` (above), so a refreshed job is claimable at once. `claimed_at`
+/// is in no index.
 ///
 /// ## Rules
 ///
@@ -118,12 +129,13 @@ import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS;
 ///
 /// ## Statement text
 ///
-/// Hot-path statements are plain JDBC with the status literals in the SQL
-/// text (never bound): the partial indexes the scheduler relies on are only
-/// provable from the text, and a constant text keeps one server-prepared
-/// statement per connection (see the long note in [DispatchJobRepository]).
-/// The statements are assembled from fixed fragments in this file — never from
-/// request input; every value is bound.
+/// Hot-path statements are plain JDBC: a constant text keeps one
+/// server-prepared statement per connection (see the note in
+/// [DispatchJobRepository]). There are no partial indexes on the dispatch path
+/// any more, so nothing depends on a literal being provable against an index
+/// predicate; the transitions' status guards are still literals in the text (a
+/// `Transition` names them), every other value is bound. The statements are
+/// assembled from fixed fragments in this file — never from request input.
 ///
 /// The `executor` of the primitives is either a pooled connection (the
 /// instance methods; the pool this lifecycle was built over — the routed data
@@ -213,6 +225,8 @@ public final class DispatchJobLifecycle implements ProcessingTransitions {
         SETTLE_ACKED(List.of("QUEUED", "PROCESSING"), "PENDING"),
         /// Reaper: siblings stranded behind a failed head.
         SWEEP_STRANDED(List.of("QUEUED", "PROCESSING"), "PENDING"),
+        /// Scheduler: a job the broker accepted that nothing has moved for the stale threshold.
+        STALE_QUEUED(List.of("QUEUED"), "PENDING"),
         /// Operator resend: from any status.
         REQUEUE(null, "PENDING"),
         /// Operator ignore: a failed job becomes cancelled.
@@ -511,7 +525,7 @@ public final class DispatchJobLifecycle implements ProcessingTransitions {
     /// nothing recovers `QUEUED`. Every transition here stamps `updated_at`,
     /// so the version differs after any of them.
     ///
-    /// @param published rows exactly as [DispatchJobRepository#claimPending] returned them
+    /// @param published rows exactly as [#claimPending] returned them
     /// @return the rows actually updated — fewer than `published.size()` when
     ///         some had already moved on
     public int markQueued(List<ClaimRow> published) {
@@ -542,6 +556,202 @@ public final class DispatchJobLifecycle implements ProcessingTransitions {
                 + " JOIN msg_dispatch_queue q2 ON q2.job_id = b.id AND q2.version = b.version::timestamptz"
                 + ") d WHERE q.job_id = d.id", List.of(ids, versions));
         return leavePending(pool(), Transition.MARK_QUEUED, "QUEUED", gone, sel, Changes.NONE, Instant.now()).size();
+    }
+
+    // ── The claim and its housekeeping (queue table) ───────────────────────
+
+    /// The claim: one statement on the pooled connection, no transaction held
+    /// open. The `FOR UPDATE SKIP LOCKED` is only for two claims racing inside
+    /// that one statement; nothing is locked once it returns. Walks
+    /// `idx_dispatch_queue_order` in order and stops at `LIMIT` (the paused
+    /// filter and the due filter are skipped over, not sorted). Never reads
+    /// `msg_dispatch_jobs`.
+    private static final String CLAIM_SQL = """
+            WITH c AS (
+                SELECT job_id FROM msg_dispatch_queue
+                 WHERE claimed_at IS NULL
+                   AND (scheduled_for IS NULL OR scheduled_for <= NOW())
+                   AND (subscription_id IS NULL OR subscription_id <> ALL(?::text[]))
+                 ORDER BY message_group NULLS LAST, sequence, job_created_at, job_id
+                 LIMIT ?
+                   FOR UPDATE SKIP LOCKED)
+            UPDATE msg_dispatch_queue q SET claimed_at = NOW()
+              FROM c WHERE q.job_id = c.job_id""" + " RETURNING " + QUEUE_RETURNING;
+
+    /// The order [#claimPending] returns its rows in, and the order the
+    /// hold-back and the lanes depend on: group (`NULL` last), sequence, job
+    /// creation time, id. `RETURNING` of an `UPDATE ... FROM` is in no
+    /// particular order, so the result is sorted here. Across groups the order
+    /// carries no meaning (a group lives in one lane); within a group it is the
+    /// database's own order exactly (TSID ids compare the same in any collation).
+    static final java.util.Comparator<ClaimRow> CLAIM_ORDER = java.util.Comparator
+            .comparing(ClaimRow::messageGroup, java.util.Comparator.nullsLast(java.util.Comparator.<String>naturalOrder()))
+            .thenComparingInt(ClaimRow::sequence)
+            .thenComparing(ClaimRow::createdAt)
+            .thenComparing(ClaimRow::id);
+
+    /// Claims up to `limit` waiting jobs, in order: due (`scheduled_for` null or
+    /// past), unclaimed, and not of a paused subscription. A row with no
+    /// subscription is never excluded. The result is sorted by [#CLAIM_ORDER].
+    /// An empty `paused` binds an empty array (`<> ALL('{}')` is true for every
+    /// row), never a different statement text and never a NULL array (`<>
+    /// ALL(NULL)` is NULL and would exclude every row that has a subscription).
+    ///
+    /// The `BLOCK_ON_ERROR` hold-back is deliberately NOT here: it stays the
+    /// caller's positional check ([DispatchJobRepository#heldBeforeIds]) over
+    /// the claimed rows, and a row it holds goes back through [#releaseClaims].
+    public List<ClaimRow> claimPending(int limit, java.util.Collection<String> pausedSubscriptionIds) {
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(CLAIM_SQL)) {
+            ps.setArray(1, conn.createArrayOf("text", pausedSubscriptionIds.toArray(String[]::new)));
+            ps.setInt(2, limit);
+            List<ClaimRow> claims = new ArrayList<>(Math.min(limit, 1024));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    claims.add(new ClaimRow(rs.getString(1), rs.getString(6), rs.getString(3),
+                            io.flowcatalyst.platform.shared.dispatch.DispatchMode.parse(rs.getString(9)),
+                            rs.getString(7), rs.getString(8), rs.getObject(2, OffsetDateTime.class).toInstant(),
+                            rs.getInt(4), rs.getString(10), rs.getObject(11, OffsetDateTime.class).toInstant()));
+                }
+            }
+            claims.sort(CLAIM_ORDER);
+            return claims;
+        } catch (SQLException e) {
+            throw new DataAccessException("dispatch job claim failed", e);
+        }
+    }
+
+    /// Gives claims back, so the jobs are claimed again — in order — by a later
+    /// claim: for a job that was not published, was dropped as poisoned,
+    /// withheld by the poller's doomed check or the hold-back, or was published
+    /// but could not be marked `QUEUED`. One statement. A job whose queue row
+    /// the lifecycle refreshed meanwhile already has `claimed_at = NULL`, and
+    /// one that has left `PENDING` has no row: both are simply not matched.
+    ///
+    /// @return the claims actually released
+    public int releaseClaims(java.util.Collection<String> jobIds) {
+        if (jobIds.isEmpty()) return 0;
+        return update("UPDATE msg_dispatch_queue SET claimed_at = NULL WHERE job_id = ANY(?::text[]) AND claimed_at IS NOT NULL",
+                "release claims", (Object) jobIds.toArray(String[]::new));
+    }
+
+    /// Releases claims whose claimer is gone: every claim older than `olderThan`
+    /// (`Duration.ZERO` = every claim) that this process does not hold in memory
+    /// (`heldInMemory`: its in-flight ids). At process start as leader that is
+    /// all of them; the periodic sweep passes five minutes.
+    ///
+    /// @return the claims released
+    public int releaseStaleClaims(java.util.Collection<String> heldInMemory, java.time.Duration olderThan) {
+        return update("UPDATE msg_dispatch_queue SET claimed_at = NULL WHERE claimed_at IS NOT NULL"
+                        + " AND claimed_at < NOW() - make_interval(secs => ?) AND job_id <> ALL(?::text[])",
+                "release stale claims", olderThan.toMillis() / 1000.0, heldInMemory.toArray(String[]::new));
+    }
+
+    private int update(String sql, String what, Object... params) {
+        try (Connection conn = dataSource.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            bind(conn, ps, java.util.Arrays.asList(params));
+            return ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new DataAccessException("dispatch queue " + what + " failed", e);
+        }
+    }
+
+    /// A stale-`QUEUED` sweep: every job still `QUEUED` whose `updated_at` is
+    /// before `cutoff` goes back to `PENDING` (a message lost after the broker
+    /// accepted it, or a status update that never came). The duplicate this can
+    /// cause is dropped by the router or skipped by the delivery callback.
+    /// Unbounded, like the Go implementation's; the status prefix of
+    /// `idx_dispatch_jobs_status_group` finds the rows.
+    ///
+    /// @return the jobs returned to `PENDING`
+    public int recoverStaleQueued(Instant cutoff) {
+        var sel = new Selector(null, List.of(), null, List.of(), "j.updated_at < ?", List.of(cutoff), null, null,
+                Integer.MAX_VALUE);
+        return enterPending(pool(), Transition.STALE_QUEUED, sel, Changes.NONE, null).size();
+    }
+
+    /// What one [#reconcileQueue] pass repaired.
+    ///
+    /// @param inserted `PENDING` jobs that had no queue row
+    /// @param deleted  queue rows whose job is missing or not `PENDING`
+    /// @param refreshed queue rows that differed from their job
+    public record Reconciled(int inserted, int deleted, int refreshed) {
+        public boolean isClean() {
+            return inserted == 0 && deleted == 0 && refreshed == 0;
+        }
+    }
+
+    private static final String RECONCILE_INSERT_SQL = "INSERT INTO msg_dispatch_queue AS q (" + QUEUE_COLUMNS + ")"
+            + " SELECT j.id, j.created_at, j.message_group, j.sequence, j.scheduled_for, j.subscription_id,"
+            + " j.dispatch_pool_id, j.client_id, j.mode, j.queue, j.updated_at"
+            + " FROM msg_dispatch_jobs j"
+            + " WHERE j.status = 'PENDING' AND j.updated_at < NOW() - make_interval(secs => ?)"
+            + " AND NOT EXISTS (SELECT 1 FROM msg_dispatch_queue x WHERE x.job_id = j.id)"
+            + " LIMIT ? ON CONFLICT (job_id) DO NOTHING";
+
+    private static final String RECONCILE_DELETE_SQL = "DELETE FROM msg_dispatch_queue q WHERE q.job_id IN ("
+            + "SELECT q2.job_id FROM msg_dispatch_queue q2"
+            + " WHERE (q2.claimed_at IS NULL OR q2.claimed_at < NOW() - make_interval(secs => ?))"
+            + " AND NOT EXISTS (SELECT 1 FROM msg_dispatch_jobs j"
+            + " WHERE j.id = q2.job_id AND j.created_at = q2.job_created_at AND j.status = 'PENDING')"
+            + " LIMIT ?)";
+
+    private static final String RECONCILE_REFRESH_SQL = "WITH stale AS ("
+            + "SELECT q2.job_id FROM msg_dispatch_queue q2"
+            + " JOIN msg_dispatch_jobs j2 ON j2.id = q2.job_id AND j2.created_at = q2.job_created_at"
+            + " AND j2.status = 'PENDING'"
+            + " WHERE (q2.version <> j2.updated_at OR q2.scheduled_for IS DISTINCT FROM j2.scheduled_for)"
+            + " AND (q2.claimed_at IS NULL OR q2.claimed_at < NOW() - make_interval(secs => ?))"
+            + " LIMIT ?) "
+            + "UPDATE msg_dispatch_queue q SET message_group = j.message_group, sequence = j.sequence,"
+            + " scheduled_for = j.scheduled_for, subscription_id = j.subscription_id,"
+            + " dispatch_pool_id = j.dispatch_pool_id, client_id = j.client_id, mode = j.mode, queue = j.queue,"
+            + " version = j.updated_at, claimed_at = NULL"
+            + " FROM stale s, msg_dispatch_jobs j"
+            + " WHERE q.job_id = s.job_id AND j.id = q.job_id AND j.created_at = q.job_created_at"
+            + " AND j.status = 'PENDING'";
+
+    /// The reconcile sweep: repairs what a bug, or an older binary writing the
+    /// table, left behind — three statements, each bounded to `maxRows`:
+    ///
+    ///  (a) a `PENDING` job with no queue row whose `updated_at` is older than
+    ///      `jobAge` gets one;
+    ///  (b) a queue row whose job is missing or not `PENDING` is deleted, when
+    ///      the row is unclaimed or its claim is older than `claimAge`;
+    ///  (c) a queue row whose `version` (or `scheduled_for`) differs from its
+    ///      job is refreshed from the job, under the same claim-age guard.
+    ///
+    /// The age guards leave a job that is being written right now alone. Every
+    /// count is a bug worth a WARN: a consistent table reports zero and changes
+    /// nothing.
+    public Reconciled reconcileQueue(int maxRows, java.time.Duration jobAge, java.time.Duration claimAge) {
+        double jobSecs = jobAge.toMillis() / 1000.0;
+        double claimSecs = claimAge.toMillis() / 1000.0;
+        int inserted = update(RECONCILE_INSERT_SQL, "reconcile insert", jobSecs, maxRows);
+        int deleted = update(RECONCILE_DELETE_SQL, "reconcile delete", claimSecs, maxRows);
+        int refreshed = update(RECONCILE_REFRESH_SQL, "reconcile refresh", claimSecs, maxRows);
+        return new Reconciled(inserted, deleted, refreshed);
+    }
+
+    /// The scheduler's backlog, sampled.
+    ///
+    /// @param depth             jobs waiting: unclaimed and due
+    /// @param oldestEnqueuedAt  when the oldest of them entered the queue; `null` when none
+    public record QueueBacklog(long depth, Instant oldestEnqueuedAt) {
+    }
+
+    /// `count(*)` and the oldest `enqueued_at` of the unclaimed due rows.
+    public QueueBacklog queueBacklog() {
+        String sql = "SELECT count(*), min(enqueued_at) FROM msg_dispatch_queue"
+                + " WHERE claimed_at IS NULL AND (scheduled_for IS NULL OR scheduled_for <= NOW())";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            rs.next();
+            return new QueueBacklog(rs.getLong(1), instant(rs.getObject(2, OffsetDateTime.class)));
+        } catch (SQLException e) {
+            throw new DataAccessException("dispatch queue backlog failed", e);
+        }
     }
 
     // ── Delivery callback (ProcessingTransitions) ──────────────────────────
