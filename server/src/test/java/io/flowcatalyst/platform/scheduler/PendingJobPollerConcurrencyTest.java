@@ -273,4 +273,59 @@ class PendingJobPollerConcurrencyTest {
         }
         assertThat(publisher.published()).containsExactlyElementsOf(ids);
     }
+
+    /// Interleaving (b), driven deterministically: the failure's poison generation
+    /// must be read AFTER its ids left the in-flight set. A whole claim runs on
+    /// the lane's thread between the removal and the read (the
+    /// `betweenRemovalAndPoisonHook` seam). The lane takes `j1` alone
+    /// (`laneBatch = 1`) and `j2` waits in its channel, in flight. `j1` fails and
+    /// leaves the set; the hook's claim excludes `j2` (in flight) and re-claims
+    /// `j1` and `j3` — no poison exists yet, so the poller-side doomed check cannot
+    /// withhold them — carrying a NEW generation. Read after the hook, the poison
+    /// covers that generation: `j2`, `j1` and `j3` are all dropped and later
+    /// claimed again, in order. Read BEFORE the removal, the poison sits below it:
+    /// `j2` (older) is dropped, but `j1` passes, clears the entry, and `j3` follows
+    /// — published ahead of the dropped `j2`.
+    ///
+    /// (Why `laneBatch = 1`: with `j1` and `j2` in ONE lane batch, the whole
+    /// batch leaves the set together, nothing stays in flight behind the failure,
+    /// and the early read is unobservable — the hook's claim just re-claims
+    /// them in order.) Mutant: read `claimGeneration` before removing the batch
+    /// from the in-flight set in `Lane.settle`.
+    @Test
+    void thePoisonGenerationIsReadAfterTheIdsLeaveTheInFlightSet() throws Exception {
+        String group = "grp-read-after-" + RUN;
+        var ids = new ArrayList<String>();
+        for (int i = 1; i <= 3; i++) {
+            ids.add(seedWriteRow(Seed.of(code("rda" + i + "-")).withMessageGroup(group).withSequence(i)));
+        }
+        String j1 = ids.get(0);
+        var publisher = new ScriptedPublisher().failOnce(j1).gate(j1);
+        var config = SchedulerConfig.DEFAULTS.withBufferCapacity(100).withDispatchers(1).withLaneBatch(1)
+                .withBatchSize(2);
+        var poller = poller(publisher, config);
+
+        assertThat(poller.pollOnce().submitted()).isEqualTo(2); // j1 and j2
+        assertThat(publisher.awaitEntered(j1)).isTrue();        // the lane holds j1; j2 waits in its channel
+
+        var hookRan = new java.util.concurrent.atomic.AtomicInteger();
+        var hookSubmitted = new java.util.concurrent.atomic.AtomicInteger(-1);
+        poller.lanes().betweenRemovalAndPoisonHook = () -> {
+            if (hookRan.getAndIncrement() == 0) {
+                hookSubmitted.set(poller.pollOnce().submitted()); // a whole claim lands between the removal and the read
+            }
+        };
+        publisher.open(j1); // j1 fails; its batch is settled
+        assertThat(poller.awaitIdle(WAIT)).isTrue();
+        assertThat(hookRan.get()).as("the seam ran").isGreaterThanOrEqualTo(1);
+        assertThat(hookSubmitted.get()).as("the claim in the hook re-claimed j1 and j3").isEqualTo(2);
+        poller.lanes().betweenRemovalAndPoisonHook = null;
+
+        for (int i = 0; i < 20 && publisher.published().size() < 3; i++) {
+            poller.pollOnce();
+            assertThat(poller.awaitIdle(WAIT)).isTrue();
+        }
+        assertThat(publisher.published()).as("the group is published in order, none ahead of j2")
+                .containsExactlyElementsOf(ids);
+    }
 }
