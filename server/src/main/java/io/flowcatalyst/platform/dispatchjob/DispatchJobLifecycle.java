@@ -550,11 +550,16 @@ public final class DispatchJobLifecycle implements ProcessingTransitions {
         // of the batch still at the claimed version (a stale one whose job moved on
         // without the row being refreshed). A row at another version belongs to a
         // job that re-entered PENDING since the claim: left alone.
+        // The version is carried through `d` and re-checked by the DELETE itself: a stale-row id's version
+        // match was made in the sub-select, on the statement's snapshot, but if the job re-entered PENDING
+        // meanwhile the DELETE waits on the row lock, re-evaluates under READ COMMITTED against the REFRESHED
+        // row, and would delete it (a PENDING job with no queue row). Rows the UPDATE moved need no check:
+        // the statement holds the job's row lock, so the job cannot re-enter PENDING under it.
         var gone = new Gone("DELETE FROM msg_dispatch_queue q USING ("
-                + "SELECT m.id FROM moved m"
-                + " UNION SELECT b.id FROM unnest(?::text[], ?::text[]) AS b(id, version)"
+                + "SELECT m.id, NULL::timestamptz AS version FROM moved m"
+                + " UNION ALL SELECT b.id, b.version::timestamptz FROM unnest(?::text[], ?::text[]) AS b(id, version)"
                 + " JOIN msg_dispatch_queue q2 ON q2.job_id = b.id AND q2.version = b.version::timestamptz"
-                + ") d WHERE q.job_id = d.id", List.of(ids, versions));
+                + ") d WHERE q.job_id = d.id AND (d.version IS NULL OR q.version = d.version)", List.of(ids, versions));
         return leavePending(pool(), Transition.MARK_QUEUED, "QUEUED", gone, sel, Changes.NONE, Instant.now()).size();
     }
 

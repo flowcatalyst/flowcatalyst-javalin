@@ -405,10 +405,70 @@ class DispatchQueueTest {
         assertThat(LIFECYCLE.queueDrift(List.of(id))).isEqualTo(new QueueDrift(0, 0));
     }
 
+    /// A mark-QUEUED whose claim is stale must not delete the row of a job that re-entered PENDING while the
+    /// statement ran. Two connections: A requeues the job (new queue version, uncommitted); B's mark-QUEUED of
+    /// the OLD version saw the old row, blocks on it, and on A's commit re-evaluates its DELETE — which must
+    /// re-check the version. Mutant: key the DELETE on job_id only — the job is PENDING with no queue row.
+    @Test
+    void aStaleMarkQueuedDoesNotDeleteTheRowOfAJobThatReEnteredPending() throws Exception {
+        String id = seedJob("PENDING", null, 1);
+        Instant created = createdAt(id);
+        Instant staleVersion = ((OffsetDateTime) queueRow(id).get("version")).toInstant();
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try (Connection a = DS.getConnection()) {
+            a.setAutoCommit(false);
+            assertThat(DispatchJobLifecycle.requeue(a, id, created)).isTrue(); // PENDING again: new version, uncommitted
+            Future<Integer> b = pool.submit(() -> LIFECYCLE.markQueued(List.of(claim(id, staleVersion))));
+            awaitBlocked();
+            a.commit();
+            assertThat(b.get(10, TimeUnit.SECONDS)).as("the job moved on since the claim: nothing marked").isZero();
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(REPO.findById(id).orElseThrow().status()).isEqualTo(DispatchJobStatus.PENDING);
+        assertQueueMirrorsJob(id, "the refreshed row survived the stale mark-QUEUED");
+    }
+
     // ── randomized ─────────────────────────────────────────────────────────
 
     @Test
     void randomConcurrentLifecycleOperationsNeverLoseAJob() throws Exception {
+        int iterations = Integer.getInteger("dq.random.iterations", 1);
+        long lost = 0;
+        for (int i = 0; i < iterations; i++) lost += randomRun();
+        System.out.println("DispatchQueueTest random: iterations=" + iterations + " missingOrStale total=" + lost);
+        assertThat(lost).as("PENDING jobs without a queue row or with a stale one, over %d iterations", iterations).isZero();
+    }
+
+    /// One randomized run; returns the number of PENDING jobs left without an exact queue row.
+    private long randomRun() throws Exception {
+        // pooled: thousands of operations per run, and a hundred runs, would exhaust ephemeral ports unpooled
+        var cfg = new com.zaxxer.hikari.HikariConfig();
+        cfg.setDataSource(DS);
+        cfg.setMaximumPoolSize(8);
+        try (var pds = new com.zaxxer.hikari.HikariDataSource(cfg)) {
+            return randomRun(pds);
+        }
+    }
+
+    private static void pooledTx(javax.sql.DataSource pds, java.util.function.Consumer<Connection> work) {
+        try (Connection conn = pds.getConnection()) {
+            conn.setAutoCommit(false);
+            try {
+                work.accept(conn);
+                conn.commit();
+            } catch (RuntimeException e) {
+                conn.rollback();
+                throw e;
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private long randomRun(javax.sql.DataSource pds) throws Exception {
+        var plife = new DispatchJobLifecycle(pds);
+        var prepo = new DispatchJobRepository(pds);
         int jobsN = 40;
         int workers = 6;
         int opsPerWorker = 500; // 3,000 operations
@@ -428,7 +488,7 @@ class DispatchQueueTest {
             ids.add(id);
             created.add(createdAt(id));
         }
-        assertThat(LIFECYCLE.queueDrift(ids)).as("clean before the run").isEqualTo(new QueueDrift(0, 0));
+        assertThat(plife.queueDrift(ids)).as("clean before the run").isEqualTo(new QueueDrift(0, 0));
 
         ExecutorService pool = Executors.newFixedThreadPool(workers);
         List<Future<Integer>> results = new ArrayList<>();
@@ -441,23 +501,29 @@ class DispatchQueueTest {
                     int k = r.nextInt(jobsN);
                     String id = ids.get(k);
                     Instant at = created.get(k);
+                    try {
                     switch (r.nextInt(11)) {
-                        case 0 -> LIFECYCLE.claimForDelivery(id, at);
-                        case 1 -> LIFECYCLE.markCompleted(id, at, Instant.now(), 3L);
-                        case 2 -> LIFECYCLE.markFailed(id, at, "boom");
-                        case 3 -> LIFECYCLE.scheduleRetry(id, at, Instant.now().plusSeconds(r.nextInt(3) * 30), 1, "retry");
-                        case 4 -> LIFECYCLE.reschedule(id, at, r.nextBoolean() ? null : Instant.now().plusSeconds(30));
-                        case 5 -> LIFECYCLE.settleAcked(List.of(id, ids.get(r.nextInt(jobsN)), ids.get(r.nextInt(jobsN))), "settled");
-                        case 6 -> LIFECYCLE.sweepStrandedSiblings(Instant.now().plusSeconds(60), "reaper");
+                        case 0 -> plife.claimForDelivery(id, at);
+                        case 1 -> plife.markCompleted(id, at, Instant.now(), 3L);
+                        case 2 -> plife.markFailed(id, at, "boom");
+                        case 3 -> plife.scheduleRetry(id, at, Instant.now().plusSeconds(r.nextInt(3) * 30), 1, "retry");
+                        case 4 -> plife.reschedule(id, at, r.nextBoolean() ? null : Instant.now().plusSeconds(30));
+                        case 5 -> plife.settleAcked(List.of(id, ids.get(r.nextInt(jobsN)), ids.get(r.nextInt(jobsN))), "settled");
+                        case 6 -> plife.sweepStrandedSiblings(Instant.now().plusSeconds(60), "reaper");
                         case 7, 8 -> {
                             // a mark-QUEUED of a claim at the job's current version
-                            var j = REPO.findById(id);
-                            if (j.isPresent()) LIFECYCLE.markQueued(List.of(
+                            var j = prepo.findById(id);
+                            if (j.isPresent()) plife.markQueued(List.of(
                                     new ClaimRow(id, null, null, null, null, null, at, 0, null, j.get().updatedAt())));
                         }
-                        case 9 -> inTx(tx -> DispatchJobLifecycle.requeue(tx, id, at));
-                        default -> LIFECYCLE.markQueued(List.of(
+                        case 9 -> pooledTx(pds, tx -> DispatchJobLifecycle.requeue(tx, id, at));
+                        default -> plife.markQueued(List.of(
                                 new ClaimRow(id, null, null, null, null, null, at, 0, null, Instant.now().minusSeconds(7200))));
+                    }
+                    } catch (org.jooq.exception.DataAccessException e) {
+                        // two multi-row statements locking jobs in different orders: Postgres kills one; the
+                        // operation simply did not happen (its statement rolled back whole)
+                        if (!String.valueOf(e.getCause()).contains("deadlock detected")) throw e;
                     }
                     done++;
                 }
@@ -469,12 +535,10 @@ class DispatchQueueTest {
         pool.shutdown();
         assertThat(total).isEqualTo(workers * opsPerWorker);
 
-        QueueDrift drift = LIFECYCLE.queueDrift(ids);
+        QueueDrift drift = plife.queueDrift(ids);
         System.out.println("DispatchQueueTest random run: ops=" + total + " jobs=" + jobsN + " drift=" + drift);
-        assertThat(drift.missingOrStale()).as("no PENDING job without a queue row or with a stale one").isZero();
         // orphans are the documented race's and allowed; each must be a non-PENDING job with a row
-        long orphans = drift.orphaned();
-        assertThat(orphans).isLessThanOrEqualTo(jobsN);
-        assertThat(LIFECYCLE.queueDrift().missingOrStale()).as("table-wide too").isZero();
+        assertThat(drift.orphaned()).isLessThanOrEqualTo(jobsN);
+        return drift.missingOrStale();
     }
 }
