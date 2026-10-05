@@ -31,6 +31,7 @@ def sample(path, interval):
                 out = subprocess.run(["docker", "exec", "bench-router-prober", "sh", "-c",
                                       f"curl -s -m 2 {SINK}; echo; curl -s -m 2 {SQS}"],
                                      capture_output=True, text=True, timeout=5).stdout.split("\n")
+                out = [x for x in out if x.strip()]
                 t = time.time()
                 a, b = json.loads(out[0]), json.loads(out[1])
                 f.write(json.dumps({"t": round(t, 3), "sink": a.get("count", 0), "sent": b.get("sent", 0),
