@@ -32,6 +32,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -117,22 +118,16 @@ public final class DispatchJobRepository implements ProcessingRepository {
         }
     }
 
-    /// One waiting job claimed from `msg_dispatch_queue` by
-    /// [DispatchJobLifecycle#claimPending] — the claim's own column list,
-    /// carrying just what the scheduler poller needs (the
-    /// [#heldBeforeIds] hold-back and
-    /// [io.flowcatalyst.platform.scheduler.PoolCodeResolver] resolution) —
-    /// not the full [DispatchJob] entity, which the claim never reads.
-    /// `createdAt` is the queue row's `job_created_at`.
-    /// `mode` is already parsed here (spec §2 "`dispatchMode` resolution"
-    /// starts from the stored raw value); every other nullable component is
-    /// `null` exactly when the column is `NULL`. `queue` is the job's OWN
-    /// raw stored priority claim (dispatch-job-priority spec R4) — carried
-    /// through to [io.flowcatalyst.platform.scheduler.PublishedMessage] so
-    /// [io.flowcatalyst.platform.scheduler.DispatchDestinationResolver] can
-    /// resolve it ahead of the subscription's. `updatedAt` is the queue row's
-    /// `version` (the job's `updated_at` when the row was written) as the claim
-    /// read it: [DispatchJobLifecycle#markQueued] only marks a job that still has it.
+    /// One due `PENDING` job a claim ([#claimPending]) returned — the claim's own column list, carrying just
+    /// what the scheduler poller needs (the [#heldBeforeIds] hold-back and
+    /// [io.flowcatalyst.platform.scheduler.PoolCodeResolver] resolution) — not the full [DispatchJob] entity,
+    /// which the claim never reads. `mode` is already parsed here (spec §2 "`dispatchMode` resolution" starts
+    /// from the stored raw value); every other nullable component is `null` exactly when the column is `NULL`.
+    /// `queue` is the job's OWN raw stored priority claim (dispatch-job-priority spec R4) — carried through to
+    /// [io.flowcatalyst.platform.scheduler.PublishedMessage] so
+    /// [io.flowcatalyst.platform.scheduler.DispatchDestinationResolver] can resolve it ahead of the
+    /// subscription's. `updatedAt` is the job's version as the claim read it:
+    /// [DispatchJobLifecycle#markQueued] only marks a job that still has it.
     public record ClaimRow(
             String id,
             String subscriptionId,
@@ -272,50 +267,41 @@ public final class DispatchJobRepository implements ProcessingRepository {
     private static final List<String> HOLDING_STATUSES = List.of("FAILED", "ERROR");
 
     /// `GroupHolding` (spec §9): the ONE predicate shared by every enforcement
-    /// point that decides whether a job holds the rest of its group behind it —
-    /// two sources, because a job is in exactly one of two places:
-    ///
-    ///  - a `FAILED`/legacy `ERROR` job: a row of `msg_dispatch_jobs`, read by
-    ///    `status = ANY($statuses) AND message_group = ...` through
-    ///    `idx_dispatch_jobs_status_group`;
-    ///  - a `PENDING` job mid-retry-backoff (a **future** `scheduled_for`): a row
-    ///    of `msg_dispatch_queue`, read by `message_group` through the queue's
-    ///    order index. (It is excluded from the ordinary claim by that same
-    ///    future timestamp, so a check that only looked at terminal statuses would
-    ///    miss it.)
-    ///
+    /// point that decides whether a job holds the rest of its group behind it: a
+    /// `FAILED`/legacy `ERROR` job, or a `PENDING` job mid-retry-backoff (a **future**
+    /// `scheduled_for`; it is excluded from the ordinary claim by that same future
+    /// timestamp, so a check that only looked at terminal statuses would miss it).
     /// Deliberately excludes `QUEUED`/`PROCESSING` — the ordinary in-flight flow.
     /// Both selects project `(message_group, sequence, created_at, id)`.
-    /// The queue half is ONE ORDERED INDEX PROBE per candidate group (the first backed-off row in the group's
-    /// order, `LIMIT 1` on `idx_dispatch_queue_order`), BOUNDED by the position of the group's last candidate:
-    /// only a holder positioned before a candidate matters, and the due rows before it are few (the claim has
-    /// just deleted the candidates themselves). As a plain `message_group = ANY(...) AND scheduled_for > NOW()`
-    /// read, a custom plan (which the scheduler's pool forces) seq-scanned a 100,000-row queue; as an unbounded
-    /// probe it walks every due row of the group looking for one that is not (22-46 ms for 500 groups of 200
-    /// due rows at 100,000). Arguments: statuses, groups (jobs half), then the groups' last-candidate positions
-    /// (group, sequence, created_at as text, id).
+    /// Both halves read `msg_dispatch_jobs` through the plain index `idx_dispatch_jobs_status_group`
+    /// (status, message_group, sequence, created_at, id): the `FAILED`/`ERROR` holders by `status = ANY,
+    /// message_group = ANY`; the `PENDING`-with-a-future-`scheduled_for` holders as ONE ORDERED INDEX PROBE per
+    /// candidate group (the first backed-off row in the group's order, `LIMIT 1`), BOUNDED by the position of the
+    /// group's last candidate: only a holder positioned before a candidate can hold it, so the probe reads the
+    /// group's PENDING rows ahead of the claim and never all of a deep group's due rows. Arguments: statuses,
+    /// groups (first half), then the groups' last-candidate positions (group, sequence, created_at as text, id).
     private static final String HOLDERS_OF_GROUPS_SQL = """
             SELECT message_group, sequence, created_at, id FROM msg_dispatch_jobs
              WHERE status = ANY(?::text[]) AND message_group = ANY(?::text[])
             UNION ALL
-            SELECT h.message_group, h.sequence, h.job_created_at, h.job_id
-              FROM unnest(?::text[], ?::int[], ?::text[], ?::text[]) AS g(grp, seq, created, id)
+            SELECT h.message_group, h.sequence, h.created_at, h.id
+              FROM unnest(?::text[], ?::int[], ?::text[], ?::text[]) AS g(grp, seq, ca, jid)
              CROSS JOIN LATERAL (
-                  SELECT message_group, sequence, job_created_at, job_id FROM msg_dispatch_queue
-                   WHERE message_group = g.grp AND scheduled_for > NOW()
-                     AND (sequence, job_created_at, job_id) < (g.seq, g.created::timestamptz, g.id)
-                   ORDER BY sequence, job_created_at, job_id
+                  SELECT message_group, sequence, created_at, id FROM msg_dispatch_jobs
+                   WHERE status = 'PENDING' AND message_group = g.grp AND scheduled_for > NOW()
+                     AND (sequence, created_at, id) < (g.seq, g.ca::timestamptz, g.jid)
+                   ORDER BY sequence, created_at, id
                    LIMIT 1) h""";
 
     private static final String GROUP_HELD_BEFORE_SQL = """
             SELECT EXISTS (
                 SELECT 1 FROM msg_dispatch_jobs
                  WHERE status = ANY(?::text[]) AND message_group = ?
-                   AND (sequence, created_at, id) < (?, ?, ?)
-                UNION ALL
-                SELECT 1 FROM msg_dispatch_queue
-                 WHERE message_group = ? AND scheduled_for > NOW()
-                   AND (sequence, job_created_at, job_id) < (?, ?, ?))
+                   AND (sequence, created_at, id) < (?, ?, ?))
+            OR EXISTS (
+                SELECT 1 FROM msg_dispatch_jobs
+                 WHERE status = 'PENDING' AND message_group = ? AND scheduled_for > NOW()
+                   AND (sequence, created_at, id) < (?, ?, ?))
             """;
 
     private static final String EARLIEST_HOLDERS_SQL = "SELECT DISTINCT ON (message_group) message_group, sequence, created_at, id FROM ("
@@ -443,6 +429,97 @@ public final class DispatchJobRepository implements ProcessingRepository {
         int byCreated = a.createdAt().compareTo(b.createdAt());
         if (byCreated != 0) return byCreated < 0;
         return a.id().compareTo(b.id()) < 0;
+    }
+
+    // ── The scheduler's claim: a plain read ─────────────────────────────────
+
+    /// The claim: ONE plain SELECT — no lock, no transaction, no write. The due `PENDING` jobs in delivery
+    /// order, outside the paused subscriptions (`$paused`), the groups remembered as held (`$held`) and this
+    /// process's in-flight ids (`$inflight`). It walks `idx_dispatch_jobs_status_group` in order (the status
+    /// equality prefix, then the index's own order: a Merge Append across the partitions) and stops at the
+    /// limit — no Sort whatever the statistics say. `status = 'PENDING'` is a literal; under the scheduler pool's
+    /// `force_custom_plan` a bind gives the same plan. No array is ever NULL (`<> ALL(NULL)` is NULL).
+    static final String CLAIM_PENDING_SQL = """
+            SELECT id, created_at, message_group, sequence, scheduled_for, subscription_id,
+                   dispatch_pool_id, client_id, mode, queue, updated_at
+              FROM msg_dispatch_jobs
+             WHERE status = 'PENDING'
+               AND (scheduled_for IS NULL OR scheduled_for <= NOW())
+               AND (subscription_id IS NULL OR subscription_id <> ALL(?::text[]))
+               AND (message_group IS NULL OR message_group <> ALL(?::text[]))
+               AND id <> ALL(?::text[])
+             ORDER BY message_group NULLS LAST, sequence, created_at, id
+             LIMIT ?""";
+
+    /// The order the hold-back and the lanes depend on: group (`NULL` last), sequence, creation time, id. The
+    /// database orders by its collation; within a group the (sequence, created_at, id) order is what matters and
+    /// is collation-independent for TSIDs; re-sorting makes the order exact for the caller.
+    static final java.util.Comparator<ClaimRow> CLAIM_ORDER = java.util.Comparator
+            .comparing(ClaimRow::messageGroup, java.util.Comparator.nullsLast(java.util.Comparator.<String>naturalOrder()))
+            .thenComparingInt(ClaimRow::sequence)
+            .thenComparing(ClaimRow::createdAt)
+            .thenComparing(ClaimRow::id);
+
+    /// Up to `limit` due `PENDING` jobs in delivery order (see [#CLAIM_PENDING_SQL]).
+    public List<ClaimRow> claimPending(int limit, Collection<String> pausedSubscriptionIds,
+                                       Collection<String> heldGroups, Collection<String> inFlightIds) {
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(CLAIM_PENDING_SQL)) {
+            ps.setArray(1, conn.createArrayOf("text", pausedSubscriptionIds.toArray(String[]::new)));
+            ps.setArray(2, conn.createArrayOf("text", heldGroups.toArray(String[]::new)));
+            ps.setArray(3, conn.createArrayOf("text", inFlightIds.toArray(String[]::new)));
+            ps.setInt(4, limit);
+            List<ClaimRow> claims = new ArrayList<>(Math.min(limit, 1024));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    claims.add(new ClaimRow(rs.getString(1), rs.getString(6), rs.getString(3),
+                            DispatchMode.parse(rs.getString(9)), rs.getString(7), rs.getString(8),
+                            rs.getObject(2, OffsetDateTime.class).toInstant(), rs.getInt(4), rs.getString(10),
+                            rs.getObject(11, OffsetDateTime.class).toInstant()));
+                }
+            }
+            claims.sort(CLAIM_ORDER);
+            return claims;
+        } catch (SQLException e) {
+            throw failed("claim", e);
+        }
+    }
+
+    /// Where the backlog count saturates: "100,000+".
+    public static final int PENDING_BACKLOG_CAP = 100_000;
+
+    /// Counts `PENDING` jobs up to a cap (an index range of at most cap+1 entries of the status prefix), so a huge
+    /// backlog is never scanned in full.
+    static final String PENDING_BACKLOG_SQL = "SELECT count(*) FROM (SELECT 1 FROM msg_dispatch_jobs"
+            + " WHERE status = 'PENDING' LIMIT " + (PENDING_BACKLOG_CAP + 1) + ") s";
+
+    /// The first DUE `PENDING` job in claim order: its `created_at` is the "oldest waiting" the gauge reports.
+    static final String OLDEST_WAITING_SQL = "SELECT created_at FROM msg_dispatch_jobs"
+            + " WHERE status = 'PENDING' AND (scheduled_for IS NULL OR scheduled_for <= NOW())"
+            + " ORDER BY message_group NULLS LAST, sequence, created_at, id LIMIT 1";
+
+    /// The backlog, sampled.
+    ///
+    /// @param count            `PENDING` jobs, saturating at [#PENDING_BACKLOG_CAP]` + 1`
+    /// @param oldestCreatedAt  `created_at` of the first due one in claim order; `null` when none
+    public record Backlog(long count, Instant oldestCreatedAt) {
+    }
+
+    public Backlog pendingBacklog() {
+        try (Connection conn = dataSource.getConnection()) {
+            long count;
+            try (PreparedStatement ps = conn.prepareStatement(PENDING_BACKLOG_SQL); ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                count = rs.getLong(1);
+            }
+            Instant oldest = null;
+            try (PreparedStatement ps = conn.prepareStatement(OLDEST_WAITING_SQL); ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) oldest = rs.getObject(1, OffsetDateTime.class).toInstant();
+            }
+            return new Backlog(count, oldest);
+        } catch (SQLException e) {
+            throw failed("backlog", e);
+        }
     }
 
     /// Records one delivery attempt (dispatch-seam spec §5 "Attempt

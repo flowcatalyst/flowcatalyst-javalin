@@ -41,13 +41,13 @@ class MigratorTest {
     @Test
     void freshDatabaseAppliesV1() {
         assertThat(first.success).isTrue();
-        assertThat(first.migrationsExecuted).isEqualTo(22);
+        assertThat(first.migrationsExecuted).isEqualTo(23);
         assertThat(first.migrations).extracting(m -> m.version)
-                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23");
 
         MigrationInfo[] applied = Migrator.flyway(ds).info().applied();
-        assertThat(applied).hasSize(22);
-        assertThat(applied[applied.length - 1].getVersion().getVersion()).isEqualTo("22");
+        assertThat(applied).hasSize(23);
+        assertThat(applied[applied.length - 1].getVersion().getVersion()).isEqualTo("23");
         assertThat(applied[applied.length - 1].getState()).isEqualTo(MigrationState.SUCCESS);
         assertThat(Migrator.flyway(ds).info().pending()).isEmpty();
     }
@@ -57,7 +57,7 @@ class MigratorTest {
         MigrateResult second = Migrator.migrate(ds);
         assertThat(second.success).isTrue();
         assertThat(second.migrationsExecuted).isZero();
-        assertThat(Migrator.flyway(ds).info().applied()).hasSize(22);
+        assertThat(Migrator.flyway(ds).info().applied()).hasSize(23);
     }
 
     @Test

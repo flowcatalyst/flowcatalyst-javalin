@@ -177,7 +177,6 @@ class DispatchJobApiSignTest {
                 .set(Tables.MSG_DISPATCH_JOBS.SUBSCRIPTION_ID, subscriptionId)
                 .where(Tables.MSG_DISPATCH_JOBS.ID.eq(outOfReach))
                 .execute();
-        DispatchJobFixture.syncQueue(java.util.List.of(outOfReach)); // the queue mirrors subscription_id
 
         var r = http.post("/api/dispatch-jobs/" + outOfReach + "/sign", "", RAW_VIEWER_A);
         assertThat(r.statusCode()).as(r.body()).isEqualTo(403);

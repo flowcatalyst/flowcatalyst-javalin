@@ -79,31 +79,8 @@ class SchemaFingerprintTest {
     static final List<String> SCHEDULER_INDEXES_V22 = List.of(
             "INDEX\tmsg_dispatch_jobs\tidx_dispatch_jobs_status_group\tCREATE INDEX idx_dispatch_jobs_status_group ON ONLY public.msg_dispatch_jobs USING btree (status, message_group, sequence, created_at, id)\ttrue");
 
-    /// V21 (`msg_dispatch_queue`, dispatch-queue spec step 2) is a NEW table that
-    /// Go and Rust carry the identical DDL for, but the Go fixture is captured at
-    /// goose 57, before it. Every fingerprint line of that table (and only that
-    /// table) is therefore named here: asserted EXACT on the Java side (the spec's
-    /// DDL, nothing else), asserted ABSENT from the fixture, and excluded from the
-    /// byte-for-byte comparison. Drop this allowance when the fixture is next
-    /// re-captured from a Go database that has the table.
-    static final List<String> DISPATCH_QUEUE_LINES_V21 = List.of(
-            "COLUMN\tmsg_dispatch_queue\tclaimed_at\t12\ttimestamp with time zone\t\t\tYES\t\tNO",
-            "COLUMN\tmsg_dispatch_queue\tclient_id\t8\tcharacter varying\t17\t\tYES\t\tNO",
-            "COLUMN\tmsg_dispatch_queue\tdispatch_pool_id\t7\tcharacter varying\t17\t\tYES\t\tNO",
-            "COLUMN\tmsg_dispatch_queue\tenqueued_at\t13\ttimestamp with time zone\t\t\tNO\tnow()\tNO",
-            "COLUMN\tmsg_dispatch_queue\tjob_created_at\t2\ttimestamp with time zone\t\t\tNO\t\tNO",
-            "COLUMN\tmsg_dispatch_queue\tjob_id\t1\tcharacter varying\t13\t\tNO\t\tNO",
-            "COLUMN\tmsg_dispatch_queue\tmessage_group\t3\tcharacter varying\t200\t\tYES\t\tNO",
-            "COLUMN\tmsg_dispatch_queue\tmode\t9\tcharacter varying\t30\t\tNO\t\tNO",
-            "COLUMN\tmsg_dispatch_queue\tqueue\t10\tcharacter varying\t255\t\tYES\t\tNO",
-            "COLUMN\tmsg_dispatch_queue\tscheduled_for\t5\ttimestamp with time zone\t\t\tYES\t\tNO",
-            "COLUMN\tmsg_dispatch_queue\tsequence\t4\tinteger\t\t32\tNO\t\tNO",
-            "COLUMN\tmsg_dispatch_queue\tsubscription_id\t6\tcharacter varying\t17\t\tYES\t\tNO",
-            "COLUMN\tmsg_dispatch_queue\tversion\t11\ttimestamp with time zone\t\t\tNO\t\tNO",
-            "CONSTRAINT\tmsg_dispatch_queue\tmsg_dispatch_queue_pkey\tp\tPRIMARY KEY (job_id)",
-            "INDEX\tmsg_dispatch_queue\tidx_dispatch_queue_order\tCREATE INDEX idx_dispatch_queue_order ON public.msg_dispatch_queue USING btree (message_group, sequence, job_created_at, job_id)\ttrue",
-            "INDEX\tmsg_dispatch_queue\tmsg_dispatch_queue_pkey\tCREATE UNIQUE INDEX msg_dispatch_queue_pkey ON public.msg_dispatch_queue USING btree (job_id)\ttrue",
-            "TABLE\tmsg_dispatch_queue\tr\t");
+    /// V21 created `msg_dispatch_queue` and V23 (Go 068, dispatch step 4) drops it again: the table is NOT in the
+    /// Java schema and was never in the Go fixture, so no allowance remains — only the assertion that it is gone.
     static final String DISPATCH_QUEUE_TABLE = "msg_dispatch_queue";
 
     static boolean isDispatchQueueLine(String fingerprintLine) {
@@ -201,14 +178,13 @@ class SchemaFingerprintTest {
                 .doesNotContainAnyElementsOf(SCHEDULER_INDEXES_V20);
         assertThat(expected.lines().toList()).as("the fixture predates Go 065").containsAll(SCHEDULER_INDEXES_GO_057);
 
-        // V21's new table: exactly the spec's DDL on the Java side, not in the fixture.
+        // V21's table was retired by V23: neither side has it.
         assertThat(javaLines.stream().filter(SchemaFingerprintTest::isDispatchQueueLine).toList())
-                .as("msg_dispatch_queue as V21 creates it, exactly").isEqualTo(DISPATCH_QUEUE_LINES_V21);
+                .as("msg_dispatch_queue is retired").isEmpty();
         assertThat(expected.lines().filter(SchemaFingerprintTest::isDispatchQueueLine).toList())
                 .as("the fixture predates the table").isEmpty();
 
         var javaLinesExceptDivergent = javaLines.stream().filter(l -> !isDivergentConstraintLine(l))
-                .filter(l -> !isDispatchQueueLine(l))
                 .filter(l -> !SCHEDULER_INDEXES_V22.contains(l)).toList();
         var expectedLinesExceptDivergent = expected.lines().filter(l -> !isDivergentConstraintLine(l))
                 .filter(l -> !SCHEDULER_INDEXES_GO_057.contains(l)).toList();

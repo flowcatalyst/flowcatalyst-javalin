@@ -28,14 +28,8 @@ public final class SchedulerMetrics {
     final LongAdder droppedPoisoned = new LongAdder();
     final LongAdder markNotUpdated = new LongAdder();
     final LongAdder fullBatchClaims = new LongAdder();
-    final LongAdder claimsRestored = new LongAdder();
-    final LongAdder restoreErrors = new LongAdder();
     final LongAdder alreadyInFlight = new LongAdder();
-    final LongAdder leaderStartRestored = new LongAdder();
     final LongAdder staleQueuedRecovered = new LongAdder();
-    final LongAdder reconcileInserted = new LongAdder();
-    final LongAdder reconcileDeleted = new LongAdder();
-    final LongAdder reconcileRefreshed = new LongAdder();
     final LongAdder maintenanceErrors = new LongAdder();
     private volatile LongSupplier heldGroups = () -> 0;
     private volatile long backlogDepth;
@@ -135,38 +129,21 @@ public final class SchedulerMetrics {
                     markNotUpdated);
             counter(b, "fc_scheduler_full_batch_claims_total",
                     "Claims that filled everything asked for (a backlog deeper than one claim).", fullBatchClaims);
-            counter(b, "fc_scheduler_claims_restored_total",
-                    "Queue rows put back because the job was not published (failed publish, poisoned drop, doomed or hold-back withhold, failed QUEUED update, shutdown).",
-                    claimsRestored);
-            counter(b, "fc_scheduler_claim_restore_errors_total",
-                    "Restores that failed; the reconcile sweep restores those rows.", restoreErrors);
             counter(b, "fc_scheduler_claims_already_in_flight_total",
-                    "Claimed jobs this process still had in flight (a restored or refreshed row claimed again): put back, not submitted twice.",
+                    "Claimed jobs this process still had in flight (the claim excludes them, so this should stay zero): dropped, not submitted twice.",
                     alreadyInFlight);
-            counter(b, "fc_scheduler_leader_start_restored_total",
-                    "Queue rows restored by the new leader's start-up reconcile pass (jobs a dead claimer left PENDING with no queue row).",
-                    leaderStartRestored);
             counter(b, "fc_scheduler_stale_queued_recovered_total",
                     "Jobs the leader returned from QUEUED to PENDING after the stale threshold (15 minutes).",
                     staleQueuedRecovered);
-            counter(b, "fc_scheduler_queue_reconcile_inserted_total",
-                    "PENDING jobs the reconcile sweep found with no queue row and gave one (a bug or an old binary writing the table).",
-                    reconcileInserted);
-            counter(b, "fc_scheduler_queue_reconcile_deleted_total",
-                    "Queue rows the reconcile sweep deleted because their job is missing or not PENDING.",
-                    reconcileDeleted);
-            counter(b, "fc_scheduler_queue_reconcile_refreshed_total",
-                    "Queue rows the reconcile sweep refreshed because they differed from their job.",
-                    reconcileRefreshed);
             counter(b, "fc_scheduler_maintenance_errors_total",
-                    "Maintenance sweeps (stale claims, reconcile, stale QUEUED, backlog sample) that ended in an error.",
+                    "Maintenance sweeps (stale QUEUED, backlog sample) that ended in an error.",
                     maintenanceErrors);
             b.metricSnapshot(GaugeSnapshot.builder().name("fc_dispatch_queue_backlog_jobs")
-                    .help("Jobs waiting in msg_dispatch_queue: unclaimed and due. Sampled by the leader every 15 s.")
+                    .help("PENDING jobs (saturating at 100,001). Sampled by the leader every 30 s.")
                     .dataPoint(GaugeSnapshot.GaugeDataPointSnapshot.builder().value(backlogDepth).build())
                     .build());
             b.metricSnapshot(GaugeSnapshot.builder().name("fc_dispatch_queue_oldest_waiting_seconds")
-                    .help("Age of the oldest unclaimed due job in msg_dispatch_queue (0 when none). Sampled by the leader every 15 s.")
+                    .help("Age (by created_at) of the first due PENDING job in claim order (0 when none). Sampled by the leader every 30 s.")
                     .dataPoint(GaugeSnapshot.GaugeDataPointSnapshot.builder().value(backlogOldestAgeSeconds).build())
                     .build());
             counter(b, "fc_scheduler_poll_errors_total", "Polls that ended in an error.", pollErrors);

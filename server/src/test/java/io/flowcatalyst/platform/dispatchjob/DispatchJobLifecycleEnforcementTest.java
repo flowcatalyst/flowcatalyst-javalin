@@ -31,9 +31,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// classes are out of scope. Adding a writer anywhere else fails here: route
 /// the change through the lifecycle instead.
 ///
-/// The same scan runs for `msg_dispatch_queue` (the waiting jobs, kept exact by
-/// the lifecycle — dispatch-queue spec step 2): only the lifecycle writes it,
-/// plus the two named exceptions in [#QUEUE_EXCEPTIONS].
+/// Dispatch step 4 retired `msg_dispatch_queue`: [#nothingInProductionCodeMentionsTheRetiredQueueTable] fails
+/// the build if production code names it again.
 class DispatchJobLifecycleEnforcementTest {
 
     /// The deliberate exceptions, each with its reason. Anything not listed
@@ -43,13 +42,6 @@ class DispatchJobLifecycleEnforcementTest {
             "the projector's `projected_at` stamp: bookkeeping, never a status",
             "io/flowcatalyst/stream/PartitionManager.java",
             "partition DDL: drops whole expired partitions (retention), not rows through the lifecycle",
-            "io/flowcatalyst/fcdev/FreshCommand.java",
-            "`fcdev fresh` truncates the dev database");
-
-    /// The deliberate exceptions for `msg_dispatch_queue`, each with its reason.
-    static final Map<String, String> QUEUE_EXCEPTIONS = Map.of(
-            "io/flowcatalyst/stream/PartitionManager.java",
-            "dropping a msg_dispatch_jobs partition deletes the queue rows of the jobs in it, in the same transaction",
             "io/flowcatalyst/fcdev/FreshCommand.java",
             "`fcdev fresh` truncates the dev database");
 
@@ -65,7 +57,6 @@ class DispatchJobLifecycleEnforcementTest {
     }
 
     static final Owned JOBS = new Owned("msg_dispatch_jobs", "MSG_DISPATCH_JOBS", EXCEPTIONS);
-    static final Owned QUEUE = new Owned("msg_dispatch_queue", "MSG_DISPATCH_QUEUE", QUEUE_EXCEPTIONS);
 
     @Test
     void onlyTheLifecycleWritesTheDispatchJobsTable() throws IOException {
@@ -74,11 +65,21 @@ class DispatchJobLifecycleEnforcementTest {
                 route the write through the lifecycle (status has ONE owner)""");
     }
 
+    /// The queue table is gone (migration V23): no production source names it, so a statement against it
+    /// cannot come back unnoticed.
     @Test
-    void onlyTheLifecycleWritesTheDispatchQueueTable() throws IOException {
-        assertOnlyTheLifecycleWrites(QUEUE, """
-                production code outside DispatchJobLifecycle writes msg_dispatch_queue; \
-                the queue is kept exact by the lifecycle's own statements (one row per PENDING job)""");
+    void nothingInProductionCodeMentionsTheRetiredQueueTable() throws IOException {
+        var hits = new ArrayList<String>();
+        for (Path root : sourceRoots()) {
+            try (Stream<Path> files = Files.walk(root)) {
+                for (Path file : (Iterable<Path>) files.filter(f -> f.toString().endsWith(".java"))::iterator) {
+                    String rel = root.relativize(file).toString().replace('\\', '/');
+                    if (stripComments(Files.readString(file)).contains("msg_dispatch_queue")
+                            || stripComments(Files.readString(file)).contains("MSG_DISPATCH_QUEUE")) hits.add(rel);
+                }
+            }
+        }
+        assertThat(hits).as("msg_dispatch_queue was retired by V23; production code must not use it").isEmpty();
     }
 
     private static void assertOnlyTheLifecycleWrites(Owned owned, String message) throws IOException {
@@ -133,22 +134,6 @@ class DispatchJobLifecycleEnforcementTest {
         assertThat(writes("var T = MSG_DISPATCH_JOBS;\n dsl.selectFrom(T).fetch()")).isNull();
         assertThat(stripComments("// UPDATE msg_dispatch_jobs SET x\n/* INSERT INTO msg_dispatch_jobs */ int a;"))
                 .doesNotContain("msg_dispatch_jobs");
-    }
-
-    /// The same scanner for the queue table, and the two tables are not confused.
-    @Test
-    void theScannerAlsoGuardsTheQueueTable() {
-        assertThat(writes("\"INSERT INTO msg_dispatch_queue (job_id) VALUES (?)\"", QUEUE)).isNotNull();
-        assertThat(writes("\"WITH moved AS (SELECT 1) DELETE FROM msg_dispatch_queue q USING moved m\"", QUEUE)).isNotNull();
-        assertThat(writes("\"UPDATE msg_dispatch_queue SET version = now()\"", QUEUE)).isNotNull();
-        assertThat(writes("\"TRUNCATE msg_dispatch_queue\"", QUEUE)).isNotNull();
-        assertThat(writes("dsl.deleteFrom(MSG_DISPATCH_QUEUE).where(x)", QUEUE)).isNotNull();
-        assertThat(writes("var Q = Tables.MSG_DISPATCH_QUEUE;\n dsl.insertInto(Q).set(a, b)", QUEUE)).isNotNull();
-        assertThat(writes("dsl.update(DSL.table(\"msg_dispatch_queue\"))", QUEUE)).isNotNull();
-        assertThat(writes("\"SELECT count(*) FROM msg_dispatch_queue WHERE x\"", QUEUE)).as("a read").isNull();
-        assertThat(writes("dsl.selectFrom(MSG_DISPATCH_QUEUE).fetch()", QUEUE)).as("a read").isNull();
-        assertThat(writes("\"UPDATE msg_dispatch_jobs SET status = 'X'\"", QUEUE)).as("the jobs table is the other scan").isNull();
-        assertThat(writes("\"DELETE FROM msg_dispatch_queue\"", JOBS)).as("the queue table is the other scan").isNull();
     }
 
     static String writes(String code) {

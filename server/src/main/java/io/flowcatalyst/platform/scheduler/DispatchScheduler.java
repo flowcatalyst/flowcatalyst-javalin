@@ -92,8 +92,7 @@ public final class DispatchScheduler implements AutoCloseable {
         var poolCodes = new PoolCodeResolver(pool);
         var poller = new PendingJobPoller(pool, repository, lifecycle, pausedCache, poolCodes, publisher, authVerifier,
                 processingEndpoint, leader, config);
-        var maintenance = new QueueMaintenance(lifecycle, () -> poller.lanes().inFlightIds(), leader, poller.metrics(),
-                QueueMaintenance.Timing.DEFAULTS, poller.claimLock());
+        var maintenance = new QueueMaintenance(lifecycle, repository, leader, poller.metrics(), QueueMaintenance.Timing.DEFAULTS);
         var scheduler = new DispatchScheduler(poller, config, maintenance);
         scheduler.thread.start();
         maintenance.start();

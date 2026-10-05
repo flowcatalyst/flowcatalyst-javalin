@@ -21,8 +21,6 @@ import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.DB;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.DS;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.RUN;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.code;
-import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.assertQueueMirrorsJob;
-import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.queueRow;
 import static io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.seedWriteRow;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -161,8 +159,6 @@ class DispatchJobLifecycleTest {
                 }
                 Case c = seedJob(from, group, 2);
                 Map<String, Object> before = rawRow(c.id());
-                Map<String, Object> queueBefore = queueRow(c.id());
-                assertQueueMirrorsJob(c.id(), t + " from " + from + ", seeded");
                 long refusedBefore = DispatchJobLifecycle.refused(t);
 
                 driver(t).accept(c, null);
@@ -172,8 +168,6 @@ class DispatchJobLifecycleTest {
                 if (expected == null) {
                     assertThat(after).as(label + ": refused, row untouched (status, updated_at, every column)")
                             .isEqualTo(before);
-                    assertThat(queueRow(c.id())).as(label + ": refused, queue row untouched (byte-identical, or still absent)")
-                            .isEqualTo(queueBefore);
                     if (t != Transition.SWEEP_STRANDED && t != Transition.STALE_QUEUED) {
                         assertThat(DispatchJobLifecycle.refused(t)).as(label + ": refusal counted")
                                 .isEqualTo(refusedBefore + 1);
@@ -184,9 +178,6 @@ class DispatchJobLifecycleTest {
                             .isAfter((OffsetDateTime) before.get("updated_at"));
                     assertThat(DispatchJobLifecycle.refused(t)).as(label + ": no refusal").isEqualTo(refusedBefore);
                 }
-                // after EVERY pair: a queue row iff the job is PENDING, mirroring it, unclaimed
-                // (a refused transition leaves a consistent pair consistent)
-                assertQueueMirrorsJob(c.id(), label);
             }
         }
     }

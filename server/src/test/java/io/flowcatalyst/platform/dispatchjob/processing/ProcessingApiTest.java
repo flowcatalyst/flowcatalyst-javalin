@@ -222,7 +222,6 @@ class ProcessingApiTest {
                 .set(Tables.MSG_DISPATCH_JOBS.SCHEDULED_FOR, scheduledFor.atOffset(ZoneOffset.UTC))
                 .where(Tables.MSG_DISPATCH_JOBS.ID.eq(id))
                 .execute();
-        DispatchJobFixture.syncQueue(java.util.List.of(id)); // a backed-off holder is read from the queue
     }
 
     /// `msg_dispatch_jobs.data_only` defaults to `true` (V1__baseline.sql),
@@ -535,7 +534,6 @@ class ProcessingApiTest {
                 .set(Tables.MSG_DISPATCH_JOBS.SCHEDULED_FOR, java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC).minusSeconds(1))
                 .where(Tables.MSG_DISPATCH_JOBS.ID.eq(id))
                 .execute();
-        DispatchJobFixture.syncQueue(java.util.List.of(id));
     }
 
     // ── (d) cooperative deferral (ack:false) spends no budget ───────────

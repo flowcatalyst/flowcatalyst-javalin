@@ -95,7 +95,6 @@ final class StreamFixture {
                 .set(MSG_DISPATCH_JOBS.CREATED_AT, createdAt.atOffset(ZoneOffset.UTC))
                 .set(MSG_DISPATCH_JOBS.UPDATED_AT, updatedAt.atOffset(ZoneOffset.UTC))
                 .execute();
-        io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.syncQueue(java.util.List.of(id)); // the queue stays exact
         return id;
     }
 }

@@ -16,7 +16,6 @@ import java.util.Locale;
 import java.util.UUID;
 
 import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS;
-import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_QUEUE;
 import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS_READ;
 import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOB_ATTEMPTS;
 
@@ -208,58 +207,23 @@ public final class DispatchJobFixture {
         return s.id();
     }
 
-    /// The write-table row (`msg_dispatch_jobs`): `id`, `code`,
-    /// `target_url`, `created_at`, `updated_at` are the mandatory columns; the
-    /// rest default or are nullable (spec §9). When the row is `PENDING` its queue
-    /// row is written too, unclaimed ([#syncQueue]) — the queue is exact whatever
-    /// a test seeds, so the scheduler can claim what a test seeded.
+    /// The write-table row (`msg_dispatch_jobs`): `id`, `code`, `target_url`, `created_at`, `updated_at` are the
+    /// mandatory columns; the rest default or are nullable (spec §9).
     public static String seedWriteRow(Seed s) {
-        insertWriteRow(s);
-        syncQueue(java.util.List.of(s.id()));
-        return s.id();
-    }
-
-    /// Makes `msg_dispatch_queue` exact for these jobs after a test changed them
-    /// directly (test-only: production code writes the queue only in the lifecycle):
-    /// a job that is not `PENDING` (or no longer exists) has no queue row, and a
-    /// `PENDING` job has one mirroring it — `version = updated_at` . Use
-    /// after any direct insert or update of `msg_dispatch_jobs`.
-    public static void syncQueue(java.util.Collection<String> jobIds) {
-        if (jobIds.isEmpty()) return;
-        String[] ids = jobIds.toArray(String[]::new);
-        DB.execute("DELETE FROM msg_dispatch_queue q WHERE q.job_id = ANY(?::text[]) AND NOT EXISTS ("
-                + "SELECT 1 FROM msg_dispatch_jobs j WHERE j.id = q.job_id AND j.created_at = q.job_created_at"
-                + " AND j.status = 'PENDING')", (Object) ids);
-        DB.execute("INSERT INTO msg_dispatch_queue AS q (job_id, job_created_at, message_group, sequence, scheduled_for,"
-                + " subscription_id, dispatch_pool_id, client_id, mode, queue, version)"
-                + " SELECT id, created_at, message_group, sequence, scheduled_for, subscription_id, dispatch_pool_id,"
-                + " client_id, mode, queue, updated_at FROM msg_dispatch_jobs WHERE id = ANY(?::text[]) AND status = 'PENDING'"
-                + " ON CONFLICT (job_id) DO UPDATE SET job_created_at = EXCLUDED.job_created_at,"
-                + " message_group = EXCLUDED.message_group, sequence = EXCLUDED.sequence,"
-                + " scheduled_for = EXCLUDED.scheduled_for, subscription_id = EXCLUDED.subscription_id,"
-                + " dispatch_pool_id = EXCLUDED.dispatch_pool_id, client_id = EXCLUDED.client_id, mode = EXCLUDED.mode,"
-                + " queue = EXCLUDED.queue, version = EXCLUDED.version", (Object) ids);
-    }
-
-    /// Sets a job's status directly (test-only, behind the lifecycle's back) and keeps the
-    /// queue exact; `updated_at` is bumped, as every lifecycle transition does.
-    public static void setStatus(String jobId, String status) {
-        DB.execute("UPDATE msg_dispatch_jobs SET status = ?, updated_at = now() WHERE id = ?", status, jobId);
-        syncQueue(java.util.List.of(jobId));
-    }
-
-    /// The write row ALONE, with no queue row, whatever its status: the table as an older
-    /// binary (or the migration's backfill test) leaves it.
-    public static String seedWriteRowOnly(Seed s) {
         return insertWriteRow(s);
     }
 
-    /// Sets every job currently in one of `fromStatuses` to `status` directly (test-only) and
-    /// keeps the queue exact; a test's cleanup between cases.
+    /// Sets a job's status directly (test-only, behind the lifecycle's back); `updated_at` is bumped, as every
+    /// lifecycle transition does.
+    public static void setStatus(String jobId, String status) {
+        DB.execute("UPDATE msg_dispatch_jobs SET status = ?, updated_at = now() WHERE id = ?", status, jobId);
+    }
+
+    /// Sets every job currently in one of `fromStatuses` to `status` directly (test-only); a test's cleanup
+    /// between cases.
     public static void setStatusWhere(String status, String... fromStatuses) {
-        var ids = DB.fetch("UPDATE msg_dispatch_jobs SET status = ?, updated_at = now() WHERE status = ANY(?::text[]) RETURNING id",
-                status, (Object) fromStatuses).getValues(0, String.class);
-        syncQueue(ids);
+        DB.execute("UPDATE msg_dispatch_jobs SET status = ?, updated_at = now() WHERE status = ANY(?::text[])",
+                status, (Object) fromStatuses);
     }
 
     private static String insertWriteRow(Seed s) {
@@ -290,37 +254,6 @@ public final class DispatchJobFixture {
                 .set(MSG_DISPATCH_JOBS.UPDATED_AT, utc(s.updatedAt() == null ? s.createdAt() : s.updatedAt()))
                 .execute();
         return s.id();
-    }
-
-    /// The queue row of `jobId` as a column map, or `null` when there is none.
-    public static Map<String, Object> queueRow(String jobId) {
-        var rec = DB.fetchOne(MSG_DISPATCH_QUEUE, MSG_DISPATCH_QUEUE.JOB_ID.eq(jobId));
-        return rec == null ? null : rec.intoMap();
-    }
-
-    /// The invariant for one job: a queue row exists iff the job is `PENDING`, and
-    /// when it exists it mirrors the job (`version = updated_at`, `scheduled_for`,
-    /// group, sequence, pool, client, subscription, mode, queue) and .
-    public static void assertQueueMirrorsJob(String jobId, String label) {
-        var job = DB.fetchOne(MSG_DISPATCH_JOBS, MSG_DISPATCH_JOBS.ID.eq(jobId));
-        org.assertj.core.api.Assertions.assertThat(job).as(label + ": job exists").isNotNull();
-        Map<String, Object> q = queueRow(jobId);
-        if (!"PENDING".equals(job.getStatus())) {
-            org.assertj.core.api.Assertions.assertThat(q).as(label + ": job is " + job.getStatus() + ", no queue row").isNull();
-            return;
-        }
-        org.assertj.core.api.Assertions.assertThat(q).as(label + ": PENDING job has a queue row").isNotNull();
-        var a = org.assertj.core.api.Assertions.assertThat(q).as(label + ": queue row mirrors the job");
-        a.containsEntry("job_created_at", job.getCreatedAt());
-        a.containsEntry("version", job.getUpdatedAt());
-        a.containsEntry("scheduled_for", job.getScheduledFor());
-        a.containsEntry("message_group", job.getMessageGroup());
-        a.containsEntry("sequence", job.getSequence());
-        a.containsEntry("dispatch_pool_id", job.getDispatchPoolId());
-        a.containsEntry("client_id", job.getClientId());
-        a.containsEntry("subscription_id", job.getSubscriptionId());
-        a.containsEntry("mode", job.getMode());
-        a.containsEntry("queue", job.getQueue());
     }
 
     /// The projection row only (`msg_dispatch_jobs_read`): fewer defaults

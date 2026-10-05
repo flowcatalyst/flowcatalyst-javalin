@@ -20,3 +20,4 @@ V19__idp_allowed_tenants.sql
 V20__dispatch_job_scheduler_indexes.sql
 V21__dispatch_queue.sql
 V22__dispatch_queue_claim.sql
+V23__retire_dispatch_queue.sql

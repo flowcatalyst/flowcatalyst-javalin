@@ -261,9 +261,6 @@ class PendingJobPollerConcurrencyTest {
         assertThat(second.submitted()).as("nothing behind the doomed j2 is submitted").isZero();
         assertThat(second.backOff()).as("it will be claimable again in moments: no sleep").isFalse();
         assertThat(poller.metrics().skippedDoomed()).isEqualTo(2);
-        assertThat(DispatchJobFixture.queueRow(j1)).as("withheld: its queue row was restored").isNotNull();
-        assertThat(DispatchJobFixture.queueRow(ids.get(2))).as("withheld: its queue row was restored").isNotNull();
-        assertThat(DispatchJobFixture.queueRow(ids.get(1))).as("j2 is still held in a lane: no row").isNull();
 
         poller.lanes().afterPoisonHook = null;
         release.countDown();

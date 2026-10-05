@@ -183,57 +183,12 @@ public final class PartitionManager implements Runnable {
             if (end.isEmpty() || end.get().isAfter(cutoff)) {
                 continue;
             }
-            if (DISPATCH_JOBS.equals(parent)) {
-                dropDispatchJobsPartition(conn, child, end.get());
-            } else {
-                try (Statement stmt = conn.createStatement()) {
-                    stmt.execute("DROP TABLE IF EXISTS " + child);
-                }
+            try (Statement stmt = conn.createStatement()) {
+                stmt.execute("DROP TABLE IF EXISTS " + child);
             }
             dropped++;
         }
         return dropped;
-    }
-
-    /// The dispatch-jobs parent: dropping its partition also discards the queue
-    /// rows of the jobs in it (`msg_dispatch_queue.job_created_at` inside the
-    /// partition's range).
-    private static final String DISPATCH_JOBS = "msg_dispatch_jobs";
-
-    /// Drops one `msg_dispatch_jobs` partition and, in the SAME transaction, the
-    /// `msg_dispatch_queue` rows whose `job_created_at` falls in its range
-    /// (`[end - 1 month, end)`), so no queue row outlives its job. The rows were
-    /// PENDING jobs being discarded by retention: logged at WARN when there are
-    /// any. This is the one place besides `DispatchJobLifecycle` that writes the
-    /// queue table (named in `DispatchJobLifecycleEnforcementTest`).
-    private static void dropDispatchJobsPartition(Connection conn, String child, Instant end) throws SQLException {
-        Instant start = end.atZone(ZoneOffset.UTC).minusMonths(1).toInstant();
-        boolean autoCommit = conn.getAutoCommit();
-        conn.setAutoCommit(false);
-        int removed;
-        try {
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "DELETE FROM msg_dispatch_queue WHERE job_created_at >= ?::timestamptz AND job_created_at < ?::timestamptz")) {
-                ps.setString(1, start.toString());
-                ps.setString(2, end.toString());
-                removed = ps.executeUpdate();
-            }
-            try (Statement stmt = conn.createStatement()) {
-                stmt.execute("DROP TABLE IF EXISTS " + child);
-            }
-            conn.commit();
-        } catch (SQLException | RuntimeException e) {
-            conn.rollback();
-            throw e;
-        } finally {
-            conn.setAutoCommit(autoCommit);
-        }
-        if (removed > 0) {
-            LOG.atWarn().setMessage("partition manager: dropped a dispatch-jobs partition that still held PENDING jobs")
-                    .addKeyValue("partition", child)
-                    .addKeyValue("queue_rows_removed", removed)
-                    .log();
-        }
     }
 
     private static boolean tableExists(Connection conn, String tableName) throws SQLException {

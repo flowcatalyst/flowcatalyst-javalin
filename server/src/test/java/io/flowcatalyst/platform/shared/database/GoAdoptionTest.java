@@ -74,12 +74,12 @@ class GoAdoptionTest {
         // Java-only table, like V8's and V13's. V20 (Go 065, the dispatch-job
         // index set) is a real change on this goose-57 database: it replaces
         // three msg_dispatch_jobs indexes, exactly as Go 065 does.
-        assertThat(result.migrationsExecuted).isEqualTo(21);
+        assertThat(result.migrationsExecuted).isEqualTo(22);
         assertThat(result.migrations).extracting(m -> m.version)
-                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22");
+                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23");
 
         MigrationInfo[] applied = Migrator.flyway(ds).info().applied();
-        assertThat(applied).hasSize(22);
+        assertThat(applied).hasSize(23);
         assertThat(applied[0].getVersion().getVersion()).isEqualTo("1");
         assertThat(applied[0].getState()).isEqualTo(MigrationState.BASELINE);
         for (int i = 1; i < applied.length; i++) {
@@ -99,7 +99,7 @@ class GoAdoptionTest {
                 assertThat(rs.getString(1)).isEqualTo("BASELINE");
                 assertThat(rs.getString(2)).isEqualTo("1");
                 assertThat(rs.getBoolean(3)).isTrue();
-                for (int v = 2; v <= 22; v++) {
+                for (int v = 2; v <= 23; v++) {
                     assertThat(rs.next()).isTrue();
                     assertThat(rs.getString(2)).isEqualTo(String.valueOf(v));
                     assertThat(rs.getBoolean(3)).isTrue();
@@ -285,15 +285,13 @@ class GoAdoptionTest {
         assertThat(afterLines).containsAll(SchemaFingerprintTest.SCHEDULER_INDEXES_V22)
                 .doesNotContainAnyElementsOf(SchemaFingerprintTest.SCHEDULER_INDEXES_GO_057)
                 .doesNotContainAnyElementsOf(SchemaFingerprintTest.SCHEDULER_INDEXES_V20);
-        // V21 adds msg_dispatch_queue: exactly the spec's DDL, and nothing of it before.
+        // V21 added msg_dispatch_queue and V23 dropped it: no line of it before or after.
         assertThat(before.lines().filter(SchemaFingerprintTest::isDispatchQueueLine).toList()).isEmpty();
-        assertThat(afterLines.stream().filter(SchemaFingerprintTest::isDispatchQueueLine).toList())
-                .isEqualTo(SchemaFingerprintTest.DISPATCH_QUEUE_LINES_V21);
+        assertThat(afterLines.stream().filter(SchemaFingerprintTest::isDispatchQueueLine).toList()).isEmpty();
         List<String> afterWithoutNewLines = afterLines.stream()
                 .filter(l -> !javaOnlyTableLines.contains(l))
                 .filter(l -> !SchemaFingerprintTest.isDivergentConstraintLine(l))
                 .filter(l -> !SchemaFingerprintTest.SCHEDULER_INDEXES_V22.contains(l))
-                .filter(l -> !SchemaFingerprintTest.isDispatchQueueLine(l))
                 .map(l -> l.equals(SchemaFingerprintTest.WIDENED_COLUMN_JAVA) ? SchemaFingerprintTest.WIDENED_COLUMN_GO : l)
                 .toList();
         List<String> beforeWithoutDivergent = before.lines()
@@ -301,7 +299,7 @@ class GoAdoptionTest {
                 .filter(l -> !SchemaFingerprintTest.SCHEDULER_INDEXES_GO_057.contains(l))
                 .toList();
         assertThat(afterWithoutNewLines)
-                .as("V2..V7, V9, V10, V12 and V14 change nothing beyond V8's/V13's new Java-only tables, the one named divergent constraint, V18's one widened column and V20/V22's three replaced indexes and one new one, and V21's one new table")
+                .as("V2..V7, V9, V10, V12 and V14 change nothing beyond V8's/V13's new Java-only tables, the one named divergent constraint, V18's one widened column and V20/V22's three replaced indexes and one new one, and V23 leaves no queue table")
                 .containsExactlyInAnyOrderElementsOf(beforeWithoutDivergent);
         assertThat(javaOnlyTableLines).as("V8 adds mail_outbox and V13 adds the fn_ tables").isNotEmpty();
 

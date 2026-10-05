@@ -20,16 +20,17 @@ import java.util.concurrent.ThreadLocalRandom;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// An adversarial multi-threaded run of the poller's claim loop against the
-/// lanes, with a model of the queue table as the "database" (a claim sets
-/// being deleted; a publish keeps it out; every other outcome restores the
-/// claim): 3,000 jobs in 30 groups,
+/// lanes, with a model of the job table as the "database" (a claim is a read
+/// that excludes the in-flight ids; a published job leaves the pending set):
+/// 3,000 jobs in 30 groups,
 /// a buffer of 24, four lanes, claims of 8, lane batches of 5, 3% random publish
 /// failures, 1% random status-update failures, and random jitter in the store
 /// and the publisher. Every job must eventually be published (within 30 s — a
 /// livelock shows as a timeout), and each group's FIRST delivery of every job
 /// must be in claim order (a duplicate after a failed status update is allowed).
 ///
-/// The iteration count comes from `-Dstress.iterations` (default 5).
+/// The iteration count comes from `-Dstress.iterations` (default 200, about 35 s: this class found real
+/// ordering bugs only at hundreds of iterations, so the normal build runs hundreds).
 /// A probabilistic backstop: the interleavings the ordering rule rests on are
 /// driven deterministically by [DispatchLanesTest] and
 /// `PendingJobPollerConcurrencyTest`.
@@ -68,8 +69,6 @@ class DispatchLanesStressTest {
     /// order) and the publisher in front of it.
     private static final class Model implements DispatchPublisher {
         final Map<Integer, TreeSet<Integer>> pending = new TreeMap<>();
-        /// Ids whose queue row was deleted by a claim: out of every claim until restored.
-        final Set<String> claimed = new HashSet<>();
         final Map<Integer, List<Integer>> received = new TreeMap<>();
         final Map<Integer, Set<Integer>> seen = new TreeMap<>();
         final List<String> orderViolations = new ArrayList<>();
@@ -88,27 +87,18 @@ class DispatchLanesStressTest {
             return pending.values().stream().mapToInt(Set::size).sum();
         }
 
-        /// The claim: rows still in the queue, in `(group, sequence)` order, which it deletes.
-        List<ClaimRow> claim(int limit) {
+        /// The claim: pending rows in `(group, sequence)` order, minus the excluded (in-flight) ids.
+        List<ClaimRow> claim(int limit, Set<String> inFlight) {
             jitter(300);
             synchronized (this) {
                 var rows = new ArrayList<ClaimRow>();
                 for (var e : pending.entrySet()) {
                     for (int seq : e.getValue()) {
                         if (rows.size() >= limit) return rows;
-                        String id = id(e.getKey(), seq);
-                        if (claimed.add(id)) rows.add(row(e.getKey(), seq));
+                        if (!inFlight.contains(id(e.getKey(), seq))) rows.add(row(e.getKey(), seq));
                     }
                 }
                 return rows;
-            }
-        }
-
-        /// The restore: the rows go back.
-        void release(List<ClaimRow> rows) {
-            jitter(200);
-            synchronized (this) {
-                for (ClaimRow r : rows) claimed.remove(r.id());
             }
         }
 
@@ -121,7 +111,6 @@ class DispatchLanesStressTest {
                 for (ClaimRow r : rows) {
                     int g = Integer.parseInt(r.id().substring(2, 4));
                     if (pending.get(g).remove(Integer.parseInt(r.id().substring(5)))) n++;
-                    claimed.remove(r.id());
                 }
                 return n;
             }
@@ -166,13 +155,8 @@ class DispatchLanesStressTest {
             int want = lanes.acquirePermits(batch);
             long generation = lanes.nextGeneration();
             var snapshot = lanes.inFlightSnapshot();
-            var rows = model.claim(want);
+            var rows = model.claim(want, new HashSet<>(snapshot.ids()));
             var submit = lanes.withoutGroupsBehindDoomedJobs(rows, snapshot);
-            if (submit.size() != rows.size()) {
-                var kept = new HashSet<String>();
-                for (var r : submit) kept.add(r.id());
-                model.release(rows.stream().filter(r -> !kept.contains(r.id())).toList());
-            }
             lanes.submit(submit, generation);
             lanes.releasePermits(want - submit.size());
             if (rows.size() < want) Thread.sleep(1);
@@ -181,14 +165,14 @@ class DispatchLanesStressTest {
 
     @Test
     void whatTheBrokerReceivesIsInOrderPerGroupAndEveryJobArrivesUnderAdversarialLoad() throws Exception {
-        int iterations = Integer.getInteger("stress.iterations", 5);
+        int iterations = Integer.getInteger("stress.iterations", 200);
         var failures = new ArrayList<String>();
         for (int i = 0; i < iterations; i++) {
             var model = new Model();
             var config = SchedulerConfig.DEFAULTS.withBufferCapacity(24).withDispatchers(4).withLaneBatch(5);
             var metrics = new SchedulerMetrics(config.dispatchers());
             long claims = 0;
-            try (var lanes = new DispatchLanes(config, model::mark, model::release, model, DispatchLanesStressTest::message,
+            try (var lanes = new DispatchLanes(config, model::mark, model, DispatchLanesStressTest::message,
                     metrics, System::nanoTime)) {
                 lanes.start();
                 var poller = new Thread(() -> {

@@ -42,7 +42,6 @@ import io.flowcatalyst.db.generated.tables.MsgDispatchJobProjectionFeed;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobs;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobsRead;
 import io.flowcatalyst.db.generated.tables.MsgDispatchPools;
-import io.flowcatalyst.db.generated.tables.MsgDispatchQueue;
 import io.flowcatalyst.db.generated.tables.MsgEventProjectionFeed;
 import io.flowcatalyst.db.generated.tables.MsgEventTypeSpecVersions;
 import io.flowcatalyst.db.generated.tables.MsgEventTypes;
@@ -116,7 +115,6 @@ public class Indexes {
     public static final Index IDX_AUD_LOGS_PERFORMED = Internal.createIndex(DSL.name("idx_aud_logs_performed"), AudLogs.AUD_LOGS, new OrderField[] { AudLogs.AUD_LOGS.PERFORMED_AT }, false);
     public static final Index IDX_AUD_LOGS_PRINCIPAL = Internal.createIndex(DSL.name("idx_aud_logs_principal"), AudLogs.AUD_LOGS, new OrderField[] { AudLogs.AUD_LOGS.PRINCIPAL_ID }, false);
     public static final Index IDX_DISPATCH_JOBS_STATUS_GROUP = Internal.createIndex(DSL.name("idx_dispatch_jobs_status_group"), MsgDispatchJobs.MSG_DISPATCH_JOBS, new OrderField[] { MsgDispatchJobs.MSG_DISPATCH_JOBS.STATUS, MsgDispatchJobs.MSG_DISPATCH_JOBS.MESSAGE_GROUP, MsgDispatchJobs.MSG_DISPATCH_JOBS.SEQUENCE, MsgDispatchJobs.MSG_DISPATCH_JOBS.CREATED_AT, MsgDispatchJobs.MSG_DISPATCH_JOBS.ID }, false);
-    public static final Index IDX_DISPATCH_QUEUE_ORDER = Internal.createIndex(DSL.name("idx_dispatch_queue_order"), MsgDispatchQueue.MSG_DISPATCH_QUEUE, new OrderField[] { MsgDispatchQueue.MSG_DISPATCH_QUEUE.MESSAGE_GROUP, MsgDispatchQueue.MSG_DISPATCH_QUEUE.SEQUENCE, MsgDispatchQueue.MSG_DISPATCH_QUEUE.JOB_CREATED_AT, MsgDispatchQueue.MSG_DISPATCH_QUEUE.JOB_ID }, false);
     public static final Index IDX_FN_DOMAINS_CLIENT_ID = Internal.createIndex(DSL.name("idx_fn_domains_client_id"), FnDomains.FN_DOMAINS, new OrderField[] { FnDomains.FN_DOMAINS.CLIENT_ID }, false);
     public static final Index IDX_FN_HOSTS_POOL_LAST_HEARTBEAT = Internal.createIndex(DSL.name("idx_fn_hosts_pool_last_heartbeat"), FnHosts.FN_HOSTS, new OrderField[] { FnHosts.FN_HOSTS.POOL, FnHosts.FN_HOSTS.LAST_HEARTBEAT }, false);
     public static final Index IDX_FN_ROUTES_FUNCTION_ID = Internal.createIndex(DSL.name("idx_fn_routes_function_id"), FnRoutes.FN_ROUTES, new OrderField[] { FnRoutes.FN_ROUTES.FUNCTION_ID }, false);

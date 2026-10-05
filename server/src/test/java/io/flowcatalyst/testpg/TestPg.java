@@ -50,6 +50,10 @@ public final class TestPg {
     /// The running top-level test class → its database; set by [TestPgPerClass].
     private static volatile String currentOwner;
     private static final java.util.Map<String, String> DATABASES = new java.util.HashMap<>();
+    /// One small connection pool per class database: the unpooled driver source opened a new connection per
+    /// statement, which exhausts the machine's ephemeral ports under a high-volume test (thousands of statements
+    /// per second for minutes). Pooled, a test can run as hard as it likes.
+    private static final java.util.Map<String, com.zaxxer.hikari.HikariDataSource> POOLS = new java.util.HashMap<>();
     private static int sequence;
     private static final java.util.List<java.util.function.Consumer<DataSource>> INITIALISERS = new java.util.ArrayList<>();
 
@@ -126,6 +130,8 @@ public final class TestPg {
         synchronized (LOCK) {
             if (testClass.equals(currentOwner)) currentOwner = null;
             database = DATABASES.remove(testClass);
+            var pool = POOLS.remove(testClass);
+            if (pool != null) pool.close();
         }
         if (database == null) return;
         try (Connection c = instance().getPostgresDatabase().getConnection(); Statement st = c.createStatement()) {
@@ -147,8 +153,20 @@ public final class TestPg {
                 DataSource fresh = instance().getDatabase("postgres", database);
                 for (var init : INITIALISERS) init.accept(fresh);
             }
-            return instance().getDatabase("postgres", database);
+            String db = database;
+            return POOLS.computeIfAbsent(key, k -> pool(db));
         }
+    }
+
+    private static com.zaxxer.hikari.HikariDataSource pool(String database) {
+        var config = new com.zaxxer.hikari.HikariConfig();
+        config.setDataSource(instance().getDatabase("postgres", database));
+        config.setMaximumPoolSize(24);
+        config.setMinimumIdle(0);
+        config.setIdleTimeout(java.time.Duration.ofSeconds(30).toMillis());
+        config.setConnectionTimeout(java.time.Duration.ofSeconds(60).toMillis());
+        config.setPoolName("testpg-" + database);
+        return new com.zaxxer.hikari.HikariDataSource(config);
     }
 
     private static void cloneTemplate(String database) {

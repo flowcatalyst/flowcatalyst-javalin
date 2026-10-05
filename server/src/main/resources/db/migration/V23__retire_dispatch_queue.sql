@@ -1,0 +1,15 @@
+-- Adopted from flowcatalyst-go internal/migrate/sql/068_drop_dispatch_queue.sql,
+-- statement for statement (dispatch step 4).
+--
+-- Retire msg_dispatch_queue (V21/V22). The scheduler claims from msg_dispatch_jobs
+-- again, with an in-memory in-flight exclusion, and nothing reads or writes the
+-- queue table: a small table that swings between empty and very full is the
+-- planner's worst case (statistics say "empty", so every statement that joins it is
+-- planned as a scan), while the big partitioned job table never is.
+-- idx_dispatch_jobs_status_group (V22) stays; no partial index is used by the
+-- dispatch path. Identical in every FlowCatalyst implementation that shares the
+-- database (Go 068, Rust 066, Java V23).
+--
+-- Down / rollback: recreate msg_dispatch_queue and idx_dispatch_queue_order as V21
+-- created them, without a backfill.
+DROP TABLE IF EXISTS msg_dispatch_queue;

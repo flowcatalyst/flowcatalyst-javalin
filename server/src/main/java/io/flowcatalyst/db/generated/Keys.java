@@ -47,7 +47,6 @@ import io.flowcatalyst.db.generated.tables.MsgDispatchJobProjectionFeed;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobs;
 import io.flowcatalyst.db.generated.tables.MsgDispatchJobsRead;
 import io.flowcatalyst.db.generated.tables.MsgDispatchPools;
-import io.flowcatalyst.db.generated.tables.MsgDispatchQueue;
 import io.flowcatalyst.db.generated.tables.MsgEventProjectionFeed;
 import io.flowcatalyst.db.generated.tables.MsgEventTypeSpecVersions;
 import io.flowcatalyst.db.generated.tables.MsgEventTypes;
@@ -130,7 +129,6 @@ import io.flowcatalyst.db.generated.tables.records.MsgDispatchJobProjectionFeedR
 import io.flowcatalyst.db.generated.tables.records.MsgDispatchJobsReadRecord;
 import io.flowcatalyst.db.generated.tables.records.MsgDispatchJobsRecord;
 import io.flowcatalyst.db.generated.tables.records.MsgDispatchPoolsRecord;
-import io.flowcatalyst.db.generated.tables.records.MsgDispatchQueueRecord;
 import io.flowcatalyst.db.generated.tables.records.MsgEventProjectionFeedRecord;
 import io.flowcatalyst.db.generated.tables.records.MsgEventTypeSpecVersionsRecord;
 import io.flowcatalyst.db.generated.tables.records.MsgEventTypesRecord;
@@ -248,7 +246,6 @@ public class Keys {
     public static final UniqueKey<MsgDispatchJobsRecord> MSG_DISPATCH_JOBS_PKEY = Internal.createUniqueKey(MsgDispatchJobs.MSG_DISPATCH_JOBS, DSL.name("msg_dispatch_jobs_pkey"), new TableField[] { MsgDispatchJobs.MSG_DISPATCH_JOBS.ID, MsgDispatchJobs.MSG_DISPATCH_JOBS.CREATED_AT }, true);
     public static final UniqueKey<MsgDispatchJobsReadRecord> MSG_DISPATCH_JOBS_READ_PKEY = Internal.createUniqueKey(MsgDispatchJobsRead.MSG_DISPATCH_JOBS_READ, DSL.name("msg_dispatch_jobs_read_pkey"), new TableField[] { MsgDispatchJobsRead.MSG_DISPATCH_JOBS_READ.ID, MsgDispatchJobsRead.MSG_DISPATCH_JOBS_READ.CREATED_AT }, true);
     public static final UniqueKey<MsgDispatchPoolsRecord> MSG_DISPATCH_POOLS_PKEY = Internal.createUniqueKey(MsgDispatchPools.MSG_DISPATCH_POOLS, DSL.name("msg_dispatch_pools_pkey"), new TableField[] { MsgDispatchPools.MSG_DISPATCH_POOLS.ID }, true);
-    public static final UniqueKey<MsgDispatchQueueRecord> MSG_DISPATCH_QUEUE_PKEY = Internal.createUniqueKey(MsgDispatchQueue.MSG_DISPATCH_QUEUE, DSL.name("msg_dispatch_queue_pkey"), new TableField[] { MsgDispatchQueue.MSG_DISPATCH_QUEUE.JOB_ID }, true);
     public static final UniqueKey<MsgEventProjectionFeedRecord> MSG_EVENT_PROJECTION_FEED_PKEY = Internal.createUniqueKey(MsgEventProjectionFeed.MSG_EVENT_PROJECTION_FEED, DSL.name("msg_event_projection_feed_pkey"), new TableField[] { MsgEventProjectionFeed.MSG_EVENT_PROJECTION_FEED.ID }, true);
     public static final UniqueKey<MsgEventTypeSpecVersionsRecord> MSG_EVENT_TYPE_SPEC_VERSIONS_PKEY = Internal.createUniqueKey(MsgEventTypeSpecVersions.MSG_EVENT_TYPE_SPEC_VERSIONS, DSL.name("msg_event_type_spec_versions_pkey"), new TableField[] { MsgEventTypeSpecVersions.MSG_EVENT_TYPE_SPEC_VERSIONS.ID }, true);
     public static final UniqueKey<MsgEventTypesRecord> MSG_EVENT_TYPES_CODE_KEY = Internal.createUniqueKey(MsgEventTypes.MSG_EVENT_TYPES, DSL.name("msg_event_types_code_key"), new TableField[] { MsgEventTypes.MSG_EVENT_TYPES.CODE }, true);

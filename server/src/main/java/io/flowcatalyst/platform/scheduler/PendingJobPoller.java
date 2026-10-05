@@ -18,56 +18,41 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 
-/// The scheduler's poller (dispatch-seam spec §3): claims waiting jobs from
-/// `msg_dispatch_queue` and hands them to the dispatcher lanes
-/// ([DispatchLanes]), which publish them and mark them `QUEUED`. **It never
-/// waits for a publish**: it blocks only when the buffer is full (no permit
-/// left), i.e. when it is too far ahead of the lanes.
+/// The scheduler's poller (dispatch-seam spec §3): READS the due `PENDING` jobs
+/// and hands them to the dispatcher lanes ([DispatchLanes]), which publish them
+/// and mark them `QUEUED`. **It never waits for a publish**: it blocks only when
+/// the buffer is full (no permit left), i.e. when it is too far ahead of the
+/// lanes.
 ///
 /// One [#pollOnce]:
 ///
-///  1. not the leader: nothing (the caller waits the poll interval). The first
-///     poll after becoming the leader restores the queue rows of every `PENDING`
-///     job that has none and this process does not hold in memory (a claimer that
-///     died between claim and publish left them), with no age guard;
+///  1. not the leader: nothing (the caller waits the poll interval);
 ///  2. acquire one permit (blocking), then up to `batchSize` in all without
 ///     blocking; `wanted` = permits held;
-///  3. increment the claim generation, THEN snapshot the in-flight set (for the
-///     doomed check), THEN claim `LIMIT wanted` excluding paused subscriptions
-///     and the groups found held in the last 5 seconds — two plain statements,
-///     no transaction, no row lock; the claim DELETES the rows it takes, which is
-///     what keeps them out of the next claim;
-///  4. apply the `BLOCK_ON_ERROR` hold-back, and the doomed check; the rows they
-///     withhold are RESTORED to the queue (from the job table, in order);
+///  3. increment the claim generation, THEN snapshot the in-flight set, THEN
+///     claim `LIMIT wanted` — one plain SELECT on `msg_dispatch_jobs`, no
+///     transaction, no lock, no write — excluding paused subscriptions, the
+///     groups found held in the last 5 seconds and this process's in-flight ids;
+///  4. apply the `BLOCK_ON_ERROR` hold-back and the doomed check; the rows they
+///     withhold are simply not submitted (still `PENDING`, claimed again);
 ///  5. hand the rest to the lanes (claim order, grouped -> `hash(group) % N`,
 ///     ungrouped -> round-robin) and release the permits not used.
 ///
-/// ### Why there is no transaction around the claim
+/// A claimed job stays `PENDING` in the table and is kept out of the next claim
+/// only by the in-memory in-flight set. A process that dies leaves nothing to
+/// recover. A published-then-unmarked job is published again (the router drops a
+/// copy whose original is in its pipeline, and `/api/dispatch/process` owns a
+/// delivery only by winning the status-guarded
+/// [DispatchJobLifecycle#claimForDelivery]).
 ///
-/// A claim that holds row locks across the broker round-trips (ten
-/// `SendMessageBatch` calls for a full SQS batch) serialises the whole
-/// scheduler behind its slowest publish. The rows a claim returns are kept out
-/// of the NEXT claim by being deleted from the queue instead. Two outcomes that the locks
-/// used to prevent are simply accepted, because both are harmless: a job
-/// published and then returned to the queue by a failed status update is
-/// published again (the router drops a copy whose original is in its pipeline,
-/// and `/api/dispatch/process` owns a delivery only by winning the
-/// status-guarded [DispatchJobLifecycle#claimForDelivery], so the copy that
-/// arrives second finds the job moved on and is acked without calling the
-/// subscriber); and a copy can reach `/process` while the row is still
-/// `PENDING`, which `claimForDelivery` accepts (`PENDING`/`QUEUED` ->
-/// `PROCESSING`), after which the lane's status-guarded `QUEUED` update finds no
-/// `PENDING` row and changes nothing.
+/// ### Hold-back
 ///
-/// ### Hold-back and paused subscriptions
-///
-/// The hold-back check is one [DispatchJobRepository#heldBeforeIds] query over
-/// the candidates' distinct groups, keyed by the EARLIEST holder per group,
-/// then applied in memory — "is ANY holder positioned before me" and "is the
-/// earliest holder positioned before me" are the same question. The claimed
-/// list is iterated in claim order throughout, which is exactly the order
-/// [DispatchPublisher] must preserve. Paused subscriptions are excluded by the
-/// claim itself.
+/// One [DispatchJobRepository#heldBeforeIds] query over the candidates' distinct
+/// groups, keyed by the EARLIEST holder per group, applied in memory. The
+/// claimed list is iterated in claim order throughout, which is exactly the
+/// order [DispatchPublisher] must preserve. A group found held is remembered for
+/// 5 seconds ([HeldGroups]) so a batch-full of held rows at the head of the order
+/// does not starve everything behind it.
 ///
 /// Everything here runs on the scheduler's one poller thread.
 public final class PendingJobPoller implements AutoCloseable {
@@ -93,23 +78,10 @@ public final class PendingJobPoller implements AutoCloseable {
     private static final long STARVED_WARN_INTERVAL_NANOS = Duration.ofMinutes(1).toNanos();
     private boolean warnedStarved;
     private long lastStarvedWarnNanos;
-    /// Whether the previous poll saw this instance as the leader; the poller's
-    /// thread only. The first poll after it turns true gives the stale claims back.
-    private boolean wasLeader;
     /// Groups found held back in the last 5 seconds, skipped by the claim (poller thread only; its size is
     /// read by the metrics gauge, so the count is mirrored in a volatile).
     private final HeldGroups heldGroups = new HeldGroups();
     private volatile int heldGroupCount;
-    private final java.util.concurrent.locks.ReentrantLock claimLock = new java.util.concurrent.locks.ReentrantLock();
-    /// Test seam: runs on the poller's thread after a claim has returned and before its jobs enter the in-flight set.
-    volatile Runnable afterClaimHook;
-
-    /// Held by a claim from its first statement until its jobs are in flight or restored, and by the periodic
-    /// reconcile around "read the in-flight ids + insert missing queue rows" ([QueueMaintenance]).
-    java.util.concurrent.locks.Lock claimLock() {
-        return claimLock;
-    }
-
     /// Builds the poller and starts its lanes.
     public PendingJobPoller(DataSource dataSource, DispatchJobRepository repository, DispatchJobLifecycle lifecycle,
                              PausedConnectionCache pausedCache, PoolCodeResolver poolCodes,
@@ -155,7 +127,6 @@ public final class PendingJobPoller implements AutoCloseable {
     /// full. A claim failure releases what it held and throws.
     public PollResult pollOnce() {
         if (!leader.getAsBoolean()) {
-            wasLeader = false;
             return PollResult.IDLE;
         }
         int wanted;
@@ -167,7 +138,6 @@ public final class PendingJobPoller implements AutoCloseable {
         }
         // The wait may have been long: leadership can have gone meanwhile.
         if (!leader.getAsBoolean()) {
-            wasLeader = false;
             lanes.releasePermits(wanted);
             return PollResult.IDLE;
         }
@@ -177,37 +147,22 @@ public final class PendingJobPoller implements AutoCloseable {
         event.begin();
         long startNanos = System.nanoTime();
         int inFlightCount;
-        // Held from the claim's first statement until its jobs are in the in-flight set (or restored): between
-        // the claim's DELETE and the in-flight insert a claimed job is PENDING with no queue row and not yet in
-        // flight, which the periodic reconcile (it takes this lock to read the in-flight ids and insert) would
-        // take for a crashed claimer's leftover and re-queue.
-        claimLock.lock();
         try {
-            try {
-                if (!wasLeader) {
-                    restoreWhatADeadClaimerLeft();
-                    wasLeader = true;
-                }
-                // Generation FIRST, then the snapshot (DispatchLanes class doc).
-                generation = lanes.nextGeneration();
-                DispatchLanes.Snapshot inFlight = lanes.inFlightSnapshot();
-                inFlightCount = lanes.inFlightCount();
-                Set<String> paused = pausedCache.pausedSubscriptionIds();
-                claimed = claim(wanted, paused, inFlight);
-            } catch (RuntimeException e) {
-                metrics.pollErrors.increment();
-                lanes.releasePermits(wanted);
-                throw e;
-            }
-            Runnable afterClaim = afterClaimHook;
-            if (afterClaim != null) afterClaim.run();
-            metrics.claimNanos.add(System.nanoTime() - startNanos);
-            metrics.claimCount.increment();
-
-            lanes.submit(claimed.toSubmit(), generation);
-        } finally {
-            claimLock.unlock();
+            // Generation FIRST, then the snapshot (DispatchLanes class doc).
+            generation = lanes.nextGeneration();
+            DispatchLanes.Snapshot inFlight = lanes.inFlightSnapshot();
+            inFlightCount = inFlight.ids().size();
+            Set<String> paused = pausedCache.pausedSubscriptionIds();
+            claimed = claim(wanted, paused, inFlight);
+        } catch (RuntimeException e) {
+            metrics.pollErrors.increment();
+            lanes.releasePermits(wanted);
+            throw e;
         }
+        metrics.claimNanos.add(System.nanoTime() - startNanos);
+        metrics.claimCount.increment();
+
+        lanes.submit(claimed.toSubmit(), generation);
         lanes.releasePermits(wanted - claimed.toSubmit().size());
 
         int submitted = claimed.toSubmit().size();
@@ -237,124 +192,56 @@ public final class PendingJobPoller implements AutoCloseable {
                            int doomedSkipped) {
     }
 
-    /// The first poll as the leader: a job claimed by a process that died (its queue row deleted, never
-    /// published) is `PENDING` with no queue row. Before the first claim, restore every such job with no age
-    /// guard, repeatedly until a pass inserts nothing (bounded batches). What this process holds in memory
-    /// (nothing at start; the in-flight jobs when leadership is regained) is excluded.
-    private void restoreWhatADeadClaimerLeft() {
-        int total = 0;
-        int inserted;
-        do {
-            inserted = lifecycle.restoreMissing(RESTORE_BATCH, Duration.ZERO, lanes.inFlightIds());
-            total += inserted;
-        } while (inserted >= RESTORE_BATCH);
-        metrics.leaderStartRestored.add(total);
-        if (total > 0) {
-            LOG.atInfo().setMessage("became the dispatch leader; restored queue rows of jobs no live process holds")
-                    .addKeyValue("count", total)
-                    .log();
-        }
-    }
-
-    /// Rows per start-up restore pass.
-    private static final int RESTORE_BATCH = 5_000;
-
     private Claimed claim(int wanted, Set<String> paused, DispatchLanes.Snapshot inFlight) {
-        List<DispatchJobRepository.ClaimRow> claims = lifecycle.claimPending(wanted, paused, heldGroups.current());
+        List<DispatchJobRepository.ClaimRow> claims =
+                repository.claimPending(wanted, paused, heldGroups.current(), inFlight.ids());
         heldGroupCount = heldGroups.size();
         if (claims.isEmpty()) {
             return new Claimed(0, List.of(), 0, 0);
         }
-        // A claim can return a job this process still has in flight: its row was restored (by the old copy's
-        // own restore, or by reconcile) or refreshed after the copy in flight was claimed. That copy is not
-        // known to be finished, so this one is NOT submitted — it is put back, and so are the rest of its group
-        // in this claim (they are behind it).
-        List<DispatchJobRepository.ClaimRow> again = new ArrayList<>();
-        Set<String> againGroups = new java.util.HashSet<>();
+        // The claim excludes this process's in-flight ids, so a row already in flight cannot come back; if one
+        // does (a bug, or a lane that has not yet removed it) it is dropped and counted, never submitted twice.
+        List<DispatchJobRepository.ClaimRow> fresh = new ArrayList<>(claims.size());
         for (DispatchJobRepository.ClaimRow c : claims) {
             if (lanes.inFlightContains(c.id())) {
-                again.add(c);
-                if (c.messageGroup() != null) againGroups.add(c.messageGroup());
+                metrics.alreadyInFlight.increment();
+            } else {
+                fresh.add(c);
             }
         }
-        if (!again.isEmpty()) {
-            List<DispatchJobRepository.ClaimRow> back = new ArrayList<>();
-            List<DispatchJobRepository.ClaimRow> rest = new ArrayList<>();
-            for (DispatchJobRepository.ClaimRow c : claims) {
-                boolean behind = lanes.inFlightContains(c.id())
-                        || (c.messageGroup() != null && againGroups.contains(c.messageGroup()));
-                (behind ? back : rest).add(c);
-            }
-            metrics.alreadyInFlight.add(again.size());
-            restoreQuietly(back);
-            if (rest.isEmpty()) return new Claimed(claims.size(), List.of(), 0, 0);
-            Claimed r = claimRest(rest, inFlight);
-            return new Claimed(claims.size(), r.toSubmit(), r.heldBack(), r.doomedSkipped());
-        }
-        return claimRest(claims, inFlight);
+        if (fresh.isEmpty()) return new Claimed(claims.size(), List.of(), 0, 0);
+        Claimed r = claimRest(fresh, inFlight);
+        return new Claimed(claims.size(), r.toSubmit(), r.heldBack(), r.doomedSkipped());
     }
 
-    /// The hold-back and the doomed check over claimed rows none of which is already in flight.
+    /// The hold-back and the doomed check over claimed rows none of which is already in flight. Rows they
+    /// withhold are simply not submitted: they are still `PENDING` and are claimed again.
     private Claimed claimRest(List<DispatchJobRepository.ClaimRow> claims, DispatchLanes.Snapshot inFlight) {
         List<DispatchJobRepository.ClaimRow> toSubmit = new ArrayList<>(claims.size());
-        List<DispatchJobRepository.ClaimRow> withheld = new ArrayList<>();
         int heldBack = 0;
-        List<DispatchJobRepository.ClaimRow> passed;
-        try {
-            // One query for every BLOCK_ON_ERROR candidate's positional hold-back
-            // (not one per candidate).
-            List<DispatchJobRepository.ClaimRow> blockCandidates = new ArrayList<>();
-            for (DispatchJobRepository.ClaimRow c : claims) {
-                if (c.mode() == DispatchMode.BLOCK_ON_ERROR) {
-                    blockCandidates.add(c);
-                }
-            }
-            Set<String> held = blockCandidates.isEmpty() ? Set.of() : repository.heldBeforeIds(blockCandidates);
-            Set<String> heldGroupNames = new java.util.HashSet<>();
-            for (DispatchJobRepository.ClaimRow c : claims) {
-                if (held.contains(c.id())) {
-                    heldBack++;
-                    withheld.add(c); // positional hold-back — stays queued, spec §3 "GroupHolding"
-                    heldGroupNames.add(c.messageGroup());
-                    continue;
-                }
-                toSubmit.add(c);
-            }
-            heldGroups.remember(heldGroupNames);
-            heldGroupCount = heldGroups.size();
-            // Jobs of this process that are still in flight were claimed earlier; if one of them is DOOMED (a
-            // lane will drop it), the rows behind it in its group must wait (DispatchLanes, point 4).
-            passed = lanes.withoutGroupsBehindDoomedJobs(toSubmit, inFlight);
-        } catch (RuntimeException e) {
-            // The claim happened and nothing will be submitted: put every row back.
-            restoreQuietly(claims);
-            throw e;
-        }
-        if (passed.size() != toSubmit.size()) {
-            Set<String> passedIds = new java.util.HashSet<>(passed.size());
-            for (DispatchJobRepository.ClaimRow c : passed) passedIds.add(c.id());
-            for (DispatchJobRepository.ClaimRow c : toSubmit) {
-                if (!passedIds.contains(c.id())) withheld.add(c);
+        // One query for every BLOCK_ON_ERROR candidate's positional hold-back (not one per candidate).
+        List<DispatchJobRepository.ClaimRow> blockCandidates = new ArrayList<>();
+        for (DispatchJobRepository.ClaimRow c : claims) {
+            if (c.mode() == DispatchMode.BLOCK_ON_ERROR) {
+                blockCandidates.add(c);
             }
         }
-        restoreQuietly(withheld);
+        Set<String> held = blockCandidates.isEmpty() ? Set.of() : repository.heldBeforeIds(blockCandidates);
+        Set<String> heldGroupNames = new java.util.HashSet<>();
+        for (DispatchJobRepository.ClaimRow c : claims) {
+            if (held.contains(c.id())) {
+                heldBack++;
+                heldGroupNames.add(c.messageGroup()); // positional hold-back, spec §3 "GroupHolding"
+                continue;
+            }
+            toSubmit.add(c);
+        }
+        heldGroups.remember(heldGroupNames);
+        heldGroupCount = heldGroups.size();
+        // Jobs of this process still in flight were skipped by the claim; if one of them is DOOMED (a lane will
+        // drop it), the rows behind it in its group must wait (DispatchLanes, point 4).
+        List<DispatchJobRepository.ClaimRow> passed = lanes.withoutGroupsBehindDoomedJobs(toSubmit, inFlight);
         return new Claimed(claims.size(), passed, heldBack, toSubmit.size() - passed.size());
-    }
-
-    /// Puts rows back; a failure is logged and counted (the reconcile sweep restores them later) rather than
-    /// failing a poll that has work to submit.
-    private void restoreQuietly(List<DispatchJobRepository.ClaimRow> rows) {
-        if (rows.isEmpty()) return;
-        try {
-            lifecycle.restore(rows);
-            metrics.claimsRestored.add(rows.size());
-        } catch (RuntimeException e) {
-            metrics.restoreErrors.increment();
-            LOG.atWarn().setMessage("could not restore queue rows; the reconcile sweep restores them")
-                    .addKeyValue("count", rows.size())
-                    .setCause(e)
-                    .log();
-        }
     }
 
     /// A full claim that submits nothing is the signature of starvation: the

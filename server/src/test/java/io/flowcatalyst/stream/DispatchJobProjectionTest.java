@@ -125,7 +125,6 @@ class DispatchJobProjectionTest {
                 .set(MSG_DISPATCH_JOBS.UPDATED_AT, statusChangedAt.atOffset(ZoneOffset.UTC))
                 .where(MSG_DISPATCH_JOBS.ID.eq(id))
                 .execute();
-        io.flowcatalyst.platform.dispatchjob.DispatchJobFixture.syncQueue(java.util.List.of(id)); // the queue stays exact
 
         int reclaimed = PROJECTION.step(BIG_BATCH);
         assertThat(reclaimed).isGreaterThanOrEqualTo(1);
