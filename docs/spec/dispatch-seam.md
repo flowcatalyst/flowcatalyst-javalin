@@ -349,15 +349,30 @@ parameters, a double publish is acceptable but a lost or out-of-order job is not
 - **Restore** (`DispatchJobLifecycle#restore`, one statement): a job claimed but
   not published — failed publish, failed mark-`QUEUED`, poisoned drop, doomed or
   hold-back withhold, lane close — gets its queue row back, created FROM THE JOB
-  TABLE (`INSERT ... SELECT ... FROM msg_dispatch_jobs WHERE (id, created_at) IN
-  (...) AND status = 'PENDING' ON CONFLICT (job_id) DO NOTHING`), so a job that has
-  moved on is not resurrected and a newer queue row is not overwritten. In a lane
+  TABLE (`INSERT ... SELECT ... FROM unnest(ids, created_ats) CROSS JOIN LATERAL
+  (SELECT * FROM msg_dispatch_jobs WHERE id = u.id AND created_at = u.created_at
+  OFFSET 0) j WHERE j.status = 'PENDING' ON CONFLICT (job_id) DO NOTHING`), so a
+  job that has moved on is not resurrected and a newer queue row is not
+  overwritten. The primary-key lookup is fenced in the lateral sub-select with the
+  status test outside it: as a plain `(id, created_at) IN (SELECT * FROM unnest(...))`
+  join the planner walked the status index per job when the job table had no
+  statistics (44-109 ms for 500 jobs; 3-5 ms now). In a lane
   it happens in `settle` immediately BEFORE the batch leaves the in-flight set and
   the poison generation is read; a lane removes only its OWN in-flight entry (the
   generation it carries); the poller restores what the hold-back and the doomed
   check withhold at once. A restore that fails is counted
   (`fc_scheduler_claim_restore_errors_total`) and logged; the reconcile sweep
   restores those rows.
+- **The claim lock and the claim window.** Between a claim's DELETE and its jobs
+  entering the in-memory in-flight set (the hold-back lookup happens in between) a
+  claimed job is `PENDING` with no queue row and not in flight — and a backlog job is
+  far older than the 60 s age guard. The poller holds a lock from a claim's first
+  statement until its jobs are in flight or restored; the periodic reconcile takes
+  the same lock around "read the in-flight ids + insert missing queue rows", so it
+  cannot re-queue a job being claimed right now. A claim that returns a job this
+  process STILL HAS IN FLIGHT (its row came back by an old copy's restore or by
+  reconcile) does not submit it again: it is restored, and so are the rest of its
+  group in that claim (they are behind it); `fc_scheduler_claims_already_in_flight_total`.
 - **Crash recovery is reconcile "insert missing".** A job claimed (row deleted) by a
   process that died is `PENDING` with no queue row. The first poll after this
   instance becomes leader runs the pass with NO age guard, repeatedly until it
@@ -373,8 +388,14 @@ parameters, a double publish is acceptable but a lost or out-of-order job is not
   delivery callback's `groupHeldBefore`), two sources joined by `UNION ALL`:
   `FAILED`/`ERROR` holders from `msg_dispatch_jobs` by `status = ANY($statuses) AND
   message_group = ANY($groups)` (`idx_dispatch_jobs_status_group`), backed-off
-  `PENDING` holders from the queue by `message_group` with `scheduled_for > NOW()`.
-  Held rows are restored. **Held-group memory:** the poller remembers each group it
+  `PENDING` holders from the queue — one ordered index probe per candidate group
+  (`LATERAL`, `ORDER BY sequence, job_created_at, job_id LIMIT 1` on
+  `idx_dispatch_queue_order`) for the first row with `scheduled_for > NOW()`, bounded
+  by the position of the group's last candidate (only a holder before a candidate
+  matters). A plain `message_group = ANY(...) AND scheduled_for > NOW()` read
+  seq-scanned a 100,000-row queue under the scheduler pool's forced custom plans,
+  and an unbounded probe walks every due row of a deep group (22-46 ms for 500
+  groups); bounded it is 3-5 ms. Held rows are restored. **Held-group memory:** the poller remembers each group it
   has just found held for 5 seconds (an in-memory map capped at 10,000 groups, the
   oldest dropped) and passes them to S1 as `$held`, so a batch-full of held rows at
   the head of the order is no longer claimed and restored on every pass (the
