@@ -44,6 +44,7 @@ class SchemaValidationRouteTest {
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
         var eventTypeState = new EventTypeApi.State(new EventTypeRepository(TestPg.dataSource()),
+                new io.flowcatalyst.platform.application.ApplicationRepository(TestPg.dataSource()),
                 new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)));
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);

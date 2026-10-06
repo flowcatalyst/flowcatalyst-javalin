@@ -358,7 +358,7 @@ public final class Platform {
         // ── authenticated platform API ───────────────────────────────────
         // Registered in Go's wire_routes.go order.
         var eventTypeRepo = new EventTypeRepository(pool);
-        EventTypeApi.register(routes, new EventTypeApi.State(eventTypeRepo, uow));
+        EventTypeApi.register(routes, new EventTypeApi.State(eventTypeRepo, new ApplicationRepository(pool), uow));
         var connectionRepo = new ConnectionRepository(pool);
         // Who may name a service account on a connection/subscription, or ingest a job some
         // account will sign (docs/spec/security-fixes-2026-09-24.md S3.1/S3.2). Stateless over

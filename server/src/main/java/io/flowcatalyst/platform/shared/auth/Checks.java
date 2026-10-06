@@ -168,6 +168,38 @@ public final class Checks {
         throw UseCaseException.authorization("APPLICATION_ACCESS_REQUIRED", "not authorised for this application");
     }
 
+    // ── Event types (application-service confinement) ──────────────────────
+
+    /// Coarse guard on the event-type read endpoints: the messaging view
+    /// permission, or the application-service view an SDK service account
+    /// holds. A caller admitted only by the second is confined by the handler
+    /// to the event types of the applications it is bound to.
+    public static void requireEventTypeReadAny(AuthContext a) {
+        requireAny(a, EVENT_TYPE_VIEW, APP_SVC_EVENT_TYPE_VIEW);
+    }
+
+    /// Whether the principal reads event types without the per-application
+    /// confinement (it holds the messaging view permission).
+    public static boolean canReadAllEventTypes(AuthContext a) {
+        return a != null && a.hasPermission(EVENT_TYPE_VIEW);
+    }
+
+    /// Coarse guard on adding a schema version to an event type: the messaging
+    /// write permissions, or the application-service create/update an SDK
+    /// service account holds (the SDK pushes its event schemas this way). A
+    /// caller admitted only by the latter is confined by the handler to the
+    /// event types of the applications it is bound to.
+    public static void requireEventTypeAddSchemaAny(AuthContext a) {
+        requireAny(a, EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE,
+                APP_SVC_EVENT_TYPE_CREATE, APP_SVC_EVENT_TYPE_UPDATE);
+    }
+
+    /// Whether the principal writes event types without the per-application confinement.
+    public static boolean canWriteAllEventTypes(AuthContext a) {
+        return a != null && (a.hasPermission(EVENT_TYPE_CREATE) || a.hasPermission(EVENT_TYPE_UPDATE)
+                || a.hasPermission(EVENT_TYPE_DELETE));
+    }
+
     // ── Portal users (CLIENT-delegable) ────────────────────────────────────
 
     /// Listing a client's portal identities: reach to the client (anchors

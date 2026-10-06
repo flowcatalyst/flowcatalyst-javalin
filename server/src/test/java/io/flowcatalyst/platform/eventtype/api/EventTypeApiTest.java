@@ -59,6 +59,7 @@ class EventTypeApiTest {
             Authenticator.TEST_PERMISSIONS, "platform:messaging:event-type:view,platform:messaging:event-type:create"};
 
     private static final EventTypeApi.State state = new EventTypeApi.State(new EventTypeRepository(TestPg.dataSource()),
+            new io.flowcatalyst.platform.application.ApplicationRepository(TestPg.dataSource()),
             new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)));
     private static TestHttp http;
     private static final HttpClient client = HttpClient.newHttpClient();
