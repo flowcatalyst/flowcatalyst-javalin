@@ -142,6 +142,32 @@ public final class Checks {
         }
     }
 
+    /// Coarse guard on the application read endpoints: the admin view
+    /// permission, or the application-service view an SDK service account
+    /// holds. The second is a narrower grant — a caller admitted only by it
+    /// must also pass [#requireApplicationRead(AuthContext, String)].
+    public static void requireApplicationReadAny(AuthContext a) {
+        requireAny(a, APPLICATION_VIEW, APP_SVC_APPLICATION_VIEW);
+    }
+
+    /// Whether the principal reads applications without per-application
+    /// confinement — it holds the admin view permission. List endpoints use
+    /// it to decide whether to filter.
+    public static boolean canReadAllApplications(AuthContext a) {
+        return a != null && a.hasPermission(APPLICATION_VIEW);
+    }
+
+    /// Resource-level rule for reading one application. The admin view
+    /// permission reads any application; a principal admitted only by the
+    /// application-service view reads just the applications it is bound to
+    /// ([AuthContext#canAccessApplication]), else
+    /// `APPLICATION_ACCESS_REQUIRED`.
+    public static void requireApplicationRead(AuthContext a, String applicationId) {
+        requireApplicationReadAny(a);
+        if (canReadAllApplications(a) || a.canAccessApplication(applicationId)) return;
+        throw UseCaseException.authorization("APPLICATION_ACCESS_REQUIRED", "not authorised for this application");
+    }
+
     // ── Portal users (CLIENT-delegable) ────────────────────────────────────
 
     /// Listing a client's portal identities: reach to the client (anchors

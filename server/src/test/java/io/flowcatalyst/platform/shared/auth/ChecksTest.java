@@ -216,4 +216,56 @@ class ChecksTest {
         assertThatThrownBy(() -> new AuthContext(null, null, null, null, null, null, true, null))
                 .isInstanceOf(NullPointerException.class);
     }
+
+    // ── Application read rule (mirrors Go's TestCanReadApplication) ─────────
+
+    private static AuthContext appCtx(Scope scope, List<String> perms, List<String> apps, boolean all) {
+        return new AuthContext("svc", scope, null, List.of(), List.of(), apps, all, perms);
+    }
+
+    @Test
+    void canReadApplication() {
+        String admin = APPLICATION_VIEW.code();
+        String svc = APP_SVC_APPLICATION_VIEW.code();
+        record Case(String name, AuthContext ac, String app, boolean ok) {
+        }
+        var cases = List.of(
+                new Case("nil context", null, "app_1", false),
+                new Case("no permission", appCtx(Scope.CLIENT, List.of(), List.of(), true), "app_1", false),
+                new Case("admin view reads any, even when application-scoped",
+                        appCtx(Scope.CLIENT, List.of(admin), List.of("app_1"), false), "app_2", true),
+                new Case("super-admin wildcard reads any",
+                        appCtx(Scope.CLIENT, List.of("platform:*:*:*"), List.of(), false), "app_2", true),
+                new Case("app-service view reads its own application",
+                        appCtx(Scope.CLIENT, List.of(svc), List.of("app_1"), false), "app_1", true),
+                new Case("app-service view is refused another application",
+                        appCtx(Scope.CLIENT, List.of(svc), List.of("app_1"), false), "app_2", false),
+                new Case("app-service view with no binding reads nothing",
+                        appCtx(Scope.CLIENT, List.of(svc), List.of(), false), "app_1", false),
+                new Case("app-service view at anchor tier is still confined",
+                        appCtx(Scope.ANCHOR, List.of(svc), List.of("app_1"), false), "app_2", false),
+                new Case("app-service view with all-applications reads any",
+                        appCtx(Scope.CLIENT, List.of(svc), List.of(), true), "app_9", true));
+        for (var c : cases) {
+            var err = errorOf(() -> Checks.requireApplicationRead(c.ac(), c.app()));
+            assertThat(err == null).as(c.name() + " (error=" + err + ")").isEqualTo(c.ok());
+        }
+        // The refusal for a bound principal reaching another application.
+        assertThat(errorOf(() -> Checks.requireApplicationRead(
+                appCtx(Scope.CLIENT, List.of(svc), List.of("app_1"), false), "app_2")))
+                .isEqualTo(UseCaseError.authorization("APPLICATION_ACCESS_REQUIRED", "not authorised for this application"));
+    }
+
+    @Test
+    void canReadApplicationsCoarseGuard() {
+        assertThatCode(() -> Checks.requireApplicationReadAny(
+                ctx(Scope.CLIENT, List.of(), List.of(APP_SVC_APPLICATION_VIEW.code())))).doesNotThrowAnyException();
+        assertThat(errorOf(() -> Checks.requireApplicationReadAny(
+                ctx(Scope.CLIENT, List.of(), List.of("platform:application-service:role:view")))).code())
+                .isEqualTo("PERMISSION_REQUIRED");
+        assertThat(Checks.canReadAllApplications(
+                ctx(Scope.CLIENT, List.of(), List.of(APP_SVC_APPLICATION_VIEW.code())))).isFalse();
+        assertThat(Checks.canReadAllApplications(ctx(Scope.CLIENT, List.of(), List.of(APPLICATION_VIEW.code())))).isTrue();
+        assertThat(Checks.canReadAllApplications(null)).isFalse();
+    }
 }

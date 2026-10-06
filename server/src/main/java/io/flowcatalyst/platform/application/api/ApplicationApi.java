@@ -35,6 +35,7 @@ import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.shared.apicommon.CreatedResponse;
 import io.flowcatalyst.platform.shared.auth.Auth;
+import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
@@ -125,21 +126,26 @@ public final class ApplicationApi {
     // ── Handlers: applications ─────────────────────────────────────────────
 
     private static void list(Exchange ctx, State s) {
-        Checks.require(Auth.current(), APPLICATION_VIEW);
+        AuthContext ac = Auth.current();
+        Checks.requireApplicationReadAny(ac);
+        // An application service account sees only the applications it is bound to.
+        boolean all = Checks.canReadAllApplications(ac);
         List<ApplicationResponse> items = s.repo().findWithFilters(listFilter(ctx)).stream()
+                .filter(a -> all || ac.canAccessApplication(a.id()))
                 .map(a -> ApplicationResponse.from(a, s.oauthClients().hasLoginClientFor(a.id()))).toList();
         ctx.json(new ApplicationListResponse(items, items.size()));
     }
 
     private static void getById(Exchange ctx, State s) {
-        Checks.require(Auth.current(), APPLICATION_VIEW);
+        Checks.requireApplicationRead(Auth.current(), ctx.pathParam("id"));
         Application a = applicationById(s, ctx.pathParam("id"));
         ctx.json(ApplicationResponse.from(a, s.oauthClients().hasLoginClientFor(a.id())));
     }
 
     private static void getByCode(Exchange ctx, State s) {
-        Checks.require(Auth.current(), APPLICATION_VIEW);
+        Checks.requireApplicationReadAny(Auth.current());
         Application a = applicationByCode(s, ctx.pathParam("code"));
+        Checks.requireApplicationRead(Auth.current(), a.id());
         ctx.json(ApplicationResponse.from(a, s.oauthClients().hasLoginClientFor(a.id())));
     }
 
@@ -241,13 +247,13 @@ public final class ApplicationApi {
     // ── Handlers: client configs + roles ───────────────────────────────────
 
     private static void listClientConfigs(Exchange ctx, State s) {
-        Checks.require(Auth.current(), APPLICATION_VIEW);
+        Checks.requireApplicationRead(Auth.current(), ctx.pathParam("id"));
         ctx.json(new ClientConfigListResponse(s.configs().findByApplication(ctx.pathParam("id")).stream()
                 .map(ClientConfigResponse::from).toList()));
     }
 
     private static void getClientConfig(Exchange ctx, State s) {
-        Checks.require(Auth.current(), APPLICATION_VIEW);
+        Checks.requireApplicationRead(Auth.current(), ctx.pathParam("id"));
         ctx.json(ClientConfigResponse.from(clientConfig(s, ctx.pathParam("id"), ctx.pathParam("clientId"))));
     }
 
@@ -272,7 +278,7 @@ public final class ApplicationApi {
 
     /// Role names registered against the application (spec §3); `[]` for an unknown id.
     private static void listRoles(Exchange ctx, State s) {
-        Checks.require(Auth.current(), APPLICATION_VIEW);
+        Checks.requireApplicationRead(Auth.current(), ctx.pathParam("id"));
         ctx.json(new ApplicationRolesResponse(s.roles().findByApplicationId(ctx.pathParam("id")).stream().map(Role::name).toList()));
     }
 

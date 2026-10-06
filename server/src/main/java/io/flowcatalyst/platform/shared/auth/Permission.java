@@ -270,6 +270,9 @@ public enum Permission {
     // application-service / process
     APP_SVC_PROCESS_VIEW("platform:application-service:process:view"),
     APP_SVC_PROCESS_SYNC("platform:application-service:process:sync"),
+    /// Read its own application (and that application's client configs and
+    /// roles). Confined to the bound applications by [Checks#requireApplicationRead].
+    APP_SVC_APPLICATION_VIEW("platform:application-service:application:view"),
 
     // function / function (spec function-api.md §2)
     FUNCTION_VIEW("platform:function:function:view"),

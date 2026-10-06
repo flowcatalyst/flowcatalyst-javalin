@@ -228,7 +228,11 @@ public final class Permissions {
             "platform:application-service:docs:sync",
             "platform:application-service:scheduled-job:sync",
             "platform:application-service:process:view",
-            "platform:application-service:process:sync");
+            "platform:application-service:process:sync",
+            // Read its own application (and its client configs and roles).
+            // Confined to the bound applications by Checks.requireApplicationRead;
+            // not a grant to read every application.
+            "platform:application-service:application:view");
 
     // ── Function context — platform/client-owned functions (spec function-api.md §2) ──
     public static final String FUNCTION_VIEW = "platform:function:function:view";
