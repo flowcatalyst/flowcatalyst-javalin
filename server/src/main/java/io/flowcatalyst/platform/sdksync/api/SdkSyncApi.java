@@ -248,7 +248,8 @@ public final class SdkSyncApi {
     }
 
     private static void syncOpenapi(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), APPLICATION_OPENAPI_SYNC, APPLICATION_OPENAPI_MANAGE);
+        Checks.requireAny(Auth.current(), APPLICATION_OPENAPI_SYNC, APPLICATION_OPENAPI_MANAGE,
+                APP_SVC_APPLICATION_OPENAPI_SYNC);
         var app = application(ctx, s);
         var cmd = ctx.bodyAsClass(SyncOpenapiRequest.class).toCommand(app.id(), app.code());
         ctx.json(SyncOpenApiSpecResponse.from(SyncOpenApiSpec.of(s.specs()).run(s.uow(), cmd, Auth.executionContext())));

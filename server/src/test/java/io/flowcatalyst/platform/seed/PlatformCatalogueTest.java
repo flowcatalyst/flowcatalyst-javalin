@@ -93,7 +93,7 @@ class PlatformCatalogueTest {
             assertThat(r.permissions()).isNotEmpty().doesNotHaveDuplicates();
             total += r.permissions().size();
         }
-        assertThat(total).isEqualTo(209);
+        assertThat(total).isEqualTo(210);
         assertThat(roles.get(0).permissions()).containsExactly(Permissions.ADMIN_ALL);
         // router-api-auth.md rule 3: the application-service permissions, then router:view for
         // the SDK's in-flight check — and nothing that operates the router.

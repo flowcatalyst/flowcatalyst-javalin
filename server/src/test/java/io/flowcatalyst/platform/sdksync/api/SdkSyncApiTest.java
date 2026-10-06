@@ -254,6 +254,27 @@ class SdkSyncApiTest {
         assertThat(json(r).get("error").asText()).isEqualTo("FORBIDDEN");
     }
 
+    /// The SDK definitions sync publishes the OpenAPI document as the application's own
+    /// service account (mirrors Go's TestCanSyncApplicationOpenAPIAdmitsApplicationService).
+    @Test
+    @DisplayName("openapi sync admits the application-service permission, confined to the bound application")
+    void openapiSyncAdmitsApplicationServiceAndConfinesIt() {
+        String spec = "{\"spec\":{\"openapi\":\"3.0.0\",\"info\":{\"title\":\"T\",\"version\":\"1.0.0\"},\"paths\":{}}}";
+        var own = post(syncPath("openapi"), spec,
+                boundTo(appId, "platform:application-service:application-openapi:sync"));
+        assertThat(own.statusCode()).as("body was: %s", own.body()).isEqualTo(200);
+        var developer = post(syncPath("openapi"), spec, boundTo(appId, "platform:developer:application-openapi:sync"));
+        assertThat(developer.statusCode()).as("developer sync still admitted: %s", developer.body()).isEqualTo(200);
+        var other = post(syncPath("openapi"), spec,
+                boundTo(otherAppId, "platform:application-service:application-openapi:sync"));
+        assertThat(other.statusCode()).as("body was: %s", other.body()).isEqualTo(403);
+        var viewOnly = post(syncPath("openapi"), spec,
+                boundTo(appId, "platform:application-service:application:view"));
+        assertThat(viewOnly.statusCode()).as("the application view permission must not admit an openapi sync")
+                .isEqualTo(403);
+        assertThat(json(viewOnly).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+    }
+
     /// An application code longer than 17 characters: the sync rollup's audit row
     /// carries the code as its entity id (subject `platform.eventtypes.{code}`), and
     /// `aud_logs.entity_id` was varchar(17) — every such sync answered 500

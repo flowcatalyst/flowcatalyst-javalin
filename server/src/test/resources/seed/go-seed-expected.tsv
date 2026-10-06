@@ -230,6 +230,7 @@ perm	platform:application-service	platform:application-service:scheduled-job:syn
 perm	platform:application-service	platform:application-service:process:view
 perm	platform:application-service	platform:application-service:process:sync
 perm	platform:application-service	platform:application-service:application:view
+perm	platform:application-service	platform:application-service:application-openapi:sync
 perm	platform:router	platform:messaging:dispatch-pool:view
 perm	platform:function-publisher	platform:function:function:view
 perm	platform:function-publisher	platform:function:version:publish

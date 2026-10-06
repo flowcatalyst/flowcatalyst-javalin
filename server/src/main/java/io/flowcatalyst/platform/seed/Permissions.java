@@ -232,7 +232,10 @@ public final class Permissions {
             // Read its own application (and its client configs and roles).
             // Confined to the bound applications by Checks.requireApplicationRead;
             // not a grant to read every application.
-            "platform:application-service:application:view");
+            "platform:application-service:application:view",
+            // Publish its own application's OpenAPI document (the SDK definitions
+            // sync). The sync operation confines it to the applications it is bound to.
+            "platform:application-service:application-openapi:sync");
 
     // ── Function context — platform/client-owned functions (spec function-api.md §2) ──
     public static final String FUNCTION_VIEW = "platform:function:function:view";

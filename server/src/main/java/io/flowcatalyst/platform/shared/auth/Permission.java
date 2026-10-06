@@ -273,6 +273,9 @@ public enum Permission {
     /// Read its own application (and that application's client configs and
     /// roles). Confined to the bound applications by [Checks#requireApplicationRead].
     APP_SVC_APPLICATION_VIEW("platform:application-service:application:view"),
+    /// Publish its own application's OpenAPI document (the SDK definitions sync).
+    /// The sync operation confines it to the applications it is bound to.
+    APP_SVC_APPLICATION_OPENAPI_SYNC("platform:application-service:application-openapi:sync"),
 
     // function / function (spec function-api.md §2)
     FUNCTION_VIEW("platform:function:function:view"),
