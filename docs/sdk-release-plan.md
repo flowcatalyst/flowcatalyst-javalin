@@ -100,3 +100,23 @@ posed here:
    `<sdk>/vX.Y.Z` tag is cut from ONE repo — today that is Go — because
    both workflows force-push the same standalone `main`. Moving a tag
    stream here is a deliberate switch, not a side effect of this unit.
+
+
+## 5. Update 2026-10-08 — the Java SDK is standalone and mirrored
+
+Supersedes the Java rulings above where they conflict:
+
+- **`sdk/` no longer depends on `usecase`.** Its pom has no parent and no sibling
+  dependency, so the directory builds on its own. The only thing it took from `usecase`
+  was `Tsid`, which moved into the SDK (`io.flowcatalyst.sdk.tsid`, same package, same
+  layout). The dependency now runs the other way: `usecase` (the framework —
+  `Operation`/`Plan`/`UnitOfWork`, `Result`, `DomainEvent`, `OutboxSink`) builds on `sdk`.
+- **`sdk/` is mirrored byte-for-byte into the Go repo's `clients/java-sdk`** (the Go copy
+  was stale: Jackson 2, the pre-fix TSID bit order, router checks without the bearer token).
+  The only file allowed to differ is `openapi/openapi.json` — each repo carries its own
+  server's lockfile; this repo's lags Go's (functions API, platform-config access) until
+  the server port catches up. `tools/sdk-drift.sh` now checks the Java SDK too.
+- **Tag ownership: Go cuts `java-sdk/v*`** (it holds v0.0.5–v0.0.10; this repo's `sdk/VERSION`
+  is set to 0.0.10 so the stream continues). Launch is on Go, so Go's copy must be the one
+  consumers see.
+- Open: the TS and Laravel SDK copies also drift from Go's (the drift script shows it).

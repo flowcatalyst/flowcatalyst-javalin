@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Compare this repo's clients/typescript-sdk and clients/laravel-sdk against
-# the Go repo's copies and report drift. Both repos hold the SDK sources for
+# Compare this repo's clients/typescript-sdk, clients/laravel-sdk and sdk (the
+# Java SDK) against the Go repo's copies and report drift. Both repos hold the SDK sources for
 # now (git subtree, since 2026-09-14 —
 # docs/go-mirror/2026-09-14-sdk-copies.md); this is the check that they stay
 # diffable.
@@ -37,4 +37,24 @@ for sdk in typescript-sdk laravel-sdk; do
 		status=1
 	fi
 done
+
+# Java SDK: this repo's sdk/ vs the Go repo's clients/java-sdk. The directory is
+# standalone (no parent pom, no sibling-module dependency) precisely so it can
+# be mirrored byte-for-byte. The one file allowed to differ is
+# openapi/openapi.json: each repo carries its OWN server's lockfile there
+# (`make sdk-spec`), and this repo's lags Go's until the server port catches up.
+# The use-case framework (usecase/) is not part of the SDK and is not mirrored.
+set +e
+diff -rq "${EXCLUDES[@]}" --exclude=target --exclude=openapi.json \
+	"$JAVA_REPO/sdk" "$GO_REPO/clients/java-sdk"
+sdk_status=$?
+set -e
+if [ "$sdk_status" -eq 2 ]; then
+	exit 2
+elif [ "$sdk_status" -ne 0 ]; then
+	status=1
+fi
+if ! cmp -s "$JAVA_REPO/sdk/openapi/openapi.json" "$GO_REPO/api/openapi.lock.json"; then
+	echo "note: sdk/openapi/openapi.json is not Go's current api/openapi.lock.json (expected until the Java server's lockfile catches up)" >&2
+fi
 exit "$status"

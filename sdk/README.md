@@ -14,11 +14,14 @@ var client = FlowCatalystClient.builder()
 var eventTypes = client.eventTypes().list(null);
 ```
 
-This SDK lives in the `flowcatalyst-javalin` reactor as the `sdk` module
-(`io.flowcatalyst:flowcatalyst-sdk`). It depends on the in-repo
-`flowcatalyst-usecase` module, which provides the TSID primitives
-(`io.flowcatalyst.sdk.tsid.Tsid`, platform Go bit layout) and the use-case
-envelope shared with the platform.
+This SDK is standalone: its `pom.xml` has no parent and no dependency on any
+other FlowCatalyst module, so the directory builds on its own
+(`mvn test` in this directory). It is mirrored byte-for-byte between
+`flowcatalyst-go` (`clients/java-sdk`) and `flowcatalyst-javalin` (`sdk`),
+apart from `openapi/openapi.json`; `tools/sdk-drift.sh` in the Javalin repo
+checks they agree. The use-case framework (`Operation`, `UnitOfWork`,
+`Result`) is a separate module, `flowcatalyst-usecase`, which builds on this
+SDK and is not part of it.
 
 ## Modules
 
@@ -28,7 +31,7 @@ envelope shared with the platform.
 | `…sdk.resources` | 15 typed resource families (event types, subscriptions, dispatch pools, connections, roles, permissions, applications, clients, principals, processes, scheduled jobs, audit logs, me, router) |
 | `…sdk.error` | `sealed interface SdkError` + `FlowCatalystException` — handle failures with a pattern-matching `switch` |
 | `…sdk.outbox` | Transactional outbox: `OutboxManager`, DTO builders, `OutboxDriver` SPI + `JdbcOutboxDriver`, raw SQL migrations in `migrations/` |
-| `…sdk.tsid` | TSID generation (13-char Crockford Base32, platform-compatible; collision-free monotonic sequence) — provided by the `flowcatalyst-usecase` module |
+| `…sdk.tsid` | TSID generation (13-char Crockford Base32, platform-compatible; collision-free monotonic sequence) |
 | `…sdk.sync` | `DefinitionSynchronizer` + `DefinitionSet` — bulk-sync roles / event types / connections / subscriptions / dispatch pools / principals / processes / scheduled jobs / OpenAPI per application, optionally scoped to one client (`forClient`) and merged across sets (`syncGrouped`) |
 | `…sdk.annotations` | `@AsEventType` / `@AsConnection` / `@AsSubscription` (with `connectionCode` / `sharedConnection` / `client`) / `@AsDispatchPool` / `@AsRole` + `DefinitionScanner` (explicit class registration — no classpath scanning) |
 | `…sdk.webhook` | `WebhookSignature.verify(...)` — HMAC-SHA256 verification of signed deliveries |

@@ -13,8 +13,8 @@
   <description>Java 25 drop-in implementation of the FlowCatalyst platform (port of flowcatalyst-go)</description>
 
   <modules>
-    <module>usecase</module>
     <module>sdk</module>
+    <module>usecase</module>
     <module>function-api</module>
     <module>eventloop-check</module>
     <module>server</module>

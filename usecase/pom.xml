@@ -21,7 +21,12 @@
   </description>
 
   <dependencies>
-    <!-- Only runtime dependency: JSON for event data / audit command payloads. -->
+    <!-- Builds ON the SDK (Tsid lives there); the SDK knows nothing of this module. -->
+    <dependency>
+      <groupId>io.flowcatalyst</groupId>
+      <artifactId>flowcatalyst-sdk</artifactId>
+    </dependency>
+    <!-- JSON for event data / audit command payloads. -->
     <dependency>
       <groupId>tools.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
