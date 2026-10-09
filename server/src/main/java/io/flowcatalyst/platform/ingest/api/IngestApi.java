@@ -54,7 +54,7 @@ import java.util.function.Function;
 /// | POST | `/api/events/batch` | yes | `messaging:batch:events-write` | 201 |
 /// | POST | `/api/dispatch-jobs` | no | `messaging:batch:dispatch-jobs-write` (spec §6 D1) | 201 |
 /// | POST | `/api/dispatch-jobs/batch` | no | `messaging:batch:dispatch-jobs-write` | 201 (200 if empty) |
-/// | POST | `/api/audit-logs/batch` | no | any authenticated principal | 200 |
+/// | POST | `/api/audit-logs/batch` | no | `admin:batch:audit-logs-write` (401 when unauthenticated, spec §7) | 200 |
 public final class IngestApi {
 
     static final int EVENT_BATCH_LIMIT = 1000;
@@ -292,6 +292,7 @@ public final class IngestApi {
             HttpError.unauthorized(ctx, "authentication required"); // spec §7: audit unauthenticated is 401, not the usual 403
             return;
         }
+        Checks.require(ac, Permission.BATCH_AUDIT_LOGS_WRITE);
         var body = ctx.bodyAsClass(AuditBatchRequest.class);
         var items = body.items();
         if (items.size() > AUDIT_BATCH_LIMIT) {
@@ -306,8 +307,8 @@ public final class IngestApi {
         for (var item : items) {
             // Application confinement: an application-scoped caller may only write audit rows
             // attributed to an application it can access, and may not omit the application (an
-            // unattributed row would escape the confinement). Refused per item. This route's
-            // gate stays bare authentication; the scope is the only added check.
+            // unattributed row would escape the confinement). Refused per item. The scope
+            // is applied on top of the BATCH_AUDIT_LOGS_WRITE gate above.
             if (ac.isApplicationScoped()) {
                 if (item.applicationCode() == null || item.applicationCode().isBlank()) {
                     results.add(new BatchResultItem("", "BAD_REQUEST", IngestAppScope.AUDIT_APP_REQUIRED));

@@ -103,7 +103,8 @@ class IngestApiTest {
     private static final String[] AUDIT_CALLER = {
             Authenticator.TEST_PRINCIPAL, AUDIT_CALLER_PRINCIPAL,
             Authenticator.TEST_SCOPE, "CLIENT",
-            Authenticator.TEST_CLIENTS, CLIENT_A};
+            Authenticator.TEST_CLIENTS, CLIENT_A,
+            Authenticator.TEST_PERMISSIONS, "platform:admin:batch:audit-logs-write"};
 
     private static CountingLookup<Client> clientLookup;
     private static CountingLookup<Application> applicationLookup;
@@ -1002,11 +1003,41 @@ class IngestApiTest {
     }
 
     @Test
-    void anyAuthenticatedPrincipalIsAllowedRegardlessOfPermissions() {
-        String entityType = uniqueType("anyauth");
+    void auditBatchWithTheWritePermissionSucceeds() {
+        String entityType = uniqueType("audwr");
         var r = http.post("/api/audit-logs/batch", """
                 {"items":[{"entityType":"%s","entityId":"e1","operation":"CREATE","principalId":"prn_TESTACTOR0000001"}]}
                 """.formatted(entityType), AUDIT_CALLER);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        assertThat(json(r).get("results").get(0).get("status").asText()).isEqualTo("SUCCESS");
+    }
+
+    @Test
+    void auditBatchWithoutTheWritePermissionIsForbiddenAndWritesNothing() {
+        String entityType = uniqueType("audno");
+        var r = http.post("/api/audit-logs/batch", """
+                {"items":[{"entityType":"%s","entityId":"e1","operation":"CREATE","principalId":"prn_TESTACTOR0000001"}]}
+                """.formatted(entityType), NO_PERMISSION);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(403);
+        assertThat(json(r).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
+        assertThat(json(r).get("message").asText())
+                .isEqualTo("permission required: platform:admin:batch:audit-logs-write");
+        assertThat(countAuditByEntityType(entityType)).isZero();
+    }
+
+    @Test
+    void auditBatchForbiddenForAnotherBatchWriteHolder() {
+        // The events/dispatch write permissions do not stand in for the audit one.
+        var r = http.post("/api/audit-logs/batch", "{\"items\":[]}", EVENTS_WRITER);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(403);
+    }
+
+    @Test
+    void auditBatchWildcardHolderIsAllowed() {
+        String entityType = uniqueType("audwild");
+        var r = http.post("/api/audit-logs/batch", """
+                {"items":[{"entityType":"%s","entityId":"e1","operation":"CREATE","principalId":"prn_TESTACTOR0000001"}]}
+                """.formatted(entityType), ANCHOR);
         assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
         assertThat(json(r).get("results").get(0).get("status").asText()).isEqualTo("SUCCESS");
     }
@@ -1157,7 +1188,7 @@ class IngestApiTest {
         return id;
     }
 
-    private static final String ALL_THREE = "platform:messaging:batch:events-write,platform:messaging:batch:dispatch-jobs-write";
+    private static final String ALL_THREE = "platform:messaging:batch:events-write,platform:messaging:batch:dispatch-jobs-write,platform:admin:batch:audit-logs-write";
 
     private static String[] appScopedHeaders;
 

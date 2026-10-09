@@ -20,7 +20,7 @@ Six routes, one Java unit (`io.flowcatalyst.platform.ingest`):
 | `POST /api/events/batch` | yes (`batchIngestEvents`, 201 `BatchResponse`) | event/api | same |
 | `POST /api/dispatch-jobs` | **no** | shared/sdk | see §5 D1 |
 | `POST /api/dispatch-jobs/batch` | **no** | shared/sdk | see §5 D1 |
-| `POST /api/audit-logs/batch` | **no** | shared/sdk | any authenticated principal |
+| `POST /api/audit-logs/batch` | **no** | shared/sdk | `platform:admin:batch:audit-logs-write` (owner ruling 2026-10-09; unauthenticated → 401) |
 
 `GET /api/events*`, `GET /api/dispatch-jobs*`, `GET /api/audit-logs*` are
 the read surfaces already ported in their own units; this unit adds only
@@ -169,8 +169,8 @@ routes: happy path writes the rows and returns one result per item in
 order; the size limit (1000 / 1000 / 100) answers `BATCH_TOO_LARGE` and
 writes nothing; empty `items` writes nothing; a tenant violation on item
 *k* of *n* writes **none of the n** (count the rows); the permission gate
-(`events-write`, `dispatch-jobs-write`; audit: unauthenticated → 401, any
-authenticated → allowed); the defaults table of §4.1 asserted on the
+(`events-write`, `dispatch-jobs-write`; audit: `audit-logs-write`; unauthenticated → 401,
+authenticated without it → 403 before the body is read); the defaults table of §4.1 asserted on the
 stored row; `INVALID_KIND`; a repeated `deduplicationId` / supplied job id
 writes exactly one row (count) and still answers `SUCCESS`; audit's three
 `SKIPPED` cases with `id:""` in the right positions; `clientCode`
