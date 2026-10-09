@@ -539,7 +539,7 @@ public final class Platform {
         // physical pool for one mount and BFF's for the other, so nothing here needs its
         // own pools.dispatch()-bound copy any more.
         var ingestState = IngestApi.State.of(eventRepo, dispatchJobLifecycle,
-                new AuditLogRepository(pool), clientRepo, applicationRepo, deliverySigningGuard);
+                new AuditLogRepository(pool), clientRepo, applicationRepo, subscriptionRepo, deliverySigningGuard);
         IngestApi.register(routes.in(Group.DISPATCH), ingestState);
         var principalRepo = new PrincipalRepository(pool);
         // Emailers, notifier and MFA are stubs until their subsystems land (docs/spec/principal.md §10);

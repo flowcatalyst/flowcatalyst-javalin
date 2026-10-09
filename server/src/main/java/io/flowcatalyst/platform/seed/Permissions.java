@@ -235,7 +235,14 @@ public final class Permissions {
             "platform:application-service:application:view",
             // Publish its own application's OpenAPI document (the SDK definitions
             // sync). The sync operation confines it to the applications it is bound to.
-            "platform:application-service:application-openapi:sync");
+            "platform:application-service:application-openapi:sync",
+            // Each application delivers its own outbox with its own service-account
+            // credentials. The ingest routes confine an application-scoped caller to
+            // items belonging to its own applications (IngestApi), so these grants
+            // do not widen reach.
+            ADMIN_BATCH_EVENTS_WRITE,
+            ADMIN_BATCH_DISPATCH_JOBS_WRITE,
+            ADMIN_BATCH_AUDIT_LOGS_WRITE);
 
     // ── Function context — platform/client-owned functions (spec function-api.md §2) ──
     public static final String FUNCTION_VIEW = "platform:function:function:view";

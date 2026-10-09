@@ -22,6 +22,8 @@
 # and :view on iam-readonly/viewer — Java-first.
 # router-api-auth.md (2026-09-25): platform:router-operator (role + 2 perm rows) and router:view on
 # platform:viewer and platform:application-service are Java-first; Go has no router API auth.
+# Owner ruling 2026-10-09 (Go 9c9986a): application-service also carries the three batch-ingest
+# permissions (events/dispatch-jobs/audit-logs) — each application delivers its own outbox.
 # code-first-connections.md slice K3 (2026-09-21): the `platform:admin:subscription:synced` `schema`
 # row's JSON is hand-edited (not re-dumped) to add `"clientId":{"type":["string","null"]}`, read
 # verbatim from Go `internal/platform/seed/event_schemas.go` at `07184da` (`56aea7c`+), which adds
@@ -231,6 +233,9 @@ perm	platform:application-service	platform:application-service:process:view
 perm	platform:application-service	platform:application-service:process:sync
 perm	platform:application-service	platform:application-service:application:view
 perm	platform:application-service	platform:application-service:application-openapi:sync
+perm	platform:application-service	platform:messaging:batch:events-write
+perm	platform:application-service	platform:messaging:batch:dispatch-jobs-write
+perm	platform:application-service	platform:admin:batch:audit-logs-write
 perm	platform:router	platform:messaging:dispatch-pool:view
 perm	platform:function-publisher	platform:function:function:view
 perm	platform:function-publisher	platform:function:version:publish

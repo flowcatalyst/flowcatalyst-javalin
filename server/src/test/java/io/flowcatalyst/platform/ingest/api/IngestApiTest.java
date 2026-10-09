@@ -54,6 +54,7 @@ import static io.flowcatalyst.db.generated.Tables.APP_APPLICATIONS;
 import static io.flowcatalyst.db.generated.Tables.AUD_LOGS;
 import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_JOBS;
 import static io.flowcatalyst.db.generated.Tables.MSG_EVENTS;
+import static io.flowcatalyst.db.generated.Tables.MSG_SUBSCRIPTIONS;
 import static io.flowcatalyst.db.generated.Tables.TNT_CLIENTS;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -72,6 +73,11 @@ class IngestApiTest {
     private static final String CLIENT_B = "cli_" + DB.run + "0000b";
     private static final String APP_CODE = "app-" + DB.run;
     private static String appId;
+    private static final String OTHER_APP_CODE = "oth-" + DB.run;
+    private static String otherAppId;
+    private static String ownSubId;
+    private static String otherSubId;
+    private static String sharedSubId;
 
     private static final String[] ANCHOR = {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
@@ -115,6 +121,13 @@ class IngestApiTest {
         DB.db.insertInto(APP_APPLICATIONS).set(APP_APPLICATIONS.ID, appId).set(APP_APPLICATIONS.CODE, APP_CODE)
                 .set(APP_APPLICATIONS.NAME, "App").execute();
 
+        otherAppId = Tsid.generateWithPrefix("app");
+        DB.db.insertInto(APP_APPLICATIONS).set(APP_APPLICATIONS.ID, otherAppId).set(APP_APPLICATIONS.CODE, OTHER_APP_CODE)
+                .set(APP_APPLICATIONS.NAME, "Other").execute();
+        ownSubId = insertSubscription("own", APP_CODE);
+        otherSubId = insertSubscription("oth", OTHER_APP_CODE);
+        sharedSubId = insertSubscription("shr", null);
+
         eventRepo = new EventRepository(DB.ds);
         dispatchJobRepo = new DispatchJobRepository(DB.ds);
         dispatchJobLifecycle = new DispatchJobLifecycle(DB.ds);
@@ -124,6 +137,7 @@ class IngestApiTest {
         clientLookup = new CountingLookup<>(clientRepo::findByIdentifier);
         applicationLookup = new CountingLookup<>(applicationRepo::findByCode);
         var state = new IngestApi.State(eventRepo, dispatchJobLifecycle, auditLogRepo, clientLookup, applicationLookup,
+                new SubscriptionRepository(DB.ds)::findById,
                 new DeliverySigningGuard(new SubscriptionRepository(DB.ds)::findById,
                         new ConnectionRepository(DB.ds)::findById, SigningAccounts.reach(DB.ds)));
 
@@ -1126,6 +1140,226 @@ class IngestApiTest {
         assertThat(rows).hasSize(1);
         assertThat(rows.getFirst().getEntityId()).isEqualTo("e2");
         assertThat(rows.getFirst().getPrincipalId()).isEqualTo(explicitPrincipal);
+    }
+
+    // ── Application confinement (Go 9c9986a) ─────────────────────────────
+
+    private static String insertSubscription(String tag, String applicationCode) {
+        String id = Tsid.generateWithPrefix("sub");
+        String code = "sc-" + tag + "-" + DB.run;
+        DB.db.insertInto(MSG_SUBSCRIPTIONS)
+                .set(MSG_SUBSCRIPTIONS.ID, id).set(MSG_SUBSCRIPTIONS.CODE, code).set(MSG_SUBSCRIPTIONS.NAME, code)
+                .set(MSG_SUBSCRIPTIONS.TARGET, "https://hook.example/" + id)
+                .set(MSG_SUBSCRIPTIONS.APPLICATION_CODE, applicationCode)
+                // the delivery-signing guard lets a client-scoped caller name only its own client's subscription
+                .set(MSG_SUBSCRIPTIONS.CLIENT_ID, CLIENT_A)
+                .execute();
+        return id;
+    }
+
+    private static final String ALL_THREE = "platform:messaging:batch:events-write,platform:messaging:batch:dispatch-jobs-write";
+
+    private static String[] appScopedHeaders;
+
+    /// The real thing: the application's OWN service account (so the delivery-signing guard also
+    /// admits it), a client-scoped credential bound to ONLY the first application.
+    private static String[] appScoped() {
+        if (appScopedHeaders == null) {
+            String account = SigningAccounts.seed(DB.ds, List.of(CLIENT_A), appId);
+            appScopedHeaders = new String[] {
+                    Authenticator.TEST_PRINCIPAL, SigningAccounts.servicePrincipal(DB.ds, account),
+                    Authenticator.TEST_SCOPE, "CLIENT",
+                    Authenticator.TEST_CLIENTS, CLIENT_A,
+                    Authenticator.TEST_APPLICATIONS, appId,
+                    Authenticator.TEST_PERMISSIONS, ALL_THREE};
+        }
+        return appScopedHeaders;
+    }
+
+    /// Super-admin with all-applications access (no TEST_APPLICATIONS header): never confined.
+    private static final String[] ALL_APPS_ANCHOR = ANCHOR;
+
+    private static String status(HttpResponse<String> r, int i) {
+        return json(r).get("results").get(i).get("status").asText();
+    }
+
+    private static String error(HttpResponse<String> r, int i) {
+        return json(r).get("results").get(i).path("error").asText("");
+    }
+
+    @Test
+    void scopedEventBatchPersistsOwnAppItemsAndRefusesOtherUnknownPerItemPositionally() {
+        String own1 = APP_CODE + ":a:b:" + uniqueType("o1");
+        String other = OTHER_APP_CODE + ":a:b:" + uniqueType("x");
+        String unknown = "nosuch" + DB.run + ":a:b:c";
+        String own2 = APP_CODE + ":a:b:" + uniqueType("o2");
+        var r = http.post("/api/events/batch", """
+                {"items":[{"type":"%s","source":"s","data":{}},{"type":"%s","source":"s","data":{}},
+                          {"type":"%s","source":"s","data":{}},{"type":"%s","source":"s","data":{}}]}
+                """.formatted(own1, other, unknown, own2), appScoped());
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        assertThat(status(r, 0)).isEqualTo("SUCCESS");
+        assertThat(status(r, 1)).isEqualTo("BAD_REQUEST");
+        assertThat(error(r, 1)).isEqualTo("event type belongs to an application this credential cannot ingest for");
+        assertThat(status(r, 2)).isEqualTo("BAD_REQUEST");
+        assertThat(error(r, 2)).isEqualTo("event type belongs to an application this credential cannot ingest for");
+        assertThat(status(r, 3)).isEqualTo("SUCCESS");
+        assertThat(countEventsByType(own1)).isEqualTo(1);
+        assertThat(countEventsByType(own2)).isEqualTo(1);
+        assertThat(countEventsByType(other)).isZero();
+        assertThat(countEventsByType(unknown)).isZero();
+    }
+
+    @Test
+    void scopedEventTypeWithNoApplicationSegmentIsRefused() {
+        String type = uniqueType("noapp").replace(":", "-");
+        var r = http.post("/api/events/batch", """
+                {"items":[{"type":"%s","source":"s","data":{}}]}
+                """.formatted(type), appScoped());
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        assertThat(status(r, 0)).isEqualTo("BAD_REQUEST");
+        assertThat(countEventsByType(type)).isZero();
+    }
+
+    @Test
+    void nonScopedEventBatchIsUnaffectedEvenForAnotherOrUnknownApplication() {
+        String other = OTHER_APP_CODE + ":a:b:" + uniqueType("x");
+        String unknown = "nosuch" + DB.run + ":a:b:" + uniqueType("u");
+        var r = http.post("/api/events/batch", """
+                {"items":[{"type":"%s","source":"s","data":{}},{"type":"%s","source":"s","data":{}}]}
+                """.formatted(other, unknown), ALL_APPS_ANCHOR);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        assertThat(status(r, 0)).isEqualTo("SUCCESS");
+        assertThat(status(r, 1)).isEqualTo("SUCCESS");
+    }
+
+    @Test
+    void scopedSingularEventOwnAppOkOtherAndUnknownForbiddenAllAppsOk() {
+        String own = APP_CODE + ":a:b:" + uniqueType("o");
+        String other = OTHER_APP_CODE + ":a:b:" + uniqueType("x");
+        String unknown = "nosuch" + DB.run + ":a:b:" + uniqueType("u");
+        String body = """
+                {"eventType":"%s","source":"s","data":{"n":1}}""";
+        assertThat(http.post("/api/events", body.formatted(own), appScoped()).statusCode()).isEqualTo(201);
+        var refusedOther = http.post("/api/events", body.formatted(other), appScoped());
+        assertThat(refusedOther.statusCode()).as(refusedOther.body()).isEqualTo(403);
+        assertThat(refusedOther.body()).contains("event type belongs to an application this credential cannot ingest for");
+        assertThat(http.post("/api/events", body.formatted(unknown), appScoped()).statusCode()).isEqualTo(403);
+        assertThat(countEventsByType(other)).isZero();
+        assertThat(countEventsByType(unknown)).isZero();
+        assertThat(http.post("/api/events", body.formatted(other), ALL_APPS_ANCHOR).statusCode()).isEqualTo(201);
+    }
+
+    @Test
+    void scopedDispatchBatchOwnCodeAndOwnSubscriptionAccepted() {
+        String c1 = APP_CODE + ":a:b:" + uniqueType("j1");
+        String c2 = APP_CODE + ":a:b:" + uniqueType("j2");
+        var r = http.post("/api/dispatch-jobs/batch", """
+                {"items":[{"code":"%s","targetUrl":"https://target.test/hook"},
+                          {"code":"%s","targetUrl":"https://target.test/hook","subscriptionId":"%s"}]}
+                """.formatted(c1, c2, ownSubId), appScoped());
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        assertThat(countJobsByCode(c1)).isEqualTo(1);
+        assertThat(countJobsByCode(c2)).isEqualTo(1);
+    }
+
+    @Test
+    void scopedDispatchBatchRefusesTheWholeBatchNamingTheItemIndex() {
+        String good = APP_CODE + ":a:b:" + uniqueType("good");
+        String bad = OTHER_APP_CODE + ":a:b:" + uniqueType("bad");
+        var r = http.post("/api/dispatch-jobs/batch", """
+                {"items":[{"code":"%s","targetUrl":"https://target.test/hook"},
+                          {"code":"%s","targetUrl":"https://target.test/hook"}]}
+                """.formatted(good, bad), appScoped());
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(403);
+        assertThat(r.body()).contains("items[1]: dispatch job code belongs to an application this credential cannot ingest for");
+        assertThat(countJobsByCode(good)).as("nothing of a refused batch is written").isZero();
+        assertThat(countJobsByCode(bad)).isZero();
+    }
+
+    @Test
+    void scopedDispatchRefusesForeignUnknownAndSharedSubscriptionsAndUnknownApplication() {
+        String code = APP_CODE + ":a:b:" + uniqueType("sub");
+        String tmpl = """
+                {"items":[{"code":"%s","targetUrl":"https://target.test/hook","subscriptionId":"%s"}]}""";
+        var foreign = http.post("/api/dispatch-jobs/batch", tmpl.formatted(code, otherSubId), appScoped());
+        assertThat(foreign.statusCode()).as(foreign.body()).isEqualTo(403);
+        assertThat(foreign.body()).contains("items[0]: subscription belongs to an application this credential cannot ingest for");
+        assertThat(http.post("/api/dispatch-jobs/batch", tmpl.formatted(code, "sub_missing0000"), appScoped()).statusCode())
+                .as("unknown subscription").isEqualTo(403);
+        assertThat(http.post("/api/dispatch-jobs/batch", tmpl.formatted(code, sharedSubId), appScoped()).statusCode())
+                .as("subscription with no application_code").isEqualTo(403);
+        assertThat(http.post("/api/dispatch-jobs/batch", tmpl.formatted("nosuch" + DB.run + ":a:b:c", ownSubId), appScoped())
+                .statusCode()).as("unknown application").isEqualTo(403);
+        assertThat(countJobsByCode(code)).isZero();
+    }
+
+    @Test
+    void nonScopedDispatchBatchIsUnaffected() {
+        String code = OTHER_APP_CODE + ":a:b:" + uniqueType("adm");
+        String unknown = "nosuch" + DB.run + ":a:b:" + uniqueType("adm");
+        var r = http.post("/api/dispatch-jobs/batch", """
+                {"items":[{"code":"%s","targetUrl":"https://target.test/hook","subscriptionId":"%s"},
+                          {"code":"%s","targetUrl":"https://target.test/hook"}]}
+                """.formatted(code, ownSubId, unknown), ALL_APPS_ANCHOR);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        assertThat(countJobsByCode(code)).isEqualTo(1);
+        assertThat(countJobsByCode(unknown)).isEqualTo(1);
+    }
+
+    @Test
+    void scopedSingularDispatchJobOwnOkOtherAndForeignSubscriptionForbidden() {
+        String own = APP_CODE + ":a:b:" + uniqueType("s1");
+        String other = OTHER_APP_CODE + ":a:b:" + uniqueType("s2");
+        String tmpl = """
+                {"code":"%s","targetUrl":"https://target.test/hook","payload":"{}","serviceAccountId":"sa_x"%s}""";
+        assertThat(http.post("/api/dispatch-jobs", tmpl.formatted(own, ""), appScoped()).statusCode()).isEqualTo(201);
+        var refused = http.post("/api/dispatch-jobs", tmpl.formatted(other, ""), appScoped());
+        assertThat(refused.statusCode()).as(refused.body()).isEqualTo(403);
+        assertThat(refused.body()).contains("dispatch job code belongs to an application this credential cannot ingest for")
+                .doesNotContain("items[");
+        var foreignSub = http.post("/api/dispatch-jobs",
+                tmpl.formatted(own + "x", ",\"subscriptionId\":\"" + otherSubId + "\""), appScoped());
+        assertThat(foreignSub.statusCode()).as(foreignSub.body()).isEqualTo(403);
+        assertThat(countJobsByCode(other)).isZero();
+        assertThat(http.post("/api/dispatch-jobs", tmpl.formatted(other, ""), ALL_APPS_ANCHOR).statusCode()).isEqualTo(201);
+    }
+
+    @Test
+    void scopedAuditBatchOwnOkOtherUnknownAndMissingApplicationRefusedPerItem() {
+        String et = uniqueType("audscope");
+        String item = """
+                {"entityType":"%s","entityId":"%s","operation":"CREATE","principalId":"prn_TESTACTOR0000001"%s}""";
+        var r = http.post("/api/audit-logs/batch", "{\"items\":[" + String.join(",",
+                item.formatted(et, "own", ",\"applicationCode\":\"" + APP_CODE + "\""),
+                item.formatted(et, "oth", ",\"applicationCode\":\"" + OTHER_APP_CODE + "\""),
+                item.formatted(et, "none", ""),
+                item.formatted(et, "unk", ",\"applicationCode\":\"nosuch" + DB.run + "\"")) + "]}", appScoped());
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        assertThat(status(r, 0)).isEqualTo("SUCCESS");
+        assertThat(status(r, 1)).isEqualTo("BAD_REQUEST");
+        assertThat(error(r, 1)).isEqualTo("audit entry belongs to an application this credential cannot write for");
+        assertThat(status(r, 2)).isEqualTo("BAD_REQUEST");
+        assertThat(error(r, 2)).isEqualTo("applicationCode is required for an application-scoped credential");
+        assertThat(status(r, 3)).isEqualTo("BAD_REQUEST");
+        assertThat(error(r, 3)).isEqualTo("audit entry belongs to an application this credential cannot write for");
+        assertThat(countAuditByEntityType(et)).isEqualTo(1);
+    }
+
+    @Test
+    void nonScopedAuditBatchKeepsItsBehaviourUnknownAppSkippedNoAppAndOtherAppWritten() {
+        String et = uniqueType("audall");
+        String item = """
+                {"entityType":"%s","entityId":"%s","operation":"CREATE","principalId":"prn_TESTACTOR0000001"%s}""";
+        var r = http.post("/api/audit-logs/batch", "{\"items\":[" + String.join(",",
+                item.formatted(et, "oth", ",\"applicationCode\":\"" + OTHER_APP_CODE + "\""),
+                item.formatted(et, "none", ""),
+                item.formatted(et, "unk", ",\"applicationCode\":\"nosuch" + DB.run + "\"")) + "]}", ALL_APPS_ANCHOR);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        assertThat(status(r, 0)).isEqualTo("SUCCESS");
+        assertThat(status(r, 1)).isEqualTo("SUCCESS");
+        assertThat(status(r, 2)).isEqualTo("SKIPPED");
+        assertThat(countAuditByEntityType(et)).isEqualTo(2);
     }
 
     // ── Test scaffolding ─────────────────────────────────────────────────

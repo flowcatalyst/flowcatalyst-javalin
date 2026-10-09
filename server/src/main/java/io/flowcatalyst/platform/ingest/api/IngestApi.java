@@ -19,6 +19,8 @@ import io.flowcatalyst.platform.event.api.EventApi.ContextEntryDTO;
 import io.flowcatalyst.platform.ingest.AuditLogIngestMapper;
 import io.flowcatalyst.platform.ingest.DispatchJobIngestMapper;
 import io.flowcatalyst.platform.ingest.EventIngestMapper;
+import io.flowcatalyst.platform.subscription.Subscription;
+import io.flowcatalyst.platform.subscription.SubscriptionRepository;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
@@ -62,7 +64,9 @@ public final class IngestApi {
     private IngestApi() {
     }
 
-    /// The handlers' dependencies. `clientLookup` / `applicationLookup` are
+    /// The handlers' dependencies. `subscriptionLookup` backs the application
+    /// confinement of application-scoped callers ([IngestAppScope]).
+    /// `clientLookup` / `applicationLookup` are
     /// injectable so a test can wrap them with a call-counting spy to pin
     /// the per-request memoisation (spec §3.1, §4.3) — [#of] wires the real
     /// repositories. `signing` decides whether a caller may create a
@@ -73,6 +77,7 @@ public final class IngestApi {
             AuditLogRepository auditLogRepo,
             Function<String, Optional<Client>> clientLookup,
             Function<String, Optional<Application>> applicationLookup,
+            Function<String, Optional<Subscription>> subscriptionLookup,
             DeliverySigningGuard signing) {
         public State {
             Objects.requireNonNull(eventRepo, "eventRepo");
@@ -80,14 +85,16 @@ public final class IngestApi {
             Objects.requireNonNull(auditLogRepo, "auditLogRepo");
             Objects.requireNonNull(clientLookup, "clientLookup");
             Objects.requireNonNull(applicationLookup, "applicationLookup");
+            Objects.requireNonNull(subscriptionLookup, "subscriptionLookup");
             Objects.requireNonNull(signing, "signing");
         }
 
         public static State of(EventRepository eventRepo, DispatchJobLifecycle dispatchJobs,
                                 AuditLogRepository auditLogRepo, ClientRepository clientRepo,
-                                ApplicationRepository applicationRepo, DeliverySigningGuard signing) {
+                                ApplicationRepository applicationRepo, SubscriptionRepository subscriptionRepo,
+                                DeliverySigningGuard signing) {
             return new State(eventRepo, dispatchJobs, auditLogRepo,
-                    clientRepo::findByIdentifier, applicationRepo::findByCode, signing);
+                    clientRepo::findByIdentifier, applicationRepo::findByCode, subscriptionRepo::findById, signing);
         }
     }
 
@@ -115,6 +122,13 @@ public final class IngestApi {
         var ac = Auth.current();
         Checks.require(ac, Permission.BATCH_EVENTS_WRITE);
         var req = ctx.bodyAsClass(CreateEventRequest.class);
+
+        // Application confinement: an application-scoped caller may only ingest events of its
+        // own applications (first segment of the type). A blank type is left to the mapper's 400.
+        if (req.eventType() != null && !req.eventType().isBlank()
+                && !newScope(s).canAccessCode(ac, IngestAppScope.firstSegment(req.eventType()))) {
+            throw HttpError.forbidden(IngestAppScope.EVENT_REFUSED);
+        }
 
         String clientId = req.clientId();
         if (clientId == null && !ac.isAnchor() && !ac.clients().isEmpty()) {
@@ -145,6 +159,7 @@ public final class IngestApi {
         // violation still refuses the whole batch before anything is written (spec §2).
         Map<String, Optional<String>> clientCodeCache = new HashMap<>();
         var signing = s.signing().perRequest();
+        var scope = newScope(s);
         List<Event> events = new ArrayList<>(items.size());
         List<Integer> eventSlot = new ArrayList<>(items.size());
         BatchResultItem[] results = new BatchResultItem[items.size()];
@@ -153,6 +168,13 @@ public final class IngestApi {
             String invalid = invalidBatchEventItem(item);
             if (invalid != null) {
                 results[i] = new BatchResultItem(item.id() == null ? "" : item.id(), "BAD_REQUEST", invalid);
+                continue;
+            }
+            // Application confinement (application-scoped callers only): refused per item, the
+            // rest of the batch still lands.
+            if (!scope.canAccessCode(ac, IngestAppScope.firstSegment(item.type()))) {
+                results[i] = new BatchResultItem(item.id() == null ? "" : item.id(), "BAD_REQUEST",
+                        IngestAppScope.EVENT_REFUSED);
                 continue;
             }
             String clientId = item.clientId();
@@ -211,6 +233,8 @@ public final class IngestApi {
                 clientId, req.subscriptionId(), req.serviceAccountId(), req.dispatchPoolId(), req.messageGroup(),
                 req.mode(), 0, req.sequence(), req.timeoutSeconds(), req.maxRetries(), req.retryStrategy(),
                 metadataFromMap(req.metadata()), req.idempotencyKey(), req.descriptor(), req.queue()));
+        String refusal = newScope(s).jobRefusal(ac, job.code(), job.subscriptionId());
+        if (refusal != null) throw HttpError.forbidden(refusal);
         requireSignable(s.signing().perRequest(), ac, job);
         s.dispatchJobs().insertBatch(List.of(job));
         ctx.status(201).json(new CreatedResponse(job.id()));
@@ -228,7 +252,9 @@ public final class IngestApi {
         DeliverySigningGuard signing = s.signing().perRequest();
         List<DispatchJob> jobs = new ArrayList<>(items.size());
         Set<String> suppliedIds = new LinkedHashSet<>();
-        for (var item : items) {
+        var scope = newScope(s);
+        for (int idx = 0; idx < items.size(); idx++) {
+            var item = items.get(idx);
             String clientId = requireWritableClient(ac, item.clientId());
             var job = DispatchJobIngestMapper.toJob(new DispatchJobIngestMapper.RawItem(
                     item.id(), item.externalId(), item.kind(), item.code(), item.source(), item.subject(),
@@ -236,6 +262,10 @@ public final class IngestApi {
                     item.correlationId(), clientId, item.subscriptionId(), item.serviceAccountId(),
                     item.dispatchPoolId(), item.messageGroup(), item.mode(), item.sequence(), null,
                     item.timeoutSeconds(), item.maxRetries(), null, item.metadata(), null, item.descriptor(), item.queue()));
+            // Application confinement (application-scoped callers only): any offending item
+            // rejects the whole batch, like the client guard above.
+            String refusal = scope.jobRefusal(ac, job.code(), job.subscriptionId());
+            if (refusal != null) throw HttpError.forbidden("items[" + idx + "]: " + refusal);
             requireSignable(signing, ac, job);
             // S3.3: a supplied id names exactly one job — never twice in a batch, never one that exists.
             if (item.id() != null && !item.id().isBlank() && !suppliedIds.add(job.id())) {
@@ -272,7 +302,22 @@ public final class IngestApi {
         Map<String, Optional<String>> clientCodeCache = new HashMap<>();
         List<BatchResultItem> results = new ArrayList<>(items.size());
         List<AuditLog> logs = new ArrayList<>(items.size());
+        var scope = newScope(s);
         for (var item : items) {
+            // Application confinement: an application-scoped caller may only write audit rows
+            // attributed to an application it can access, and may not omit the application (an
+            // unattributed row would escape the confinement). Refused per item. This route's
+            // gate stays bare authentication; the scope is the only added check.
+            if (ac.isApplicationScoped()) {
+                if (item.applicationCode() == null || item.applicationCode().isBlank()) {
+                    results.add(new BatchResultItem("", "BAD_REQUEST", IngestAppScope.AUDIT_APP_REQUIRED));
+                    continue;
+                }
+                if (!scope.canAccessCode(ac, item.applicationCode())) {
+                    results.add(new BatchResultItem("", "BAD_REQUEST", IngestAppScope.AUDIT_REFUSED));
+                    continue;
+                }
+            }
             String applicationId = null;
             if (item.applicationCode() != null && !item.applicationCode().isBlank()) {
                 var resolved = appCodeCache.computeIfAbsent(item.applicationCode(),
@@ -315,6 +360,11 @@ public final class IngestApi {
         }
         s.auditLogRepo().insertBatch(logs);
         ctx.json(new BatchResponse(results));
+    }
+
+    /// A fresh per-request application-confinement resolver ([IngestAppScope]).
+    private static IngestAppScope newScope(State s) {
+        return new IngestAppScope(s.applicationLookup(), s.subscriptionLookup());
     }
 
     private static final BatchResultItem SKIPPED = new BatchResultItem("", "SKIPPED", null);

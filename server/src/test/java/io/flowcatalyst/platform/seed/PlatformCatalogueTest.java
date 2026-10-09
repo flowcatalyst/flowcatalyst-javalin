@@ -57,6 +57,19 @@ class PlatformCatalogueTest {
         }
     }
 
+    /// Each application delivers its own outbox with its own service-account credentials:
+    /// the built-in application-service role holds the three batch-ingest permissions (Go
+    /// 9c9986a). Existing deployments get them from V24 (the seeder never rewrites a role).
+    @Test
+    void applicationServiceRoleCarriesTheBatchIngestPermissions() {
+        var role = PlatformRoles.all().stream().filter(r -> r.name().equals("platform:application-service"))
+                .findFirst().orElseThrow();
+        assertThat(role.permissions()).contains(
+                "platform:messaging:batch:events-write",
+                "platform:messaging:batch:dispatch-jobs-write",
+                "platform:admin:batch:audit-logs-write");
+    }
+
     @Test
     void noWebhookOrDeliveryEvents() {
         for (var d : PlatformEventTypes.all()) {
@@ -93,7 +106,7 @@ class PlatformCatalogueTest {
             assertThat(r.permissions()).isNotEmpty().doesNotHaveDuplicates();
             total += r.permissions().size();
         }
-        assertThat(total).isEqualTo(210);
+        assertThat(total).isEqualTo(213);
         assertThat(roles.get(0).permissions()).containsExactly(Permissions.ADMIN_ALL);
         // router-api-auth.md rule 3: the application-service permissions, then router:view for
         // the SDK's in-flight check — and nothing that operates the router.
