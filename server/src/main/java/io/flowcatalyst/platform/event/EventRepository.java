@@ -110,6 +110,16 @@ public final class EventRepository {
                 .map(EventRepository::toEntity);
     }
 
+    /// An event's `context_data` from the write-side `msg_events` (the
+    /// projection has no context column): empty when the row has none or is
+    /// no longer there (pruned partitions). The detail view fills it in after
+    /// reading the projection (bug 22).
+    public List<ContextEntry> contextById(String id) {
+        return dsl.select(W.CONTEXT_DATA).from(W).where(W.ID.eq(id)).limit(1).fetchOptional(W.CONTEXT_DATA)
+                .map(raw -> contextEntries(fromJsonb(raw, "msg_events.context_data")))
+                .orElse(List.of());
+    }
+
     /// Projected rows matching every filter and the visibility, newest first
     /// (`created_at DESC`), `offset` rows in, at most `limit` rows.
     public List<Event> findWithFilters(ListFilter f, int limit, int offset) {

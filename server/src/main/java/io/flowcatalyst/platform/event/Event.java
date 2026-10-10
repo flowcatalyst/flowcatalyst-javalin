@@ -44,6 +44,13 @@ public record Event(
         if (data != null && data.isNull()) data = null;
     }
 
+    /// This event with `newContext` — the detail view's context, read from the
+    /// write side after the projection (bug 22).
+    public Event withContext(List<ContextEntry> newContext) {
+        return new Event(id, specVersion, type, source, subject, time, data, newContext, deduplicationId, clientId,
+                messageGroup, correlationId, causationId, createdAt, projection);
+    }
+
     /// One `{key, value}` pair of the write-side `context_data` array.
     public record ContextEntry(String key, String value) {
         public ContextEntry {

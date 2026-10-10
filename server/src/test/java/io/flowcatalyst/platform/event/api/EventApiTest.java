@@ -24,6 +24,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 
+import static io.flowcatalyst.platform.event.EventFixture.DB;
 import static io.flowcatalyst.platform.event.EventFixture.NOW;
 import static io.flowcatalyst.platform.event.EventFixture.emit;
 import static io.flowcatalyst.platform.event.EventFixture.insert;
@@ -233,7 +234,7 @@ class EventApiTest {
     void getByIdAnswersTheFullEnvelope() {
         var e = ok(http.get("/api/events/" + sinkRow, ANCHOR));
         assertThat(e.propertyNames()).containsExactly(
-                "id", "specVersion", "type", "source", "subject", "time", "data", "deduplicationId",
+                "id", "specVersion", "type", "source", "subject", "time", "data", "contextData", "deduplicationId",
                 "messageGroup", "correlationId", "application", "subdomain", "aggregate", "projectedAt", "createdAt");
         assertThat(e.get("specVersion").asText()).isEqualTo("1.0");
         assertThat(e.get("type").asText()).isEqualTo(SHIPPED);
@@ -241,7 +242,10 @@ class EventApiTest {
         assertThat(e.get("data").isObject()).as("data is a nested object, not a string").isTrue();
         assertThat(e.get("data").get("note").asText()).isEqualTo("shipped");
         assertThat(e.get("data").get("n").asInt()).isEqualTo(7);
-        assertThat(e.has("contextData")).as("the projection has no context").isFalse();
+        // The projection has no context column; the detail reads the sink's context_data from
+        // the write table (bug 22 — it was always omitted).
+        assertThat(e.get("contextData").isArray()).isTrue();
+        assertThat(e.get("contextData")).isNotEmpty();
         assertThat(e.get("deduplicationId").asText()).isEqualTo(SHIPPED + "-" + sinkRow);
         assertThat(e.get("messageGroup").asText()).isEqualTo("grp-api");
         assertThat(e.get("application").asText()).isEqualTo(APP);
@@ -305,5 +309,24 @@ class EventApiTest {
         assertThat(body.get("applications").valueStream().map(n -> n.get("value").asString())).contains(APP).doesNotContain(otherApp);
         assertThat(body.get("subdomains").valueStream().map(n -> n.get("value").asString())).doesNotContain("secret");
         assertThat(body.get("eventTypes").valueStream().map(n -> n.get("value").asString())).contains(SHIPPED, PAID).doesNotContain(otherType);
+    }
+
+    /// Bug 22: the detail carries the event's context data, read from the
+    /// write table (the projection has no context column); the list does not.
+    /// (Go `event/api/context_data_pg_test.go`.)
+    @Test
+    void getByIdCarriesTheContextDataFromTheWriteTable() {
+        // Its own application, so the in-run list assertions elsewhere are untouched.
+        String id = emit(type(application("apictx"), "shipping", "shipment", "shipped"), "platform.shipment." + entity, null,
+                NOW.minusSeconds(2), null, null, new Payload("ctx", 1));
+        DB.execute("UPDATE msg_events SET context_data = ?::jsonb WHERE id = ?",
+                "[{\"key\":\"tenant\",\"value\":\"acme\"},{\"key\":\"region\",\"value\":\"eu\"}]", id);
+        project(List.of(id));
+        var e = ok(http.get("/api/events/" + id, ANCHOR));
+        assertThat(e.get("contextData").isArray()).as(e.toString()).isTrue();
+        assertThat(e.get("contextData").valueStream().map(n -> n.get("key").asString() + "=" + n.get("value").asString()))
+                .containsExactly("tenant=acme", "region=eu");
+        assertThat(ok(http.get("/api/events/" + rowA, ANCHOR)).has("contextData"))
+                .as("a projected row without a write row has none").isFalse();
     }
 }

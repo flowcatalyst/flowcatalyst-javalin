@@ -94,7 +94,10 @@ public final class EventApi {
         var ac = Auth.current();
         Checks.require(ac, EVENT_VIEW);
         String id = ctx.pathParam("id");
-        ctx.json(EventResponse.from(visible(ac, s.repo().findById(id).orElseThrow(() -> HttpError.notFound("Event", id)))));
+        Event e = visible(ac, s.repo().findById(id).orElseThrow(() -> HttpError.notFound("Event", id)));
+        // The projection has no context column; the write table has it (bug 22).
+        if (e.context().isEmpty()) e = e.withContext(s.repo().contextById(e.id()));
+        ctx.json(EventResponse.from(e));
     }
 
     private static void filterOptions(Exchange ctx, State s) {
