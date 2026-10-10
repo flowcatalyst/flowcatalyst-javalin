@@ -86,6 +86,15 @@ public record Application(
         return withActive(false);
     }
 
+    /// The delete guard (bug 14, the SPA's rule moved server-side): an active
+    /// application must be deactivated first.
+    ///
+    /// @throws UseCaseException business rule `APPLICATION_ACTIVE`
+    public Application requireDeletable() {
+        if (active) throw UseCaseException.businessRule("APPLICATION_ACTIVE", "Deactivate the application first.");
+        return this;
+    }
+
     /// Records the service account's principal as this application's service
     /// account. Write-once.
     ///

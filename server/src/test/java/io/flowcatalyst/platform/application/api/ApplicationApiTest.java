@@ -221,6 +221,10 @@ class ApplicationApiTest {
     void deleteReturns204ThenGetIs404Envelope() {
         String code = code("del");
         String id = create(code, "Doomed", "");
+        var active = http.delete("/api/applications/" + id, ANCHOR);
+        assertThat(active.statusCode()).as("an active application is refused (bug 14)").isEqualTo(409);
+        assertThat(json(active).get("error").asString()).isEqualTo("APPLICATION_ACTIVE");
+        assertThat(http.post("/api/applications/" + id + "/deactivate", null, ANCHOR).statusCode()).isEqualTo(200);
         var del = http.delete("/api/applications/" + id, ANCHOR);
         assertThat(del.statusCode()).isEqualTo(204);
 

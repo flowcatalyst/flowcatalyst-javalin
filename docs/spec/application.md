@@ -77,7 +77,7 @@ delete = `application:delete`.
 | `PUT /api/applications/{id}` | `application:update` | `UpdateApplicationRequest` → `UpdateCommand` | 204 | PATCH semantics: absent field = unchanged |
 | `POST /api/applications/{id}/activate` | `application:update` | `ActivateCommand{id}` | 200 `ApplicationResponse` (re-read) | |
 | `POST /api/applications/{id}/deactivate` | `application:update` | `DeactivateCommand{id}` | 200 `ApplicationResponse` (re-read) | |
-| `DELETE /api/applications/{id}` | `application:delete` | `DeleteCommand{id}` | 204 | hard delete; client configs are **not** cascaded (**accident?** — orphaned `app_client_configs` rows) |
+| `DELETE /api/applications/{id}` | `application:delete` | `DeleteCommand{id}` | 204; 409 `APPLICATION_ACTIVE` "Deactivate the application first." for an active application (bug 14, 2026-10-10, checked first) | hard delete; client configs are **not** cascaded (**accident?** — orphaned `app_client_configs` rows) |
 | `POST /api/applications/{id}/service-account` | anchor + `APPLICATION_UPDATE` | `AttachServiceAccountRequest{serviceAccountId, serviceAccountCode}` → `AttachServiceAccountCommand` | 204 | |
 | `GET /api/applications/{id}/clients` | `application:view` | — | 200 `ClientConfigListResponse` `{items}` | ordered by `createdAt`; an unknown application id lists `[]`, not 404 (**accident?**) |
 | `GET /api/applications/{id}/clients/{clientId}` | `application:view` | — | 200 `ClientConfigResponse` | 404 `ClientConfig_NOT_FOUND`, id rendered `{appId}:{clientId}` |

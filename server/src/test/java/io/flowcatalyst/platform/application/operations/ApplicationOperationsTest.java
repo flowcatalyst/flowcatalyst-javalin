@@ -286,9 +286,30 @@ class ApplicationOperationsTest {
 
     // ── Delete ─────────────────────────────────────────────────────────────
 
+    /// Bug 14: an active application is refused (409 `APPLICATION_ACTIVE`)
+    /// before any other delete check, and survives; deactivated, it deletes.
+    /// (Go `TestDeleteApplication_RefusedWhileActive`.)
+    @Test
+    void deleteIsRefusedWhileActive() {
+        var seeded = created("appdelactive", "Active");
+        assertUseCaseError(() -> runAsAnchor(DeleteApplication.of(repo, functions), new DeleteCommand(seeded.applicationId())),
+                UseCaseError.BusinessRule.class, "APPLICATION_ACTIVE");
+        assertThat(repo.findById(seeded.applicationId())).as("the refused application survives").isPresent();
+        assertThat(eventsFor(seeded.applicationId(), ApplicationEvents.DELETED)).isEmpty();
+
+        deactivate(seeded.applicationId());
+        runAsAnchor(DeleteApplication.of(repo, functions), new DeleteCommand(seeded.applicationId()));
+        assertThat(repo.findById(seeded.applicationId())).isEmpty();
+    }
+
+    private static void deactivate(String id) {
+        runAsAnchor(DeactivateApplication.of(repo), new DeactivateCommand(id));
+    }
+
     @Test
     void deleteRemovesTheRow() {
         var seeded = created("appdel", "Doomed");
+        deactivate(seeded.applicationId());
 
         var ev = runAsAnchor(DeleteApplication.of(repo, functions), new DeleteCommand(seeded.applicationId()));
         assertThat(ev.applicationId()).isEqualTo(seeded.applicationId());
@@ -307,6 +328,7 @@ class ApplicationOperationsTest {
     @Test
     void deleteRefusesWhileFunctionsExistThenSucceedsAfterTheyAreDeleted() {
         var seeded = created("appfn", "HasFunctions");
+        deactivate(seeded.applicationId());
         FunctionAddress address = FunctionAddress.of(
                 new DnsLabel("appfn-" + RUN), new DnsLabel("svc"), new DnsLabel("fn"));
         Function f = Function.create(seeded.applicationId(), address, new FunctionOwner.Platform(), Runtime.JVM, null);
