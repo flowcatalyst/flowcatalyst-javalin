@@ -52,11 +52,11 @@ All routes require a bearer; every error is the `ErrorModel` envelope
 | Method / path | Gate (handler) | Body → command | Success | Notes |
 |---|---|---|---|---|
 | `GET /api/processes` | `process:view` | query `application`, `subdomain`, `status` | 200 `ProcessListResponse` `{items: [ProcessResponse]}` | ordered by code; every non-empty query parameter is an equality filter; **no implied default** (unfiltered lists `ARCHIVED` rows too — unlike event types) |
-| `POST /api/processes` | any of `process:{create\|update\|delete}` | `CreateProcessRequest` → `CreateCommand` | 201 `CreatedResponse` `{id}` | **accident?** create is gated by "any write permission", not `create` |
+| `POST /api/processes` | `process:create` | `CreateProcessRequest` → `CreateCommand` | 201 `CreatedResponse` `{id}` | **ruled 2026-10-10**: the permission for the operation, never any of the three (`docs/go-mirror/2026-10-10-platform-bug-fixes.md`) |
 | `GET /api/processes/by-code/{code}` | `process:view` | — | 200 `ProcessResponse` | 404 `Process_NOT_FOUND`, message carries the code |
 | `GET /api/processes/{id}` | `process:view` | — | 200 `ProcessResponse` | 404 `Process_NOT_FOUND` |
-| `PUT /api/processes/{id}` | any write permission | `UpdateProcessRequest` → `UpdateCommand(id from path)` | 204, empty body | |
-| `POST /api/processes/{id}/archive` | any write permission | `ArchiveCommand(id)` | 204, empty body | no request body; **accident?** `process:archive` exists as a permission but the route is gated by the write trio |
+| `PUT /api/processes/{id}` | `process:update` | `UpdateProcessRequest` → `UpdateCommand(id from path)` | 204, empty body | |
+| `POST /api/processes/{id}/archive` | `process:update` | `ArchiveCommand(id)` | 204, empty body | no request body; `process:archive` exists as a permission but no check reads it (owner decision open, Go decision 1) |
 | `DELETE /api/processes/{id}` | `process:delete` | `DeleteCommand(id)` | 204 | hard delete |
 | `POST /api/applications/{appCode}/processes/sync` | `process:sync` \| `application-service:process:sync` + application resolution | `SyncProcessesRequest` (+ `?removeUnlisted`) → `SyncProcessesCommand` | 200 `SyncResultResponse` | lives in the sdksync surface, not this package's API; the operation is here |
 | `POST /api/processes/sync` | same | `SyncProcessesByBodyRequest` (`applicationCode` in the body) | 200 `SyncResultResponse` | Laravel-SDK alias of the route above — sdksync surface, **not wired by this package** although it sits under `/api/processes` |

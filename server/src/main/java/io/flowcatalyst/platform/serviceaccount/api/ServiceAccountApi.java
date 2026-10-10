@@ -173,7 +173,7 @@ public final class ServiceAccountApi {
 
     private static void create(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
-        Checks.requireAny(ac, SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
+        Checks.require(ac, SERVICE_ACCOUNT_CREATE);
         var cmd = ctx.bodyAsClass(CreateServiceAccountRequest.class).toCommand();
         // Same rule as assigning application access (PrincipalApi): only a caller that
         // itself holds all-applications access may grant it.
@@ -193,14 +193,14 @@ public final class ServiceAccountApi {
     }
 
     private static void update(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
+        Checks.require(Auth.current(), SERVICE_ACCOUNT_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateServiceAccountRequest.class).toCommand(ctx.pathParam("id"));
         UpdateServiceAccount.of(s.repo(), s.principals(), s.clients()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
     private static void deactivate(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
+        Checks.require(Auth.current(), SERVICE_ACCOUNT_UPDATE);
         DeactivateServiceAccount.of(s.repo()).run(s.uow(), new DeactivateCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }

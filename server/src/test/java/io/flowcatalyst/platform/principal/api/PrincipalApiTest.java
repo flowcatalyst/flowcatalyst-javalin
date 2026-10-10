@@ -46,6 +46,9 @@ import java.util.Locale;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import io.flowcatalyst.platform.shared.auth.Permission;
+import io.flowcatalyst.platform.shared.auth.WriteGates;
+import io.flowcatalyst.platform.shared.auth.WriteGates.Write;
 
 /// The `/api/principals` surface (`docs/spec/principal.md` §3) — the
 /// aggregate that landed without an API test, and the one where a missing
@@ -977,5 +980,43 @@ class PrincipalApiTest {
         assertThat(r.statusCode()).as("mutant: the flag only wired on /users — body was %s", r.body()).isEqualTo(400);
         assertThat(json(r).get("error").asText()).isEqualTo("INVITE_REDIRECT_URI_INVALID");
         assertThat(REPO.findByEmail(email)).isEmpty();
+    }
+
+    // ── Per-operation permission ───────────────────────────────────────────
+
+    /// Each user write needs the permission for its operation, never any of
+    /// create/update/delete: creating users (create, createUser, bulk import)
+    /// needs create; every change to an existing user (edit, activate,
+    /// deactivate, passwords, application access, someone else's developer
+    /// credential) needs update; delete needs delete. Role changes keep their
+    /// dedicated `USER_ASSIGN_ROLES` (owner ruling 2026-09-25), so none of the
+    /// three admits them. (reset-2fa answers 500 before its gate here: this
+    /// harness has no MFA service.)
+    @Test
+    @DisplayName("each user write needs the permission for its operation")
+    void eachWriteNeedsTheOperationsPermission() {
+        String target = createUser("gate", clientA);
+        String p = "/api/principals/" + target;
+        WriteGates.assertEachWriteNeedsItsPermission(http, List.of(
+                        Write.of("create", "POST", "/api/principals",
+                                "{\"email\":\"gate-c" + RUN + "@example.test\",\"scope\":\"CLIENT\",\"clientId\":\"" + clientA
+                                        + "\",\"inviteRedirectUri\":\"not a url\"}", Permission.USER_CREATE),
+                        Write.of("createUser", "POST", "/api/principals/users",
+                                "{\"email\":\"gate-u" + RUN + "@example.test\",\"name\":\"G\",\"clientId\":\"" + clientA
+                                        + "\",\"inviteRedirectUri\":\"not a url\"}", Permission.USER_CREATE),
+                        Write.of("bulk import", "POST", "/api/principals/bulk-import",
+                                "{\"clientId\":\"" + clientA + "\",\"users\":[]}", Permission.USER_CREATE),
+                        Write.of("update", "PUT", p, "{}", Permission.USER_UPDATE),
+                        Write.of("activate", "POST", p + "/activate", null, Permission.USER_UPDATE),
+                        Write.of("deactivate", "POST", p + "/deactivate", null, Permission.USER_UPDATE),
+                        Write.of("reset-password", "POST", p + "/reset-password", "{\"newPassword\":\"x\"}", Permission.USER_UPDATE),
+                        Write.of("send-password-reset", "POST", p + "/send-password-reset", null, Permission.USER_UPDATE),
+                        Write.of("application-access", "PUT", p + "/application-access", "{\"applicationIds\":[]}", Permission.USER_UPDATE),
+                        Write.of("developer-credential", "POST", p + "/developer-credential", null, Permission.USER_UPDATE),
+                        Write.of("revoke developer-credential", "DELETE", p + "/developer-credential", null, Permission.USER_UPDATE),
+                        Write.of("assign roles", "PUT", p + "/roles", "{\"roles\":[]}", Permission.USER_ASSIGN_ROLES),
+                        Write.of("add role", "POST", p + "/roles", "{\"role\":\"x\"}", Permission.USER_ASSIGN_ROLES),
+                        Write.of("delete", "DELETE", "/api/principals/prn_gate000000001", null, Permission.USER_DELETE)),
+                Permission.USER_CREATE, Permission.USER_UPDATE, Permission.USER_DELETE);
     }
 }

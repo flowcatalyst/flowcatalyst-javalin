@@ -125,12 +125,12 @@ All routes require a bearer; every error is the `ErrorModel` envelope
 | Method / path | Gate (handler) | Body → command | Success | Notes |
 |---|---|---|---|---|
 | `GET /api/subscriptions` | `subscription:view` | query `status`, `clientId` | 200 `SubscriptionListResponse` `{subscriptions: [...], total}` | ordered by code; both are equality filters on real columns (empty string = absent); no default status; client-scoped rows the caller cannot access are filtered out; `total` = size of the *visible* list |
-| `POST /api/subscriptions` | `subscription:{create\|update\|delete}` (any) | `CreateSubscriptionRequest` → `CreateCommand` | 201 `CreatedResponse` `{id}` | **accident?** create is gated by "any write permission" (same as event types / dispatch pools) |
+| `POST /api/subscriptions` | `subscription:create` | `CreateSubscriptionRequest` → `CreateCommand` | 201 `CreatedResponse` `{id}` | **ruled 2026-10-10**: the permission for the operation, never any of the three (`docs/go-mirror/2026-10-10-platform-bug-fixes.md`) (bug 8) |
 | `GET /api/subscriptions/{id}` | `subscription:view` | — | 200 `SubscriptionResponse` | 404 `Subscription_NOT_FOUND`; 403 `FORBIDDEN` `No access to this subscription` when client-scoped and not accessible |
-| `PUT /api/subscriptions/{id}` | any write permission | `UpdateSubscriptionRequest` → `UpdateCommand(id from path)` | 204, empty body | partial update: absent = unchanged |
+| `PUT /api/subscriptions/{id}` | `subscription:update` | `UpdateSubscriptionRequest` → `UpdateCommand(id from path)` | 204, empty body | partial update: absent = unchanged |
 | `DELETE /api/subscriptions/{id}` | `subscription:delete` | `DeleteCommand` | 204 | hard delete (bindings + config rows too) |
-| `POST /api/subscriptions/{id}/pause` | any write permission | `PauseCommand` | 204 | |
-| `POST /api/subscriptions/{id}/resume` | any write permission | `ResumeCommand` | 204 | |
+| `POST /api/subscriptions/{id}/pause` | `subscription:update` | `PauseCommand` | 204 | |
+| `POST /api/subscriptions/{id}/resume` | `subscription:update` | `ResumeCommand` | 204 | |
 | `POST /api/applications/{appCode}/subscriptions/sync` | `subscription:{sync\|manage}` or `application-service:subscription:{create\|update\|delete}` + application resolution | `SyncSubscriptionsRequest` (+ `?removeUnlisted`) → `SyncSubscriptionsCommand` | 200 `SyncResultResponse` | lives in the sdksync surface — **not wired by this package**; the operation is here (§7) |
 
 Wire shapes:

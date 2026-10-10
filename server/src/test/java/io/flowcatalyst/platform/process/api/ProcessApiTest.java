@@ -22,6 +22,10 @@ import java.util.Locale;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import io.flowcatalyst.platform.shared.auth.Permission;
+import io.flowcatalyst.platform.shared.auth.WriteGates;
+import io.flowcatalyst.platform.shared.auth.WriteGates.Write;
+import java.util.List;
 
 /// The seven `/api/processes` routes end to end through Javalin: the
 /// authenticator's test headers, the coarse permission gates, the lockfile
@@ -257,5 +261,22 @@ class ProcessApiTest {
         var malformed = http.post("/api/processes", "{not json", ANCHOR);
         assertThat(malformed.statusCode()).isEqualTo(400);
         assertThat(json(malformed).get("error").asText()).isEqualTo("INVALID_JSON");
+    }
+
+    // ── Per-operation permission ───────────────────────────────────────────
+
+    /// Each write needs the permission for its operation, never any of
+    /// create/update/delete: create needs create; update and archive need
+    /// update; delete needs delete.
+    @Test
+    void eachWriteNeedsTheOperationsPermission() {
+        String p = "/api/processes/prc_gate000000001";
+        String g = "gate" + Long.toString(System.nanoTime(), 36);
+        WriteGates.assertEachWriteNeedsItsPermission(http, List.of(
+                        Write.of("create", "POST", "/api/processes", "{\"code\":\"gate:" + g + ":x:y\",\"name\":\"G\"}", Permission.PROCESS_CREATE),
+                        Write.of("update", "PUT", p, "{}", Permission.PROCESS_UPDATE),
+                        Write.of("archive", "POST", p + "/archive", null, Permission.PROCESS_UPDATE),
+                        Write.of("delete", "DELETE", p, null, Permission.PROCESS_DELETE)),
+                Permission.PROCESS_CREATE, Permission.PROCESS_UPDATE, Permission.PROCESS_DELETE);
     }
 }

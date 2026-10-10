@@ -88,18 +88,18 @@ the fallback is unambiguous) → 404 `Role_NOT_FOUND` with the given key.
 | Method / path | Gate (handler) | Body → command | Success | Notes |
 |---|---|---|---|---|
 | `GET /api/roles` | `role:view` | — | 200 `RoleListResponse` `{roles[], total}` | all roles, ordered by name |
-| `POST /api/roles` | any of `role:{create\|update\|delete}` | `CreateRoleRequest` → `CreateCommand` | 201 `CreatedResponse` `{id}` | **accident?** create is gated by "any write permission", not `create` |
+| `POST /api/roles` | `role:create` | `CreateRoleRequest` → `CreateCommand` | 201 `CreatedResponse` `{id}` | **ruled 2026-10-10**: the permission for the operation, never any of the three (`docs/go-mirror/2026-10-10-platform-bug-fixes.md`) |
 | `GET /api/roles/{id}` | `role:view` | — | 200 `RoleResponse` | resolve (id, then name) |
-| `PUT /api/roles/{id}` | any write permission | `UpdateRoleRequest` → `UpdateCommand(id = resolved role's id)` | 204, empty | the handler resolves first (404 before validation), then runs the use case with the TSID |
+| `PUT /api/roles/{id}` | `role:update` | `UpdateRoleRequest` → `UpdateCommand(id = resolved role's id)` | 204, empty | the handler resolves first (404 before validation), then runs the use case with the TSID |
 | `DELETE /api/roles/{id}` | `role:delete` | `DeleteCommand(resolved id)` | 204 | |
 | `GET /api/roles/by-code/{code}` | `role:view` | — | 200 `RoleResponse` | by name only, no id fallback |
 | `GET /api/roles/by-source/{source}` | `role:view` | — | 200 bare JSON array `[RoleResponse]` | `source` parsed leniently: anything but `CODE`/`SDK` lists the `DATABASE` roles. **accident?** |
 | `GET /api/roles/by-application/{applicationId}` | `role:view` | — | 200 bare array | roles whose `applicationId` matches (SDK-synced roles in practice) |
 | `GET /api/roles/filters/applications` | `role:view` | — | 200 `{applicationCodes[]}` | distinct non-null codes, ordered |
 | `GET /api/roles/{roleName}/permissions` | `role:view` | — | 200 `{permissions[]}` | by name only → 404 `Role_NOT_FOUND` |
-| `POST /api/roles/{roleName}/permissions/{permission}` | any write permission | `GrantPermissionCommand(roleName, permission)` | 200 `RoleResponse` (re-read) | |
-| `POST /api/roles/{roleName}/permissions` | any write permission | `GrantPermissionRequest{permission}` → same command | 200 `RoleResponse` | SDK-compatibility alias — **load-bearing** |
-| `DELETE /api/roles/{roleName}/permissions/{permission}` | any write permission | `RevokePermissionCommand(roleName, permission)` | 200 `RoleResponse` (re-read) | |
+| `POST /api/roles/{roleName}/permissions/{permission}` | `role:update` | `GrantPermissionCommand(roleName, permission)` | 200 `RoleResponse` (re-read) | |
+| `POST /api/roles/{roleName}/permissions` | `role:update` | `GrantPermissionRequest{permission}` → same command | 200 `RoleResponse` | SDK-compatibility alias — **load-bearing** |
+| `DELETE /api/roles/{roleName}/permissions/{permission}` | `role:update` | `RevokePermissionCommand(roleName, permission)` | 200 `RoleResponse` (re-read) | |
 | `GET /api/roles/permissions` | `role:view` | — | 200 `PermissionListResponse` `{permissions[], total}` | catalogue, ordered by code |
 | `GET /api/roles/permissions/{permission}` | `role:view` | — | 200 `PermissionResponse` | 404 `Permission_NOT_FOUND` |
 | `DELETE /api/roles/permissions/{permission}` | `role:delete` | — | 204 | idempotent (absent code → 204). **Bypasses the use-case envelope: no domain event, no audit row.** **load-bearing or accident?** |

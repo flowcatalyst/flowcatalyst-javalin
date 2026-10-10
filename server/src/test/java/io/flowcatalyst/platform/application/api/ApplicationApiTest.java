@@ -42,6 +42,9 @@ import static io.flowcatalyst.db.generated.Tables.IAM_ROLES;
 import static io.flowcatalyst.db.generated.Tables.IAM_SERVICE_ACCOUNTS;
 import static io.flowcatalyst.db.generated.Tables.TNT_CLIENTS;
 import static org.assertj.core.api.Assertions.assertThat;
+import io.flowcatalyst.platform.shared.auth.Permission;
+import io.flowcatalyst.platform.shared.auth.WriteGates;
+import io.flowcatalyst.platform.shared.auth.WriteGates.Write;
 
 /// The fourteen mounted `/api/applications*` routes end to end through
 /// Javalin: the authenticator's test headers, the coarse permission / anchor
@@ -544,5 +547,23 @@ class ApplicationApiTest {
         var malformed = http.post("/api/applications", "{not json", ANCHOR);
         assertThat(malformed.statusCode()).isEqualTo(400);
         assertThat(json(malformed).get("error").asText()).isEqualTo("INVALID_JSON");
+    }
+
+    // ── Per-operation permission ───────────────────────────────────────────
+
+    /// Each write needs the permission for its operation, never any of
+    /// create/update/delete: create needs create; update, activate and
+    /// deactivate need update; delete needs delete (bug 13).
+    @Test
+    void eachWriteNeedsTheOperationsPermission() {
+        String p = "/api/applications/app_gate000000001";
+        String g = "gate" + Long.toString(System.nanoTime(), 36);
+        WriteGates.assertEachWriteNeedsItsPermission(http, List.of(
+                        Write.of("create", "POST", "/api/applications", "{\"code\":\"" + g + "\",\"name\":\"G\"}", Permission.APPLICATION_CREATE),
+                        Write.of("update", "PUT", p, "{}", Permission.APPLICATION_UPDATE),
+                        Write.of("activate", "POST", p + "/activate", null, Permission.APPLICATION_UPDATE),
+                        Write.of("deactivate", "POST", p + "/deactivate", null, Permission.APPLICATION_UPDATE),
+                        Write.of("delete", "DELETE", p, null, Permission.APPLICATION_DELETE)),
+                Permission.APPLICATION_CREATE, Permission.APPLICATION_UPDATE, Permission.APPLICATION_DELETE);
     }
 }

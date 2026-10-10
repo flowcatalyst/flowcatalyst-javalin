@@ -332,7 +332,7 @@ public final class PrincipalApi {
         AuthContext ac = Auth.current();
         var req = ctx.bodyAsClass(CreatePrincipalRequest.class);
         requireClientScopeForNonAnchor(ac, req.scope());
-        Checks.requireUserAdmin(ac, req.clientId());
+        Checks.requireUserAdmin(ac, req.clientId(), USER_CREATE);
         String inviteRedirect = resolveInviteRedirect(req.inviteRedirectUri());
         var event = CreateUser.of(s.repo()).run(s.uow(), req.toCommand(), Auth.executionContext());
         String inviteLink = s.repo().findById(event.userId())
@@ -358,7 +358,7 @@ public final class PrincipalApi {
         var derived = UserScopeDerivation.derive(req.scope(), isAnchorDomain, mapping, requestedClient);
 
         requireClientScopeForNonAnchor(ac, derived.scope().name());
-        Checks.requireUserAdmin(ac, derived.clientId());
+        Checks.requireUserAdmin(ac, derived.clientId(), USER_CREATE);
         String inviteRedirect = resolveInviteRedirect(req.inviteRedirectUri());
         ExecutionContext ec = Auth.executionContext();
 
@@ -392,7 +392,7 @@ public final class PrincipalApi {
         var req = ctx.bodyAsClass(BulkImportRequest.class);
         String clientId = req.clientId() == null ? "" : req.clientId().trim();
         if (clientId.isEmpty()) throw HttpError.badRequest("CLIENT_REQUIRED", "A target client is required");
-        Checks.requireUserAdmin(ac, clientId);
+        Checks.requireUserAdmin(ac, clientId, USER_CREATE);
         if (req.users().isEmpty()) throw HttpError.badRequest("NO_ROWS", "No users to import");
         if (req.users().size() > BULK_IMPORT_MAX_ROWS) {
             throw HttpError.badRequest("TOO_MANY", "Import is limited to " + BULK_IMPORT_MAX_ROWS + " users at a time");
@@ -461,20 +461,20 @@ public final class PrincipalApi {
     }
 
     private static void update(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), USER_CREATE, USER_UPDATE, USER_DELETE);
+        Checks.require(Auth.current(), USER_UPDATE);
         String id = ctx.pathParam("id");
         UpdateUser.of(s.repo()).run(s.uow(), ctx.bodyAsClass(UpdatePrincipalRequest.class).toCommand(id), Auth.executionContext());
         ctx.json(PrincipalResponse.from(principal(s, id)));
     }
 
     private static void activate(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), USER_CREATE, USER_UPDATE, USER_DELETE);
+        Checks.require(Auth.current(), USER_UPDATE);
         ActivateUser.of(s.repo()).run(s.uow(), new ActivateCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.json(new StatusChangeResponse("Principal activated"));
     }
 
     private static void deactivate(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), USER_CREATE, USER_UPDATE, USER_DELETE);
+        Checks.require(Auth.current(), USER_UPDATE);
         DeactivateUser.of(s.repo()).run(s.uow(), new DeactivateCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.json(new StatusChangeResponse("Principal deactivated"));
     }
@@ -487,7 +487,7 @@ public final class PrincipalApi {
     /// (not `requireUserAdmin`) matches that spelling for the scope check too.
     private static void resetPassword(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
-        Checks.requireAny(ac, USER_CREATE, USER_UPDATE, USER_DELETE);
+        Checks.require(ac, USER_UPDATE);
         String id = ctx.pathParam("id");
         Principal p = principal(s, id);
         Access.requireManageable(p);

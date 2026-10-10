@@ -39,6 +39,9 @@ import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import io.flowcatalyst.platform.shared.auth.Permission;
+import io.flowcatalyst.platform.shared.auth.WriteGates;
+import io.flowcatalyst.platform.shared.auth.WriteGates.Write;
 
 /// The three `/api/reset-approvals*` routes end to end through Javalin
 /// (spec `auth-identity.md` §8.6): anchor-vs-client-admin visibility,
@@ -266,5 +269,22 @@ class ResetApprovalApiTest {
             }
         }
         throw new AssertionError("no row with id " + id + " in " + requests);
+    }
+
+    // ── Per-operation permission ───────────────────────────────────────────
+
+    /// The queue is what an administrator holding `user:update` may approve or
+    /// deny: listing, approving and denying need update, not any of
+    /// create/update/delete.
+    @Test
+    void listApproveAndDenyNeedUserUpdate() {
+        String client = EntityType.CLIENT.generate();
+        var toApprove = seedPending(seedPrincipal(client).id(), client);
+        var toDeny = seedPending(seedPrincipal(client).id(), client);
+        WriteGates.assertEachWriteNeedsItsPermission(http, List.of(
+                        Write.of("list", "GET", "/api/reset-approvals", null, Permission.USER_UPDATE),
+                        Write.of("approve", "POST", "/api/reset-approvals/" + toApprove.id() + "/approve", null, Permission.USER_UPDATE),
+                        Write.of("deny", "POST", "/api/reset-approvals/" + toDeny.id() + "/deny", "{}", Permission.USER_UPDATE)),
+                Permission.USER_CREATE, Permission.USER_UPDATE, Permission.USER_DELETE);
     }
 }

@@ -27,6 +27,10 @@ import java.util.Locale;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import io.flowcatalyst.platform.shared.auth.Permission;
+import io.flowcatalyst.platform.shared.auth.WriteGates;
+import io.flowcatalyst.platform.shared.auth.WriteGates.Write;
+import java.util.List;
 
 /// The fifteen `/api/scheduled-jobs` routes end to end through Javalin: the
 /// authenticator's test headers, the coarse permission gates, the lockfile
@@ -53,7 +57,7 @@ class ScheduledJobApiTest {
             Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
             Authenticator.TEST_SCOPE, "CLIENT",
             Authenticator.TEST_CLIENTS, CLIENT,
-            Authenticator.TEST_PERMISSIONS, "platform:messaging:scheduled-job:view,platform:messaging:scheduled-job:create,platform:messaging:scheduled-job:fire"};
+            Authenticator.TEST_PERMISSIONS, "platform:messaging:scheduled-job:view,platform:messaging:scheduled-job:create,platform:messaging:scheduled-job:update,platform:messaging:scheduled-job:fire"};
 
     private static final ScheduledJobApi.State state = new ScheduledJobApi.State(
             new ScheduledJobRepository(TestPg.dataSource()),
@@ -311,7 +315,7 @@ class ScheduledJobApiTest {
         assertThat(http.post("/api/scheduled-jobs/" + id + "/pause", null, VIEWER).statusCode()).isEqualTo(403);
         assertThat(http.post("/api/scheduled-jobs/" + id + "/fire", null, VIEWER).statusCode()).isEqualTo(403);
         assertThat(http.delete("/api/scheduled-jobs/" + id, VIEWER).statusCode()).isEqualTo(403);
-        // The client writer holds create + fire but not delete; a platform job is out of its scope anyway.
+        // The client writer holds create, update and fire but not delete; a platform job is out of its scope anyway.
         assertThat(http.delete("/api/scheduled-jobs/" + id, CLIENT_WRITER).statusCode()).isEqualTo(403);
         var scoped = http.post("/api/scheduled-jobs/" + id + "/pause", null, CLIENT_WRITER);
         assertThat(scoped.statusCode()).isEqualTo(403);
@@ -357,5 +361,25 @@ class ScheduledJobApiTest {
                 "{\"level\":\"\",\"message\":\"m\"}", ANCHOR);
         assertThat(noLevel.statusCode()).isEqualTo(400);
         assertThat(json(noLevel).get("error").asText()).isEqualTo("LEVEL_REQUIRED");
+    }
+
+    // ── Per-operation permission ───────────────────────────────────────────
+
+    /// Each write needs the permission for its operation, never any of
+    /// create/update/delete: create needs create; update, pause, resume and
+    /// archive need update; delete needs delete (bug 17). The runner's
+    /// instance log/complete reports keep their any-of gate.
+    @Test
+    void eachWriteNeedsTheOperationsPermission() {
+        String p = "/api/scheduled-jobs/sjb_gate000000001";
+        String g = "gate" + Long.toString(System.nanoTime(), 36);
+        WriteGates.assertEachWriteNeedsItsPermission(http, List.of(
+                        Write.of("create", "POST", "/api/scheduled-jobs", "{\"code\":\"" + g + "\",\"name\":\"G\",\"crons\":[\"0 * * * *\"],\"concurrent\":false,\"tracksCompletion\":false}", Permission.SCHEDULED_JOB_CREATE),
+                        Write.of("update", "PUT", p, "{}", Permission.SCHEDULED_JOB_UPDATE),
+                        Write.of("pause", "POST", p + "/pause", null, Permission.SCHEDULED_JOB_UPDATE),
+                        Write.of("resume", "POST", p + "/resume", null, Permission.SCHEDULED_JOB_UPDATE),
+                        Write.of("archive", "POST", p + "/archive", null, Permission.SCHEDULED_JOB_UPDATE),
+                        Write.of("delete", "DELETE", p, null, Permission.SCHEDULED_JOB_DELETE)),
+                Permission.SCHEDULED_JOB_CREATE, Permission.SCHEDULED_JOB_UPDATE, Permission.SCHEDULED_JOB_DELETE);
     }
 }

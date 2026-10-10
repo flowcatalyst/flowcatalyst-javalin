@@ -104,7 +104,7 @@ public final class RoleApi {
     }
 
     private static void create(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
+        Checks.require(Auth.current(), ROLE_CREATE);
         var cmd = ctx.bodyAsClass(CreateRoleRequest.class).toCommand();
         var event = CreateRole.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.roleId()));
@@ -116,7 +116,7 @@ public final class RoleApi {
     }
 
     private static void update(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
+        Checks.require(Auth.current(), ROLE_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateRoleRequest.class).toCommand(resolveRole(s, ctx.pathParam("id")).id());
         UpdateRole.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
@@ -167,7 +167,7 @@ public final class RoleApi {
     }
 
     private static void grant(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
+        Checks.require(Auth.current(), ROLE_UPDATE);
         var cmd = new GrantPermissionCommand(ctx.pathParam("roleName"), ctx.pathParam("permission"));
         GrantPermission.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(RoleResponse.from(roleNamed(s, cmd.roleName())));
@@ -175,14 +175,14 @@ public final class RoleApi {
 
     /// The SDK shape: `{permission}` in the body — the same grant operation.
     private static void grantFromBody(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
+        Checks.require(Auth.current(), ROLE_UPDATE);
         var cmd = ctx.bodyAsClass(GrantPermissionRequest.class).toCommand(ctx.pathParam("roleName"));
         GrantPermission.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(RoleResponse.from(roleNamed(s, cmd.roleName())));
     }
 
     private static void revoke(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
+        Checks.require(Auth.current(), ROLE_UPDATE);
         var cmd = new RevokePermissionCommand(ctx.pathParam("roleName"), ctx.pathParam("permission"));
         RevokePermission.of(s.roles()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(RoleResponse.from(roleNamed(s, cmd.roleName())));

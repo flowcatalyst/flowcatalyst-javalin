@@ -150,14 +150,14 @@ public final class ApplicationApi {
     }
 
     private static void create(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), APPLICATION_CREATE, APPLICATION_UPDATE, APPLICATION_DELETE);
+        Checks.require(Auth.current(), APPLICATION_CREATE);
         var cmd = ctx.bodyAsClass(CreateApplicationRequest.class).toCommand();
         var event = CreateApplication.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.applicationId()));
     }
 
     private static void update(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), APPLICATION_CREATE, APPLICATION_UPDATE, APPLICATION_DELETE);
+        Checks.require(Auth.current(), APPLICATION_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateApplicationRequest.class).toCommand(ctx.pathParam("id"));
         UpdateApplication.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
@@ -165,7 +165,7 @@ public final class ApplicationApi {
 
     /// Answers with the re-read application, as the lockfile says.
     private static void activate(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), APPLICATION_CREATE, APPLICATION_UPDATE, APPLICATION_DELETE);
+        Checks.require(Auth.current(), APPLICATION_UPDATE);
         String id = ctx.pathParam("id");
         ActivateApplication.of(s.repo()).run(s.uow(), new ActivateCommand(id), Auth.executionContext());
         Application a = applicationById(s, id);
@@ -174,7 +174,7 @@ public final class ApplicationApi {
 
     /// Answers with the re-read application, as the lockfile says.
     private static void deactivate(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), APPLICATION_CREATE, APPLICATION_UPDATE, APPLICATION_DELETE);
+        Checks.require(Auth.current(), APPLICATION_UPDATE);
         String id = ctx.pathParam("id");
         DeactivateApplication.of(s.repo()).run(s.uow(), new DeactivateCommand(id), Auth.executionContext());
         Application a = applicationById(s, id);

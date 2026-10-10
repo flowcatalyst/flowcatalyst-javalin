@@ -39,6 +39,11 @@ import java.util.UUID;
 
 import static io.flowcatalyst.db.generated.Tables.IAM_ROLES;
 import static org.assertj.core.api.Assertions.assertThat;
+import io.flowcatalyst.platform.shared.auth.WriteGates;
+import io.flowcatalyst.platform.shared.auth.WriteGates.Write;
+import static io.flowcatalyst.platform.shared.auth.Permission.ROLE_CREATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.ROLE_DELETE;
+import static io.flowcatalyst.platform.shared.auth.Permission.ROLE_UPDATE;
 
 /// The sixteen `/api/roles*` routes end to end through Javalin: the
 /// authenticator's test headers, the coarse permission gates, route
@@ -376,11 +381,16 @@ class RoleApiTest {
         assertThat(env.get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
         assertThat(env.get("message").asText()).contains("platform:iam:role:create");
 
-        // Any write permission passes the create gate (spec §3, open question 8)…
-        var writer = http.post("/api/roles",
+        // Create needs role:create itself: an updater is refused (the permission
+        // for the operation, never any of create/update/delete)…
+        var byUpdater = http.post("/api/roles",
                 "{\"applicationCode\":\"" + APP + "\",\"roleName\":\"writer\",\"displayName\":\"X\",\"clientManaged\":false}", WRITER);
+        assertThat(byUpdater.statusCode()).as(byUpdater.body()).isEqualTo(403);
+        assertThat(json(byUpdater).get("message").asText()).contains("platform:iam:role:create");
+        var writer = http.post("/api/roles",
+                "{\"applicationCode\":\"" + APP + "\",\"roleName\":\"writer\",\"displayName\":\"X\",\"clientManaged\":false}", ANCHOR);
         assertThat(writer.statusCode()).as(writer.body()).isEqualTo(201);
-        // …but delete needs the delete permission specifically.
+        // …and delete needs the delete permission specifically.
         var del = http.delete("/api/roles/" + json(writer).get("id").asText(), WRITER);
         assertThat(del.statusCode()).isEqualTo(403);
         assertThat(json(del).get("error").asText()).isEqualTo("PERMISSION_REQUIRED");
@@ -415,5 +425,24 @@ class RoleApiTest {
         var malformed = http.post("/api/roles", "{not json", ANCHOR);
         assertThat(malformed.statusCode()).isEqualTo(400);
         assertThat(json(malformed).get("error").asText()).isEqualTo("INVALID_JSON");
+    }
+
+    // ── Per-operation permission ───────────────────────────────────────────
+
+    /// Each write needs the permission for its operation, never any of
+    /// create/update/delete: create needs create; update and granting or
+    /// revoking a permission need update; delete needs delete.
+    @Test
+    void eachWriteNeedsTheOperationsPermission() {
+        String r = "/api/roles/gate:missing-role";
+        String g = "gate" + Long.toString(System.nanoTime(), 36);
+        WriteGates.assertEachWriteNeedsItsPermission(http, List.of(
+                        Write.of("create", "POST", "/api/roles", "{\"applicationCode\":\"" + g + "\",\"roleName\":\"r\",\"displayName\":\"R\",\"clientManaged\":false}", ROLE_CREATE),
+                        Write.of("update", "PUT", r, "{}", ROLE_UPDATE),
+                        Write.of("grant", "POST", r + "/permissions/platform:iam:user:view", null, ROLE_UPDATE),
+                        Write.of("grant (body)", "POST", r + "/permissions", "{\"permission\":\"platform:iam:user:view\"}", ROLE_UPDATE),
+                        Write.of("revoke", "DELETE", r + "/permissions/platform:iam:user:view", null, ROLE_UPDATE),
+                        Write.of("delete", "DELETE", r, null, ROLE_DELETE)),
+                ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
     }
 }

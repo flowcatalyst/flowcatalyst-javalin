@@ -68,10 +68,11 @@ public final class Access {
         requireInScope(ac, p, "Principal");
     }
 
-    /// The user-administration rule used by role and application-access
-    /// assignment and the developer-credential admin branch:
-    /// [#blockNonClientTarget], then the out-of-scope-is-not-found rule, then
-    /// the coarse user-write permission — at **every** tier, anchors included
+    /// The rule for changing an existing user (application-access assignment,
+    /// password-reset mail, 2FA reset and the developer-credential admin
+    /// branch): [#blockNonClientTarget], then the out-of-scope-is-not-found
+    /// rule, then `USER_UPDATE` — the permission for the operation, not any
+    /// user write — at **every** tier, anchors included
     /// (permissions come from roles; the anchor tier is reach, never
     /// authority — `docs/spec/permissions-from-roles.md`,
     /// `docs/spec/security-fixes-2026-09-24.md` S1.1). Order matters (ledger PR-3/PR-4, ruled 2026-09-01): a
@@ -95,7 +96,7 @@ public final class Access {
         AuthContext ac = Auth.current();
         blockNonClientTarget(ac, p);
         requireInScope(ac, p, notFoundResource);
-        Checks.requireAny(ac, Permission.USER_CREATE, Permission.USER_UPDATE, Permission.USER_DELETE);
+        Checks.require(ac, Permission.USER_UPDATE);
     }
 
     /// The gate for changing a user's roles (owner ruling 2026-09-25, backlog

@@ -27,6 +27,9 @@ import java.util.Locale;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import io.flowcatalyst.platform.shared.auth.Permission;
+import io.flowcatalyst.platform.shared.auth.WriteGates;
+import io.flowcatalyst.platform.shared.auth.WriteGates.Write;
 
 /// The seven `/api/subscriptions` routes end to end through Javalin: the
 /// authenticator's test headers, the coarse permission gates, the lockfile
@@ -436,5 +439,23 @@ class SubscriptionApiTest {
         var malformed = http.post("/api/subscriptions", "{not json", ANCHOR);
         assertThat(malformed.statusCode()).isEqualTo(400);
         assertThat(json(malformed).get("error").asText()).isEqualTo("INVALID_JSON");
+    }
+
+    // ── Per-operation permission ───────────────────────────────────────────
+
+    /// Each write needs the permission for its operation, never any of
+    /// create/update/delete: create needs create; update, pause and resume
+    /// need update; delete needs delete (bug 8).
+    @Test
+    void eachWriteNeedsTheOperationsPermission() {
+        String p = "/api/subscriptions/sub_gate000000001";
+        String g = "gate" + Long.toString(System.nanoTime(), 36);
+        WriteGates.assertEachWriteNeedsItsPermission(http, List.of(
+                        Write.of("create", "POST", "/api/subscriptions", "{\"code\":\"" + g + "\",\"name\":\"G\",\"endpoint\":\"https://example.test/hook\"}", Permission.SUBSCRIPTION_CREATE),
+                        Write.of("update", "PUT", p, "{}", Permission.SUBSCRIPTION_UPDATE),
+                        Write.of("pause", "POST", p + "/pause", null, Permission.SUBSCRIPTION_UPDATE),
+                        Write.of("resume", "POST", p + "/resume", null, Permission.SUBSCRIPTION_UPDATE),
+                        Write.of("delete", "DELETE", p, null, Permission.SUBSCRIPTION_DELETE)),
+                Permission.SUBSCRIPTION_CREATE, Permission.SUBSCRIPTION_UPDATE, Permission.SUBSCRIPTION_DELETE);
     }
 }

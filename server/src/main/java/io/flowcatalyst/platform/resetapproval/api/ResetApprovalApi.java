@@ -25,8 +25,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /// `/api/reset-approvals` (spec `auth-identity.md` §8.6): the lost-device
-/// reset-approval queue's admin surface. `GET` is gated by any user-write
-/// permission (view is a read-side privilege here, not a dedicated one);
+/// reset-approval queue's admin surface. `GET` is gated by `USER_UPDATE` —
+/// the queue is what an administrator holding it may approve or deny;
 /// `approve` / `deny` are gated by [Checks#requireUserAdmin] against the
 /// request's own client — which is why both handlers load the row before
 /// checking, and why [DecideResetApproval] itself declares
@@ -63,7 +63,7 @@ public final class ResetApprovalApi {
     // ── Handlers ───────────────────────────────────────────────────────────
 
     private static void list(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), Permission.USER_CREATE, Permission.USER_UPDATE, Permission.USER_DELETE);
+        Checks.require(Auth.current(), Permission.USER_UPDATE);
         List<ResetApprovalResponse> items = s.repo().findPending(Auth.current().visibility()).stream()
                 .map(r -> response(s, r)).toList();
         ctx.json(new ResetApprovalListResponse(items));
@@ -75,7 +75,7 @@ public final class ResetApprovalApi {
     private static void approve(Exchange ctx, State s) {
         String id = ctx.pathParam("id");
         ResetApprovalRequest request = load(s, id);
-        Checks.requireUserAdmin(Auth.current(), request.clientId());
+        Checks.requireUserAdmin(Auth.current(), request.clientId(), Permission.USER_UPDATE);
         DecideResetApproval.of(s.repo())
                 .run(s.uow(), new DecideCommand(id, ResetApprovalStatus.APPROVED, noteFrom(ctx)), Auth.executionContext());
         Principal p = s.principals().findById(request.principalId())
@@ -94,7 +94,7 @@ public final class ResetApprovalApi {
     private static void deny(Exchange ctx, State s) {
         String id = ctx.pathParam("id");
         ResetApprovalRequest request = load(s, id);
-        Checks.requireUserAdmin(Auth.current(), request.clientId());
+        Checks.requireUserAdmin(Auth.current(), request.clientId(), Permission.USER_UPDATE);
         DecideResetApproval.of(s.repo())
                 .run(s.uow(), new DecideCommand(id, ResetApprovalStatus.DENIED, noteFrom(ctx)), Auth.executionContext());
         ctx.json(Map.of("message", "Reset request denied"));

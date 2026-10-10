@@ -70,13 +70,13 @@ All routes require a bearer; every error is the `ErrorModel` envelope
 | Method / path | Gate (handler) | Body → command | Success | Notes |
 |---|---|---|---|---|
 | `GET /api/event-types` | `event-type:view` | query `application`, `clientId`, `status`, `subdomain`, `aggregate` | 200 `EventTypeListResponse` `{items: [EventTypeResponse]}` | ordered by code; client-scoped rows the caller cannot access are filtered out. When **no** query parameter is given, `status=CURRENT` is implied. `clientId` is accepted but filters nothing (not a column) — yet its presence suppresses the `CURRENT` default. **load-bearing or accident?** |
-| `POST /api/event-types` | `event-type:{create\|update\|delete}` (any) | `CreateEventTypeRequest` → `CreateCommand` | 201 `CreatedResponse` `{id}` | **accident?** create is gated by "any write permission", not `create` specifically |
+| `POST /api/event-types` | `event-type:create` | `CreateEventTypeRequest` → `CreateCommand` | 201 `CreatedResponse` `{id}` | **ruled 2026-10-10**: the permission for the operation, never any of the three (`docs/go-mirror/2026-10-10-platform-bug-fixes.md`) |
 | `GET /api/event-types/{id}` | `event-type:view` | — | 200 `EventTypeResponse` | 404 `EventType_NOT_FOUND`; 403 `FORBIDDEN` when client-scoped and not accessible |
 | `GET /api/event-types/by-code/{code}` | `event-type:view` | — | 200 `EventTypeResponse` | same as by id; the 404 message carries the code |
-| `PUT /api/event-types/{id}` | any write permission | `UpdateEventTypeRequest` → `UpdateCommand(id from path)` | 204, empty body | body `id` ignored |
+| `PUT /api/event-types/{id}` | `event-type:update` | `UpdateEventTypeRequest` → `UpdateCommand(id from path)` | 204, empty body | body `id` ignored |
 | `DELETE /api/event-types/{id}` | `event-type:delete` | `DeleteCommand` | 204 | hard delete incl. spec versions; the lockfile summary says "Archive" — **accident** (it deletes) |
-| `POST /api/event-types/{id}/schemas` | any write permission | `AddSchemaRequest` → `AddSchemaCommand` | 200 `EventTypeResponse` (re-read after the write) | historical alias of `/versions` — same handler. **load-bearing** (SPA clients) |
-| `POST /api/event-types/{id}/versions` | any write permission | same | same | canonical path |
+| `POST /api/event-types/{id}/schemas` | `event-type:update`, or the application-service `event-type:create`/`:update` (confined to its own applications unless it holds `event-type:update`) | `AddSchemaRequest` → `AddSchemaCommand` | 200 `EventTypeResponse` (re-read after the write) | historical alias of `/versions` — same handler. **load-bearing** (SPA clients) |
+| `POST /api/event-types/{id}/versions` | same as `/schemas` | same | same | canonical path |
 | `POST /api/applications/{appCode}/event-types/sync` | `event-type:sync` et al. + application access | `SyncEventTypesRequest` (+ `?removeUnlisted`) → `SyncEventTypesCommand` | 200 `SyncResultResponse` | lives in the sdksync surface, not this package's API; the operation is here |
 
 Archive / finalise / deprecate have **no** route in this surface; they are

@@ -59,6 +59,8 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import io.flowcatalyst.platform.shared.auth.WriteGates;
+import io.flowcatalyst.platform.shared.auth.WriteGates.Write;
 
 /// The `/api/service-accounts` surface end to end through Javalin (spec §3):
 /// the lockfile's status codes, the anchor-only pair (role assignment, token
@@ -134,6 +136,8 @@ class ServiceAccountApiTest {
     private static final String[] VIEWER = withPermissions("platform:iam:service-account:view");
     private static final String[] WRITER = withPermissions(
             "platform:iam:service-account:view", "platform:iam:service-account:create");
+    private static final String[] UPDATER = withPermissions(
+            "platform:iam:service-account:view", "platform:iam:service-account:update");
     private static final String[] DELETER = withPermissions(
             "platform:iam:service-account:view", "platform:iam:service-account:delete");
 
@@ -542,7 +546,7 @@ class ServiceAccountApiTest {
         var created = create(code("update"), "Before");
         String id = created.get("serviceAccount").get("id").asText();
 
-        var upd = http.put("/api/service-accounts/" + id, "{\"name\":\"After\",\"description\":\"new desc\"}", WRITER);
+        var upd = http.put("/api/service-accounts/" + id, "{\"name\":\"After\",\"description\":\"new desc\"}", UPDATER);
         assertThat(upd.statusCode()).isEqualTo(204);
 
         var got = json(http.get("/api/service-accounts/" + id, VIEWER));
@@ -556,7 +560,7 @@ class ServiceAccountApiTest {
         var created = create(code("deact"), "Deact");
         String id = created.get("serviceAccount").get("id").asText();
 
-        assertThat(http.post("/api/service-accounts/" + id + "/deactivate", null, WRITER).statusCode()).isEqualTo(204);
+        assertThat(http.post("/api/service-accounts/" + id + "/deactivate", null, UPDATER).statusCode()).isEqualTo(204);
         assertThat(json(http.get("/api/service-accounts/" + id, VIEWER)).get("active").asBoolean()).isFalse();
     }
 
@@ -772,7 +776,7 @@ class ServiceAccountApiTest {
     void mintTokenRefusesADeactivatedAccountWithA400() {
         var created = create(code("mintdeact"), "MintDeact");
         String id = created.get("serviceAccount").get("id").asText();
-        http.post("/api/service-accounts/" + id + "/deactivate", null, WRITER);
+        http.post("/api/service-accounts/" + id + "/deactivate", null, UPDATER);
 
         var r = http.post("/api/service-accounts/" + id + "/token", null, anchor());
         assertThat(r.statusCode()).isEqualTo(400);
@@ -855,5 +859,22 @@ class ServiceAccountApiTest {
         assertThat(clientsClaim).hasSize(2);
         assertThat(clientsClaim).anySatisfy(pair -> assertThat(pair).startsWith(clientA));
         assertThat(clientsClaim).anySatisfy(pair -> assertThat(pair).startsWith(clientB));
+    }
+
+    // ── Per-operation permission ───────────────────────────────────────────
+
+    /// Each write needs the permission for its operation, never any of
+    /// create/update/delete: create needs create; update and deactivate need
+    /// update; delete needs delete.
+    @Test
+    void eachWriteNeedsTheOperationsPermission() {
+        String p = "/api/service-accounts/sac_gate000000001";
+        String g = "gate" + Long.toString(System.nanoTime(), 36);
+        WriteGates.assertEachWriteNeedsItsPermission(http, List.of(
+                        Write.of("create", "POST", "/api/service-accounts", "{\"code\":\"" + g + "\",\"name\":\"G\"}", Permission.SERVICE_ACCOUNT_CREATE),
+                        Write.of("update", "PUT", p, "{}", Permission.SERVICE_ACCOUNT_UPDATE),
+                        Write.of("deactivate", "POST", p + "/deactivate", null, Permission.SERVICE_ACCOUNT_UPDATE),
+                        Write.of("delete", "DELETE", p, null, Permission.SERVICE_ACCOUNT_DELETE)),
+                Permission.SERVICE_ACCOUNT_CREATE, Permission.SERVICE_ACCOUNT_UPDATE, Permission.SERVICE_ACCOUNT_DELETE);
     }
 }

@@ -110,14 +110,14 @@ public final class EventTypeApi {
     }
 
     private static void create(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
+        Checks.require(Auth.current(), EVENT_TYPE_CREATE);
         var cmd = ctx.bodyAsClass(CreateEventTypeRequest.class).toCommand();
         var event = CreateEventType.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.eventTypeId()));
     }
 
     private static void update(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
+        Checks.require(Auth.current(), EVENT_TYPE_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateEventTypeRequest.class).toCommand(ctx.pathParam("id"));
         UpdateEventType.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);

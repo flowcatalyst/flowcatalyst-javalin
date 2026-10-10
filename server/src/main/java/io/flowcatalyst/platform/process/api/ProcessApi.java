@@ -92,7 +92,7 @@ public final class ProcessApi {
     }
 
     private static void create(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), PROCESS_CREATE, PROCESS_UPDATE, PROCESS_DELETE);
+        Checks.require(Auth.current(), PROCESS_CREATE);
         var cmd = ctx.bodyAsClass(CreateProcessRequest.class).toCommand();
         var event = CreateProcess.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.processId()));
@@ -109,14 +109,14 @@ public final class ProcessApi {
     }
 
     private static void update(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), PROCESS_CREATE, PROCESS_UPDATE, PROCESS_DELETE);
+        Checks.require(Auth.current(), PROCESS_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateProcessRequest.class).toCommand(ctx.pathParam("id"));
         UpdateProcess.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
     private static void archive(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), PROCESS_CREATE, PROCESS_UPDATE, PROCESS_DELETE);
+        Checks.require(Auth.current(), PROCESS_UPDATE);
         ArchiveProcess.of(s.repo()).run(s.uow(), new ArchiveCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }

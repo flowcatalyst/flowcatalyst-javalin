@@ -52,12 +52,12 @@ All routes require a bearer; every error is the `ErrorModel` envelope
 | Method / path | Gate (handler) | Body → command | Success | Notes |
 |---|---|---|---|---|
 | `GET /api/dispatch-pools` | `dispatch-pool:view` | query `status`, `clientId` | 200 `DispatchPoolListResponse` `{pools: [...], total}` | ordered by code; client-scoped rows the caller cannot access are filtered out **after** the query, and `total` is the count of the visible rows. No default status filter (archived pools are listed unless `status` is given). Empty query values mean "no filter" |
-| `POST /api/dispatch-pools` | `dispatch-pool:{create\|update\|delete}` (any) | `CreateDispatchPoolRequest` → `CreateCommand` | 201 `CreatedResponse` `{id}` | **accident?** create is gated by "any write permission", not `create` specifically (same as event types) |
+| `POST /api/dispatch-pools` | `dispatch-pool:create` | `CreateDispatchPoolRequest` → `CreateCommand` | 201 `CreatedResponse` `{id}` | **ruled 2026-10-10**: the permission for the operation, never any of the three (`docs/go-mirror/2026-10-10-platform-bug-fixes.md`) (Go `c59e246`) |
 | `GET /api/dispatch-pools/{id}` | `dispatch-pool:view` | — | 200 `DispatchPoolResponse` | 404 `DispatchPool_NOT_FOUND`; 403 `FORBIDDEN` `No access to this dispatch pool` when client-scoped and not accessible |
-| `PUT /api/dispatch-pools/{id}` | any write permission | `UpdateDispatchPoolRequest` → `UpdateCommand(id from path)` | 204, empty body | partial update: every body field optional, `null`/absent = unchanged |
-| `POST /api/dispatch-pools/{id}/archive` | any write permission | `ArchiveCommand` | 204 | |
-| `POST /api/dispatch-pools/{id}/suspend` | any write permission | `SuspendCommand` | 204 | |
-| `POST /api/dispatch-pools/{id}/activate` | any write permission | `ActivateCommand` | 204 | |
+| `PUT /api/dispatch-pools/{id}` | `dispatch-pool:update` | `UpdateDispatchPoolRequest` → `UpdateCommand(id from path)` | 204, empty body | partial update: every body field optional, `null`/absent = unchanged |
+| `POST /api/dispatch-pools/{id}/archive` | `dispatch-pool:delete` | `ArchiveCommand` | 204 | |
+| `POST /api/dispatch-pools/{id}/suspend` | `dispatch-pool:update` | `SuspendCommand` | 204 | |
+| `POST /api/dispatch-pools/{id}/activate` | `dispatch-pool:update` | `ActivateCommand` | 204 | |
 | `DELETE /api/dispatch-pools/{id}` | `dispatch-pool:delete` | `DeleteCommand` | 204 | hard delete |
 | `POST /api/applications/{appCode}/dispatch-pools/sync` | `dispatch-pool:{sync\|manage}` + application resolution | `SyncDispatchPoolsRequest` (+ `?removeUnlisted`) → `SyncDispatchPoolsCommand` | 200 `SyncResultResponse` | lives in the sdksync surface, not this package's API; the operation is here (§7) |
 

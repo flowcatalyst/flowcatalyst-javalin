@@ -32,6 +32,9 @@ import java.util.Locale;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import io.flowcatalyst.platform.shared.auth.Permission;
+import io.flowcatalyst.platform.shared.auth.WriteGates;
+import io.flowcatalyst.platform.shared.auth.WriteGates.Write;
 
 /// The eight `/api/event-types` routes end to end through Javalin: the
 /// authenticator's test headers, the coarse permission gates, the lockfile
@@ -324,5 +327,34 @@ class EventTypeApiTest {
         var malformed = send("POST", "/api/event-types", "{not json", ANCHOR);
         assertThat(malformed.statusCode()).isEqualTo(400);
         assertThat(json(malformed).get("error").asText()).isEqualTo("INVALID_JSON");
+    }
+
+    // ── Per-operation permission ───────────────────────────────────────────
+
+    /// Each write needs the permission for its operation, never any of
+    /// create/update/delete: create needs create; update and adding a schema
+    /// version (both routes) need update; delete needs delete.
+    @Test
+    void eachWriteNeedsTheOperationsPermission() {
+        String p = "/api/event-types/evt_gate000000001";
+        String g = "gate" + Long.toString(System.nanoTime(), 36);
+        WriteGates.assertEachWriteNeedsItsPermission(http, List.of(
+                        Write.of("create", "POST", "/api/event-types", "{\"code\":\"gate:" + g + ":x:y\",\"name\":\"G\"}", Permission.EVENT_TYPE_CREATE),
+                        Write.of("update", "PUT", p, "{\"name\":\"G\"}", Permission.EVENT_TYPE_UPDATE),
+                        Write.of("add schema (versions)", "POST", p + "/versions", "{\"version\":\"1.1\",\"schema\":{}}", Permission.EVENT_TYPE_UPDATE),
+                        Write.of("add schema (schemas)", "POST", p + "/schemas", "{\"version\":\"1.1\",\"schema\":{}}", Permission.EVENT_TYPE_UPDATE),
+                        Write.of("delete", "DELETE", p, null, Permission.EVENT_TYPE_DELETE)),
+                Permission.EVENT_TYPE_CREATE, Permission.EVENT_TYPE_UPDATE, Permission.EVENT_TYPE_DELETE);
+    }
+
+    /// The SDK pushes its event schemas with the application-service grant;
+    /// that stays admitted by the add-schema gate (then confined to its own
+    /// applications).
+    @Test
+    void addSchemaStillAdmitsTheApplicationServiceGrant() {
+        for (Permission held : List.of(Permission.APP_SVC_EVENT_TYPE_CREATE, Permission.APP_SVC_EVENT_TYPE_UPDATE)) {
+            var r = http.post("/api/event-types/evt_gate000000001/versions", "{\"version\":\"1.1\",\"schema\":{}}", WriteGates.holding(held.code()));
+            assertThat(WriteGates.refusedForPermission(r)).as(held.code() + ": " + r.body()).isFalse();
+        }
     }
 }

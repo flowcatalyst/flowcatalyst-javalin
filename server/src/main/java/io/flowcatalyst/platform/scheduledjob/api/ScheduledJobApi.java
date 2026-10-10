@@ -129,14 +129,14 @@ public final class ScheduledJobApi {
     }
 
     private static void create(Exchange ctx, State s) {
-        requireWrite(Auth.current());
+        Checks.require(Auth.current(), SCHEDULED_JOB_CREATE);
         var cmd = ctx.bodyAsClass(CreateScheduledJobRequest.class).toCommand();
         var event = CreateScheduledJob.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.scheduledJobId()));
     }
 
     private static void update(Exchange ctx, State s) {
-        requireWrite(Auth.current());
+        Checks.require(Auth.current(), SCHEDULED_JOB_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateScheduledJobRequest.class).toCommand(ctx.pathParam("id"));
         UpdateScheduledJob.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
@@ -149,19 +149,19 @@ public final class ScheduledJobApi {
     }
 
     private static void pause(Exchange ctx, State s) {
-        requireWrite(Auth.current());
+        Checks.require(Auth.current(), SCHEDULED_JOB_UPDATE);
         PauseScheduledJob.of(s.repo()).run(s.uow(), new PauseCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
     private static void resume(Exchange ctx, State s) {
-        requireWrite(Auth.current());
+        Checks.require(Auth.current(), SCHEDULED_JOB_UPDATE);
         ResumeScheduledJob.of(s.repo()).run(s.uow(), new ResumeCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
     private static void archive(Exchange ctx, State s) {
-        requireWrite(Auth.current());
+        Checks.require(Auth.current(), SCHEDULED_JOB_UPDATE);
         ArchiveScheduledJob.of(s.repo()).run(s.uow(), new ArchiveCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
@@ -221,7 +221,9 @@ public final class ScheduledJobApi {
 
     // ── Read-side helpers ──────────────────────────────────────────────────
 
-    /// "write" = any of create / update / delete (spec §4).
+    /// The runner's instance reports (log, complete): any of create / update /
+    /// delete (spec §4). Job writes check the permission for their operation
+    /// instead (create; update for update, pause, resume, archive; delete).
     private static void requireWrite(AuthContext ac) {
         Checks.requireAny(ac, SCHEDULED_JOB_CREATE, SCHEDULED_JOB_UPDATE, SCHEDULED_JOB_DELETE);
     }

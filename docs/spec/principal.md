@@ -135,8 +135,12 @@ Scope / client association (anchor-only, `SetClientAssociation`):
 
 All routes require a bearer; errors are the `ErrorModel` envelope. "Gate"
 is what the handler checks before anything else; resource-level rules are
-in §5. `USER_VIEW` = `platform:iam:user:view`; "write" = any of
-`USER_CREATE`, `USER_UPDATE`, `USER_DELETE`; "sync" = any of `USER_MANAGE`,
+in §5. `USER_VIEW` = `platform:iam:user:view`; "write" is the permission for
+the operation (ruled 2026-10-10): `USER_CREATE` to create users (create,
+createUser, bulk import), `USER_UPDATE` for every change to an existing user
+(edit, activate, deactivate, passwords, 2FA reset, application access, someone
+else's developer credential), `USER_DELETE` to delete; role changes keep
+`USER_ASSIGN_ROLES`; "sync" = any of `USER_MANAGE`,
 `USER_CREATE`, `USER_UPDATE`, `USER_DELETE`, `USER_ASSIGN_ROLES`. `CLIENT_ACCESS_VIEW`
 = `platform:iam:client-access:view`, `CLIENT_ACCESS_GRANT` = `…:grant`,
 `CLIENT_ACCESS_REVOKE` = `…:revoke` — the client-access and
@@ -155,10 +159,10 @@ S1.2, commit `6068fe6b`: the anchor tier is reach, never authority, so
 | `GET /api/principals/developer-users` | `USER_VIEW` | read (`findByRole("platform:developer")`, by name) | 200 `DeveloperUserListResponse {principals, total}` |
 | `GET /api/principals/{id}` | self (caller's own id) needs no permission; otherwise `USER_VIEW`; then non-self + `clientId != null` + no access → 403 `FORBIDDEN` "No access to this principal" | read | 200 `PrincipalResponse` (+ `twoFactorMethods` when an MFA service is configured) |
 | `GET /api/principals/{id}/version` | self or `USER_VIEW` | read `lookupVersion` | 200 `{updatedAt}` = `GREATEST(p.updated_at, MAX(updated_at of roles held))`; unknown id → 404 `Principal_NOT_FOUND` (§12 D1) |
-| `PUT /api/principals/{id}` | write | `UpdateUser` | 200 `PrincipalResponse` (re-read) |
-| `POST /api/principals/{id}/activate` | write | `ActivateUser` | 200 `{message: "Principal activated"}` |
-| `POST /api/principals/{id}/deactivate` | write | `DeactivateUser` | 200 `{message: "Principal deactivated"}` |
-| `POST /api/principals/{id}/reset-password` | write; then load (404) + `blockNonClientTarget` + `checkScopeAccess(p.clientId)` **in the handler** (the op is public — §5) | `ResetPassword` | 200 `{message: "Password reset successfully"}` |
+| `PUT /api/principals/{id}` | `USER_UPDATE` | `UpdateUser` | 200 `PrincipalResponse` (re-read) |
+| `POST /api/principals/{id}/activate` | `USER_UPDATE` | `ActivateUser` | 200 `{message: "Principal activated"}` |
+| `POST /api/principals/{id}/deactivate` | `USER_UPDATE` | `DeactivateUser` | 200 `{message: "Principal deactivated"}` |
+| `POST /api/principals/{id}/reset-password` | `USER_UPDATE`; then load (404) + `blockNonClientTarget` + `checkScopeAccess(p.clientId)` **in the handler** (the op is public — §5) | `ResetPassword` | 200 `{message: "Password reset successfully"}` |
 | `POST /api/principals/{id}/send-password-reset` | load (404); `requireUserAdmin(p.clientId)`; `blockNonClientTarget` | `SendPasswordReset` (no event) | 200 `{message: "Password reset email sent"}` |
 | `POST /api/principals/{id}/reset-2fa` | MFA not configured → 500 `MFA_NOT_CONFIGURED` (before the load); load (404); `requireUserAdmin`; `blockNonClientTarget`; non-USER → 400 `NOT_USER` | `mfa.resetAll` + notifier + audit row `2FA_RESET_BY_ADMIN` | 200 `{message: "Two-factor authentication reset"}` |
 | `DELETE /api/principals/{id}` | `USER_DELETE` | `DeleteUser` | 204 |
@@ -279,7 +283,7 @@ subsystem lands.
 |---|---|---|
 | `blockNonClientTarget(ac, p)` | a non-anchor may act only on `CLIENT`-scope principals → else 403 `FORBIDDEN` "Client administrators can only manage client-scope users" | everything below |
 | `requireManageable(p)` = `blockNonClientTarget` + `Checks.checkScopeAccess(ac, p.clientId)` | client-admins touch only CLIENT users of a client they can access; a clientless target needs anchor (`SCOPE_FORBIDDEN`) | `UpdateUser`, `ActivateUser`, `DeactivateUser`, `DeleteUser` (in execute); `reset-password` handler |
-| `requireUserAdmin(p)` = `Checks.requireUserAdmin(ac, p.clientId)` + `blockNonClientTarget` | every tier needs a write permission (`USER_CREATE`/`UPDATE`/`DELETE`; anchors included since S1.1, `docs/spec/security-fixes-2026-09-24.md`); a non-anchor must also access the target's client, and the target must be CLIENT-scope; clientless target → `ANCHOR_REQUIRED` | `AssignRoles`, `AssignApplicationAccess` (in execute); `send-password-reset` / `reset-2fa` handlers |
+| `requireUserAdmin(p)` = `Checks.requireUserAdmin(ac, p.clientId)` + `blockNonClientTarget` | every tier needs `USER_UPDATE` (the permission for the operation, ruled 2026-10-10; anchors included since S1.1, `docs/spec/security-fixes-2026-09-24.md`); a non-anchor must also access the target's client, and the target must be CLIENT-scope; clientless target → `ANCHOR_REQUIRED` | `AssignRoles`, `AssignApplicationAccess` (in execute); `send-password-reset` / `reset-2fa` handlers |
 | `requireSelfOrUserAdmin(p)` | the caller's own principal unconditionally, else `requireUserAdmin` | `SetDeveloperCredential`, `RevokeDeveloperCredential` |
 
 Every operation declares `Authorize.publicAccess()`: by-id writes run

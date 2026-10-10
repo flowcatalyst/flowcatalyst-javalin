@@ -1073,7 +1073,7 @@ Routes (lockfile; `resetapproval/api/api.go:40-45`):
 
 | Route | Gate | Behaviour | Response |
 |---|---|---|---|
-| `GET /api/reset-approvals` | `CanWritePrincipals` (any of user create/update/delete) | anchors: all pending unexpired, oldest first; others: `client_id = ANY(ac.Clients)` (`nil` → `[]` → none) | `{requests:[{id, principalId, email, name, clientId?, expiresAt, createdAt}]}` (e-mail/name resolved per row; blank when the principal is gone) |
+| `GET /api/reset-approvals` | `user:update` (ruled 2026-10-10; was any user write) | anchors: all pending unexpired, oldest first; others: `client_id = ANY(ac.Clients)` (`nil` → `[]` → none) | `{requests:[{id, principalId, email, name, clientId?, expiresAt, createdAt}]}` (e-mail/name resolved per row; blank when the principal is gone) |
 | `POST /api/reset-approvals/{id}/approve` | `RequireUserAdmin(ac, req.ClientID)` | 404 `ResetApprovalRequest_NOT_FOUND`; `Decide(APPROVED)` guarded `WHERE status='PENDING' AND expires_at > NOW()` → 0 rows ⇒ 400 `ALREADY_DECIDED` `request is no longer pending`; principal gone → 404; `SendResetEmail(p, req.Reset2FA)` best-effort | `{"message":"Reset approved — the user has been emailed a link"}` |
 | `POST /api/reset-approvals/{id}/deny` | same | `Decide(DENIED)` | `{"message":"Reset request denied"}` |
 

@@ -77,14 +77,15 @@ public final class Checks {
     }
 
     /// Authorizes a user-management action on a principal owned by
-    /// `targetClientId`: an anchor reaches any target but must still hold a
-    /// user-write permission; a non-anchor must be able to access the
-    /// target's client AND hold a user-write permission; a `null` target
-    /// (platform user) is anchor-only.
-    public static void requireUserAdmin(AuthContext a, String targetClientId) {
+    /// `targetClientId`. `permission` is the operation's (`USER_CREATE` to
+    /// create users, `USER_UPDATE` to change one), never any user write. An
+    /// anchor reaches any target but must still hold that permission; a
+    /// non-anchor must be able to access the target's client AND hold it; a
+    /// `null` target (platform user) is anchor-only.
+    public static void requireUserAdmin(AuthContext a, String targetClientId, Permission permission) {
         if (a == null) throw unauthenticated();
         if (a.isAnchor()) {
-            requireAny(a, USER_CREATE, USER_UPDATE, USER_DELETE);
+            require(a, permission);
             return;
         }
         if (targetClientId == null) {
@@ -93,7 +94,7 @@ public final class Checks {
         if (!a.canAccessClient(targetClientId)) {
             throw UseCaseException.authorization("SCOPE_FORBIDDEN", "no access to this user's client");
         }
-        requireAny(a, USER_CREATE, USER_UPDATE, USER_DELETE);
+        require(a, permission);
     }
 
     // ── Scope ──────────────────────────────────────────────────────────────
@@ -184,20 +185,21 @@ public final class Checks {
         return a != null && a.hasPermission(EVENT_TYPE_VIEW);
     }
 
-    /// Coarse guard on adding a schema version to an event type: the messaging
-    /// write permissions, or the application-service create/update an SDK
-    /// service account holds (the SDK pushes its event schemas this way). A
-    /// caller admitted only by the latter is confined by the handler to the
-    /// event types of the applications it is bound to.
+    /// Coarse guard on adding a schema version to an event type. Adding a
+    /// version updates the event type, so the messaging grant is
+    /// `EVENT_TYPE_UPDATE` (not any of create/update/delete). The
+    /// application-service create/update an SDK service account holds are kept
+    /// (the SDK pushes its event schemas this way); a caller admitted only by
+    /// those is confined by the handler to the event types of the applications
+    /// it is bound to.
     public static void requireEventTypeAddSchemaAny(AuthContext a) {
-        requireAny(a, EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE,
-                APP_SVC_EVENT_TYPE_CREATE, APP_SVC_EVENT_TYPE_UPDATE);
+        requireAny(a, EVENT_TYPE_UPDATE, APP_SVC_EVENT_TYPE_CREATE, APP_SVC_EVENT_TYPE_UPDATE);
     }
 
-    /// Whether the principal writes event types without the per-application confinement.
+    /// Whether the principal versions event types without the per-application
+    /// confinement: it holds the messaging `EVENT_TYPE_UPDATE`.
     public static boolean canWriteAllEventTypes(AuthContext a) {
-        return a != null && (a.hasPermission(EVENT_TYPE_CREATE) || a.hasPermission(EVENT_TYPE_UPDATE)
-                || a.hasPermission(EVENT_TYPE_DELETE));
+        return a != null && a.hasPermission(EVENT_TYPE_UPDATE);
     }
 
     // ── Portal users (CLIENT-delegable) ────────────────────────────────────

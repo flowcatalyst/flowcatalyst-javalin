@@ -63,18 +63,20 @@ already-disabled row still writes and still emits (audit trail).
 ## 3. HTTP surface (lockfile)
 
 All routes require a bearer; every error is the `ErrorModel` envelope
-`{"error": CODE, "message": …, "details"?: …}`. Write permission =
-`requireAny(application:create, application:update, application:delete)`.
+`{"error": CODE, "message": …, "details"?: …}`. Each write checks the
+permission for its operation (ruled 2026-10-10, bug 13): create =
+`application:create`; update, activate and deactivate = `application:update`;
+delete = `application:delete`.
 
 | Method / path | Gate (handler) | Body → command | Success | Notes |
 |---|---|---|---|---|
 | `GET /api/applications` | `application:view` | query `type`, `active` | 200 `ApplicationListResponse` `{applications: [ApplicationResponse], total}` | ordered by code; `active` is parsed as `"true"` → active only, any other non-empty value → inactive only, absent → all. **accident?** (`active=yes` lists the inactive ones) |
-| `POST /api/applications` | write | `CreateApplicationRequest` → `CreateCommand` | 201 `CreatedResponse` `{id}` | |
+| `POST /api/applications` | `application:create` | `CreateApplicationRequest` → `CreateCommand` | 201 `CreatedResponse` `{id}` | |
 | `GET /api/applications/by-code/{code}` | `application:view` | — | 200 `ApplicationResponse` | 404 `Application_NOT_FOUND` (message carries the code) |
 | `GET /api/applications/{id}` | `application:view` | — | 200 `ApplicationResponse` | 404 `Application_NOT_FOUND` |
-| `PUT /api/applications/{id}` | write | `UpdateApplicationRequest` → `UpdateCommand` | 204 | PATCH semantics: absent field = unchanged |
-| `POST /api/applications/{id}/activate` | write | `ActivateCommand{id}` | 200 `ApplicationResponse` (re-read) | |
-| `POST /api/applications/{id}/deactivate` | write | `DeactivateCommand{id}` | 200 `ApplicationResponse` (re-read) | |
+| `PUT /api/applications/{id}` | `application:update` | `UpdateApplicationRequest` → `UpdateCommand` | 204 | PATCH semantics: absent field = unchanged |
+| `POST /api/applications/{id}/activate` | `application:update` | `ActivateCommand{id}` | 200 `ApplicationResponse` (re-read) | |
+| `POST /api/applications/{id}/deactivate` | `application:update` | `DeactivateCommand{id}` | 200 `ApplicationResponse` (re-read) | |
 | `DELETE /api/applications/{id}` | `application:delete` | `DeleteCommand{id}` | 204 | hard delete; client configs are **not** cascaded (**accident?** — orphaned `app_client_configs` rows) |
 | `POST /api/applications/{id}/service-account` | anchor + `APPLICATION_UPDATE` | `AttachServiceAccountRequest{serviceAccountId, serviceAccountCode}` → `AttachServiceAccountCommand` | 204 | |
 | `GET /api/applications/{id}/clients` | `application:view` | — | 200 `ClientConfigListResponse` `{items}` | ordered by `createdAt`; an unknown application id lists `[]`, not 404 (**accident?**) |

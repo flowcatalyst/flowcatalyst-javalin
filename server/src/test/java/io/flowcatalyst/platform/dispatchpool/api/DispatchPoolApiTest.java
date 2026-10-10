@@ -22,6 +22,10 @@ import java.util.Locale;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import io.flowcatalyst.platform.shared.auth.Permission;
+import io.flowcatalyst.platform.shared.auth.WriteGates;
+import io.flowcatalyst.platform.shared.auth.WriteGates.Write;
+import java.util.List;
 
 /// The eight `/api/dispatch-pools` routes end to end through Javalin: the
 /// authenticator's test headers, the coarse permission gates, the lockfile
@@ -304,5 +308,24 @@ class DispatchPoolApiTest {
         var malformed = http.post("/api/dispatch-pools", "{not json", ANCHOR);
         assertThat(malformed.statusCode()).isEqualTo(400);
         assertThat(json(malformed).get("error").asText()).isEqualTo("INVALID_JSON");
+    }
+
+    // ── Per-operation permission ───────────────────────────────────────────
+
+    /// Each write needs the permission for its operation, never any of
+    /// create/update/delete: create needs create; update, suspend and activate
+    /// need update; archive and delete need delete (Go `c59e246`).
+    @Test
+    void eachWriteNeedsTheOperationsPermission() {
+        String p = "/api/dispatch-pools/dpl_gate000000001";
+        String g = "gate" + Long.toString(System.nanoTime(), 36);
+        WriteGates.assertEachWriteNeedsItsPermission(http, List.of(
+                        Write.of("create", "POST", "/api/dispatch-pools", "{\"code\":\"" + g + "\",\"name\":\"G\"}", Permission.DISPATCH_POOL_CREATE),
+                        Write.of("update", "PUT", p, "{}", Permission.DISPATCH_POOL_UPDATE),
+                        Write.of("suspend", "POST", p + "/suspend", null, Permission.DISPATCH_POOL_UPDATE),
+                        Write.of("activate", "POST", p + "/activate", null, Permission.DISPATCH_POOL_UPDATE),
+                        Write.of("archive", "POST", p + "/archive", null, Permission.DISPATCH_POOL_DELETE),
+                        Write.of("delete", "DELETE", p, null, Permission.DISPATCH_POOL_DELETE)),
+                Permission.DISPATCH_POOL_CREATE, Permission.DISPATCH_POOL_UPDATE, Permission.DISPATCH_POOL_DELETE);
     }
 }

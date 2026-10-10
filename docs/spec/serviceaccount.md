@@ -69,18 +69,20 @@ is the contract.
 
 All routes require a bearer. Gates — at every tier, anchors included (permissions
 come from roles; the anchor tier is reach, never authority — owner ruling 2026-09-13,
-`permissions-from-roles.md`): **read** = `SERVICE_ACCOUNT_VIEW`; **write** = any of
-`SERVICE_ACCOUNT_{CREATE,UPDATE,DELETE}`; **delete** = `SERVICE_ACCOUNT_DELETE`
-specifically.
+`permissions-from-roles.md`): **read** = `SERVICE_ACCOUNT_VIEW`; **create** =
+`SERVICE_ACCOUNT_CREATE`; **update** and **deactivate** = `SERVICE_ACCOUNT_UPDATE`;
+**delete** = `SERVICE_ACCOUNT_DELETE` (ruled 2026-10-10: the permission for the
+operation; `docs/go-mirror/2026-10-10-platform-bug-fixes.md`). **write** (the
+token/secret rotations below) is still any of `SERVICE_ACCOUNT_{CREATE,UPDATE,DELETE}`.
 
 | Method / path | Gate | Success |
 |---|---|---|
 | `GET /api/service-accounts` | read | 200 `{serviceAccounts[], total}` |
-| `POST /api/service-accounts` | write | 201 `ServiceAccountResponse` |
+| `POST /api/service-accounts` | `SERVICE_ACCOUNT_CREATE` | 201 `ServiceAccountResponse` |
 | `GET /api/service-accounts/code/{code}` | read | 200; unknown → 404 `ServiceAccount_NOT_FOUND` |
 | `GET /api/service-accounts/{id}` | read | 200; unknown → 404 |
-| `PUT /api/service-accounts/{id}` | write | 204 |
-| `POST /api/service-accounts/{id}/deactivate` | write | 204 |
+| `PUT /api/service-accounts/{id}` | `SERVICE_ACCOUNT_UPDATE` | 204 |
+| `POST /api/service-accounts/{id}/deactivate` | `SERVICE_ACCOUNT_UPDATE` | 204 |
 | `DELETE /api/service-accounts/{id}` | **delete** | 204 |
 | `GET /api/service-accounts/{id}/roles` | read | 200 role list |
 | `PUT /api/service-accounts/{id}/roles` | **anchor** + `SERVICE_ACCOUNT_UPDATE` | 200 `ServiceAccountRolesAssignedResponse` |

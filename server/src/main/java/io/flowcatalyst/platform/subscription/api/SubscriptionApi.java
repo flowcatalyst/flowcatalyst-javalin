@@ -94,14 +94,14 @@ public final class SubscriptionApi {
     }
 
     private static void create(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), SUBSCRIPTION_CREATE, SUBSCRIPTION_UPDATE, SUBSCRIPTION_DELETE);
+        Checks.require(Auth.current(), SUBSCRIPTION_CREATE);
         var cmd = ctx.bodyAsClass(CreateSubscriptionRequest.class).toCommand();
         var event = CreateSubscription.of(s.repo(), s.connections(), s.signing()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.subscriptionId()));
     }
 
     private static void update(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), SUBSCRIPTION_CREATE, SUBSCRIPTION_UPDATE, SUBSCRIPTION_DELETE);
+        Checks.require(Auth.current(), SUBSCRIPTION_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateSubscriptionRequest.class).toCommand(ctx.pathParam("id"));
         UpdateSubscription.of(s.repo(), s.connections(), s.signing()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
@@ -114,13 +114,13 @@ public final class SubscriptionApi {
     }
 
     private static void pause(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), SUBSCRIPTION_CREATE, SUBSCRIPTION_UPDATE, SUBSCRIPTION_DELETE);
+        Checks.require(Auth.current(), SUBSCRIPTION_UPDATE);
         PauseSubscription.of(s.repo()).run(s.uow(), new PauseCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
     private static void resume(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), SUBSCRIPTION_CREATE, SUBSCRIPTION_UPDATE, SUBSCRIPTION_DELETE);
+        Checks.require(Auth.current(), SUBSCRIPTION_UPDATE);
         ResumeSubscription.of(s.repo()).run(s.uow(), new ResumeCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }

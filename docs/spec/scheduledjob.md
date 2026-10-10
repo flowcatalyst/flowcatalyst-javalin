@@ -146,20 +146,24 @@ every-second expression on a job whose window is months wide is O(slots)
 ## 4. HTTP surface (lockfile)
 
 All routes require a bearer; errors are the `ErrorModel` envelope
-`{"error": CODE, "message": …, "details"?: …}`. "write" = any of
-`scheduled-job:{create|update|delete}`.
+`{"error": CODE, "message": …, "details"?: …}`. Job writes check the
+permission for their operation (ruled 2026-10-10, bug 17): create =
+`scheduled-job:create`; update, pause, resume and archive =
+`scheduled-job:update`; delete = `scheduled-job:delete`; fire =
+`scheduled-job:fire`. "write" (the runner's instance log/complete reports
+only) = any of `scheduled-job:{create|update|delete}`.
 
 | Method / path | Gate (handler) | Body → command | Success | Notes |
 |---|---|---|---|---|
 | `GET /api/scheduled-jobs` | `scheduled-job:view` | query `status`, `clientId` (`platform` = platform-scoped only), `search` (ILIKE `%s%` on code OR name), `page`/`size`(+aliases) | 200 `OffsetPageScheduledJobResponse` `{data, page, size, total, total_pages}` | ordered by code; non-anchors see platform-scoped rows + their clients' (in SQL, so `total` is consistent); `hasActiveInstance` per row |
-| `POST /api/scheduled-jobs` | write | `CreateScheduledJobRequest` → `CreateCommand` | 201 `CreatedResponse` `{id}` | |
+| `POST /api/scheduled-jobs` | `scheduled-job:create` | `CreateScheduledJobRequest` → `CreateCommand` | 201 `CreatedResponse` `{id}` | |
 | `GET /api/scheduled-jobs/by-code/{code}` | `scheduled-job:view` | query `clientId` (absent = platform scope) | 200 `ScheduledJobResponse` | 404 `ScheduledJob_NOT_FOUND` (message carries the code); 403 `FORBIDDEN` "No access to this scheduled job" |
 | `GET /api/scheduled-jobs/{id}` | `scheduled-job:view` | — | 200 `ScheduledJobResponse` | same 404/403 |
-| `PUT /api/scheduled-jobs/{id}` | write | `UpdateScheduledJobRequest` → `UpdateCommand(id)` | 204 | partial: absent = untouched |
+| `PUT /api/scheduled-jobs/{id}` | `scheduled-job:update` | `UpdateScheduledJobRequest` → `UpdateCommand(id)` | 204 | partial: absent = untouched |
 | `DELETE /api/scheduled-jobs/{id}` | `scheduled-job:delete` | `DeleteCommand` | 204 | hard delete of the job row; instances/logs are **not** deleted (**accident?** orphans) |
-| `POST /api/scheduled-jobs/{id}/pause` | write | `PauseCommand` | 204 | |
-| `POST /api/scheduled-jobs/{id}/resume` | write | `ResumeCommand` | 204 | |
-| `POST /api/scheduled-jobs/{id}/archive` | write | `ArchiveCommand` | 204 | |
+| `POST /api/scheduled-jobs/{id}/pause` | `scheduled-job:update` | `PauseCommand` | 204 | |
+| `POST /api/scheduled-jobs/{id}/resume` | `scheduled-job:update` | `ResumeCommand` | 204 | |
+| `POST /api/scheduled-jobs/{id}/archive` | `scheduled-job:update` | `ArchiveCommand` | 204 | |
 | `POST /api/scheduled-jobs/{id}/fire` | `scheduled-job:fire` | optional `FireNowRequest{correlationId}` → `FireNowCommand` | 202 `FireNowResponse` `{id, scheduledJobId, instanceId}` (`id` = `instanceId`, SPA toast reads `id`) | |
 | `GET /api/scheduled-jobs/{id}/instances` | `scheduled-job:view` | query `status`, paging | 200 `OffsetPageScheduledJobInstanceResponse` | newest first (`created_at DESC, id DESC`); `status` is read leniently — unknown → `QUEUED` filter (**accident?**); no scope check on `{id}` (rows carry `clientId`) (**accident?**) |
 | `GET /api/scheduled-jobs/instances/{instanceId}` | `scheduled-job:view` (**not** `scheduled-job-instance:view` — **accident?**) | — | 200 `ScheduledJobInstanceResponse` | 404 `ScheduledJobInstance_NOT_FOUND`; 403 `FORBIDDEN` "No access to this instance" |

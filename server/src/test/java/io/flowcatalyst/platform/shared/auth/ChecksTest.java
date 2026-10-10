@@ -44,7 +44,7 @@ class ChecksTest {
         assertThat(errorOf(() -> Checks.require(null, EVENT_TYPE_VIEW)).code()).isEqualTo("UNAUTHENTICATED");
         assertThat(errorOf(() -> Checks.requireAny(null, EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE)).code()).isEqualTo("UNAUTHENTICATED");
         assertThat(errorOf(() -> Checks.checkScopeAccess(null, "cli_1")).code()).isEqualTo("UNAUTHENTICATED");
-        assertThat(errorOf(() -> Checks.requireUserAdmin(null, null)).code()).isEqualTo("UNAUTHENTICATED");
+        assertThat(errorOf(() -> Checks.requireUserAdmin(null, null, USER_UPDATE)).code()).isEqualTo("UNAUTHENTICATED");
         assertThat(errorOf(() -> Checks.requirePortalUserView(null, "cli_1")).code()).isEqualTo("UNAUTHENTICATED");
         assertThat(errorOf(() -> Checks.checkApplicationAccess(null, "app_1", "app")).code()).isEqualTo("UNAUTHENTICATED");
         assertThat(Checks.canAccessScope(null, "cli_1")).isFalse();
@@ -156,15 +156,28 @@ class ChecksTest {
 
     @Test
     void userAdmin() {
-        assertThatCode(() -> Checks.requireUserAdmin(CLIENT_ADMIN, "cli_1")).doesNotThrowAnyException();
-        assertThat(errorOf(() -> Checks.requireUserAdmin(CLIENT_ADMIN, null)))
+        assertThatCode(() -> Checks.requireUserAdmin(CLIENT_ADMIN, "cli_1", USER_UPDATE)).doesNotThrowAnyException();
+        assertThat(errorOf(() -> Checks.requireUserAdmin(CLIENT_ADMIN, null, USER_UPDATE)))
                 .isEqualTo(UseCaseError.authorization("ANCHOR_REQUIRED", "anchor scope required for platform users"));
-        assertThat(errorOf(() -> Checks.requireUserAdmin(CLIENT_ADMIN, "cli_2")))
+        assertThat(errorOf(() -> Checks.requireUserAdmin(CLIENT_ADMIN, "cli_2", USER_UPDATE)))
                 .isEqualTo(UseCaseError.authorization("SCOPE_FORBIDDEN", "no access to this user's client"));
         var noPerm = ctx(Scope.CLIENT, List.of("cli_1"), List.of());
-        assertThat(errorOf(() -> Checks.requireUserAdmin(noPerm, "cli_1")))
+        assertThat(errorOf(() -> Checks.requireUserAdmin(noPerm, "cli_1", USER_UPDATE)))
                 .isEqualTo(UseCaseError.authorization("PERMISSION_REQUIRED",
-                        "one of: platform:iam:user:create, platform:iam:user:update, platform:iam:user:delete"));
+                        "permission required: platform:iam:user:update"));
+    }
+
+    /// The permission is the operation's, never any user write (Go
+    /// `TestRequireUserAdmin_ChecksTheOperationsPermission`): an administrator
+    /// holding only `USER_UPDATE` may change a user but not create one, at
+    /// either tier.
+    @Test
+    void userAdminChecksTheOperationsPermission() {
+        assertThat(errorOf(() -> Checks.requireUserAdmin(CLIENT_ADMIN, "cli_1", USER_CREATE)))
+                .isEqualTo(UseCaseError.authorization("PERMISSION_REQUIRED", "permission required: platform:iam:user:create"));
+        assertThat(errorOf(() -> Checks.requireUserAdmin(ANCHOR_WITH_USER_WRITE, "cli_1", USER_CREATE)))
+                .isEqualTo(UseCaseError.authorization("PERMISSION_REQUIRED", "permission required: platform:iam:user:create"));
+        assertThatCode(() -> Checks.requireUserAdmin(CLIENT_ADMIN, "cli_1", USER_UPDATE)).doesNotThrowAnyException();
     }
 
     /// spec §3.1's anchor half of `requireUserAdmin`: an anchor reaches ANY
@@ -174,17 +187,17 @@ class ChecksTest {
     /// it would turn both of these `PERMISSION_REQUIRED` cases back into a pass.
     @Test
     void anchorUserAdminNeedsTheUserWritePermissionForAnyTarget() {
-        assertThat(errorOf(() -> Checks.requireUserAdmin(ANCHOR, "cli_1")))
+        assertThat(errorOf(() -> Checks.requireUserAdmin(ANCHOR, "cli_1", USER_UPDATE)))
                 .isEqualTo(UseCaseError.authorization("PERMISSION_REQUIRED",
-                        "one of: platform:iam:user:create, platform:iam:user:update, platform:iam:user:delete"));
-        assertThat(errorOf(() -> Checks.requireUserAdmin(ANCHOR, null)))
+                        "permission required: platform:iam:user:update"));
+        assertThat(errorOf(() -> Checks.requireUserAdmin(ANCHOR, null, USER_UPDATE)))
                 .isEqualTo(UseCaseError.authorization("PERMISSION_REQUIRED",
-                        "one of: platform:iam:user:create, platform:iam:user:update, platform:iam:user:delete"));
+                        "permission required: platform:iam:user:update"));
         // With the permission, an anchor still reaches any target, unlike a non-anchor.
         assertThatCode(() -> {
-            Checks.requireUserAdmin(ANCHOR_WITH_USER_WRITE, "cli_1");
-            Checks.requireUserAdmin(ANCHOR_WITH_USER_WRITE, "cli_unrelated");
-            Checks.requireUserAdmin(ANCHOR_WITH_USER_WRITE, null);
+            Checks.requireUserAdmin(ANCHOR_WITH_USER_WRITE, "cli_1", USER_UPDATE);
+            Checks.requireUserAdmin(ANCHOR_WITH_USER_WRITE, "cli_unrelated", USER_UPDATE);
+            Checks.requireUserAdmin(ANCHOR_WITH_USER_WRITE, null, USER_UPDATE);
         }).doesNotThrowAnyException();
     }
 

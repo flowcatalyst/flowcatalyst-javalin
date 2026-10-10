@@ -90,33 +90,33 @@ public final class DispatchPoolApi {
     }
 
     private static void create(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), DISPATCH_POOL_CREATE, DISPATCH_POOL_UPDATE, DISPATCH_POOL_DELETE);
+        Checks.require(Auth.current(), DISPATCH_POOL_CREATE);
         var cmd = ctx.bodyAsClass(CreateDispatchPoolRequest.class).toCommand();
         var event = CreateDispatchPool.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(new CreatedResponse(event.poolId()));
     }
 
     private static void update(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), DISPATCH_POOL_CREATE, DISPATCH_POOL_UPDATE, DISPATCH_POOL_DELETE);
+        Checks.require(Auth.current(), DISPATCH_POOL_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateDispatchPoolRequest.class).toCommand(ctx.pathParam("id"));
         UpdateDispatchPool.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
     private static void archive(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), DISPATCH_POOL_CREATE, DISPATCH_POOL_UPDATE, DISPATCH_POOL_DELETE);
+        Checks.require(Auth.current(), DISPATCH_POOL_DELETE);
         ArchiveDispatchPool.of(s.repo()).run(s.uow(), new ArchiveCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
     private static void suspend(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), DISPATCH_POOL_CREATE, DISPATCH_POOL_UPDATE, DISPATCH_POOL_DELETE);
+        Checks.require(Auth.current(), DISPATCH_POOL_UPDATE);
         SuspendDispatchPool.of(s.repo()).run(s.uow(), new SuspendCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
     private static void activate(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), DISPATCH_POOL_CREATE, DISPATCH_POOL_UPDATE, DISPATCH_POOL_DELETE);
+        Checks.require(Auth.current(), DISPATCH_POOL_UPDATE);
         ActivateDispatchPool.of(s.repo()).run(s.uow(), new ActivateCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
