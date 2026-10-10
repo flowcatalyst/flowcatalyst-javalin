@@ -420,4 +420,20 @@ class DispatchJobApiTest {
     private static JsonNode reload(String id) {
         return json(http.get("/api/dispatch-jobs/" + id, ANCHOR));
     }
+
+    /// Bug 18: the facets are scoped as the list is — a client user sees the
+    /// values of platform jobs and its own tenants' only, never another
+    /// tenant's code or client id. (Go `dispatchjob/api/filter_options_pg_test.go`.)
+    @Test
+    void filterOptionsAreScopedToTheCallersTenants() {
+        String onlyB = code("only-b");
+        seed(Seed.of(onlyB).withClientId(CLIENT_B).withCreatedAt(BASE.plusSeconds(9)));
+        JsonNode body = json(http.get("/api/dispatch-jobs/filter-options", VIEWER_A));
+        var codes = new ArrayList<String>();
+        body.get("codes").forEach(n -> codes.add(n.asString()));
+        var clients = new ArrayList<String>();
+        body.get("clientIds").forEach(n -> clients.add(n.asString()));
+        assertThat(codes).contains(CODE).doesNotContain(onlyB);
+        assertThat(clients).contains(CLIENT_A).doesNotContain(CLIENT_B);
+    }
 }

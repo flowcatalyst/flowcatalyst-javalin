@@ -281,7 +281,7 @@ pass). The literal segments (`list-raw`, `raw`, `filter-options`, `event/…`,
 | `GET /api/dispatch-jobs` | view | §4 list query | **bare JSON array** of `DispatchJobRead` | the SPA binds the array directly — no `{items}` envelope, no pagination metadata |
 | `GET /api/dispatch-jobs/list-raw` | view-raw | same | same | same rows, raw gate — **accident?** ("raw" returns the projection shape, not the raw row) |
 | `GET /api/dispatch-jobs/raw` | view-raw | same | same | SDK alias of `list-raw` |
-| `GET /api/dispatch-jobs/filter-options` | view | — | `DispatchJobFilterOptionsResponse` | six facets, ≤ 200 distinct values each, ascending, **not tenant-scoped** (**accident?** a client viewer sees other tenants' client ids / codes) |
+| `GET /api/dispatch-jobs/filter-options` | view | — | `DispatchJobFilterOptionsResponse` | six facets, ≤ 200 distinct values each, ascending, scoped as the list is — platform jobs plus the caller's tenants (bug 18, 2026-10-10; they were unscoped) |
 | `GET /api/dispatch-jobs/event/{eventId}` | view | path | bare array of `DispatchJobRead` | newest first; rows filtered by `canAccessScope` (platform-scoped jobs visible to anchor / super-admin only) |
 | `GET /api/dispatch-jobs/by-event/{eventId}` | view | path | same | SDK alias |
 | `GET /api/dispatch-jobs/{id}` | view | path | `DispatchJobResponse` | 404 `DispatchJob_NOT_FOUND` for missing **and** out-of-scope, byte-identical (PR-3, §2.1; platform-scoped → anchor / super-admin, else 404) |
@@ -320,7 +320,7 @@ timestamps RFC 3339, 6 fractional digits, `Z`):
 | `applications` / `subdomains` / `aggregates` (CSV) | `application IN` / `subdomain IN` / `aggregate IN` | projection columns |
 | `since` / `until` | `created_at >=` / `<=` | RFC 3339; an **unparseable value is ignored** (no filter, no error) — **accident?** |
 | `sort` | `createdAt.asc` → ascending; anything else → `created_at DESC` | |
-| `limit`, `size` | row cap; `size` wins when > 0 | `<= 0` or `> 1000` → **100**; non-integer → 400 `VALIDATION` |
+| `limit`, `size` | row cap; `size` wins when > 0 | `<= 0` → **100**, `> 1000` → **1000** (bug 21, 2026-10-10); non-integer → 400 `VALIDATION` |
 | `offset` | `OFFSET` when > 0 | non-integer → 400 `VALIDATION` |
 
 A non-integer `limit` / `offset` / `size` is the shared `QueryParams`
@@ -429,9 +429,9 @@ Each writes one `msg_events` row and one `aud_logs` row
 
 | Constant | Value | Where | Load-bearing or accident? |
 |---|---|---|---|
-| list row cap fallback | 100 (when `<= 0` or `> 1000`) | `findWithFilters` | guard family shared with events — keep |
+| list row cap fallback | 100 (when `<= 0`; `> 1000` clamps to 1000 — bug 21) | `findWithFilters` | guard family shared with events — keep |
 | list row cap max | 1000 | same | keep |
-| facet limit | 200 per facet (repo fallback 200 when `<= 0` or `> 1000`) | `filter-options` | keep |
+| facet limit | 200 per facet (repo fallback 200 when `<= 0`, clamp 1000) | `filter-options` | keep |
 | `payload_content_type` default | `application/json` | read | keep |
 | `retry_strategy` default | `exponential` | read | keep |
 | `sequence` default | 99 | DB default | scheduler's; not applied here |
@@ -488,7 +488,7 @@ remain unwired plumbing until the scheduler/processing endpoint land.
 | `SettleAcked(ids, reason)` | **implemented (6a)**, wired to `settled.SettledApi` | `status IN ('QUEUED','PROCESSING')` guard, returns the ids actually changed (§2.2) |
 | `SweepStrandedSiblings(processingLiveBefore, reason)` | **implemented (6a)**, wired to `DispatchJobReaper` | positional `BLOCK_ON_ERROR` sweep behind a `FAILED`/`ERROR` head (§2.2) |
 | `RecordAttempt(jobId, attempt)` | processing | untyped TSID id; `status` `SUCCESS`/`FAILURE` from the boolean |
-| `FindRecentRaw(limit)` | `/bff/debug/dispatch-jobs` | write table, newest first, cap 1000 → 100 |
+| `FindRecentRaw(limit)` | `/bff/debug/dispatch-jobs` | write table, newest first, clamped to 1000 (bug 21) |
 | poller claim `PENDING → QUEUED` (`FOR UPDATE SKIP LOCKED`), stale `QUEUED → PENDING` | scheduler | plain-SQL text blocks are allowed for the claim |
 
 All status flips carry `created_at` with `id` for partition pruning.
@@ -516,7 +516,7 @@ with "load-bearing or accident?".
    requeue platform-scoped jobs) vs Go's `client_id = ANY(clients)`.
 5. Rollup subject segment: a minted `{batchId}` vs a constant.
 6. Empty `ids` still writes the rollup event + audit.
-7. `filter-options` facets are not tenant-scoped.
+7. ~~`filter-options` facets are not tenant-scoped.~~ Scoped since bug 18 (2026-10-10).
 8. `since`/`until` parse failures are ignored; `source` is equality not
    free-text; list order has no tie-breaker.
 9. `list-raw` / `{id}/raw` return the same shapes as their non-raw twins

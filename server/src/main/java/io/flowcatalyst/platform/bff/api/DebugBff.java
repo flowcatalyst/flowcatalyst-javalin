@@ -48,10 +48,8 @@ import static io.flowcatalyst.platform.shared.auth.Permission.EVENT_VIEW_RAW;
 public final class DebugBff {
 
     /// `size` absent or `<= 0` → this default (Go `listDebugRaw`); the
-    /// repository's own guard then re-clamps an out-of-range value to ITS
-    /// default (100), not this one — `size=5000` therefore yields 100 rows,
-    /// not 1000, even though the repository's doc string says "max 1000".
-    /// Mirrored from Go verbatim; flagged as a likely defect, not fixed here.
+    /// repository's guard clamps a size above its cap to 1000 (bug 21 of
+    /// 2026-10-10 — it used to fall back to its default 100).
     static final int DEFAULT_SIZE = 50;
 
     private DebugBff() {

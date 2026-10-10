@@ -292,4 +292,18 @@ class EventApiTest {
             assertThat(json(anon).get("error").asText()).as(path).isEqualTo("UNAUTHENTICATED");
         }
     }
+
+    /// Bug 18: the facets are scoped as the list is — a client user sees the
+    /// applications, subdomains and event types of platform events and its own
+    /// tenants' only. (Go `event/api/filter_options_pg_test.go`.)
+    @Test
+    void filterOptionsAreScopedToTheCallersTenants() {
+        String otherApp = application("apiother");
+        String otherType = type(otherApp, "secret", "thing", "happened");
+        insert(readRow(otherType, CLIENT_B, T0.minusSeconds(40)));
+        var body = ok(http.get("/api/events/filter-options", VIEWER));
+        assertThat(body.get("applications").valueStream().map(n -> n.get("value").asString())).contains(APP).doesNotContain(otherApp);
+        assertThat(body.get("subdomains").valueStream().map(n -> n.get("value").asString())).doesNotContain("secret");
+        assertThat(body.get("eventTypes").valueStream().map(n -> n.get("value").asString())).contains(SHIPPED, PAID).doesNotContain(otherType);
+    }
 }

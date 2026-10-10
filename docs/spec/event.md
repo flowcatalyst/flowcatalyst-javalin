@@ -85,7 +85,7 @@ Timestamps: RFC 3339, 6 fractional digits, `Z`.
 | `principalId` | **accepted and ignored** — `msg_events_read` has no backing column (open question 3) |
 | `types`, `clientIds`, `applications`, `subdomains`, `aggregates` | comma-separated; each part trimmed, blanks dropped; the remaining values form an `IN` filter on `type` / `client_id` / `application` / `subdomain` / `aggregate`; absent/empty/all-blank → no filter. `type` and `types` both apply (AND) when both are sent |
 | `since`, `until` | RFC 3339 with any offset → inclusive bounds on **`created_at`** (the partition key, so Postgres prunes partitions — not on `time`); unparseable → **ignored** (open question 4) |
-| `limit`, `size` | `size` wins when `> 0`, else `limit`; the resolved value is passed to the repository, whose guard (§7) turns `<= 0` or `> 1000` into **100** — so the effective default is 100 and `size=5000` yields 100, not 1000 (the lockfile text says "default 50, max 1000": open question 5) |
+| `limit`, `size` | `size` wins when `> 0`, else `limit`; the resolved value is passed to the repository, whose guard (§7) turns `<= 0` into **100** and clamps `> 1000` to **1000** (bug 21, 2026-10-10; it fell back to 100) |
 | `offset` | `> 0` → `OFFSET`; else none |
 | any of `limit` / `size` / `offset` non-integer | 400 `VALIDATION` `validation failed` with `details.errors[{message: "invalid integer", location: "query.<name>", value}]` — one entry per bad parameter, in `limit, offset, size` order |
 
@@ -109,8 +109,8 @@ value is wrapped as `{value, label}` with both equal. The facet set the
 repository allows is closed — `type`, `source`, `subject`, `client_id`,
 `correlation_id`, `application`, `subdomain`, `aggregate` — a typed
 enumeration, never a column name from the wire; only the three above are
-routed (open question 7). Not tenant-scoped: any holder of `event:view`
-sees every value (open question 8).
+routed (open question 7). Scoped as the list is (bug 18, 2026-10-10;
+open question 8): platform events plus the caller's tenants' (`Visibility`).
 
 ## 5. Get by id (`/{id}`)
 
@@ -135,9 +135,9 @@ empty list.
 
 | Guard | Value | Load-bearing or accident? |
 |---|---|---|
-| filtered read: limit `<= 0` or `> 1000` → 100 | | same guard family as audit (§7 there); the API passes the raw `size`/`limit`, so this *is* the API default and the over-max behaviour — open question 5 |
-| raw read: limit `<= 0` or `> 1000` → 100 | | same |
-| facet read: limit `<= 0` or `> 1000` → 200 | | same; the API passes 200 |
+| filtered read: limit `<= 0` → 100, `> 1000` → 1000 (bug 21) | | same guard family as audit (§7 there); the API passes the raw `size`/`limit`, so this *is* the API default and the over-max behaviour — open question 5 |
+| raw read: limit `<= 0` → 100, `> 1000` → 1000 (bug 21) | | same |
+| facet read: limit `<= 0` → 200, `> 1000` → 1000 (bug 21) | | same; the API passes 200 |
 | API facet limit | 200 | |
 
 Invalid limits are *corrected* by the repository rather than rejected.
@@ -202,14 +202,14 @@ projection, and by other writers before it): `NULL`, empty, the literal
    `msg_events_read`). Keep accepting (SDK sends it) or reject?
 4. An unparseable `since` / `until` is silently ignored rather than 400.
    Load-bearing or accident?
-5. `size` / `limit`: effective default 100 and `> 1000` → 100 (repository
+5. ~~`size` / `limit`: effective default 100 and `> 1000` → 100~~ **ruled 2026-10-10 (bug 21)**: `> 1000` clamps to 1000. (repository
    guard), while the lockfile text says "default 50, max 1000". Keep the
    guard (pinned by test) or clamp / default 50?
 6. The list orders by `created_at DESC` only — ties (same microsecond) are in
    undefined order. Add `id DESC`?
 7. The repository allows eight facet columns; the API routes three. Keep the
    unused five (SDK/BFF may) or drop?
-8. Filter options are not tenant-scoped: a client-scoped viewer sees every
-   application/subdomain/type that has events. Intended or accident?
+8. ~~Filter options are not tenant-scoped.~~ **Ruled 2026-10-10** (bug 18):
+   scoped as the list is.
 9. `GET /{id}` scans every partition of `msg_events_read` (no `created_at`
    bound). Accident — should the TSID's timestamp bound the partition?

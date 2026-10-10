@@ -135,10 +135,13 @@ public final class EventRepository {
                 .fetch(EventRepository::toEntity);
     }
 
-    /// The distinct non-null values of one facet column, ascending, at most `limit`.
-    public List<String> distinctValues(Facet facet, int limit) {
+    /// The distinct non-null values of one facet column, ascending, at most
+    /// `limit`, of the rows `visibility` may see — the list's tenant scope
+    /// (bug 18: a client user saw every tenant's values).
+    public List<String> distinctValues(Facet facet, int limit, Visibility visibility) {
         return dsl.selectDistinct(facet.column).from(R)
                 .where(facet.column.isNotNull())
+                .and(VisibilitySql.toCondition(Objects.requireNonNull(visibility, "visibility"), R.CLIENT_ID))
                 .orderBy(facet.column.asc())
                 .limit(guard(limit, FACET_MAX_LIMIT, FACET_DEFAULT_LIMIT))
                 .fetch(facet.column);
@@ -168,9 +171,11 @@ public final class EventRepository {
                 .map(EventRepository::toEntity);
     }
 
-    /// Out-of-range limits are corrected, not rejected (spec §7).
+    /// Out-of-range limits are corrected, not rejected (spec §7): none (≤ 0)
+    /// is the default, one above the cap is clamped to it (bug 21; it fell
+    /// back to the default).
     private static int guard(int limit, int max, int fallback) {
-        return limit <= 0 || limit > max ? fallback : limit;
+        return limit <= 0 ? fallback : Math.min(limit, max);
     }
 
     // ── Writes (infra ingest — no unit of work, sdk-ingest spec §1/§3) ──────

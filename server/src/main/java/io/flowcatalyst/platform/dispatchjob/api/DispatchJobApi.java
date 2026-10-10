@@ -23,6 +23,7 @@ import io.flowcatalyst.platform.dispatchjob.processing.SubscriberDelivery;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
+import io.flowcatalyst.platform.shared.auth.Visibility;
 import io.flowcatalyst.platform.shared.auth.Permission;
 import io.flowcatalyst.platform.shared.apicommon.QueryParams;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
@@ -240,7 +241,8 @@ public final class DispatchJobApi {
 
     private static void filterOptions(Exchange ctx, State s) {
         Checks.require(Auth.current(), DISPATCH_JOB_VIEW);
-        ctx.json(DispatchJobFilterOptionsResponse.from(s.repo()));
+        // Scoped as the list is (bug 18): platform jobs plus the caller's own tenants.
+        ctx.json(DispatchJobFilterOptionsResponse.from(s.repo(), Auth.current().visibility()));
     }
 
     private static void requeue(Exchange ctx, State s) {
@@ -509,14 +511,14 @@ public final class DispatchJobApi {
             kinds = kinds == null ? List.of() : List.copyOf(kinds);
         }
 
-        static DispatchJobFilterOptionsResponse from(DispatchJobRepository repo) {
+        static DispatchJobFilterOptionsResponse from(DispatchJobRepository repo, Visibility visibility) {
             return new DispatchJobFilterOptionsResponse(
-                    repo.distinctValues(Facet.STATUS, FACET_LIMIT),
-                    repo.distinctValues(Facet.CODE, FACET_LIMIT),
-                    repo.distinctValues(Facet.CLIENT_ID, FACET_LIMIT),
-                    repo.distinctValues(Facet.DISPATCH_POOL_ID, FACET_LIMIT),
-                    repo.distinctValues(Facet.SUBSCRIPTION_ID, FACET_LIMIT),
-                    repo.distinctValues(Facet.KIND, FACET_LIMIT));
+                    repo.distinctValues(Facet.STATUS, FACET_LIMIT, visibility),
+                    repo.distinctValues(Facet.CODE, FACET_LIMIT, visibility),
+                    repo.distinctValues(Facet.CLIENT_ID, FACET_LIMIT, visibility),
+                    repo.distinctValues(Facet.DISPATCH_POOL_ID, FACET_LIMIT, visibility),
+                    repo.distinctValues(Facet.SUBSCRIPTION_ID, FACET_LIMIT, visibility),
+                    repo.distinctValues(Facet.KIND, FACET_LIMIT, visibility));
         }
     }
 }

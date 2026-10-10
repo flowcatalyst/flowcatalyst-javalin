@@ -228,22 +228,22 @@ class EventRepositoryTest {
         assertThat(repo.findWithFilters(inRun(), 0, 0)).hasSize(6);
         assertThat(repo.findWithFilters(inRun(), 1001, 0)).hasSize(6);
         assertThat(repo.findRecentRaw(0)).hasSizeLessThanOrEqualTo(EventRepository.LIST_DEFAULT_LIMIT).isNotEmpty();
-        assertThat(repo.distinctValues(Facet.APPLICATION, 0)).contains(APP);
-        assertThat(repo.distinctValues(Facet.APPLICATION, 5000)).contains(APP);
+        assertThat(repo.distinctValues(Facet.APPLICATION, 0, Visibility.Everything.INSTANCE)).contains(APP);
+        assertThat(repo.distinctValues(Facet.APPLICATION, 5000, Visibility.Everything.INSTANCE)).contains(APP);
     }
 
     // ── Facets ─────────────────────────────────────────────────────────────
 
     @Test
     void facetsAreDistinctNonNullAscending() {
-        assertThat(repo.distinctValues(Facet.APPLICATION, 1000)).contains(APP).doesNotHaveDuplicates().doesNotContainNull().isSorted();
-        assertThat(repo.distinctValues(Facet.SUBDOMAIN, 1000)).contains("orders", "billing").doesNotHaveDuplicates().isSorted();
-        assertThat(repo.distinctValues(Facet.AGGREGATE, 1000)).contains("order", "invoice").doesNotHaveDuplicates().isSorted();
-        assertThat(repo.distinctValues(Facet.TYPE, 1000)).contains(ORDER_CREATED, ORDER_SHIPPED, INVOICE_ISSUED).doesNotHaveDuplicates().isSorted();
-        assertThat(repo.distinctValues(Facet.CLIENT_ID, 1000)).contains(CLIENT_A, CLIENT_B).doesNotContainNull().isSorted();
-        assertThat(repo.distinctValues(Facet.SOURCE, 1000)).contains("platform:admin", "test://" + APP).isSorted();
-        assertThat(repo.distinctValues(Facet.SUBJECT, 1000)).contains("platform.order." + entity).doesNotContainNull();
-        assertThat(repo.distinctValues(Facet.CORRELATION_ID, 1000)).contains("corr-" + EventFixture.RUN, "corr-direct-" + EventFixture.RUN).doesNotContainNull();
+        assertThat(repo.distinctValues(Facet.APPLICATION, 1000, Visibility.Everything.INSTANCE)).contains(APP).doesNotHaveDuplicates().doesNotContainNull().isSorted();
+        assertThat(repo.distinctValues(Facet.SUBDOMAIN, 1000, Visibility.Everything.INSTANCE)).contains("orders", "billing").doesNotHaveDuplicates().isSorted();
+        assertThat(repo.distinctValues(Facet.AGGREGATE, 1000, Visibility.Everything.INSTANCE)).contains("order", "invoice").doesNotHaveDuplicates().isSorted();
+        assertThat(repo.distinctValues(Facet.TYPE, 1000, Visibility.Everything.INSTANCE)).contains(ORDER_CREATED, ORDER_SHIPPED, INVOICE_ISSUED).doesNotHaveDuplicates().isSorted();
+        assertThat(repo.distinctValues(Facet.CLIENT_ID, 1000, Visibility.Everything.INSTANCE)).contains(CLIENT_A, CLIENT_B).doesNotContainNull().isSorted();
+        assertThat(repo.distinctValues(Facet.SOURCE, 1000, Visibility.Everything.INSTANCE)).contains("platform:admin", "test://" + APP).isSorted();
+        assertThat(repo.distinctValues(Facet.SUBJECT, 1000, Visibility.Everything.INSTANCE)).contains("platform.order." + entity).doesNotContainNull();
+        assertThat(repo.distinctValues(Facet.CORRELATION_ID, 1000, Visibility.Everything.INSTANCE)).contains("corr-" + EventFixture.RUN, "corr-direct-" + EventFixture.RUN).doesNotContainNull();
     }
 
     // ── Foreign shapes: pin the read ───────────────────────────────────────
@@ -289,5 +289,26 @@ class EventRepositoryTest {
         assertThat(p.application()).isEqualTo(FOREIGN);
         assertThat(p.subdomain()).isEqualTo("only");
         assertThat(p.aggregate()).isNull();
+    }
+
+    /// Bug 21: a size above the 1,000 cap is clamped to 1,000, not replaced
+    /// by the default 100 (size 1001 returned fewer rows than 1000). (Go
+    /// `TestFindWithFilters_SizeAboveTheCapIsClamped`.)
+    @Test
+    void aSizeAboveTheCapIsClamped() {
+        String typ = "clamp" + EventFixture.RUN + ":events:list:made";
+        DB.execute("""
+                INSERT INTO msg_events_read (id, type, source, time, created_at, application, subdomain, aggregate)
+                SELECT 'e' || ? || lpad(n::text, 6, '0'), ?, 'test://clamp', NOW(), NOW(), 'clamp', 'events', 'list'
+                  FROM generate_series(1, 150) n""", EventFixture.RUN, typ);
+        try {
+            var filter = new ListFilter(null, null, null, null, null, null, null, List.of(typ), null, null, null, null, ALL);
+            for (int size : new int[] {1000, 1001, 5000}) {
+                assertThat(repo.findWithFilters(filter, size, 0)).as("size %d", size).hasSize(150);
+            }
+            assertThat(repo.findWithFilters(filter, 0, 0)).as("no size: the default 100").hasSize(100);
+        } finally {
+            DB.execute("DELETE FROM msg_events_read WHERE type = ?", typ);
+        }
     }
 }

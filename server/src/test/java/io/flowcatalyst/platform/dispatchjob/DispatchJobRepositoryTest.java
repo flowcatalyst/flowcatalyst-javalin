@@ -166,12 +166,12 @@ class DispatchJobRepositoryTest {
         String pool = "dpl_" + RUN;
         seed(Seed.of(code("facet")).withDispatchPoolId(pool).withSubscriptionId("sub_" + RUN));
         seed(Seed.of(code("facet")).withDispatchPoolId(pool));
-        assertThat(repo.distinctValues(Facet.DISPATCH_POOL_ID, 1000)).containsOnlyOnce(pool);
-        assertThat(repo.distinctValues(Facet.SUBSCRIPTION_ID, 1000)).contains("sub_" + RUN);
-        assertThat(repo.distinctValues(Facet.CODE, 1000)).contains(code("facet"), SCOPE_CODE).isSorted();
-        assertThat(repo.distinctValues(Facet.KIND, 1000)).contains("EVENT");
-        assertThat(repo.distinctValues(Facet.STATUS, 1000)).contains("PENDING", "COMPLETED");
-        assertThat(repo.distinctValues(Facet.CLIENT_ID, 1000)).contains(CLIENT_A, CLIENT_B);
+        assertThat(repo.distinctValues(Facet.DISPATCH_POOL_ID, 1000, Visibility.Everything.INSTANCE)).containsOnlyOnce(pool);
+        assertThat(repo.distinctValues(Facet.SUBSCRIPTION_ID, 1000, Visibility.Everything.INSTANCE)).contains("sub_" + RUN);
+        assertThat(repo.distinctValues(Facet.CODE, 1000, Visibility.Everything.INSTANCE)).contains(code("facet"), SCOPE_CODE).isSorted();
+        assertThat(repo.distinctValues(Facet.KIND, 1000, Visibility.Everything.INSTANCE)).contains("EVENT");
+        assertThat(repo.distinctValues(Facet.STATUS, 1000, Visibility.Everything.INSTANCE)).contains("PENDING", "COMPLETED");
+        assertThat(repo.distinctValues(Facet.CLIENT_ID, 1000, Visibility.Everything.INSTANCE)).contains(CLIENT_A, CLIENT_B);
     }
 
     // ── Detail read (spec §1.1, §9) ────────────────────────────────────────
@@ -813,5 +813,30 @@ class DispatchJobRepositoryTest {
 
         assertThat(lifecycle.markQueued(claimed(id, id2))).isEqualTo(2);
         assertThat(repo.findById(id).orElseThrow().status()).isEqualTo(DispatchJobStatus.QUEUED);
+    }
+
+    /// Bug 21: a size above the 1,000 cap is clamped to 1,000, not replaced
+    /// by the default 100. (Go `TestFindWithFilters_SizeAboveTheCapIsClamped`.)
+    @Test
+    void aSizeAboveTheCapIsClamped() {
+        String clampCode = "clamp" + RUN + ":jobs:list";
+        DB.execute("""
+                INSERT INTO msg_dispatch_jobs_read (id, code, target_url, kind, protocol, mode, status, max_retries, created_at, updated_at)
+                SELECT 'c' || ? || lpad(n::text, 6, '0'), ?, 'http://example.invalid/hook', 'EVENT', 'HTTP_WEBHOOK',
+                       'IMMEDIATE', 'PENDING', 3, NOW(), NOW()
+                  FROM generate_series(1, 150) n""", RUN, clampCode);
+        try {
+            var unscoped = Visibility.Everything.INSTANCE;
+            for (int size : new int[] {1000, 1001, 5000}) {
+                assertThat(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null, null,
+                        false, size, 0, null, null, List.of(clampCode), null, null, null, unscoped)))
+                        .as("size %d", size).hasSize(150);
+            }
+            assertThat(repo.findWithFilters(new ListFilter(null, null, null, null, null, null, null, null, null,
+                    false, 0, 0, null, null, List.of(clampCode), null, null, null, unscoped)))
+                    .as("no size: the default 100").hasSize(100);
+        } finally {
+            DB.execute("DELETE FROM msg_dispatch_jobs_read WHERE code = ?", clampCode);
+        }
     }
 }

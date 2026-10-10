@@ -410,23 +410,23 @@ class DebugBffTest {
     }
 
     @Test
-    void eventsSizeIsAbsentFiftyHonouredAndClampedAtOneHundred() {
+    void eventsSizeIsAbsentFiftyHonouredAndClampedAtOneThousand() {
         assertThat(ok(http.get("/bff/debug/events", ANCHOR))).as("size absent defaults to 50, not the repository's own 100 fallback").hasSize(50);
         assertThat(ok(http.get("/bff/debug/events?size=0", ANCHOR))).as("size<=0 is the same as absent").hasSize(50);
         assertThat(ok(http.get("/bff/debug/events?size=7", ANCHOR))).as("size is honoured when in range").hasSize(7);
         assertThat(ok(http.get("/bff/debug/events?size=5000", ANCHOR)))
-                .as("size=5000 clamps to 100, not 1000 (repository guard's own default), despite the doc string's claim of \"max 1000\"")
-                .hasSize(100);
+                .as("size=5000 clamps to 1000, not the repository's default 100 (bug 21)")
+                .hasSizeGreaterThanOrEqualTo(SIZE_FLOOR).hasSizeLessThanOrEqualTo(1000);
     }
 
     @Test
-    void dispatchJobsSizeIsAbsentFiftyHonouredAndClampedAtOneHundred() {
+    void dispatchJobsSizeIsAbsentFiftyHonouredAndClampedAtOneThousand() {
         assertThat(ok(http.get("/bff/debug/dispatch-jobs", ANCHOR))).as("size absent defaults to 50").hasSize(50);
         assertThat(ok(http.get("/bff/debug/dispatch-jobs?size=0", ANCHOR))).as("size<=0 is the same as absent").hasSize(50);
         assertThat(ok(http.get("/bff/debug/dispatch-jobs?size=7", ANCHOR))).as("size is honoured when in range").hasSize(7);
         assertThat(ok(http.get("/bff/debug/dispatch-jobs?size=5000", ANCHOR)))
-                .as("size=5000 clamps to 100, not 1000")
-                .hasSize(100);
+                .as("size=5000 clamps to 1000, not the repository's default 100 (bug 21)")
+                .hasSizeGreaterThanOrEqualTo(SIZE_FLOOR).hasSizeLessThanOrEqualTo(1000);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────

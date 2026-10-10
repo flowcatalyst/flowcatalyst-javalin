@@ -10,6 +10,7 @@ import io.flowcatalyst.platform.shared.apicommon.QueryParams;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
+import io.flowcatalyst.platform.shared.auth.Visibility;
 import io.flowcatalyst.platform.shared.auth.Permission;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.http.Exchange;
@@ -98,10 +99,12 @@ public final class EventApi {
 
     private static void filterOptions(Exchange ctx, State s) {
         Checks.require(Auth.current(), EVENT_VIEW);
+        // Scoped as the list is (bug 18): platform events plus the caller's own tenants.
+        Visibility visibility = Auth.current().visibility();
         ctx.json(new EventFilterOptionsResponse(
-                options(s.repo().distinctValues(Facet.APPLICATION, FACET_LIMIT)),
-                options(s.repo().distinctValues(Facet.SUBDOMAIN, FACET_LIMIT)),
-                options(s.repo().distinctValues(Facet.TYPE, FACET_LIMIT))));
+                options(s.repo().distinctValues(Facet.APPLICATION, FACET_LIMIT, visibility)),
+                options(s.repo().distinctValues(Facet.SUBDOMAIN, FACET_LIMIT, visibility)),
+                options(s.repo().distinctValues(Facet.TYPE, FACET_LIMIT, visibility))));
     }
 
     // ── Read-side helpers ──────────────────────────────────────────────────
