@@ -37,7 +37,7 @@ it lands in Java).
 | `name` | string, required | admin create/update: trimmed; sync: as given |
 | `description` | string, optional | |
 | `clientId` | string, optional | `null` = platform-wide; persisted; drives authorization, list visibility and `matchesClient`. **K3**: also the second part of sync's ownership key — a sync scopes its matching/creation/removal to `(applicationCode, clientId)`, `NULL` matching `NULL` only (`code-first-connections.md` §3) |
-| `clientIdentifier` | string, optional | column read/written, **no operation ever sets it** — **load-bearing or accident?** |
+| `clientIdentifier` | string, optional | set by admin create from `tnt_clients.identifier` for the client id (2026-10-10; none for no client or an id naming none; sync does not set it; existing rows not backfilled) |
 | `clientScoped` | boolean | set by create's optional `clientScoped` (default `false`; bug 9, 2026-10-10); update leaves it |
 | `eventTypes` | list of binding | ≥ 1 on create; replaced wholesale on update/sync |
 | `connectionId` | string, optional | ~~not a foreign key; validated to exist **only by sync** (`CONNECTION_NOT_FOUND`), not by admin create/update — **load-bearing or accident?**~~ **Superseded 2026-09-25** (`security-fixes-2026-09-24.md` S3.1, commit `b1ce6e55`): still not a foreign key, but admin create, and any admin update that changes it, now require the resolved connection — and, when the connection names a service account, that account — to be one the caller may sign with (`SigningReach`, §10 open question 13) |
@@ -340,7 +340,7 @@ hydrate both junctions in one `IN` query each. List reads order by `code`.
 5. Sync clears `connectionId` when the row omits it; admin update cannot clear it. **K3**: a row naming neither `connectionId` nor `connectionCode` still clears it — unchanged.
 6. Unresolvable `dispatchPoolCode` is silently ignored; admin `dispatchPoolId` is stored without existence check and never sets `dispatchPoolCode`.
 7. `mode` is parsed leniently on the wire (typo ⇒ `IMMEDIATE`) and ignored by sync.
-8. `clientIdentifier`, `clientScoped`, `queue`, `sequence`, `eventTypeId` are never set by any operation.
+8. `eventTypeId` is never set by any operation (`clientIdentifier`, `clientScoped`, `sequence` and `queue` are, since 2026-10-10 / R1).
 9. Pause/resume are idempotent (no 409 on a no-op flip); `updated` carries no settings.
 10. Numeric settings are unbounded; a binding's `eventTypeCode` may be blank; an update with `eventTypes: []` leaves zero bindings.
 11. Create/update/pause/resume are gated by *any* write permission rather than the specific verb.

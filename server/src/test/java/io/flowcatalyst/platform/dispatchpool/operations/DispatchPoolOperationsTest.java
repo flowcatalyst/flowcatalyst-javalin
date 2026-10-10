@@ -39,6 +39,9 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import io.flowcatalyst.platform.client.Client;
+import io.flowcatalyst.platform.client.ClientIdentifier;
+import io.flowcatalyst.platform.client.ClientRepository;
 
 /// The dispatch-pool use cases against the embedded Postgres (spec §4–9):
 /// validation, the per-resource authorization, persistence, and the
@@ -580,5 +583,49 @@ class DispatchPoolOperationsTest {
         assertThat(repo.findWithFilters(new ListFilter(null, client))).extracting(DispatchPool::id).containsExactly(c.poolId());
         assertThat(repo.findWithFilters(new ListFilter("ACTIVE", client))).extracting(DispatchPool::id).containsExactly(c.poolId());
         assertThat(repo.findWithFilters(new ListFilter("SUSPENDED", client))).isEmpty();
+    }
+
+    // ── Client identifier; clearing fields (2026-10-10) ────────────────────
+
+    /// A real client row to scope a pool to.
+    private static String seededClient(String identifier) {
+        var c = Client.create("Client " + identifier, ClientIdentifier.parse(identifier));
+        uow.inTransaction(tx -> {
+            new ClientRepository(DS).persist(c, tx.dbTx());
+            return null;
+        });
+        return c.id();
+    }
+
+    /// Create stores the client's identifier beside the client id (it never
+    /// did, so every client pool showed as anchor-level and the router could
+    /// not name its `{clientIdentifier}-{code}` pool); no client, or an id
+    /// naming no client, stores none. (Go `client_identifier_pg_test.go`.)
+    @Test
+    void createStoresTheClientIdentifier() {
+        String identifier = "dpci" + RUN;
+        String clientId = seededClient(identifier);
+        String scoped = runAsAnchor(CreateDispatchPool.of(repo),
+                new CreateCommand(code("dpci-a"), "Scoped", null, null, null, clientId)).poolId();
+        assertThat(reload(scoped).clientIdentifier()).isEqualTo(identifier);
+        assertThat(reload(created(code("dpci-p"), "Platform").poolId()).clientIdentifier()).as("platform-wide").isNull();
+        String unknown = runAsAnchor(CreateDispatchPool.of(repo),
+                new CreateCommand(code("dpci-u"), "Unknown", null, null, null, "clt_nosuchclient1")).poolId();
+        assertThat(reload(unknown).clientIdentifier()).as("an id naming no client").isNull();
+    }
+
+    /// An edit can clear the rate limit (0) and the description (blank);
+    /// omitted, they are kept. (Go `clear_fields_pg_test.go`.)
+    @Test
+    void updateClearsTheRateLimitAndDescription() {
+        String id = runAsAnchor(CreateDispatchPool.of(repo),
+                new CreateCommand(code("dpclear"), "Clear", "a description", 120, null, null)).poolId();
+        runAsAnchor(UpdateDispatchPool.of(repo), new UpdateCommand(id, "Renamed", null, null, null));
+        assertThat(reload(id).rateLimit()).as("omitted: kept").isEqualTo(120);
+        assertThat(reload(id).description()).isEqualTo("a description");
+
+        runAsAnchor(UpdateDispatchPool.of(repo), new UpdateCommand(id, null, "  ", 0, null));
+        assertThat(reload(id).rateLimit()).as("0 clears the limit").isNull();
+        assertThat(reload(id).description()).as("blank clears the description").isNull();
     }
 }

@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.connection;
 
+import io.flowcatalyst.platform.shared.database.ClientIdentifiers;
 import io.flowcatalyst.db.generated.tables.MsgConnections;
 import io.flowcatalyst.db.generated.tables.records.MsgConnectionsRecord;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
@@ -32,6 +33,12 @@ public final class ConnectionRepository implements Persist<Connection> {
 
     public ConnectionRepository(DataSource dataSource) {
         this.dsl = DSL.using(Objects.requireNonNull(dataSource, "dataSource"), SQLDialect.POSTGRES);
+    }
+
+    /// The identifier of the client with this id (empty for no client, or an
+    /// id naming no client); create stores it beside the client id.
+    public Optional<String> clientIdentifier(String clientId) {
+        return ClientIdentifiers.of(dsl, clientId);
     }
 
     /// Equality filters for [#findWithFilters]; `null` = no filter on that column.

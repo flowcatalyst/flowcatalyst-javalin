@@ -31,7 +31,7 @@ import java.util.Objects;
 ///                         always produce `UI`
 /// @param serviceAccountId the owning service account (not validated today, spec §1)
 /// @param clientId         optional client scope; `null` = platform-wide
-/// @param clientIdentifier optional; read and written but never set by an operation (spec §1)
+/// @param clientIdentifier optional; set by admin create from the client id (2026-10-10); sync does not set it
 /// @param createdAt        creation time
 /// @param updatedAt        last change
 public record Connection(
@@ -109,6 +109,11 @@ public record Connection(
     public Connection withExternalId(String newExternalId) {
         return new Connection(id, code, applicationCode, name, description, newExternalId, status,
                 source, serviceAccountId, clientId, clientIdentifier, createdAt, updatedAt);
+    }
+
+    public Connection withClientIdentifier(String newClientIdentifier) {
+        return new Connection(id, code, applicationCode, name, description, externalId, status,
+                source, serviceAccountId, clientId, newClientIdentifier, createdAt, updatedAt);
     }
 
     public Connection withClientId(String newClientId) {

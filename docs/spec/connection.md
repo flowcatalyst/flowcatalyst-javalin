@@ -34,7 +34,7 @@ itself, not by the operation's pre-check alone.
 | `source` | `CODE` \| `API` \| `UI` | who authored the row (`ConnectionSource`, X-06 strict stored read); create/update always stamp `UI`; existing pre-V12 rows are backfilled `UI` |
 | `serviceAccountId` | string, required | immutable after create; ~~**not validated against `iam_service_accounts`** (Go `TODO(wave-3c)`) — **load-bearing or accident?** (an unknown id is accepted today)~~ **Superseded 2026-09-25** (`security-fixes-2026-09-24.md` S3.1, commit `b1ce6e55`; `CreateConnection.java`): create now requires the named account to exist (404 `ServiceAccount_NOT_FOUND`) and to be one the caller may sign with (`SigningReach#mayUse` — a super-admin may use any account; an account owned by an application only by that application; an application caller only its own accounts; otherwise the caller's tenancy must cover the account's), superseding the "not validated" note. `applicationCode` on this same command proves nothing about whose account this is, so it counts for nothing in the check |
 | `clientId` | string, optional | `null` = platform-wide; persisted; drives authorization and list visibility |
-| `clientIdentifier` | string, optional | column exists and is read/written, but **no operation ever sets it** — **load-bearing or accident?** |
+| `clientIdentifier` | string, optional | set by admin create from `tnt_clients.identifier` for the client id (2026-10-10; none for no client or an id naming none; sync does not set it; existing rows not backfilled) |
 | `createdAt`, `updatedAt` | timestamps | `updatedAt` is stamped `now()` on every persist |
 
 Lenient enum read: exactly `PAUSED` → `PAUSED`; anything else (other case,
@@ -163,7 +163,7 @@ today, **load-bearing or accident?**).
 ## 9. Open questions for the owner (summary)
 
 1. ~~`serviceAccountId` is not checked against `iam_service_accounts` at create.~~ **Superseded 2026-09-25** (`security-fixes-2026-09-24.md` S3.1, commit `b1ce6e55`): create now requires the account to exist and to be one the caller may sign with (`SigningReach`, §1 above) — no longer an open question.
-2. `clientIdentifier` is never set by any operation — dead column or pending feature?
+2. ~~`clientIdentifier` is never set by any operation.~~ **Ruled 2026-10-10**: admin create sets it.
 3. Pause/activate are idempotent (no 409 on a no-op flip).
 4. Update's `status` is read leniently (`garbage` → `ACTIVE`).
 5. ~~Platform-wide code uniqueness relies on the operation's pre-check (the DB index treats `NULL` client ids as distinct).~~ **Answered, owner ruling 2026-09-21**: uniqueness is now `(applicationCode, clientId, code)`, enforced by a database expression index (V12), `NULL` a real value on both nullable parts — see `code-first-connections.md`.

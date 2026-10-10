@@ -2922,8 +2922,14 @@ export type UpdateDispatchPoolRequest = {
      */
     readonly $schema?: string;
     concurrency?: number;
+    /**
+     * Omitted leaves it; blank clears it.
+     */
     description?: string;
     name?: string;
+    /**
+     * Messages per minute. Omitted leaves it; 0 clears it (no limit).
+     */
     rateLimit?: number;
     [key: string]: unknown;
 };
@@ -4812,8 +4818,14 @@ export type UpdateConnectionRequestWritable = {
 
 export type UpdateDispatchPoolRequestWritable = {
     concurrency?: number;
+    /**
+     * Omitted leaves it; blank clears it.
+     */
     description?: string;
     name?: string;
+    /**
+     * Messages per minute. Omitted leaves it; 0 clears it (no limit).
+     */
     rateLimit?: number;
     [key: string]: unknown;
 };

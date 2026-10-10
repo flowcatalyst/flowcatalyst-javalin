@@ -58,6 +58,9 @@ import static io.flowcatalyst.db.generated.Tables.MSG_SUBSCRIPTIONS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.groups.Tuple.tuple;
+import io.flowcatalyst.platform.client.Client;
+import io.flowcatalyst.platform.client.ClientIdentifier;
+import io.flowcatalyst.platform.client.ClientRepository;
 
 /// The subscription use cases against the embedded Postgres (spec §4–9):
 /// validation, the per-resource authorization, persistence of the row and
@@ -1294,5 +1297,23 @@ class SubscriptionOperationsTest {
                     null, null, null, null, null, null, null, null, null, null, null));
             assertThat(reload(id).connectionId()).as("blank %s is omitted", "'" + blank + "'").isEqualTo(before);
         }
+    }
+
+    /// Create stores the client's identifier beside the client id; none for
+    /// no client. (Go `subscription/operations/client_identifier_pg_test.go`.)
+    @Test
+    void createStoresTheClientIdentifier() {
+        String identifier = "subci" + RUN;
+        var client = Client.create("Client " + identifier, ClientIdentifier.parse(identifier));
+        uow.inTransaction(tx -> {
+            new ClientRepository(DS).persist(client, tx.dbTx());
+            return null;
+        });
+        var base = createCommand(code("subci"), "Scoped");
+        var scoped = new CreateCommand(base.code(), base.name(), base.endpoint(), null, client.id(), null, null, null,
+                BINDINGS, null, null, null, null, null, null, null, null);
+        String id = runAsAnchor(CreateSubscription.of(repo, connections, REACH), scoped).subscriptionId();
+        assertThat(reload(id).clientIdentifier()).isEqualTo(identifier);
+        assertThat(reload(created(code("subci-p"), "Platform").subscriptionId()).clientIdentifier()).isNull();
     }
 }

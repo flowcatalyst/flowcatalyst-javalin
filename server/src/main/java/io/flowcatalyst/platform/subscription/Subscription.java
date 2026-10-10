@@ -31,7 +31,7 @@ import java.util.Objects;
 /// @param name             human-readable name
 /// @param description      optional description
 /// @param clientId         optional client scope; `null` = platform-wide
-/// @param clientIdentifier optional; read and written but never set by an operation (spec §1)
+/// @param clientIdentifier optional; set by admin create from the client id (2026-10-10); sync does not set it
 /// @param clientScoped     subscribes to client-scoped event types; set at create (bug 9), default `false`
 /// @param eventTypes       the patterns, in stored order; replaced wholesale on update
 /// @param connectionId     optional delivery connection (not a foreign key)
@@ -334,6 +334,13 @@ public record Subscription(
                 eventTypes, connectionId, endpoint, queue, customConfig, source, status, maxAgeSeconds,
                 dispatchPoolId, dispatchPoolCode, delaySeconds, sequence, mode, timeoutSeconds, maxRetries,
                 serviceAccountId, newDataOnly, createdBy, createdAt, updatedAt);
+    }
+
+    public Subscription withClientIdentifier(String newClientIdentifier) {
+        return new Subscription(id, code, applicationCode, name, description, clientId, newClientIdentifier, clientScoped,
+                eventTypes, connectionId, endpoint, queue, customConfig, source, status, maxAgeSeconds,
+                dispatchPoolId, dispatchPoolCode, delaySeconds, sequence, mode, timeoutSeconds, maxRetries,
+                serviceAccountId, dataOnly, createdBy, createdAt, updatedAt);
     }
 
     public Subscription withClientScoped(boolean newClientScoped) {

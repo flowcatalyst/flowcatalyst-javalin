@@ -63,6 +63,7 @@ public final class CreateConnection {
                             .withDescription(cmd.description())
                             .withExternalId(cmd.externalId())
                             .withClientId(cmd.clientId())
+                            .withClientIdentifier(repo.clientIdentifier(cmd.clientId()).orElse(null))
                             .withApplicationCode(cmd.applicationCode());
                     return Plan.save(c, repo, ConnectionCreated.of(ec, c));
                 });

@@ -58,6 +58,7 @@ public final class CreateSubscription {
                     Subscription s = Subscription.create(code, cmd.name().strip(), EndpointUrl.parse(cmd.endpoint()).value())
                             .withDescription(cmd.description())
                             .withClientId(cmd.clientId())
+                            .withClientIdentifier(repo.clientIdentifier(cmd.clientId()).orElse(null))
                             .withConnectionId(cmd.connectionId())
                             .withDispatchPool(cmd.dispatchPoolId(), Access.poolCode(repo, cmd.dispatchPoolId()))
                             .withServiceAccountId(cmd.serviceAccountId())

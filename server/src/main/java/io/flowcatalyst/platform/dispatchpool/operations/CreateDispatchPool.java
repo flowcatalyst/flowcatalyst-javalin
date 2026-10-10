@@ -39,7 +39,8 @@ public final class CreateDispatchPool {
                     DispatchPool p = DispatchPool.create(code, cmd.name().trim())
                             .withDescription(cmd.description())
                             .withRateLimit(cmd.rateLimit())
-                            .withClientId(cmd.clientId());
+                            .withClientId(cmd.clientId())
+                            .withClientIdentifier(repo.clientIdentifier(cmd.clientId()).orElse(null));
                     if (cmd.concurrency() != null) {
                         p = p.withConcurrency(cmd.concurrency());
                     }

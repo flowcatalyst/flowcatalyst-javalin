@@ -23,7 +23,7 @@ platform-wide ("anchor-scope").
 | `rateLimit` | int, optional | messages per minute; `null` = no rate limiter, concurrency-only |
 | `concurrency` | int, required | max concurrent dispatches; default `10` |
 | `clientId` | string, optional | owning client; `null` = platform-wide. Used for authorization, filtering and code uniqueness |
-| `clientIdentifier` | string, optional | denormalised client identifier; read-only — nothing in this aggregate sets it (**accident?** column exists for the router/BFF read side) |
+| `clientIdentifier` | string, optional | denormalised client identifier, set by admin create from `tnt_clients.identifier` for the client id (2026-10-10; none for no client or an id naming none; sync does not set it; existing rows not backfilled); the router names a client pool's processing pool `{clientIdentifier}-{code}` from it |
 | `status` | `ACTIVE` \| `SUSPENDED` \| `ARCHIVED` | default `ACTIVE` |
 | `createdAt`, `updatedAt` | timestamps | `updatedAt` is stamped `now()` on every persist |
 
@@ -218,6 +218,6 @@ uses the same `Persist`.
 5. Sync is global with `removeUnlisted` archiving other applications' and admin-created pools; and sync is not per-pool scope-checked.
 6. The `updated` event omits rate-limit/concurrency.
 7. Sync rollup message group is `platform:dispatchpools` (shared), not per application.
-8. `clientIdentifier` is never set by this aggregate; `description` cannot be cleared via update (`null` = unchanged).
+8. ~~`clientIdentifier` is never set by this aggregate; `description` cannot be cleared via update.~~ **Ruled 2026-10-10**: create sets the identifier; an update's blank `description` or `rateLimit: 0` clears the value (`null` still = unchanged).
 9. Lenient status read masks bad rows.
 10. Sync matching by code over all scopes: which row wins when a code exists platform-wide *and* per client; and a batch that repeats a code creates duplicate platform-wide pools (§7).

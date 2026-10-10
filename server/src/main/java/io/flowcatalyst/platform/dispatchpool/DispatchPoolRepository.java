@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.dispatchpool;
 
+import io.flowcatalyst.platform.shared.database.ClientIdentifiers;
 import io.flowcatalyst.db.generated.tables.MsgDispatchPools;
 import io.flowcatalyst.db.generated.tables.records.MsgDispatchPoolsRecord;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
@@ -33,6 +34,12 @@ public final class DispatchPoolRepository implements Persist<DispatchPool> {
 
     public DispatchPoolRepository(DataSource dataSource) {
         this.dsl = DSL.using(Objects.requireNonNull(dataSource, "dataSource"), SQLDialect.POSTGRES);
+    }
+
+    /// The identifier of the client with this id (empty for no client, or an
+    /// id naming no client); create stores it beside the client id.
+    public Optional<String> clientIdentifier(String clientId) {
+        return ClientIdentifiers.of(dsl, clientId);
     }
 
     /// Equality filters for [#findWithFilters]; `null` = no filter on that column.

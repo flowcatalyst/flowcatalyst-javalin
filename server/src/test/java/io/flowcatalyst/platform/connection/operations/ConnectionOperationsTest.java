@@ -46,6 +46,9 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import io.flowcatalyst.platform.client.Client;
+import io.flowcatalyst.platform.client.ClientIdentifier;
+import io.flowcatalyst.platform.client.ClientRepository;
 
 /// The connection use cases against the embedded Postgres (spec §4–8):
 /// validation, the per-resource authorization, persistence, and the
@@ -599,5 +602,24 @@ class ConnectionOperationsTest {
                 .containsExactly(a.connectionId());
         assertThat(repo.findByCode(code("connlist-a"), null, client)).map(Connection::id).contains(a.connectionId());
         assertThat(repo.findByCode(code("connlist-a"), null, null)).as("null client matches platform-wide rows only").isEmpty();
+    }
+
+    // ── Client identifier (2026-10-10) ─────────────────────────────────────
+
+    /// Create stores the client's identifier beside the client id; none for
+    /// no client. (Go `client_identifier_pg_test.go`.)
+    @Test
+    void createStoresTheClientIdentifier() {
+        String identifier = "conci" + RUN;
+        var client = Client.create("Client " + identifier, ClientIdentifier.parse(identifier));
+        uow.inTransaction(tx -> {
+            new ClientRepository(DS).persist(client, tx.dbTx());
+            return null;
+        });
+        String scoped = runAsAnchor(CreateConnection.of(repo, apps, REACH),
+                new CreateCommand(code("conci-a"), "Scoped", null, SERVICE_ACCOUNT, null, client.id(), null)).connectionId();
+        assertThat(repo.findById(scoped).orElseThrow().clientIdentifier()).isEqualTo(identifier);
+        String platform = created(code("conci-p"), "Platform").connectionId();
+        assertThat(repo.findById(platform).orElseThrow().clientIdentifier()).isNull();
     }
 }

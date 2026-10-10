@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.subscription;
 
+import io.flowcatalyst.platform.shared.database.ClientIdentifiers;
 import io.flowcatalyst.db.generated.tables.MsgSubscriptionCustomConfigs;
 import io.flowcatalyst.db.generated.tables.MsgSubscriptionEventTypes;
 import io.flowcatalyst.db.generated.tables.MsgSubscriptions;
@@ -49,6 +50,12 @@ public final class SubscriptionRepository implements Persist<Subscription> {
 
     public SubscriptionRepository(DataSource dataSource) {
         this.dsl = DSL.using(Objects.requireNonNull(dataSource, "dataSource"), SQLDialect.POSTGRES);
+    }
+
+    /// The identifier of the client with this id (empty for no client, or an
+    /// id naming no client); create stores it beside the client id.
+    public Optional<String> clientIdentifier(String clientId) {
+        return ClientIdentifiers.of(dsl, clientId);
     }
 
     /// Equality filters for [#findWithFilters]; `null` = no filter on that column.

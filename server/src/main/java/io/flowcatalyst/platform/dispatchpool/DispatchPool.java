@@ -24,7 +24,7 @@ import java.util.Objects;
 /// @param rateLimit        messages per minute; `null` = no rate limiter, concurrency-only
 /// @param concurrency      max concurrent dispatches (default [#DEFAULT_CONCURRENCY])
 /// @param clientId         owning client; `null` = platform-wide
-/// @param clientIdentifier denormalised client identifier; read-only here (spec §1)
+/// @param clientIdentifier denormalised client identifier; set by create from the client id (2026-10-10)
 /// @param status           routing-eligibility state
 /// @param createdAt        creation time
 /// @param updatedAt        last change
@@ -110,6 +110,11 @@ public record DispatchPool(
 
     public DispatchPool withConcurrency(int newConcurrency) {
         return new DispatchPool(id, code, name, description, rateLimit, newConcurrency, clientId, clientIdentifier,
+                status, createdAt, updatedAt);
+    }
+
+    public DispatchPool withClientIdentifier(String newClientIdentifier) {
+        return new DispatchPool(id, code, name, description, rateLimit, concurrency, clientId, newClientIdentifier,
                 status, createdAt, updatedAt);
     }
 

@@ -8,7 +8,10 @@ import io.flowcatalyst.sdk.usecase.op.Operation;
 import io.flowcatalyst.sdk.usecase.op.Plan;
 
 /// Applies the given settings to an existing pool (absent ones are kept) and
-/// emits [DispatchPoolUpdated]. The code is immutable.
+/// emits [DispatchPoolUpdated]. The code is immutable. A provided blank
+/// description or a rate limit of `0` clears the value (2026-10-10, Go
+/// `d1158fa`: none, no limit — the router treats 0 and none alike), so an
+/// edit can remove either.
 public final class UpdateDispatchPool {
 
     private UpdateDispatchPool() {
@@ -27,8 +30,8 @@ public final class UpdateDispatchPool {
                 .execute((cmd, ec) -> {
                     DispatchPool p = Access.loadScoped(repo, cmd.id());
                     if (cmd.name() != null) p = p.withName(cmd.name().trim());
-                    if (cmd.description() != null) p = p.withDescription(cmd.description());
-                    if (cmd.rateLimit() != null) p = p.withRateLimit(cmd.rateLimit());
+                    if (cmd.description() != null) p = p.withDescription(cmd.description().isBlank() ? null : cmd.description());
+                    if (cmd.rateLimit() != null) p = p.withRateLimit(cmd.rateLimit() == 0 ? null : cmd.rateLimit());
                     if (cmd.concurrency() != null) p = p.withConcurrency(cmd.concurrency());
                     return Plan.save(p, repo, DispatchPoolUpdated.of(ec, p));
                 });
