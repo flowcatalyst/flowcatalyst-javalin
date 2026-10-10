@@ -85,13 +85,16 @@ application-service view, client scoping, and for a caller without
 | `POST /bff/event-types/{id}/archive` | `ArchiveEventType` | 200, the full response |
 | `POST /bff/event-types/{id}/schemas` `{schema, mimeType?, schemaType?, version?}` | `AddSchema` | 200, the full response |
 | `POST /bff/event-types/{id}/schemas/{version}/finalise` / `…/deprecate` | `FinaliseEventTypeSchema` / `DeprecateEventTypeSchema` | 200, the full response |
-| `POST /bff/event-types/sync-platform` `{applicationCode}` | `requireAnchor` + `EVENT_TYPE_SYNC` | `{created, updated, deleted, total, schemas:{created, updated, unchanged}}` |
+| `POST /bff/event-types/sync-platform` `{applicationCode}` | `requireAnchor` + `EVENT_TYPE_SYNC` or `EVENT_TYPE_MANAGE` | `{created, updated, deleted, total, schemas:{created, updated, unchanged}}` |
 
-Permissions: the same coarse gates as `/api/event-types` (the aggregate
-spec), except `sync-platform`, which — **2026-09-25** (`security-fixes-2026-09-24.md`
+Permissions (2026-10-10, the permission for the operation, as Go's BFF):
+create `EVENT_TYPE_CREATE`; update (PUT/PATCH), archive, add schema, finalise
+and deprecate `EVENT_TYPE_UPDATE`; delete `EVENT_TYPE_DELETE` (they were any
+of the three); `sync-platform`, which — **2026-09-25** (`security-fixes-2026-09-24.md`
 S1.2, commit `6068fe6b`; superseded: this route used to be anchor-only with
-no permission) — requires anchor reach *and* `EVENT_TYPE_SYNC`
-(`EventTypesBff.java`): the anchor tier is reach, never authority.
+no permission) — requires anchor reach *and* `EVENT_TYPE_SYNC` — or, since 2026-10-10 (Go
+`a3414cc`), `EVENT_TYPE_MANAGE` (`EventTypesBff.java`): the anchor tier is
+reach, never authority.
 
 ## 6. Roles and the permission catalogue [C]
 
@@ -104,20 +107,23 @@ no permission) — requires anchor reach *and* `EVENT_TYPE_SYNC`
 | `GET /bff/roles?application&source` | `findAll`, filtered | `{items, total}` |
 | `GET /bff/roles/filters/applications` | **every active application** (Go `shared/bff/roles.go filterApplications`: `Applications.FindWithFilters(nil, active)` — not the roles' codes; corrected 2026-09-06 after the parity harness, S3) | `{options:[{id, code, name}]}` |
 | `GET /bff/roles/permissions?application` | **catalogue = the seeded platform permissions ∪ `iam_permissions` rows** (`PermissionRepository.findAll`), filtered by application, deduplicated by code | `{items, total}` |
-| `POST /bff/roles/permissions` `{application, context, aggregate, action, description?}` | `requireAnchor` + `ROLE_CREATE`; `PermissionRepository.upsert` of `app:context:aggregate:action` | 201 |
+| `POST /bff/roles/permissions` `{application, context, aggregate, action, description?}` | `ROLE_CREATE`, then `requireAnchor`; `PermissionRepository.upsert` of `app:context:aggregate:action` | 201 |
 | `GET /bff/roles/permissions/{permission}` | one catalogue entry | 404 |
 | `GET /bff/roles/{roleName}` | `findByName` | 404 |
-| `POST /bff/roles` `{applicationCode, roleName, displayName, description?, permissions[], clientManaged}` | `requireAnchor` + one of `ROLE_CREATE`/`ROLE_UPDATE`/`ROLE_DELETE`; `CreateRole` | 201 `{id}` |
-| `PUT /bff/roles/{roleName}` `{displayName?, description?, clientManaged?, permissions?}` | `requireAnchor` + one of `ROLE_CREATE`/`ROLE_UPDATE`/`ROLE_DELETE`; `UpdateRole` | 204 |
-| `DELETE /bff/roles/{roleName}` | `requireAnchor` + `ROLE_DELETE`; `DeleteRole` | 204 |
-| `POST /bff/roles/sync-platform` | `requireAnchor` + one of `ROLE_CREATE`/`ROLE_UPDATE`/`ROLE_DELETE`; `SyncPlatformRoles(seed platform roles)` | `{created, updated, removed, total}` |
+| `POST /bff/roles` `{applicationCode, roleName, displayName, description?, permissions[], clientManaged}` | `ROLE_CREATE`, then `requireAnchor`; `CreateRole` | 201 `{id}` |
+| `PUT /bff/roles/{roleName}` `{displayName?, description?, clientManaged?, permissions?}` | `ROLE_UPDATE`, then `requireAnchor`; `UpdateRole` | 204 |
+| `DELETE /bff/roles/{roleName}` | `ROLE_DELETE`, then `requireAnchor`; `DeleteRole` | 204 |
+| `POST /bff/roles/sync-platform` | `ROLE_CREATE`, `ROLE_UPDATE` and `ROLE_DELETE`, then `requireAnchor`; `SyncPlatformRoles(seed platform roles)` | `{created, updated, removed, total}` |
 
 **Superseded 2026-09-25** (`security-fixes-2026-09-24.md` S1.2, commit
 `6068fe6b`; `RolesBff.java`): the five rows above used to say "anchor-only"
 with no permission — the anchor tier is reach, never authority, so each now
 also carries the matching `/api/roles` write permission (create/update/
 sync-platform: any of `ROLE_CREATE`/`ROLE_UPDATE`/`ROLE_DELETE`; delete:
-`ROLE_DELETE`; the permission catalogue's create: `ROLE_CREATE`).
+`ROLE_DELETE`; the permission catalogue's create: `ROLE_CREATE`). **Superseded
+again 2026-10-10** (Go `5b75de5`): the permission for the operation (rows
+above; the sync all three), checked before anchor reach, so a non-anchor
+without it hears `PERMISSION_REQUIRED` and one with it `ANCHOR_REQUIRED`.
 
 ## 7. Scheduled jobs (paginated) [C]
 

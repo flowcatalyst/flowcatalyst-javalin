@@ -45,9 +45,11 @@ import static io.flowcatalyst.platform.shared.auth.Permission.*;
 /// The `/bff/event-types` surface (bff spec §5) — the SPA's own shape for
 /// event types, reusing [io.flowcatalyst.platform.eventtype.operations]
 /// verbatim; only the wire DTOs differ from `/api/event-types`
-/// ([io.flowcatalyst.platform.eventtype.api.EventTypeApi]). Gates mirror the
-/// aggregate spec (`docs/spec/eventtype.md`), except `sync-platform` which
-/// is anchor-only.
+/// ([io.flowcatalyst.platform.eventtype.api.EventTypeApi]). Each write checks
+/// the permission for its operation: create `EVENT_TYPE_CREATE`; update,
+/// archive and the schema writes `EVENT_TYPE_UPDATE`; delete
+/// `EVENT_TYPE_DELETE`; `sync-platform` anchor reach and `EVENT_TYPE_SYNC` or
+/// `EVENT_TYPE_MANAGE`.
 ///
 /// | Method | Path | Status |
 /// |---|---|---|
@@ -116,14 +118,14 @@ public final class EventTypesBff {
     }
 
     private static void create(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
+        Checks.require(Auth.current(), EVENT_TYPE_CREATE);
         var cmd = ctx.bodyAsClass(CreateEventTypeRequest.class).toCommand();
         var event = CreateEventType.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(201).json(EventTypeResponse.from(eventType(s, event.eventTypeId())));
     }
 
     private static void update(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
+        Checks.require(Auth.current(), EVENT_TYPE_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateEventTypeRequest.class).toCommand(ctx.pathParam("id"));
         UpdateEventType.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
@@ -136,14 +138,14 @@ public final class EventTypesBff {
     }
 
     private static void archive(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
+        Checks.require(Auth.current(), EVENT_TYPE_UPDATE);
         String id = ctx.pathParam("id");
         ArchiveEventType.of(s.repo()).run(s.uow(), new ArchiveCommand(id), Auth.executionContext());
         ctx.json(EventTypeResponse.from(eventType(s, id)));
     }
 
     private static void addSchema(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
+        Checks.require(Auth.current(), EVENT_TYPE_UPDATE);
         String id = ctx.pathParam("id");
         var cmd = ctx.bodyAsClass(AddSchemaRequest.class).toCommand(id);
         AddSchema.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
@@ -151,7 +153,7 @@ public final class EventTypesBff {
     }
 
     private static void finalise(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
+        Checks.require(Auth.current(), EVENT_TYPE_UPDATE);
         String id = ctx.pathParam("id");
         var cmd = new FinaliseSchemaCommand(id, ctx.pathParam("version"));
         FinaliseEventTypeSchema.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
@@ -159,7 +161,7 @@ public final class EventTypesBff {
     }
 
     private static void deprecate(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
+        Checks.require(Auth.current(), EVENT_TYPE_UPDATE);
         String id = ctx.pathParam("id");
         var cmd = new DeprecateSchemaCommand(id, ctx.pathParam("version"));
         DeprecateEventTypeSchema.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
@@ -181,14 +183,16 @@ public final class EventTypesBff {
         ctx.json(distinctOptions(rows, EventType::aggregate));
     }
 
-    /// Anchor-only: bulk-syncs the platform's built-in event-type catalogue
+    /// Anchor reach, then `EVENT_TYPE_SYNC` or `EVENT_TYPE_MANAGE` (Go
+    /// `a3414cc`: anchor scope is reach, not authority): bulk-syncs the
+    /// platform's built-in event-type catalogue
     /// (`seed.PlatformEventTypes`), defaulting `applicationCode` to
     /// `"platform"` when the body is absent/blank. The schema tally is
     /// wire-compatible but not instrumented on this path — `SyncEventTypes`
     /// applies name/description only, never a schema (Go parity, event_types.go).
     private static void syncPlatform(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
-        Checks.require(Auth.current(), EVENT_TYPE_SYNC); // security-fixes S1.2: the tier is reach, the permission authority
+        Checks.requireAny(Auth.current(), EVENT_TYPE_SYNC, EVENT_TYPE_MANAGE); // the tier is reach, the permission authority
         // Owner ruling 2026-09-25 (backlog "Overnight review" item 16): the platform's own
         // definitions belong to `platform` only. The body used to name any application,
         // and removeUnlisted then replaced that application's event types with these.

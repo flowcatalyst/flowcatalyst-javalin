@@ -23,6 +23,12 @@ import java.util.Locale;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import io.flowcatalyst.platform.shared.auth.WriteGates;
+import io.flowcatalyst.platform.shared.auth.WriteGates.Write;
+import java.util.List;
+import static io.flowcatalyst.platform.shared.auth.Permission.EVENT_TYPE_CREATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.EVENT_TYPE_DELETE;
+import static io.flowcatalyst.platform.shared.auth.Permission.EVENT_TYPE_UPDATE;
 
 /// The `/bff/event-types` surface end to end: status codes, the
 /// `{items,total}` shape, `clientScoped`, and the anchor-only sync gate.
@@ -232,5 +238,33 @@ class EventTypesBffTest {
         String[] anchorSyncer = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(), Authenticator.TEST_SCOPE, "ANCHOR",
                 Authenticator.TEST_PERMISSIONS, "platform:messaging:event-type:sync"};
         assertThat(http.post("/bff/event-types/sync-platform", null, anchorSyncer).statusCode()).isEqualTo(200);
+    }
+
+    // ── Per-operation permission ───────────────────────────────────────────
+
+    /// Each write needs the permission for its operation, never any of
+    /// create/update/delete: create needs create; update (PUT and PATCH),
+    /// archive and the schema writes need update; delete needs delete.
+    @Test
+    void eachWriteNeedsTheOperationsPermission() {
+        String p = "/bff/event-types/evt_gate000000001";
+        WriteGates.assertEachWriteNeedsItsPermission(http, List.of(
+                        Write.of("create", "POST", "/bff/event-types", "{\"code\":\"" + code("gate") + "\",\"name\":\"G\"}", EVENT_TYPE_CREATE),
+                        Write.of("update", "PUT", p, "{\"name\":\"G\"}", EVENT_TYPE_UPDATE),
+                        Write.of("update (PATCH)", "PATCH", p, "{\"name\":\"G\"}", EVENT_TYPE_UPDATE),
+                        Write.of("archive", "POST", p + "/archive", null, EVENT_TYPE_UPDATE),
+                        Write.of("add schema", "POST", p + "/schemas", "{\"version\":\"1.1\",\"schema\":{}}", EVENT_TYPE_UPDATE),
+                        Write.of("finalise", "POST", p + "/schemas/1.1/finalise", null, EVENT_TYPE_UPDATE),
+                        Write.of("deprecate", "POST", p + "/schemas/1.1/deprecate", null, EVENT_TYPE_UPDATE),
+                        Write.of("delete", "DELETE", p, null, EVENT_TYPE_DELETE)),
+                EVENT_TYPE_CREATE, EVENT_TYPE_UPDATE, EVENT_TYPE_DELETE);
+    }
+
+    /// Sync Platform Events: anchor reach and `event-type:sync` **or**
+    /// `event-type:manage` (Go `a3414cc`).
+    @Test
+    void syncPlatformAlsoAdmitsTheManagePermission() {
+        var r = http.post("/bff/event-types/sync-platform", null, WriteGates.holding("platform:messaging:event-type:manage"));
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
     }
 }

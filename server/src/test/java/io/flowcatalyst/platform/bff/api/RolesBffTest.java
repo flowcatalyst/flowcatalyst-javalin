@@ -24,6 +24,12 @@ import java.util.Locale;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import io.flowcatalyst.platform.shared.auth.WriteGates;
+import io.flowcatalyst.platform.shared.auth.WriteGates.Write;
+import java.util.List;
+import static io.flowcatalyst.platform.shared.auth.Permission.ROLE_CREATE;
+import static io.flowcatalyst.platform.shared.auth.Permission.ROLE_DELETE;
+import static io.flowcatalyst.platform.shared.auth.Permission.ROLE_UPDATE;
 
 /// The `/bff/roles` surface end to end: the permission catalogue's seed ∪
 /// table dedup, the anchor gates (stricter than `/api/roles`'s coarse
@@ -296,5 +302,45 @@ class RolesBffTest {
         assertThat(codes).as("a role's code without an application row is not an application").doesNotContain(app);
         assertThat(codes).as("an active application row is listed").contains(active);
         assertThat(codes).as("an inactive one is not").doesNotContain(inactive);
+    }
+
+    // ── Per-operation permission ───────────────────────────────────────────
+
+    /// Each write checks the role permission for its operation, never any of
+    /// create/update/delete (Go `5b75de5`): create and defining a permission
+    /// need create, update needs update, delete needs delete.
+    @Test
+    void eachWriteNeedsTheOperationsPermission() {
+        String r = "/bff/roles/rbffapp" + RUN + ":gate-missing";
+        WriteGates.assertEachWriteNeedsItsPermission(http, List.of(
+                        Write.of("create", "POST", "/bff/roles", "{\"applicationCode\":\"rbffapp" + RUN + "\",\"roleName\":\""
+                                + roleName("op") + "\",\"displayName\":\"D\"}", ROLE_CREATE),
+                        Write.of("update", "PUT", r, "{\"displayName\":\"X\"}", ROLE_UPDATE),
+                        Write.of("define permission", "POST", "/bff/roles/permissions",
+                                "{\"application\":\"rbffapp" + RUN + "\",\"context\":\"op\",\"aggregate\":\"z\",\"action\":\"w\"}", ROLE_CREATE),
+                        Write.of("delete", "DELETE", r, null, ROLE_DELETE)),
+                ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE);
+    }
+
+    /// The platform role sync creates, updates and removes roles, so it needs
+    /// all three; any one alone is refused.
+    @Test
+    void syncPlatformNeedsCreateUpdateAndDelete() {
+        for (var held : List.of(ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE)) {
+            var r = http.post("/bff/roles/sync-platform", null, WriteGates.holding(held.code()));
+            assertThat(WriteGates.refusedForPermission(r)).as(held.code() + ": " + r.body()).isTrue();
+        }
+    }
+
+    /// The permission is checked before anchor reach (Go's order): a
+    /// non-anchor without it hears `PERMISSION_REQUIRED`, one with it
+    /// `ANCHOR_REQUIRED`.
+    @Test
+    void thePermissionIsCheckedBeforeAnchorReach() {
+        String[] clientViewer = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "CLIENT", Authenticator.TEST_PERMISSIONS, "platform:iam:role:view"};
+        String body = "{\"applicationCode\":\"rbffapp" + RUN + "\",\"roleName\":\"" + roleName("order") + "\",\"displayName\":\"D\"}";
+        assertThat(json(http.post("/bff/roles", body, clientViewer)).get("error").asString()).isEqualTo("PERMISSION_REQUIRED");
+        assertThat(json(http.post("/bff/roles", body, WRITER)).get("error").asString()).isEqualTo("ANCHOR_REQUIRED");
     }
 }

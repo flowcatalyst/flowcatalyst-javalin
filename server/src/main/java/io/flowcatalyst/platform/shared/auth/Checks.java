@@ -13,8 +13,9 @@ import static io.flowcatalyst.platform.shared.auth.Permission.*;
 /// `Require*` / `Can*` half). Conventions:
 ///
 ///   - `require(ac, Permission)` for a single permission (`VIEW` on GET,
-///     the verb on a verb), `requireAny(ac, Permission...)` for the "any
-///     write" / sync groupings, `requireAnchor(ac)` for anchor-only
+///     the verb on a verb — a write checks the permission for its operation,
+///     never any of create/update/delete), `requireAny(ac, Permission...)`
+///     for the sync groupings and two-grant reads, `requireAnchor(ac)` for anchor-only
 ///     resources (clients, identity providers) — a **reach** check, not an
 ///     authority one.
 ///   - Every helper takes the (possibly `null`) [AuthContext] and **throws**
