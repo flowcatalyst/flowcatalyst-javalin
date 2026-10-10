@@ -18,12 +18,15 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /// Bulk-upserts an application's event-type catalogue in one transaction
-/// (spec §7): existing codes get name + description replaced, new codes are
+/// (spec §7): existing codes get name + description replaced — a listed code
+/// whose name and description are unchanged (by value; `null` equals `null`
+/// only) is neither saved nor counted as updated (bug 6) — new codes are
 /// created `API`-sourced, and with `removeUnlisted` the `API`-sourced rows
 /// not in the batch are deleted (`UI`/`CODE` rows are never touched). One
 /// per-row event per row touched plus one [EventTypesSynced] rollup.
@@ -57,6 +60,10 @@ public final class SyncEventTypes {
                     for (SyncEventTypeInput in : cmd.eventTypes()) {
                         EventType existing = existingByCode.get(in.code());
                         if (existing != null) {
+                            if (Objects.equals(existing.name(), in.name())
+                                    && Objects.equals(existing.description(), in.description())) {
+                                continue; // unchanged: neither written nor counted as updated (bug 6)
+                            }
                             EventType et = existing.withName(in.name()).withDescription(in.description());
                             saves.add(new SyncSave<>(et, EventTypeUpdated.of(ec, et)));
                             updated++;

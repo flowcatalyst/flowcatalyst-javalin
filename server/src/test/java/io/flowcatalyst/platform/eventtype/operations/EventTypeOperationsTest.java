@@ -387,6 +387,30 @@ class EventTypeOperationsTest {
         assertThat(rollups.getFirst().get("message_group")).isEqualTo("platform:eventtypes:" + application);
     }
 
+    /// Bug 6: a listed type whose name and description are unchanged is
+    /// neither saved nor counted as updated (no `EventTypeUpdated`); a change
+    /// to either, including a description going from none to "", is.
+    @Test
+    void syncLeavesUnchangedTypesAlone() {
+        String application = app("etsyncsame");
+        String code = application + ":orders:order:created";
+        runAsAnchor(SyncEventTypes.of(repo), new SyncEventTypesCommand(application, List.of(
+                new SyncEventTypeInput(code, "A", "desc", null)), false));
+        var before = repo.findByCode(code).orElseThrow();
+
+        var same = runAsAnchor(SyncEventTypes.of(repo), new SyncEventTypesCommand(application, List.of(
+                new SyncEventTypeInput(code, "A", "desc", null)), false));
+        assertThat(same.updated()).as("unchanged is not updated").isZero();
+        assertThat(same.created()).isZero();
+        assertThat(eventsFor(before.id(), EventTypeEvents.UPDATED)).isEmpty();
+        assertThat(repo.findByCode(code).orElseThrow().updatedAt()).as("not rewritten").isEqualTo(before.updatedAt());
+
+        var described = runAsAnchor(SyncEventTypes.of(repo), new SyncEventTypesCommand(application, List.of(
+                new SyncEventTypeInput(code, "A", "other", null)), false));
+        assertThat(described.updated()).isEqualTo(1);
+        assertThat(eventsFor(before.id(), EventTypeEvents.UPDATED)).hasSize(1);
+    }
+
     @Test
     void syncRejectsAMissingApplicationCodeAndAbortsOnTheFirstBadRow() {
         assertUseCaseError(() -> runAsAnchor(SyncEventTypes.of(repo), new SyncEventTypesCommand(null, List.of(), false)),
