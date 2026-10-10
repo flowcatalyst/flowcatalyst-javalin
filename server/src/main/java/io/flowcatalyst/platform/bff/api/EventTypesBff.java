@@ -1,10 +1,12 @@
 package io.flowcatalyst.platform.bff.api;
 
 import tools.jackson.databind.JsonNode;
+import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.eventtype.EventType;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository.ListFilter;
 import io.flowcatalyst.platform.eventtype.SpecVersion;
+import io.flowcatalyst.platform.eventtype.api.EventTypeReads;
 import io.flowcatalyst.platform.eventtype.operations.AddSchema;
 import io.flowcatalyst.platform.eventtype.operations.AddSchemaCommand;
 import io.flowcatalyst.platform.eventtype.operations.ArchiveCommand;
@@ -36,6 +38,7 @@ import io.flowcatalyst.http.Routes;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Function;
 
 import static io.flowcatalyst.platform.shared.auth.Permission.*;
 
@@ -68,9 +71,12 @@ public final class EventTypesBff {
     private EventTypesBff() {
     }
 
-    public record State(EventTypeRepository repo, UnitOfWork uow) {
+    /// `apps` resolves an event type's application code, to confine an
+    /// application service account to its own applications' event types.
+    public record State(EventTypeRepository repo, ApplicationRepository apps, UnitOfWork uow) {
         public State {
             Objects.requireNonNull(repo, "repo");
+            Objects.requireNonNull(apps, "apps");
             Objects.requireNonNull(uow, "uow");
         }
     }
@@ -94,17 +100,19 @@ public final class EventTypesBff {
 
     // ── Handlers ───────────────────────────────────────────────────────────
 
+    /// The reads make `GET /api/event-types`'s checks (bug 1): the read
+    /// permission, client scoping, application confinement. The facets may
+    /// repeat (the SPA's multi-selects) and match any of their values (bug 2).
     private static void list(Exchange ctx, State s) {
-        AuthContext ac = Auth.current();
-        Checks.require(ac, EVENT_TYPE_VIEW);
-        List<EventType> visible = Checks.filterClientScoped(ac, s.repo().findWithFilters(listFilter(ctx)), EventType::clientId);
-        ctx.json(new EventTypeListResponse(visible.stream().map(EventTypeResponse::from).toList()));
+        List<EventType> rows = EventTypeReads.matchAny(visible(s, queryParam(ctx, "status")),
+                ctx.queryParams("application"), ctx.queryParams("subdomain"), ctx.queryParams("aggregate"));
+        ctx.json(new EventTypeListResponse(rows.stream().map(EventTypeResponse::from).toList()));
     }
 
     private static void getById(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
-        Checks.require(ac, EVENT_TYPE_VIEW);
-        ctx.json(EventTypeResponse.from(visible(ac, eventType(s, ctx.pathParam("id")))));
+        Checks.requireEventTypeReadAny(ac);
+        ctx.json(EventTypeResponse.from(EventTypeReads.readable(ac, s.apps(), eventType(s, ctx.pathParam("id")))));
     }
 
     private static void create(Exchange ctx, State s) {
@@ -158,16 +166,19 @@ public final class EventTypesBff {
         ctx.json(EventTypeResponse.from(eventType(s, id)));
     }
 
+    /// Cascading filter: the subdomains of the event types the caller may
+    /// read, of any of the given applications (repeatable; none = every one).
     private static void filterSubdomains(Exchange ctx, State s) {
-        String application = queryParam(ctx, "application");
-        ctx.json(new OptionsResponse(application == null ? List.of() : s.repo().distinctSubdomains(application)));
+        var rows = EventTypeReads.matchAny(visible(s, null), ctx.queryParams("application"), List.of(), List.of());
+        ctx.json(distinctOptions(rows, EventType::subdomain));
     }
 
+    /// Cascading filter: the aggregates of the visible event types of any of
+    /// the given applications and subdomains (both repeatable).
     private static void filterAggregates(Exchange ctx, State s) {
-        String application = queryParam(ctx, "application");
-        String subdomain = queryParam(ctx, "subdomain");
-        ctx.json(new OptionsResponse(application == null || subdomain == null
-                ? List.of() : s.repo().distinctAggregates(application, subdomain)));
+        var rows = EventTypeReads.matchAny(visible(s, null), ctx.queryParams("application"),
+                ctx.queryParams("subdomain"), List.of());
+        ctx.json(distinctOptions(rows, EventType::aggregate));
     }
 
     /// Anchor-only: bulk-syncs the platform's built-in event-type catalogue
@@ -200,12 +211,24 @@ public final class EventTypesBff {
 
     // ── Read-side helpers ──────────────────────────────────────────────────
 
-    private static ListFilter listFilter(Exchange ctx) {
-        String application = queryParam(ctx, "application");
-        String status = queryParam(ctx, "status");
-        String subdomain = queryParam(ctx, "subdomain");
-        String aggregate = queryParam(ctx, "aggregate");
-        return new ListFilter(application, status, subdomain, aggregate);
+    /// Every event type the caller may read, of `status` (`null`: any), after
+    /// the read permission (bug 1).
+    private static List<EventType> visible(State s, String status) {
+        return visibleEventTypes(s.repo(), s.apps(), status);
+    }
+
+    /// The BFF's shared event-type read: [Checks#requireEventTypeReadAny], then
+    /// [EventTypeReads#visibleTo] — also the applications filter's source.
+    static List<EventType> visibleEventTypes(EventTypeRepository repo, ApplicationRepository apps, String status) {
+        AuthContext ac = Auth.current();
+        Checks.requireEventTypeReadAny(ac);
+        return EventTypeReads.visibleTo(ac, apps, repo.findWithFilters(new ListFilter(null, status, null, null)));
+    }
+
+    /// `{"options": [...]}`: the distinct non-blank values, sorted.
+    private static OptionsResponse distinctOptions(List<EventType> rows, Function<EventType, String> pick) {
+        return new OptionsResponse(rows.stream().map(pick).filter(v -> v != null && !v.isEmpty())
+                .distinct().sorted().toList());
     }
 
     private static String queryParam(Exchange ctx, String name) {
@@ -217,13 +240,6 @@ public final class EventTypesBff {
         return s.repo().findById(id).orElseThrow(() -> HttpError.notFound("EventType", id));
     }
 
-    /// A client-scoped event type is visible only to principals with access to that client.
-    private static EventType visible(AuthContext ac, EventType et) {
-        if (et.clientId() != null && !ac.canAccessClient(et.clientId())) {
-            throw HttpError.forbidden("No access to this event type");
-        }
-        return et;
-    }
 
     // ── Wire DTOs (SPA shape, bff spec §5) ──────────────────────────────────
 

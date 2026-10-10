@@ -34,6 +34,7 @@ Package `io.flowcatalyst.http` (module `server`), no dependency on any web frame
 Request side:
 - `String pathParam(String name)` — decoded; missing → `HttpException(400)`? **No**: Javalin throws `IllegalArgumentException` for an unknown name (a programming error) and the adapter must do the same. A present param is never null.
 - `String queryParam(String name)` — first value or `null`.
+- `List<String> queryParams(String name)` — every value in request order (a repeated parameter), empty when absent (added 2026-10-10 for the SPA's multi-select facets).
 - `String formParam(String name)` — first value or `null`.
 - `String header(String name)` — request header or `null` (case-insensitive).
 - `String body()` — UTF-8 body, `""` when empty.

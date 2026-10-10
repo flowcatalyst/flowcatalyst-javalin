@@ -99,6 +99,11 @@ final class VertxExchange implements Exchange {
     }
 
     @Override
+    public List<String> queryParams(String name) {
+        return List.copyOf(rc.queryParams().getAll(name));
+    }
+
+    @Override
     public String formParam(String name) {
         return rc.request().getFormAttribute(name);
     }

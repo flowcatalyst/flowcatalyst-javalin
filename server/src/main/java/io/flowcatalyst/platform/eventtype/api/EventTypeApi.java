@@ -27,9 +27,7 @@ import io.flowcatalyst.http.Group;
 import io.flowcatalyst.http.Routes;
 
 import java.time.Instant;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 
 import static io.flowcatalyst.platform.shared.auth.Permission.*;
@@ -86,12 +84,7 @@ public final class EventTypeApi {
     private static void list(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.requireEventTypeReadAny(ac);
-        List<EventType> visible = Checks.filterClientScoped(ac, s.repo().findWithFilters(listFilter(ctx)), EventType::clientId);
-        if (!Checks.canReadAllEventTypes(ac)) {
-            // An application service account sees only its own applications' event types.
-            Map<String, Boolean> seen = new HashMap<>();
-            visible = visible.stream().filter(et -> appAccess(s, ac, et.application(), seen)).toList();
-        }
+        List<EventType> visible = EventTypeReads.visibleTo(ac, s.apps(), s.repo().findWithFilters(listFilter(ctx)));
         ctx.json(new EventTypeListResponse(visible.stream().map(EventTypeResponse::from).toList()));
     }
 
@@ -99,14 +92,14 @@ public final class EventTypeApi {
         AuthContext ac = Auth.current();
         Checks.requireEventTypeReadAny(ac);
         String id = ctx.pathParam("id");
-        ctx.json(EventTypeResponse.from(readable(s, ac, s.repo().findById(id).orElseThrow(() -> HttpError.notFound("EventType", id)))));
+        ctx.json(EventTypeResponse.from(EventTypeReads.readable(ac, s.apps(), s.repo().findById(id).orElseThrow(() -> HttpError.notFound("EventType", id)))));
     }
 
     private static void getByCode(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
         Checks.requireEventTypeReadAny(ac);
         String code = ctx.pathParam("code");
-        ctx.json(EventTypeResponse.from(readable(s, ac, s.repo().findByCode(code).orElseThrow(() -> HttpError.notFound("EventType", code)))));
+        ctx.json(EventTypeResponse.from(EventTypeReads.readable(ac, s.apps(), s.repo().findByCode(code).orElseThrow(() -> HttpError.notFound("EventType", code)))));
     }
 
     private static void create(Exchange ctx, State s) {
@@ -136,7 +129,7 @@ public final class EventTypeApi {
         String id = ctx.pathParam("id");
         if (!Checks.canWriteAllEventTypes(ac)) {
             // An application service account may version only its own applications' event types.
-            requireAppAccess(s, ac, s.repo().findById(id).orElseThrow(() -> HttpError.notFound("EventType", id)));
+            EventTypeReads.requireAppAccess(ac, s.apps(), s.repo().findById(id).orElseThrow(() -> HttpError.notFound("EventType", id)));
         }
         AddSchema.of(s.repo()).run(s.uow(), ctx.bodyAsClass(AddSchemaRequest.class).toCommand(id), Auth.executionContext());
         ctx.json(EventTypeResponse.from(s.repo().findById(id).orElseThrow(() -> HttpError.notFound("EventType", id))));
@@ -162,37 +155,6 @@ public final class EventTypeApi {
     private static String queryParam(Exchange ctx, String name) {
         String v = ctx.queryParam(name);
         return v == null || v.isEmpty() ? null : v;
-    }
-
-    /// A client-scoped event type is visible only to principals with access to that client.
-    private static EventType visible(AuthContext ac, EventType et) {
-        if (et.clientId() != null && !ac.canAccessClient(et.clientId())) {
-            throw HttpError.forbidden("No access to this event type");
-        }
-        return et;
-    }
-
-    /// [#visible] plus, for a caller admitted only by the application-service
-    /// view, the application confinement.
-    private static EventType readable(State s, AuthContext ac, EventType et) {
-        visible(ac, et);
-        if (!Checks.canReadAllEventTypes(ac)) requireAppAccess(s, ac, et);
-        return et;
-    }
-
-    /// Refuses an application-confined principal an event type that belongs to
-    /// an application it is not bound to.
-    private static void requireAppAccess(State s, AuthContext ac, EventType et) {
-        if (!appAccess(s, ac, et.application(), new HashMap<>())) {
-            throw HttpError.forbidden("No access to this event type");
-        }
-    }
-
-    /// Whether the principal is bound to the application with the given code.
-    /// Results are remembered in `seen` for the life of one request, so a list
-    /// resolves each application once. An unknown application is not accessible.
-    private static boolean appAccess(State s, AuthContext ac, String code, Map<String, Boolean> seen) {
-        return seen.computeIfAbsent(code, c -> s.apps().findByCode(c).map(a -> ac.canAccessApplication(a.id())).orElse(false));
     }
 
     // ── Wire DTOs (lockfile components) ────────────────────────────────────

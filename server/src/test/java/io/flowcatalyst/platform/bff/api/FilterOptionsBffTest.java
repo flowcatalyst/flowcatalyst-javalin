@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.bff.api;
 import tools.jackson.databind.JsonNode;
 import io.flowcatalyst.platform.client.Client;
 import io.flowcatalyst.platform.client.ClientIdentifier;
+import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.eventtype.EventType;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
@@ -50,7 +51,7 @@ class FilterOptionsBffTest {
         http = TestHttp.routes(routes -> {
             HttpError.install(routes);
             routes.before("/bff/*", auth);
-            FilterOptionsBff.register(routes, new FilterOptionsBff.State(clientRepo, eventTypeRepo));
+            FilterOptionsBff.register(routes, new FilterOptionsBff.State(clientRepo, eventTypeRepo, new ApplicationRepository(TestPg.dataSource())));
         });
     }
 

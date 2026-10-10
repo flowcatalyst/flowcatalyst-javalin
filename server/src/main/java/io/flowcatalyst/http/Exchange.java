@@ -1,6 +1,7 @@
 package io.flowcatalyst.http;
 
 import java.io.InputStream;
+import java.util.List;
 
 /// One HTTP request/response. The methods are named exactly as Javalin's
 /// `Context` (`docs/spec/http-seam.md` §1) so a handler written against this
@@ -19,6 +20,10 @@ public interface Exchange {
 
     /// First query value for `name`, or `null` when absent.
     String queryParam(String name);
+
+    /// Every query value for `name` in request order (a repeated parameter,
+    /// `a=1&a=2`), empty when absent; never `null`.
+    List<String> queryParams(String name);
 
     /// First form value for `name`, or `null` when absent.
     String formParam(String name);

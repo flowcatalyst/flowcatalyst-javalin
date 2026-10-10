@@ -765,10 +765,10 @@ public final class Platform {
         // repository object. Part A's separate pools.bff()-bound DashboardRepository copy
         // is retired in favour of this.
         DashboardBff.register(bff, new DashboardBff.State(new DashboardRepository(pool)));
-        FilterOptionsBff.register(bff, new FilterOptionsBff.State(clientRepo, eventTypeRepo));
+        FilterOptionsBff.register(bff, new FilterOptionsBff.State(clientRepo, eventTypeRepo, applicationRepo));
         DeveloperBff.register(bff, new DeveloperBff.State(applicationRepo, openApiSpecRepo, eventTypeRepo, uow,
                 lockfile::json));
-        EventTypesBff.register(bff, new EventTypesBff.State(eventTypeRepo, uow));
+        EventTypesBff.register(bff, new EventTypesBff.State(eventTypeRepo, applicationRepo, uow));
         RolesBff.register(bff, new RolesBff.State(roleRepo, permissionRepo, applicationRepo, uow));
         AuditLogsBff.register(bff, new AuditLogsBff.State(new AuditLogRepository(pool), uow));
         ScheduledJobsBff.register(bff, new ScheduledJobsBff.State(scheduledJobRepo,

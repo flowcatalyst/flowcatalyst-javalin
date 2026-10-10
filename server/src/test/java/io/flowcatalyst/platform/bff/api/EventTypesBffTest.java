@@ -1,6 +1,7 @@
 package io.flowcatalyst.platform.bff.api;
 
 import tools.jackson.databind.JsonNode;
+import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
@@ -31,7 +32,7 @@ class EventTypesBffTest {
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
 
     private static final EventTypesBff.State state = new EventTypesBff.State(
-            new EventTypeRepository(TestPg.dataSource()), new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)));
+            new EventTypeRepository(TestPg.dataSource()), new ApplicationRepository(TestPg.dataSource()), new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)));
     private static TestHttp http;
 
     private static final String ANCHOR_PRINCIPAL = EntityType.PRINCIPAL.generate();

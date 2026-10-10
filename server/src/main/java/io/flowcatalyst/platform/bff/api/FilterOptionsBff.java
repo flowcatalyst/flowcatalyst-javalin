@@ -2,6 +2,8 @@ package io.flowcatalyst.platform.bff.api;
 
 import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.client.ClientStatus;
+import io.flowcatalyst.platform.application.ApplicationRepository;
+import io.flowcatalyst.platform.eventtype.EventType;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
@@ -14,8 +16,9 @@ import java.util.Objects;
 
 /// The two most-called dropdown endpoints (bff spec §3), pulling every row
 /// from the underlying repository and filtering/sorting in memory (cheap
-/// given typical row counts). No coarse permission gate — same as Go: a
-/// missing [AuthContext] simply sees no accessible clients.
+/// given typical row counts). The client options have no coarse permission
+/// gate — same as Go: a missing [AuthContext] simply sees no accessible
+/// clients. The event-type applications make `GET /api/event-types`'s checks.
 ///
 /// | Method | Path | Status |
 /// |---|---|---|
@@ -26,10 +29,13 @@ public final class FilterOptionsBff {
     private FilterOptionsBff() {
     }
 
-    public record State(ClientRepository clients, EventTypeRepository eventTypes) {
+    /// `apps` confines an application service account's event-type options
+    /// to its own applications ([EventTypeReads#visibleTo]).
+    public record State(ClientRepository clients, EventTypeRepository eventTypes, ApplicationRepository apps) {
         public State {
             Objects.requireNonNull(clients, "clients");
             Objects.requireNonNull(eventTypes, "eventTypes");
+            Objects.requireNonNull(apps, "apps");
         }
     }
 
@@ -50,9 +56,22 @@ public final class FilterOptionsBff {
         ctx.json(new ClientOptionsResponse(options));
     }
 
-    /// The distinct first code segments of every event type, sorted.
+    /// The distinct applications of the event types the caller may read
+    /// (`GET /api/event-types`'s checks, bug 1), sorted. Any status: the
+    /// question is which applications have at least one event type.
     private static void eventTypeApplications(Exchange ctx, State s) {
-        ctx.json(new OptionsResponse(s.eventTypes().distinctApplications()));
+        ctx.json(new OptionsResponse(EventTypesBff.visibleEventTypes(s.eventTypes(), s.apps(), null).stream()
+                .map(FilterOptionsBff::applicationOf)
+                .filter(a -> !a.isEmpty())
+                .distinct().sorted().toList()));
+    }
+
+    /// The event type's application, or its code's first segment when the
+    /// denormalised column is blank.
+    private static String applicationOf(EventType et) {
+        if (et.application() != null && !et.application().isEmpty()) return et.application();
+        int colon = et.code().indexOf(':');
+        return colon < 0 ? et.code() : et.code().substring(0, colon);
     }
 
     // ── Wire DTOs ────────────────────────────────────────────────────────

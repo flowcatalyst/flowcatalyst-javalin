@@ -46,7 +46,7 @@ client-scoped user gets 403 `ADMIN_REQUIRED`).
 
 - `GET /bff/filter-options/clients` → `{clients: [{value: clientId, label: name}]}`,
   every client the caller can access (anchor: all), sorted by label.
-- `GET /bff/event-types/filters/applications` → `{options: [application]}`
+- `GET /bff/event-types/filters/applications` → `{options: [application]}` of the event types the caller may read (bug 1, below)
   distinct first segments of all event-type codes, sorted.
   (Wrapped objects, as Go's `writeJSON(map{"clients"/"options": …})` and the
   SPA's `filter-options.ts` types; the first draft of this spec wrote bare
@@ -70,9 +70,15 @@ client-scoped user gets 403 `ADMIN_REQUIRED`).
 
 | Route | Backing (`docs/spec/eventtype.md`) | Notes |
 |---|---|---|
-| `GET /bff/event-types?status&application&subdomain&aggregate` | `findWithFilters` | `{items, total}` |
-| `GET /bff/event-types/filters/subdomains?application` / `…/filters/aggregates?application&subdomain` | distinct segments | `{options: [string]}` sorted |
-| `GET /bff/event-types/{id}` | `findById` | 404 |
+| `GET /bff/event-types?status&application&subdomain&aggregate` | `findWithFilters(status)`, then the caller's visibility, then each facet (repeatable) matches any of its values | `{items, total}` |
+| `GET /bff/event-types/filters/subdomains?application` / `…/filters/aggregates?application&subdomain` | distinct segments of the visible event types of any of the given applications (and subdomains); none given = all | `{options: [string]}` sorted |
+| `GET /bff/event-types/{id}` | `findById` | 404; 403 when not readable |
+
+Every event-type read (list, by id, the three filter-option routes) makes
+`GET /api/event-types`'s checks (bugs 1, 2 of the 2026-10-10 batch,
+`docs/go-mirror/2026-10-10-platform-bug-fixes.md`): `event-type:view` or the
+application-service view, client scoping, and for a caller without
+`event-type:view` only its own applications' event types (`EventTypeReads`).
 | `POST /bff/event-types` `{code, name, description?, schema?, clientId?}` | `CreateEventType` (+ `AddSchema` when `schema` given) | 201, the full response |
 | `PUT /bff/event-types/{id}` `{name, description?}` | `UpdateEventType` | 204 |
 | `DELETE /bff/event-types/{id}` | `DeleteEventType` | 204 |
