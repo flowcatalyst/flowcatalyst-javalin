@@ -21,6 +21,8 @@ public final class ClientEvents {
     public static final String UPDATED = "platform:admin:client:updated";
     public static final String ACTIVATED = "platform:admin:client:activated";
     public static final String SUSPENDED = "platform:admin:client:suspended";
+    /// The client was set `INACTIVE` (the soft delete, bug 15).
+    public static final String DEACTIVATED = "platform:admin:client:deactivated";
     public static final String NOTE_ADDED = "platform:admin:client:note-added";
     public static final String DELETED = "platform:admin:client:deleted";
 
@@ -110,6 +112,28 @@ public final class ClientEvents {
 
         public static ClientSuspended of(ExecutionContext ec, Client c, String reason) {
             return new ClientSuspended(metadataFor(ec, SUSPENDED, c), c.id(), reason);
+        }
+
+        @Override
+        public String messageGroup() {
+            return messageGroupFor(clientId);
+        }
+
+        @Override
+        public Object data() {
+            return new Data(clientId, reason);
+        }
+
+        private record Data(String clientId, String reason) {
+        }
+    }
+
+    /// Emitted when a client is set `INACTIVE`; `reason` is the command's,
+    /// trimmed, omitted when blank.
+    public record ClientDeactivated(EventMetadata metadata, String clientId, String reason) implements DomainEvent {
+
+        public static ClientDeactivated of(ExecutionContext ec, Client c, String reason) {
+            return new ClientDeactivated(metadataFor(ec, DEACTIVATED, c), c.id(), reason);
         }
 
         @Override

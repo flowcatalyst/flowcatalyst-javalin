@@ -22,7 +22,7 @@ import java.util.Objects;
 /// @param name            display name, trimmed
 /// @param identifier      normalised slug, unique, immutable
 /// @param status          `ACTIVE` | `INACTIVE` | `SUSPENDED`
-/// @param statusReason    why the client is suspended; `null` otherwise
+/// @param statusReason    why the client is suspended or deactivated; `null` otherwise
 /// @param statusChangedAt last status change; `null` until the first one
 /// @param notes           audit-trail notes, in insertion order
 /// @param createdAt       creation time
@@ -77,6 +77,14 @@ public record Client(
     public Client suspend(String reason) {
         Instant now = Instant.now();
         return new Client(id, name, identifier, ClientStatus.SUSPENDED, reason, now, notes, createdAt, now);
+    }
+
+    /// → `INACTIVE` with `reason` (`null` for none), stamping
+    /// `statusChangedAt`: the soft delete (bug 15) — the row and its
+    /// configuration stay, and [#activate] reactivates. No precondition.
+    public Client deactivate(String reason) {
+        Instant now = Instant.now();
+        return new Client(id, name, identifier, ClientStatus.INACTIVE, reason, now, notes, createdAt, now);
     }
 
     /// → `ACTIVE`, clearing the reason and stamping `statusChangedAt`. No

@@ -272,14 +272,28 @@ class ClientApiTest {
         assertThat(json(byIdent).get("message").asText()).isEqualTo("Client not found: " + ident("del"));
     }
 
-    /// Deactivate is the delete alias: a hard delete answering with the status-change envelope.
+    /// Bug 15: deactivate is the soft delete — the client is set `INACTIVE`
+    /// with the reason and kept, emits `platform:admin:client:deactivated`,
+    /// and can be reactivated; it used to delete the row. (Go
+    /// `TestDeactivateClient_SetsInactiveAndKeepsTheRow`.)
     @Test
-    void deactivateIsAHardDeleteWithAMessage() {
+    void deactivateSetsInactiveAndKeepsTheRow() {
         String id = create("Deactivate Me", ident("deact"));
-        var r = http.post("/api/clients/" + id + "/deactivate", "{\"reason\":\"churned\"}", ANCHOR);
+        var r = http.post("/api/clients/" + id + "/deactivate", "{\"reason\":\"Manual deactivation\"}", ANCHOR);
         assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
         assertThat(r.body()).isEqualTo("{\"message\":\"Client deactivated\"}\n");
-        assertThat(http.get("/api/clients/" + id, ANCHOR).statusCode()).isEqualTo(404);
+
+        var got = http.get("/api/clients/" + id, ANCHOR);
+        assertThat(got.statusCode()).as("the client row is kept").isEqualTo(200);
+        assertThat(json(got).get("status").asString()).isEqualTo("INACTIVE");
+        assertThat(json(got).get("statusReason").asString()).isEqualTo("Manual deactivation");
+        var events = DB.fetch("SELECT type, data FROM msg_events WHERE subject = ?", "platform.client." + id);
+        assertThat(events.getValues("type", String.class)).contains("platform:admin:client:deactivated")
+                .doesNotContain("platform:admin:client:deleted");
+
+        assertThat(http.post("/api/clients/" + id + "/activate", null, ANCHOR).statusCode()).isEqualTo(200);
+        assertThat(json(http.get("/api/clients/" + id, ANCHOR)).get("status").asString())
+                .as("a deactivated client can be reactivated").isEqualTo("ACTIVE");
     }
 
     @Test

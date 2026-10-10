@@ -21,7 +21,7 @@ surface is the handler's `requireAnchor` and every use case is
 | `id` | `clt_` + 13-char TSID | generated on create |
 | `name` | string, required | trimmed on create and on rename |
 | `identifier` | string, unique | URL-safe slug: `^[a-z0-9][a-z0-9-]*[a-z0-9]$` or a single `[a-z0-9]`; **trimmed and lower-cased** before validation and storage, so uniqueness is on the normalised form; immutable after create |
-| `status` | `ACTIVE` \| `INACTIVE` \| `SUSPENDED` | default `ACTIVE`. Nothing in this aggregate ever sets `INACTIVE` (deactivate is a hard delete, §3) — **load-bearing or accident?** |
+| `status` | `ACTIVE` \| `INACTIVE` \| `SUSPENDED` | default `ACTIVE`. `INACTIVE` is set by deactivate (§3; ruled 2026-10-10, bug 15 — it was a hard delete) |
 | `statusReason` | string, optional | set by suspend, cleared by activate |
 | `statusChangedAt` | timestamp, optional | stamped by suspend and activate; `null` until the first status change |
 | `notes` | list of note | stored as a JSONB array on the row, append-only, in insertion order |
@@ -74,7 +74,7 @@ catalogue has them but no route checks them (**load-bearing or accident?**).
 | `POST /api/clients/{id}/suspend` | anchor | `SuspendClientRequest{reason}` → `SuspendCommand` | 200 `{"message":"Client suspended"}` | |
 | `POST /api/clients/{id}/notes` | anchor | `AddNoteRequest{category,text}` → `AddNoteCommand` | 200 `{"message":"Note added"}` | |
 | `DELETE /api/clients/{id}` | anchor | `DeleteCommand` | 204 | hard delete of the row only — children (`client_id` references elsewhere) are **not** touched (**load-bearing or accident?**) |
-| `POST /api/clients/{id}/deactivate` | anchor | `StatusChangeRequest{reason}` → `DeleteCommand` | 200 `{"message":"Client deactivated"}` | alias of delete: a **hard delete** — the row is gone afterwards, `GET /{id}` is 404, the status never becomes `INACTIVE`; the body is parsed (malformed JSON → 400) but the `reason` is **discarded** — it reaches neither the command, the audit row nor the event (the Go comment claims it is "for the audit log") — **accident** |
+| `POST /api/clients/{id}/deactivate` | anchor + `client:deactivate` | `StatusChangeRequest{reason}` → `DeactivateCommand{id, reason}` | 200 `{"message":"Client deactivated"}` | **ruled 2026-10-10 (bug 15)**: the soft delete — status `INACTIVE` with the trimmed reason (none when blank) as `statusReason`, row and configuration kept, `platform:admin:client:deactivated` `{clientId, reason?}`; `activate` reactivates; `DELETE` still removes the row. (Was: an alias of delete, reason discarded.) |
 | `GET /api/clients/{id}/applications` | anchor **or** access to client `{id}` → else 403 `FORBIDDEN` `No access to this client` | — | 200 `ClientApplicationsResponse` `{applications[], total}` | 404 `Client_NOT_FOUND`; every application (ordered by `code`) with `enabledForClient` = the client's `app_client_configs.enabled` for that application, `false` when no config row. The only non-anchor route on this surface; see §10 |
 | `PUT /api/clients/{id}/applications` | anchor | `UpdateClientApplicationsRequest{enabledApplicationIds[]}` → application's `UpdateClientApplicationsCommand` | 204 | **application aggregate's operation** (`platform:admin:application:…` events, `app_client_configs` rows) — see §10 |
 | `POST /api/clients/{id}/applications/{applicationId}/enable` | anchor | → application's `EnableForClientCommand` | 204 | application aggregate's operation — §10 |
@@ -181,10 +181,10 @@ empty `notes` column reads as an empty list.
 
 ## 9. Open questions for the owner (summary)
 
-1. `INACTIVE` exists in the status enum but nothing sets it; deactivate is a
-   hard delete. Intended?
-2. Deactivate's `reason` is discarded (not audited). Intended, or should the
-   alias carry the reason into the audit row?
+1. ~~`INACTIVE` exists in the status enum but nothing sets it; deactivate is a
+   hard delete. Intended?~~ **Ruled 2026-10-10** (bug 15): deactivate sets `INACTIVE`.
+2. ~~Deactivate's `reason` is discarded (not audited).~~ **Ruled 2026-10-10**:
+   the reason is the `statusReason` and rides on the event and audit row.
 3. Suspend / activate have no preconditions (idempotent re-stamps). Keep?
 4. `PUT` with no `name` re-persists and emits `updated`. Keep?
 5. The `client:*` permissions exist but every route is anchor-only. Intended?

@@ -299,6 +299,29 @@ class ClientOperationsTest {
         assertUseCaseError(() -> runAsAnchor(SuspendClient.of(repo), cmd), kind, code);
     }
 
+    /// Bug 15: deactivate sets `INACTIVE` with the trimmed reason (none when
+    /// blank), keeps the row, emits `...:deactivated` and is audited.
+    @Test
+    void deactivateSetsInactiveThroughTheEnvelope() {
+        var seeded = created("Deactivate Me", ident("cl-deact"));
+        var ev = runAsAnchor(DeactivateClient.of(repo), new DeactivateCommand(seeded.clientId(), "  Manual deactivation "));
+        assertThat(ev.eventType()).isEqualTo(ClientEvents.DEACTIVATED);
+        assertThat(ev.reason()).isEqualTo("Manual deactivation");
+        var got = reload(seeded.clientId());
+        assertThat(got.status()).isEqualTo(ClientStatus.INACTIVE);
+        assertThat(got.statusReason()).isEqualTo("Manual deactivation");
+        assertThat(got.statusChangedAt()).isNotNull();
+        assertThat(auditsFor(seeded.clientId(), "DeactivateCommand")).hasSize(1);
+
+        var blank = created("Deactivate Blank", ident("cl-deact-blank"));
+        runAsAnchor(DeactivateClient.of(repo), new DeactivateCommand(blank.clientId(), " "));
+        assertThat(reload(blank.clientId()).statusReason()).as("a blank reason is none").isNull();
+        var data = json(eventsFor(blank.clientId(), ClientEvents.DEACTIVATED).getFirst().get("data", String.class));
+        assertThat(data.has("reason")).as("reason omitted when blank").isFalse();
+        assertUseCaseError(() -> runAsAnchor(DeactivateClient.of(repo), new DeactivateCommand("clt_doesnotexist1", null)),
+                UseCaseError.NotFound.class, "Client_NOT_FOUND");
+    }
+
     @Test
     void activateRejectsMissingIdOrUnknownRow() {
         assertUseCaseError(() -> runAsAnchor(ActivateClient.of(repo), new ActivateCommand(" ")),

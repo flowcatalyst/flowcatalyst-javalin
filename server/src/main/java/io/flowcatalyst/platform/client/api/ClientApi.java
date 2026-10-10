@@ -20,6 +20,8 @@ import io.flowcatalyst.platform.client.operations.AddNote;
 import io.flowcatalyst.platform.client.operations.AddNoteCommand;
 import io.flowcatalyst.platform.client.operations.CreateClient;
 import io.flowcatalyst.platform.client.operations.CreateCommand;
+import io.flowcatalyst.platform.client.operations.DeactivateClient;
+import io.flowcatalyst.platform.client.operations.DeactivateCommand;
 import io.flowcatalyst.platform.client.operations.DeleteClient;
 import io.flowcatalyst.platform.client.operations.DeleteCommand;
 import io.flowcatalyst.platform.client.operations.SuspendClient;
@@ -72,7 +74,7 @@ import static java.util.stream.Collectors.toMap;
 /// | POST | `/api/clients/{id}/activate` | 200 [StatusChangeResponse] |
 /// | POST | `/api/clients/{id}/suspend` | 200 [StatusChangeResponse] |
 /// | POST | `/api/clients/{id}/notes` | 200 [StatusChangeResponse] |
-/// | POST | `/api/clients/{id}/deactivate` | 200 [StatusChangeResponse] (delete alias) |
+/// | POST | `/api/clients/{id}/deactivate` | 200 [StatusChangeResponse] (soft delete: `INACTIVE`) |
 /// | GET | `/api/clients/{id}/applications` | 200 [ClientApplicationsResponse] |
 /// | PUT | `/api/clients/{id}/applications` | 204 |
 /// | POST | `/api/clients/{id}/applications/{applicationId}/enable` | 204 |
@@ -114,7 +116,7 @@ public final class ClientApi {
         write.post("/api/clients/{id}/activate", Auth.scoped(ctx -> activate(ctx, s)));
         write.post("/api/clients/{id}/suspend", Auth.scoped(ctx -> suspend(ctx, s)));
         write.post("/api/clients/{id}/notes", Auth.scoped(ctx -> addNote(ctx, s)));
-        write.post("/api/clients/{id}/deactivate", Auth.scoped(ctx -> deactivate(ctx, s))); // delete alias
+        write.post("/api/clients/{id}/deactivate", Auth.scoped(ctx -> deactivate(ctx, s))); // soft delete
         routes.get("/api/clients/{id}/applications", Auth.scoped(ctx -> applications(ctx, s)));
         write.put("/api/clients/{id}/applications", Auth.scoped(ctx -> updateApplications(ctx, s)));
         write.post("/api/clients/{id}/applications/{applicationId}/enable", Auth.scoped(ctx -> enableApplication(ctx, s)));
@@ -213,13 +215,13 @@ public final class ClientApi {
         ctx.json(new StatusChangeResponse("Note added"));
     }
 
-    /// Alias of delete: a hard delete; the body's `reason` is read for shape
-    /// and discarded (spec §3, open question 2).
+    /// The soft delete (bug 15): the client is set `INACTIVE` with the body's
+    /// `reason` and can be reactivated; `DELETE` removes it.
     private static void deactivate(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         Checks.require(Auth.current(), CLIENT_DEACTIVATE);
-        ctx.bodyAsClass(StatusChangeRequest.class);
-        DeleteClient.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
+        String reason = ctx.bodyAsClass(StatusChangeRequest.class).reason();
+        DeactivateClient.of(s.repo()).run(s.uow(), new DeactivateCommand(ctx.pathParam("id"), reason), Auth.executionContext());
         ctx.json(new StatusChangeResponse("Client deactivated"));
     }
 
@@ -302,7 +304,7 @@ public final class ClientApi {
     public record SearchClientRequest(String term) {
     }
 
-    /// Body of `POST /api/clients/{id}/deactivate`. The reason is not used (spec §3).
+    /// Body of `POST /api/clients/{id}/deactivate`; `reason` is optional.
     public record StatusChangeRequest(String reason) {
     }
 
