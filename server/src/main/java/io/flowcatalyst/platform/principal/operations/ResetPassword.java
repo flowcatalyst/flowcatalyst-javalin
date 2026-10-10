@@ -16,7 +16,7 @@ import io.flowcatalyst.sdk.usecase.op.Plan;
 /// two-character floor — the caller owns its policy by contract.
 ///
 /// Authorization is deliberately [Operation.Authorize#publicAccess()]: the
-/// operation is reached by the admin route (coarse write permission +
+/// operation is reached by the admin route (`USER_UPDATE` +
 /// per-resource scope, both in the handler) **and** by the unauthenticated,
 /// token-gated password-reset confirm flow. Each entry point keeps its own gate.
 public final class ResetPassword {
