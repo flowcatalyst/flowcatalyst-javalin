@@ -35,6 +35,9 @@ public final class CreateSubscription {
                     if (cmd.eventTypes().isEmpty()) {
                         throw UseCaseException.validation("EVENT_TYPES_REQUIRED", "at least one event type binding is required");
                     }
+                    if (cmd.sequence() != null && cmd.sequence() < 0) {
+                        throw UseCaseException.validation("INVALID_SEQUENCE", "sequence must not be negative");
+                    }
                 })
                 // The target client is a command field, so the per-resource check
                 // can run before execute: a client-bound create needs access to that
@@ -68,6 +71,8 @@ public final class CreateSubscription {
                     if (cmd.delaySeconds() != null) s = s.withDelaySeconds(cmd.delaySeconds());
                     if (cmd.maxAgeSeconds() != null) s = s.withMaxAgeSeconds(cmd.maxAgeSeconds());
                     if (cmd.dataOnly() != null) s = s.withDataOnly(cmd.dataOnly());
+                    if (cmd.clientScoped() != null) s = s.withClientScoped(cmd.clientScoped());
+                    if (cmd.sequence() != null) s = s.withSequence(cmd.sequence());
                     return Plan.save(s, repo, SubscriptionCreated.of(ec, s));
                 });
     }

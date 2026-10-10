@@ -196,12 +196,14 @@ public final class SubscriptionApi {
             Integer maxRetries,
             Integer delaySeconds,
             Integer maxAgeSeconds,
-            Boolean dataOnly) {
+            Boolean dataOnly,
+            Boolean clientScoped,
+            Integer sequence) {
 
         public CreateCommand toCommand() {
             return new CreateCommand(code, name, endpoint, description, clientId, connectionId, dispatchPoolId,
                     serviceAccountId, bindings(eventTypes), entries(customConfig), mode, queue, timeoutSeconds, maxRetries,
-                    delaySeconds, maxAgeSeconds, dataOnly);
+                    delaySeconds, maxAgeSeconds, dataOnly, clientScoped, sequence);
         }
     }
 

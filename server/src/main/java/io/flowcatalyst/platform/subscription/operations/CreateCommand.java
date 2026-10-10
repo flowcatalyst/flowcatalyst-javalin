@@ -31,6 +31,8 @@ import java.util.List;
 /// @param delaySeconds     optional
 /// @param maxAgeSeconds    optional
 /// @param dataOnly         optional
+/// @param clientScoped     optional; `null` ⇒ `false` (bug 9)
+/// @param sequence         optional, not negative; `null` ⇒ [Subscription#DEFAULT_SEQUENCE] (bug 9)
 public record CreateCommand(
         String code,
         String name,
@@ -48,10 +50,22 @@ public record CreateCommand(
         Integer maxRetries,
         Integer delaySeconds,
         Integer maxAgeSeconds,
-        Boolean dataOnly) {
+        Boolean dataOnly,
+        Boolean clientScoped,
+        Integer sequence) {
 
     public CreateCommand {
         eventTypes = eventTypes == null ? List.of() : List.copyOf(eventTypes);
         customConfig = customConfig == null ? List.of() : List.copyOf(customConfig);
+    }
+
+    /// Without `clientScoped` and `sequence` (their defaults).
+    public CreateCommand(String code, String name, String endpoint, String description, String clientId,
+                         String connectionId, String dispatchPoolId, String serviceAccountId,
+                         List<EventTypeBinding> eventTypes, List<ConfigEntry> customConfig, String mode, String queue,
+                         Integer timeoutSeconds, Integer maxRetries, Integer delaySeconds, Integer maxAgeSeconds,
+                         Boolean dataOnly) {
+        this(code, name, endpoint, description, clientId, connectionId, dispatchPoolId, serviceAccountId, eventTypes,
+                customConfig, mode, queue, timeoutSeconds, maxRetries, delaySeconds, maxAgeSeconds, dataOnly, null, null);
     }
 }

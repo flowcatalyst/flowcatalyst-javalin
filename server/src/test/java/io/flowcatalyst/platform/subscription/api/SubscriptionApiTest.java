@@ -458,4 +458,25 @@ class SubscriptionApiTest {
                         Write.of("delete", "DELETE", p, null, Permission.SUBSCRIPTION_DELETE)),
                 Permission.SUBSCRIPTION_CREATE, Permission.SUBSCRIPTION_UPDATE, Permission.SUBSCRIPTION_DELETE);
     }
+
+    // ── Create body: clientScoped and sequence (bug 9) ─────────────────────
+
+    /// The SPA's create body carries `clientScoped` and `sequence`; both are
+    /// stored. Omitted, they keep their defaults (false, 99); a negative
+    /// sequence is refused. (Go `TestCreateSubscription_StoresClientScopedAndSequence`.)
+    @Test
+    void createStoresClientScopedAndSequence() {
+        String spa = create(code("body-spa"), "SPA", ",\"queue\":\"DEFAULT\",\"mode\":\"NEXT_ON_ERROR\",\"clientScoped\":true,\"sequence\":5");
+        var stored = state.repo().findById(spa).orElseThrow();
+        assertThat(stored.clientScoped()).isTrue();
+        assertThat(stored.sequence()).isEqualTo(5);
+
+        var plain = state.repo().findById(create(code("body-plain"), "Plain", "")).orElseThrow();
+        assertThat(plain.clientScoped()).isFalse();
+        assertThat(plain.sequence()).isEqualTo(99);
+
+        var negative = http.post("/api/subscriptions", body(code("body-neg"), "Neg", ",\"sequence\":-1"), ANCHOR);
+        assertThat(negative.statusCode()).as(negative.body()).isEqualTo(400);
+        assertThat(json(negative).get("error").asString()).isEqualTo("INVALID_SEQUENCE");
+    }
 }

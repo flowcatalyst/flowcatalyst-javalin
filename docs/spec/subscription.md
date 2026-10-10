@@ -38,7 +38,7 @@ it lands in Java).
 | `description` | string, optional | |
 | `clientId` | string, optional | `null` = platform-wide; persisted; drives authorization, list visibility and `matchesClient`. **K3**: also the second part of sync's ownership key — a sync scopes its matching/creation/removal to `(applicationCode, clientId)`, `NULL` matching `NULL` only (`code-first-connections.md` §3) |
 | `clientIdentifier` | string, optional | column read/written, **no operation ever sets it** — **load-bearing or accident?** |
-| `clientScoped` | boolean | column read/written, always `false` — nothing sets it. **accident?** |
+| `clientScoped` | boolean | set by create's optional `clientScoped` (default `false`; bug 9, 2026-10-10); update leaves it |
 | `eventTypes` | list of binding | ≥ 1 on create; replaced wholesale on update/sync |
 | `connectionId` | string, optional | ~~not a foreign key; validated to exist **only by sync** (`CONNECTION_NOT_FOUND`), not by admin create/update — **load-bearing or accident?**~~ **Superseded 2026-09-25** (`security-fixes-2026-09-24.md` S3.1, commit `b1ce6e55`): still not a foreign key, but admin create, and any admin update that changes it, now require the resolved connection — and, when the connection names a service account, that account — to be one the caller may sign with (`SigningReach`, §10 open question 13) |
 | `endpoint` | string, required | column `target`; admin create/update require `^https?://.+`; sync requires non-blank only (**accident?**) |
@@ -49,7 +49,7 @@ it lands in Java).
 | `maxAgeSeconds` | int | default `86400` |
 | `dispatchPoolId`, `dispatchPoolCode` | string, optional | admin: `dispatchPoolId` set verbatim (not validated, `dispatchPoolCode` never set — **accident?**); sync: both resolved from `dispatchPoolCode` (§7) |
 | `delaySeconds` | int | default `0` |
-| `sequence` | int | default `99`; nothing changes it. **accident?** |
+| `sequence` | int | set by create's optional `sequence` (default `99`; negative → 400 `INVALID_SEQUENCE`; bug 9, 2026-10-10); update leaves it |
 | `mode` | `IMMEDIATE` \| `NEXT_ON_ERROR` \| `BLOCK_ON_ERROR` | default `IMMEDIATE`; read **leniently** (unknown → `IMMEDIATE`) both from the row and from the create/update command — **load-bearing or accident?** (a typo in `mode` silently becomes `IMMEDIATE`). The enum is the router's per-subscription dispatch mode (`DispatchMode`, see "Design notes") |
 | `timeoutSeconds` | int | default `30` |
 | `maxRetries` | int | default `3` |

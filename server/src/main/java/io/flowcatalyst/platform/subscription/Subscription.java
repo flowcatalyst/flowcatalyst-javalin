@@ -32,7 +32,7 @@ import java.util.Objects;
 /// @param description      optional description
 /// @param clientId         optional client scope; `null` = platform-wide
 /// @param clientIdentifier optional; read and written but never set by an operation (spec §1)
-/// @param clientScoped     read and written, always `false` today (spec §1)
+/// @param clientScoped     subscribes to client-scoped event types; set at create (bug 9), default `false`
 /// @param eventTypes       the patterns, in stored order; replaced wholesale on update
 /// @param connectionId     optional delivery connection (not a foreign key)
 /// @param endpoint         delivery URL (column `target`)
@@ -48,7 +48,7 @@ import java.util.Objects;
 /// @param dispatchPoolId   optional pool id
 /// @param dispatchPoolCode optional pool code (set by sync resolution only)
 /// @param delaySeconds     delivery delay (default [#DEFAULT_DELAY_SECONDS])
-/// @param sequence         ordering hint, never changed today (default [#DEFAULT_SEQUENCE])
+/// @param sequence         orders dispatch jobs within a message group, lower first; set at create (bug 9), not negative (default [#DEFAULT_SEQUENCE])
 /// @param mode             router ordering mode (default [DispatchMode#DEFAULT], `NEXT_ON_ERROR` — ledger `X-01`)
 /// @param timeoutSeconds   per-delivery timeout (default [#DEFAULT_TIMEOUT_SECONDS])
 /// @param maxRetries       retry budget (default [#DEFAULT_MAX_RETRIES])
@@ -341,6 +341,20 @@ public record Subscription(
                 eventTypes, connectionId, endpoint, queue, customConfig, source, status, maxAgeSeconds,
                 dispatchPoolId, dispatchPoolCode, delaySeconds, sequence, mode, timeoutSeconds, maxRetries,
                 serviceAccountId, newDataOnly, createdBy, createdAt, updatedAt);
+    }
+
+    public Subscription withClientScoped(boolean newClientScoped) {
+        return new Subscription(id, code, applicationCode, name, description, clientId, clientIdentifier, newClientScoped,
+                eventTypes, connectionId, endpoint, queue, customConfig, source, status, maxAgeSeconds,
+                dispatchPoolId, dispatchPoolCode, delaySeconds, sequence, mode, timeoutSeconds, maxRetries,
+                serviceAccountId, dataOnly, createdBy, createdAt, updatedAt);
+    }
+
+    public Subscription withSequence(int newSequence) {
+        return new Subscription(id, code, applicationCode, name, description, clientId, clientIdentifier, clientScoped,
+                eventTypes, connectionId, endpoint, queue, customConfig, source, status, maxAgeSeconds,
+                dispatchPoolId, dispatchPoolCode, delaySeconds, newSequence, mode, timeoutSeconds, maxRetries,
+                serviceAccountId, dataOnly, createdBy, createdAt, updatedAt);
     }
 
     public Subscription withCreatedBy(String principalId) {
