@@ -46,7 +46,7 @@ import java.util.Objects;
 /// @param status           `ACTIVE` | `PAUSED`
 /// @param maxAgeSeconds    a message older than this is not delivered (default [#DEFAULT_MAX_AGE_SECONDS])
 /// @param dispatchPoolId   optional pool id
-/// @param dispatchPoolCode optional pool code (set by sync resolution only)
+/// @param dispatchPoolCode optional pool code, beside the id (sync; create/update since bug 11)
 /// @param delaySeconds     delivery delay (default [#DEFAULT_DELAY_SECONDS])
 /// @param sequence         orders dispatch jobs within a message group, lower first; set at create (bug 9), not negative (default [#DEFAULT_SEQUENCE])
 /// @param mode             router ordering mode (default [DispatchMode#DEFAULT], `NEXT_ON_ERROR` — ledger `X-01`)
@@ -271,15 +271,8 @@ public record Subscription(
                 serviceAccountId, dataOnly, createdBy, createdAt, updatedAt);
     }
 
-    /// Points at a pool by id only — the admin surface never learns the code (spec open question 6).
-    public Subscription withDispatchPoolId(String newDispatchPoolId) {
-        return new Subscription(id, code, applicationCode, name, description, clientId, clientIdentifier, clientScoped,
-                eventTypes, connectionId, endpoint, queue, customConfig, source, status, maxAgeSeconds,
-                newDispatchPoolId, dispatchPoolCode, delaySeconds, sequence, mode, timeoutSeconds, maxRetries,
-                serviceAccountId, dataOnly, createdBy, createdAt, updatedAt);
-    }
-
-    /// Points at a resolved pool — id and code together (sync, spec §7).
+    /// Points at a resolved pool — id and code together (sync, spec §7; admin
+    /// create and update since bug 11, with `null` code for an id naming no pool).
     public Subscription withDispatchPool(String newDispatchPoolId, String newDispatchPoolCode) {
         return new Subscription(id, code, applicationCode, name, description, clientId, clientIdentifier, clientScoped,
                 eventTypes, connectionId, endpoint, queue, customConfig, source, status, maxAgeSeconds,

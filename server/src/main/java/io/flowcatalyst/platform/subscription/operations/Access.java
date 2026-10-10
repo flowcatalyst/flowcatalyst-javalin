@@ -107,4 +107,11 @@ final class Access {
     static String blankToNull(String s) {
         return s == null || s.isBlank() ? null : s;
     }
+
+    /// The code of the dispatch pool a create or update points at (`null` for
+    /// no pool, or an id that names no pool — no new error), stored beside the
+    /// id as the SDK sync stores it (bug 11).
+    static String poolCode(SubscriptionRepository repo, String poolId) {
+        return poolId == null || poolId.isBlank() ? null : repo.dispatchPoolCode(poolId).orElse(null);
+    }
 }

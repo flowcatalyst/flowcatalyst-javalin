@@ -114,7 +114,8 @@ class SubscriptionTest {
         assertThat(s.dataOnly()).isFalse();
         assertThat(s.queue()).isEqualTo("HIGH_PRIORITY");
         assertThat(s.withQueue(null).queue()).as("withQueue(null) clears it").isNull();
-        assertThat(s.withDispatchPoolId("dpl_2").dispatchPoolCode()).as("admin pool id does not touch the code").isEqualTo("pool-one");
+        assertThat(s.withDispatchPool("dpl_2", "pool-two")).extracting(Subscription::dispatchPoolId, Subscription::dispatchPoolCode)
+                .as("id and code move together (bug 11)").containsExactly("dpl_2", "pool-two");
         assertThat(s.withEventTypes(List.of()).eventTypes()).as("bindings may be emptied wholesale").isEmpty();
         assertThat(s.withConnectionId(null).connectionId()).isNull();
     }

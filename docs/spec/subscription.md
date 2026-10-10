@@ -47,7 +47,7 @@ it lands in Java).
 | `source` | `CODE` \| `API` \| `UI` | `UI` from the admin API, `API` from sync; `CODE` is read-only legacy |
 | `status` | `ACTIVE` \| `PAUSED` | default `ACTIVE` |
 | `maxAgeSeconds` | int | default `86400` |
-| `dispatchPoolId`, `dispatchPoolCode` | string, optional | admin: `dispatchPoolId` set verbatim (not validated, `dispatchPoolCode` never set — **accident?**); sync: both resolved from `dispatchPoolCode` (§7) |
+| `dispatchPoolId`, `dispatchPoolCode` | string, optional | admin: `dispatchPoolId` set verbatim (not validated) and, since bug 11 (2026-10-10), `dispatchPoolCode` looked up from it (none for an id naming no pool, no error); sync: both resolved from `dispatchPoolCode` (§7) |
 | `delaySeconds` | int | default `0` |
 | `sequence` | int | set by create's optional `sequence` (default `99`; negative → 400 `INVALID_SEQUENCE`; bug 9, 2026-10-10); update leaves it |
 | `mode` | `IMMEDIATE` \| `NEXT_ON_ERROR` \| `BLOCK_ON_ERROR` | default `IMMEDIATE`; read **leniently** (unknown → `IMMEDIATE`) both from the row and from the create/update command — **load-bearing or accident?** (a typo in `mode` silently becomes `IMMEDIATE`). The enum is the router's per-subscription dispatch mode (`DispatchMode`, see "Design notes") |
@@ -138,7 +138,7 @@ Wire shapes:
 | Schema | Fields | Notes |
 |---|---|---|
 | `CreateSubscriptionRequest` | `code`*, `name`*, `endpoint`*, `description`, `clientId`, `connectionId`, `dispatchPoolId`, `serviceAccountId`, `eventTypes[]`, `customConfig[]`, `mode`, `timeoutSeconds`, `maxRetries`, `delaySeconds`, `maxAgeSeconds`, `dataOnly` | absent numerics/`dataOnly`/`mode` ⇒ the aggregate defaults (§1) |
-| `UpdateSubscriptionRequest` | `name`, `description`, `endpoint`, `connectionId`, `eventTypes[]`, `customConfig[]`, `mode`, `timeoutSeconds`, `maxRetries`, `delaySeconds`, `maxAgeSeconds`, `dispatchPoolId`, `serviceAccountId`, `dataOnly` | every field optional, absent = unchanged; an explicit `[]` for `eventTypes`/`customConfig` **replaces with empty** (so an update can leave a subscription with no bindings — **accident?**); nothing can be cleared to `null` (`connectionId` can be re-pointed but not cleared) |
+| `UpdateSubscriptionRequest` | `name`, `description`, `endpoint`, `connectionId`, `eventTypes[]`, `customConfig[]`, `mode`, `timeoutSeconds`, `maxRetries`, `delaySeconds`, `maxAgeSeconds`, `dispatchPoolId`, `serviceAccountId`, `dataOnly` | every field optional, absent = unchanged; an explicit `[]` for `eventTypes`/`customConfig` **replaces with empty** (so an update can leave a subscription with no bindings — **accident?**); nothing can be cleared to `null` (`connectionId` can be re-pointed but not cleared; a blank `connectionId` is omitted, a value trimmed — bug 12, 2026-10-10) |
 | `EventTypeBindingDTO` | `eventTypeCode`*, `eventTypeId`, `specVersion`, `filter` | optional fields omitted when null |
 | `ConfigEntryDTO` | `key`*, `value`* | |
 | `SubscriptionResponse` | `id, code, applicationCode?, name, description?, clientId?, clientIdentifier?, clientScoped, eventTypes[], connectionId?, endpoint, queue?, customConfig[], source, status, maxAgeSeconds, dispatchPoolId?, dispatchPoolCode?, delaySeconds, sequence, mode, timeoutSeconds, maxRetries, serviceAccountId?, dataOnly, createdBy?, createdAt, updatedAt` | optional (`?`) fields omitted when null; the two arrays are always present (possibly empty); timestamps RFC 3339 with 6 fractional digits, `Z` |

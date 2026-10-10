@@ -926,7 +926,7 @@ class FunctionTriggerSyncTest {
         Subscription correct = subscriptions.findById(fx.subId()).orElseThrow();
         String correctPoolId = correct.dispatchPoolId();
         uow.inTransaction(tx -> {
-            subscriptions.persist(correct.withDispatchPoolId("dpl" + fresh()), tx.dbTx());
+            subscriptions.persist(correct.withDispatchPool("dpl" + fresh(), correct.dispatchPoolCode()), tx.dbTx());
             return null;
         });
         long before = updatedEventCount(fx.subId());

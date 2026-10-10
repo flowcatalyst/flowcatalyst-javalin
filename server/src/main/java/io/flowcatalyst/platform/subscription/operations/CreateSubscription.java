@@ -59,7 +59,7 @@ public final class CreateSubscription {
                             .withDescription(cmd.description())
                             .withClientId(cmd.clientId())
                             .withConnectionId(cmd.connectionId())
-                            .withDispatchPoolId(cmd.dispatchPoolId())
+                            .withDispatchPool(cmd.dispatchPoolId(), Access.poolCode(repo, cmd.dispatchPoolId()))
                             .withServiceAccountId(cmd.serviceAccountId())
                             .withEventTypes(cmd.eventTypes())
                             .withCustomConfig(cmd.customConfig())

@@ -49,7 +49,11 @@ public final class UpdateSubscription {
                     if (cmd.name() != null) s = s.withName(cmd.name().strip());
                     if (cmd.description() != null) s = s.withDescription(cmd.description());
                     if (cmd.endpoint() != null) s = s.withEndpoint(EndpointUrl.parse(cmd.endpoint()).value());
-                    if (cmd.connectionId() != null) s = s.withConnectionId(cmd.connectionId());
+                    // Set-if-provided: connectionId can be re-pointed, not cleared. A blank
+                    // value (the SPA's edit sends "" for an empty field) is omitted, not stored (bug 12).
+                    if (cmd.connectionId() != null && !cmd.connectionId().isBlank()) {
+                        s = s.withConnectionId(cmd.connectionId().strip());
+                    }
                     if (cmd.eventTypes() != null) s = s.withEventTypes(cmd.eventTypes());
                     if (cmd.customConfig() != null) s = s.withCustomConfig(cmd.customConfig());
                     if (cmd.mode() != null) s = s.withMode(DispatchMode.parse(cmd.mode()));
@@ -61,7 +65,9 @@ public final class UpdateSubscription {
                     if (cmd.maxRetries() != null) s = s.withMaxRetries(cmd.maxRetries());
                     if (cmd.delaySeconds() != null) s = s.withDelaySeconds(cmd.delaySeconds());
                     if (cmd.maxAgeSeconds() != null) s = s.withMaxAgeSeconds(cmd.maxAgeSeconds());
-                    if (cmd.dispatchPoolId() != null) s = s.withDispatchPoolId(cmd.dispatchPoolId());
+                    if (cmd.dispatchPoolId() != null) {
+                        s = s.withDispatchPool(cmd.dispatchPoolId(), Access.poolCode(repo, cmd.dispatchPoolId()));
+                    }
                     if (cmd.serviceAccountId() != null) s = s.withServiceAccountId(cmd.serviceAccountId());
                     if (cmd.dataOnly() != null) s = s.withDataOnly(cmd.dataOnly());
                     String accountBefore = Access.blankToNull(before.serviceAccountId());

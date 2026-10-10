@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
+import static io.flowcatalyst.db.generated.Tables.MSG_DISPATCH_POOLS;
 import static io.flowcatalyst.db.generated.Tables.MSG_SUBSCRIPTIONS;
 import static io.flowcatalyst.db.generated.Tables.MSG_SUBSCRIPTION_CUSTOM_CONFIGS;
 import static io.flowcatalyst.db.generated.Tables.MSG_SUBSCRIPTION_EVENT_TYPES;
@@ -94,6 +95,14 @@ public final class SubscriptionRepository implements Persist<Subscription> {
     public List<String> findCodesByConnectionId(String connectionId) {
         return dsl.select(T.CODE).from(T).where(T.CONNECTION_ID.eq(connectionId))
                 .orderBy(T.CODE.asc()).fetch(T.CODE);
+    }
+
+    /// The code of the dispatch pool with this id, empty when no pool has it
+    /// (bug 11): create and update store it beside the pool id, as the SDK
+    /// sync does, so the pool shows by code.
+    public Optional<String> dispatchPoolCode(String poolId) {
+        return dsl.select(MSG_DISPATCH_POOLS.CODE).from(MSG_DISPATCH_POOLS).where(MSG_DISPATCH_POOLS.ID.eq(poolId))
+                .fetchOptional(MSG_DISPATCH_POOLS.CODE);
     }
 
     /// Subscriptions matching every non-null filter, by code.

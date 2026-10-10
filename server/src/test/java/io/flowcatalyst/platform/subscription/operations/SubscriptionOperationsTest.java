@@ -1256,4 +1256,43 @@ class SubscriptionOperationsTest {
                 .filter(c -> c.startsWith("sublist-")).toList();
         assertThat(codes).as("ordered by code").containsExactly(code("sublist-a"), code("sublist-b"));
     }
+
+    // ── Pool code and blank connection (bugs 11, 12) ───────────────────────
+
+    /// Bug 11: create and update store the pool's code beside its id, as the
+    /// SDK sync does; an id naming no pool stores no code (no new error).
+    /// (Go `pool_code_pg_test.go`.)
+    @Test
+    void createAndUpdateStoreTheDispatchPoolCode() {
+        String poolA = seededPool(code("subpool-a"));
+        String poolB = seededPool(code("subpool-b"));
+        var base = createCommand(code("subpoolcode"), "Pooled");
+        var withPool = new CreateCommand(base.code(), base.name(), base.endpoint(), null, null, null, poolA, null,
+                BINDINGS, null, null, null, null, null, null, null, null);
+        String id = runAsAnchor(CreateSubscription.of(repo, connections, REACH), withPool).subscriptionId();
+        assertThat(reload(id).dispatchPoolId()).isEqualTo(poolA);
+        assertThat(reload(id).dispatchPoolCode()).isEqualTo(code("subpool-a"));
+
+        runAsAnchor(UpdateSubscription.of(repo, connections, REACH), new UpdateCommand(id, null, null, null, null, null,
+                null, null, null, null, null, null, null, poolB, null, null));
+        assertThat(reload(id).dispatchPoolCode()).as("re-pointed").isEqualTo(code("subpool-b"));
+
+        runAsAnchor(UpdateSubscription.of(repo, connections, REACH), new UpdateCommand(id, null, null, null, null, null,
+                null, null, null, null, null, null, null, "dpl_nosuchpool001", null, null));
+        assertThat(reload(id).dispatchPoolId()).isEqualTo("dpl_nosuchpool001");
+        assertThat(reload(id).dispatchPoolCode()).as("an unknown id stores no code").isNull();
+    }
+
+    /// Bug 12: a blank `connectionId` on update (the SPA's edit sends "" for
+    /// an empty field) leaves the connection alone; a value is trimmed.
+    @Test
+    void aBlankConnectionIdOnUpdateLeavesTheConnectionAlone() {
+        String id = created(code("subblankcon"), "Blank Con").subscriptionId();
+        var before = reload(id).connectionId();
+        for (String blank : List.of("", "   ")) {
+            runAsAnchor(UpdateSubscription.of(repo, connections, REACH), new UpdateCommand(id, "Renamed", null, null, blank,
+                    null, null, null, null, null, null, null, null, null, null, null));
+            assertThat(reload(id).connectionId()).as("blank %s is omitted", "'" + blank + "'").isEqualTo(before);
+        }
+    }
 }
