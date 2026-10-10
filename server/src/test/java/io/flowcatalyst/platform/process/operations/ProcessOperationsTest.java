@@ -267,6 +267,7 @@ class ProcessOperationsTest {
     void deleteRemovesTheRowAndWritesTheEventAndAudit() {
         String code = code("prdel", "flow");
         var seeded = created(code, "Doomed");
+        runAsAnchor(ArchiveProcess.of(repo), new ArchiveCommand(seeded.processId()));
 
         var ev = runAsAnchor(DeleteProcess.of(repo), new DeleteCommand(seeded.processId()));
         assertThat(ev.processId()).isEqualTo(seeded.processId());
@@ -278,6 +279,34 @@ class ProcessOperationsTest {
         assertThat(events).hasSize(1);
         assertThat(json(events.getFirst().get("data", String.class)).get("code").asText()).isEqualTo(code);
         assertThat(auditsFor(seeded.processId(), "DeleteCommand")).hasSize(1);
+    }
+
+    /// Bugs 23, 25 (Go `lifecycle_guards_pg_test.go`): an archived process
+    /// refuses an edit (`PROCESS_ARCHIVED`), a current one refuses a delete
+    /// (`PROCESS_NOT_ARCHIVED`) — nothing written either way; a blank
+    /// description is stored as none on create and update.
+    @Test
+    void editAndDeleteFollowTheStatusAndABlankDescriptionIsNone() {
+        String code = code("prguard", "flow");
+        var seeded = runAsAnchor(CreateProcess.of(repo), new CreateCommand(code, "Guarded", "  ", null, null, null));
+        String id = seeded.processId();
+        assertThat(repo.findById(id).orElseThrow().description()).as("blank on create is none").isNull();
+
+        assertUseCaseError(() -> runAsAnchor(DeleteProcess.of(repo), new DeleteCommand(id)),
+                UseCaseError.BusinessRule.class, "PROCESS_NOT_ARCHIVED");
+        assertThat(repo.findById(id)).as("a current process survives").isPresent();
+
+        runAsAnchor(UpdateProcess.of(repo), new UpdateCommand(id, null, "described", null, null, null));
+        runAsAnchor(UpdateProcess.of(repo), new UpdateCommand(id, null, " ", null, null, null));
+        assertThat(repo.findById(id).orElseThrow().description()).as("blank on update clears").isNull();
+
+        runAsAnchor(ArchiveProcess.of(repo), new ArchiveCommand(id));
+        assertUseCaseError(() -> runAsAnchor(UpdateProcess.of(repo), new UpdateCommand(id, "Renamed", null, null, null, null)),
+                UseCaseError.BusinessRule.class, "PROCESS_ARCHIVED");
+        assertThat(repo.findById(id).orElseThrow().name()).as("the archived process is unchanged").isEqualTo("Guarded");
+
+        runAsAnchor(DeleteProcess.of(repo), new DeleteCommand(id));
+        assertThat(repo.findById(id)).as("an archived process is deleted").isEmpty();
     }
 
     @Test

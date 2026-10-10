@@ -201,6 +201,10 @@ class ProcessApiTest {
     @Test
     void deleteReturns204ThenGetIs404Envelope() {
         String id = create(APP + ":del:flow", "Doomed", "");
+        var current = http.delete("/api/processes/" + id, ANCHOR);
+        assertThat(current.statusCode()).as("a current process is refused (bug 23)").isEqualTo(409);
+        assertThat(json(current).get("error").asString()).isEqualTo("PROCESS_NOT_ARCHIVED");
+        assertThat(http.post("/api/processes/" + id + "/archive", null, ANCHOR).statusCode()).isEqualTo(204);
         var del = http.delete("/api/processes/" + id, ANCHOR);
         assertThat(del.statusCode()).isEqualTo(204);
 

@@ -7,7 +7,8 @@ import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.op.Operation;
 import io.flowcatalyst.sdk.usecase.op.Plan;
 
-/// Hard-deletes a process and emits [ProcessDeleted].
+/// Hard-deletes an archived process and emits [ProcessDeleted]; a current one
+/// is refused (`PROCESS_NOT_ARCHIVED`, [Process#requireDeletable], bug 23).
 public final class DeleteProcess {
 
     private DeleteProcess() {
@@ -19,7 +20,7 @@ public final class DeleteProcess {
                 // Processes are global — no per-resource dimension; the handler's coarse gate is the whole check.
                 .authorize(Operation.Authorize.publicAccess())
                 .execute((cmd, ec) -> {
-                    Process p = Access.byId(repo, cmd.id());
+                    Process p = Access.byId(repo, cmd.id()).requireDeletable();
                     return Plan.delete(p, repo, ProcessDeleted.of(ec, p));
                 });
     }

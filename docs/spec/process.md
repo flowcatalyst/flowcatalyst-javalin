@@ -21,7 +21,7 @@ gate is the handler's coarse permission (same shape as roles).
 | `id` | `prc_` + 13-char TSID | generated on create |
 | `code` | string, unique | `a:b:c`, each segment non-blank; immutable after create |
 | `name` | string, required | admin create / update store it **trimmed**; sync stores it verbatim (**accident?**) |
-| `description` | string, optional | `null` when absent |
+| `description` | string, optional | `null` when absent; a blank one is stored as `null` on create and update (bug 25, 2026-10-10) |
 | `status` | `CURRENT` \| `ARCHIVED` | default `CURRENT` |
 | `source` | `CODE` \| `API` \| `UI` | `UI` from the admin API, `API` from sync, `CODE` from the seeder (the example `platform:fulfilment:on-demand-flow`) |
 | `application`, `subdomain`, `processName` | strings | the three code segments |
@@ -55,9 +55,9 @@ All routes require a bearer; every error is the `ErrorModel` envelope
 | `POST /api/processes` | `process:create` | `CreateProcessRequest` → `CreateCommand` | 201 `CreatedResponse` `{id}` | **ruled 2026-10-10**: the permission for the operation, never any of the three (`docs/go-mirror/2026-10-10-platform-bug-fixes.md`) |
 | `GET /api/processes/by-code/{code}` | `process:view` | — | 200 `ProcessResponse` | 404 `Process_NOT_FOUND`, message carries the code |
 | `GET /api/processes/{id}` | `process:view` | — | 200 `ProcessResponse` | 404 `Process_NOT_FOUND` |
-| `PUT /api/processes/{id}` | `process:update` | `UpdateProcessRequest` → `UpdateCommand(id from path)` | 204, empty body | |
+| `PUT /api/processes/{id}` | `process:update` | `UpdateProcessRequest` → `UpdateCommand(id from path)` | 204, empty body; 409 `PROCESS_ARCHIVED` "Archived processes cannot be edited." (bug 23, 2026-10-10) | |
 | `POST /api/processes/{id}/archive` | `process:update` | `ArchiveCommand(id)` | 204, empty body | no request body; `process:archive` exists as a permission but no check reads it (owner decision open, Go decision 1) |
-| `DELETE /api/processes/{id}` | `process:delete` | `DeleteCommand(id)` | 204 | hard delete |
+| `DELETE /api/processes/{id}` | `process:delete` | `DeleteCommand(id)` | 204; 409 `PROCESS_NOT_ARCHIVED` "Archive the process before deleting it." for a current process (bug 23) | hard delete |
 | `POST /api/applications/{appCode}/processes/sync` | `process:sync` \| `application-service:process:sync` + application resolution | `SyncProcessesRequest` (+ `?removeUnlisted`) → `SyncProcessesCommand` | 200 `SyncResultResponse` | lives in the sdksync surface, not this package's API; the operation is here |
 | `POST /api/processes/sync` | same | `SyncProcessesByBodyRequest` (`applicationCode` in the body) | 200 `SyncResultResponse` | Laravel-SDK alias of the route above — sdksync surface, **not wired by this package** although it sits under `/api/processes` |
 
@@ -69,7 +69,7 @@ Wire shapes:
 | Schema | Fields | Notes |
 |---|---|---|
 | `CreateProcessRequest` | `code`*, `name`*, `description`, `body`, `diagramType`, `tags[]` | absent `body` ⇒ `""`; absent/blank `diagramType` ⇒ `mermaid`; absent `tags` ⇒ `[]` |
-| `UpdateProcessRequest` | `name`, `description`, `body`, `diagramType`, `tags[]` | **every field optional; absent = untouched.** `description: ""` stores the empty string (it cannot be reset to absent); `tags: []` clears the list; `diagramType` is stored verbatim when present — a blank value is stored as `""` (**accident?** create and sync treat a blank diagram type as absent ⇒ default / keep; update does not) |
+| `UpdateProcessRequest` | `name`, `description`, `body`, `diagramType`, `tags[]` | **every field optional; absent = untouched.** `description: ""` (blank) clears it (bug 25; it stored the empty string); `tags: []` clears the list; `diagramType` is stored verbatim when present — a blank value is stored as `""` (**accident?** create and sync treat a blank diagram type as absent ⇒ default / keep; update does not) |
 | `SyncProcessInputRequest` | `code`*, `name`*, `description`, `body`, `diagramType`, `tags[]` | |
 | `ProcessResponse` | `id, code, name, description?, status, source, application, subdomain, processName, body, diagramType, tags[], createdBy?, createdAt, updatedAt` | optional fields omitted when null; `body` always present (may be `""`); `tags` always present (may be `[]`); timestamps RFC 3339 with 6 fractional digits, `Z` |
 | `ProcessListResponse` | `items[]` | no pagination |

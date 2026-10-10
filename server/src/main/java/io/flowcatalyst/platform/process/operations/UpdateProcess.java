@@ -8,7 +8,8 @@ import io.flowcatalyst.sdk.usecase.op.Operation;
 import io.flowcatalyst.sdk.usecase.op.Plan;
 
 /// Replaces the supplied fields of an existing process (`null` = untouched)
-/// and emits [ProcessUpdated]. The code is immutable.
+/// and emits [ProcessUpdated]. The code is immutable; an archived process is
+/// refused (`PROCESS_ARCHIVED`, [Process#update]); a blank description clears it.
 public final class UpdateProcess {
 
     private UpdateProcess() {

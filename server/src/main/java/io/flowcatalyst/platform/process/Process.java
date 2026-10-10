@@ -89,6 +89,27 @@ public record Process(
         return status == ProcessStatus.ARCHIVED;
     }
 
+    /// Why an archived process refuses an edit (bug 23) — the message the UIs
+    /// show beside the disabled action.
+    public static final String CANNOT_EDIT_REASON = "Archived processes cannot be edited.";
+
+    /// Why a current process refuses a delete (bug 23).
+    public static final String CANNOT_DELETE_REASON = "Archive the process before deleting it.";
+
+    /// The delete guard (bug 23, the SPA drawer's rule): only an archived
+    /// process is deleted.
+    ///
+    /// @throws UseCaseException business rule `PROCESS_NOT_ARCHIVED`
+    public Process requireDeletable() {
+        if (!isArchived()) throw UseCaseException.businessRule("PROCESS_NOT_ARCHIVED", CANNOT_DELETE_REASON);
+        return this;
+    }
+
+    /// A blank description is none (bug 25): stored as `null`, never `""`.
+    public static String optionalDescription(String description) {
+        return description == null || description.isBlank() ? null : description;
+    }
+
     // ── Transitions (spec §2) ──────────────────────────────────────────────
 
     /// `CURRENT` → `ARCHIVED`. Unconditional: an already archived process is
@@ -99,7 +120,8 @@ public record Process(
     }
 
     /// The fields an admin update may change; `null` = untouched (spec §3).
-    /// `tags` replaces the whole list (an empty list clears it).
+    /// `tags` replaces the whole list (an empty list clears it); a blank
+    /// `description` clears it (bug 25).
     public record Changes(String name, String description, String body, String diagramType, List<String> tags) {
         public Changes {
             tags = tags == null ? null : List.copyOf(tags);
@@ -109,10 +131,13 @@ public record Process(
     /// Applies the non-null [Changes]; `code`, `status` and `source` never change.
     /// Values are taken verbatim — a blank `diagramType` is stored as given, unlike
     /// create / sync where blank means absent (spec §3, open question 9).
+    ///
+    /// @throws UseCaseException business rule `PROCESS_ARCHIVED` — an archived process is read-only (bug 23)
     public Process update(Changes c) {
+        if (isArchived()) throw UseCaseException.businessRule("PROCESS_ARCHIVED", CANNOT_EDIT_REASON);
         return new Process(id, code,
                 c.name() != null ? c.name() : name,
-                c.description() != null ? c.description() : description,
+                c.description() != null ? optionalDescription(c.description()) : description,
                 status, source, application, subdomain, processName,
                 c.body() != null ? c.body() : body,
                 c.diagramType() != null ? c.diagramType() : diagramType,

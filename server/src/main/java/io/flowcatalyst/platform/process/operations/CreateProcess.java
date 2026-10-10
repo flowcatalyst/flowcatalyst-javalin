@@ -29,7 +29,7 @@ public final class CreateProcess {
                                 "Process with code '" + cmd.code() + "' already exists");
                     }
                     Process p = Process.create(cmd.code(), cmd.name().trim())
-                            .withDescription(cmd.description())
+                            .withDescription(Process.optionalDescription(cmd.description()))
                             .withBody(cmd.body())
                             .withDiagramType(cmd.diagramType())
                             .withTags(cmd.tags())
