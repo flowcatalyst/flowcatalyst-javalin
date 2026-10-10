@@ -80,6 +80,34 @@ class EventTypeTest {
         assertUseCaseError(archived::archive, UseCaseError.Conflict.class, "ALREADY_ARCHIVED");
     }
 
+    /// Bug 5: archive needs every schema version deprecated; delete needs an
+    /// archived event type or one whose versions are all still finalising.
+    @Test
+    void archiveAndDeleteFollowTheSchemaVersions() {
+        var finalising = EventType.create("a:b:c:d", "Name").addSchemaVersion("1.0", SCHEMA);
+        var current = finalising.finaliseSchema("1.0").eventType();
+        var deprecated = current.deprecateSchema("1.0");
+
+        assertThat(EventType.create("a:b:c:d", "Name").canArchive()).as("no versions").isTrue();
+        assertThat(finalising.canArchive()).isFalse();
+        assertThat(current.canArchive()).isFalse();
+        assertThat(deprecated.canArchive()).isTrue();
+        assertThat(deprecated.archive().canArchive()).as("already archived").isFalse();
+        var refused = assertUseCaseError(current::archive, UseCaseError.BusinessRule.class, "SCHEMAS_NOT_DEPRECATED");
+        assertThat(refused.message()).isEqualTo("Deprecate every schema version first.");
+        assertUseCaseError(finalising::archive, UseCaseError.BusinessRule.class, "SCHEMAS_NOT_DEPRECATED");
+
+        assertThat(finalising.canDelete()).as("never published").isTrue();
+        assertThat(finalising.requireDeletable()).isSameAs(finalising);
+        assertThat(current.canDelete()).isFalse();
+        assertThat(deprecated.canDelete()).as("published, not archived").isFalse();
+        assertThat(deprecated.archive().canDelete()).isTrue();
+        assertThat(current.addSchemaVersion("2.0", SCHEMA).canDelete()).as("one version published").isFalse();
+        var noDelete = assertUseCaseError(current::requireDeletable, UseCaseError.BusinessRule.class, "DELETE_NOT_ALLOWED");
+        assertThat(noDelete.message()).isEqualTo(
+                "Only an archived event type, or one whose schema versions are all still finalising, can be deleted.");
+    }
+
     // ── Schema versions ────────────────────────────────────────────────────
 
     @Test
@@ -167,7 +195,7 @@ class EventTypeTest {
                 .isInstanceOf(SchemaType.UnrecognisedSchemaTypeException.class);
     }
 
-    private static void assertUseCaseError(ThrowingCallable call, Class<? extends UseCaseError> kind, String code) {
+    private static UseCaseError assertUseCaseError(ThrowingCallable call, Class<? extends UseCaseError> kind, String code) {
         assertThatThrownBy(call)
                 .isInstanceOf(UseCaseException.class)
                 .extracting(t -> ((UseCaseException) t).error())
@@ -175,5 +203,13 @@ class EventTypeTest {
                     assertThat(err).as("error kind").isInstanceOf(kind);
                     assertThat(err.code()).as("error code").isEqualTo(code);
                 });
+        try {
+            call.call();
+        } catch (UseCaseException e) {
+            return e.error();
+        } catch (Throwable t) {
+            throw new AssertionError(t);
+        }
+        throw new AssertionError("no error");
     }
 }

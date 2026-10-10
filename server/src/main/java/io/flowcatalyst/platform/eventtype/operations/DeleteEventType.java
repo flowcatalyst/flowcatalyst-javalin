@@ -8,6 +8,8 @@ import io.flowcatalyst.sdk.usecase.op.Operation;
 import io.flowcatalyst.sdk.usecase.op.Plan;
 
 /// Hard-deletes an event type with its spec versions and emits [EventTypeDeleted].
+/// Only an archived event type, or one whose schema versions are all still
+/// finalising, may be deleted ([EventType#requireDeletable], bug 5).
 public final class DeleteEventType {
 
     private DeleteEventType() {
@@ -22,7 +24,7 @@ public final class DeleteEventType {
                 })
                 .authorize(Operation.Authorize.publicAccess()) // per-resource check is in Access.loadScoped
                 .execute((cmd, ec) -> {
-                    EventType et = Access.loadScoped(repo, cmd.id());
+                    EventType et = Access.loadScoped(repo, cmd.id()).requireDeletable();
                     return Plan.delete(et, repo, EventTypeDeleted.of(ec, et));
                 });
     }

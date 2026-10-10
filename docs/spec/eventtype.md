@@ -134,6 +134,8 @@ Malformed JSON body → 400 `INVALID_JSON` (transport).
 | Create | another event type has the same code | `CODE_EXISTS` | 409 |
 | Update / Delete / Archive / AddSchema / Finalise / Deprecate | no event type with that id | `EventType_NOT_FOUND` | 404 |
 | Archive | already archived | `ALREADY_ARCHIVED` | 409 |
+| Archive | a schema version is not `DEPRECATED` (bug 5, 2026-10-10) | `SCHEMAS_NOT_DEPRECATED` "Deprecate every schema version first." (business rule) | 409 |
+| Delete | neither `ARCHIVED` nor every version still `FINALISING` (bug 5) | `DELETE_NOT_ALLOWED` "Only an archived event type, or one whose schema versions are all still finalising, can be deleted." (business rule) | 409 — also `DELETE /api/event-types/{id}`, which the TS SDK calls `archive()` |
 | AddSchema | version exists | `VERSION_EXISTS` | 409 |
 | Finalise / Deprecate | no such version | `SpecVersion_NOT_FOUND` | 404 |
 | Finalise | version not `FINALISING` | `NOT_FINALISING` | 409 |

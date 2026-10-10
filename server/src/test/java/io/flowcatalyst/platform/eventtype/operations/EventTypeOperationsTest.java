@@ -302,6 +302,32 @@ class EventTypeOperationsTest {
                 UseCaseError.NotFound.class, "EventType_NOT_FOUND");
     }
 
+    /// Bug 5 through the use cases (every caller: BFF archive/delete and
+    /// `DELETE /api/event-types/{id}`): archive refuses while a version is not
+    /// deprecated, delete refuses a published, current event type; nothing is
+    /// written either way. (Go `lifecycle_guards_pg_test.go`.)
+    @Test
+    void archiveAndDeleteEnforceTheVersionRules() {
+        var seeded = createdWithSchema(code("etguard", "created"), "Guarded");
+        String id = seeded.eventTypeId();
+        assertUseCaseError(() -> runAsAnchor(ArchiveEventType.of(repo), new ArchiveCommand(id)),
+                UseCaseError.BusinessRule.class, "SCHEMAS_NOT_DEPRECATED");
+
+        runAsAnchor(FinaliseEventTypeSchema.of(repo), new FinaliseSchemaCommand(id, "1.0"));
+        assertUseCaseError(() -> runAsAnchor(DeleteEventType.of(repo), new DeleteCommand(id)),
+                UseCaseError.BusinessRule.class, "DELETE_NOT_ALLOWED");
+        assertUseCaseError(() -> runAsAnchor(ArchiveEventType.of(repo), new ArchiveCommand(id)),
+                UseCaseError.BusinessRule.class, "SCHEMAS_NOT_DEPRECATED");
+        assertThat(reload(id).status()).isEqualTo(EventTypeStatus.CURRENT);
+        assertThat(eventsFor(id, EventTypeEvents.ARCHIVED)).isEmpty();
+        assertThat(eventsFor(id, EventTypeEvents.DELETED)).isEmpty();
+
+        runAsAnchor(DeprecateEventTypeSchema.of(repo), new DeprecateSchemaCommand(id, "1.0"));
+        runAsAnchor(ArchiveEventType.of(repo), new ArchiveCommand(id));
+        runAsAnchor(DeleteEventType.of(repo), new DeleteCommand(id));
+        assertThat(repo.findById(id)).as("an archived event type is deletable").isEmpty();
+    }
+
     // ── Archive ────────────────────────────────────────────────────────────
 
     @Test

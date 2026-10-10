@@ -90,6 +90,39 @@ public record EventType(
         return status == EventTypeStatus.ARCHIVED;
     }
 
+    /// Why archive is refused while a version is not deprecated (bug 5) — the
+    /// message the UIs show beside the disabled action.
+    public static final String CANNOT_ARCHIVE_REASON = "Deprecate every schema version first.";
+
+    /// Why delete is refused for a published, current event type (bug 5).
+    public static final String CANNOT_DELETE_REASON =
+            "Only an archived event type, or one whose schema versions are all still finalising, can be deleted.";
+
+    /// Whether the event type may be archived: it is `CURRENT` and every schema
+    /// version (if any) is `DEPRECATED` (bug 5, the SPA drawer's rule).
+    public boolean canArchive() {
+        return status == EventTypeStatus.CURRENT
+                && specVersions.stream().allMatch(SpecVersion::isDeprecated);
+    }
+
+    /// Whether the event type may be deleted: it is `ARCHIVED`, or `CURRENT`
+    /// with every schema version (if any) still `FINALISING` — never published
+    /// (bug 5).
+    public boolean canDelete() {
+        return switch (status) {
+            case ARCHIVED -> true;
+            case CURRENT -> specVersions.stream().allMatch(sv -> sv.status() == SpecVersionStatus.FINALISING);
+        };
+    }
+
+    /// The delete guard (bug 5): this event type, or the refusal.
+    ///
+    /// @throws UseCaseException business rule `DELETE_NOT_ALLOWED`
+    public EventType requireDeletable() {
+        if (!canDelete()) throw UseCaseException.businessRule("DELETE_NOT_ALLOWED", CANNOT_DELETE_REASON);
+        return this;
+    }
+
     /// The spec version with the given version string, if present.
     public Optional<SpecVersion> specVersion(String version) {
         return specVersions.stream().filter(sv -> sv.version().equals(version)).findFirst();
@@ -97,12 +130,15 @@ public record EventType(
 
     // ── Transitions (spec §2) ──────────────────────────────────────────────
 
-    /// `CURRENT` → `ARCHIVED`.
+    /// `CURRENT` → `ARCHIVED`, once every schema version is deprecated (bug 5).
     ///
-    /// @throws UseCaseException conflict `ALREADY_ARCHIVED`
+    /// @throws UseCaseException conflict `ALREADY_ARCHIVED`; business rule `SCHEMAS_NOT_DEPRECATED`
     public EventType archive() {
         if (isArchived()) {
             throw UseCaseException.conflict("ALREADY_ARCHIVED", "Event type '" + code + "' is already archived");
+        }
+        if (!canArchive()) {
+            throw UseCaseException.businessRule("SCHEMAS_NOT_DEPRECATED", CANNOT_ARCHIVE_REASON);
         }
         return new EventType(id, code, name, description, specVersions, EventTypeStatus.ARCHIVED, source, clientScoped,
                 application, subdomain, aggregate, eventName, clientId, createdBy, createdAt, Instant.now());
