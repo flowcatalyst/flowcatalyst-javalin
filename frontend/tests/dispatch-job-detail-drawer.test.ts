@@ -10,6 +10,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia, type Pinia } from "pinia";
+import { useAuthStore } from "@/stores/auth";
 import PrimeVue from "primevue/config";
 import ConfirmationService from "primevue/confirmationservice";
 import type {
@@ -154,6 +155,16 @@ describe("DispatchJobDetailDrawer", () => {
 	beforeEach(() => {
 		pinia = createPinia();
 		setActivePinia(pinia);
+		// Sign needs dispatch-job:view-raw (bug 20); the panel's tests run as a holder.
+		useAuthStore().user = {
+			id: "prn-1",
+			email: "op@example.test",
+			name: "Op",
+			clientId: null,
+			roles: [],
+			permissions: ["platform:messaging:dispatch-job:view-raw"],
+			ssoManaged: false,
+		};
 		mocks.get.mockReset().mockResolvedValue(job);
 		mocks.attempts.mockReset().mockResolvedValue(attempts);
 		mocks.sign.mockReset().mockResolvedValue(plan);
@@ -216,5 +227,12 @@ describe("DispatchJobDetailDrawer", () => {
 		// value is asserted here as a distinct behaviour: the DOM must show
 		// what the server actually returned, byte for byte.
 		expect(text).toContain("deadbeef");
+	});
+
+	it("does not offer Sign without dispatch-job:view-raw (bug 20)", async () => {
+		useAuthStore().user!.permissions = ["platform:messaging:dispatch-job:view"];
+		const wrapper = await mountDrawer();
+
+		expect(wrapper.findAll("button").some((b) => b.text().includes("Sign"))).toBe(false);
 	});
 });
