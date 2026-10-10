@@ -267,4 +267,20 @@ class EventTypesBffTest {
         var r = http.post("/bff/event-types/sync-platform", null, WriteGates.holding("platform:messaging:event-type:manage"));
         assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
     }
+
+    /// Bug 3: the SPA's add-schema body (the textarea's text as a JSON string,
+    /// with its MIME type and schema type) stores the document with those
+    /// types, not a JSON string with the defaults.
+    @Test
+    void addSchemaStoresTheSPAsSchemaAsTheDocument() {
+        String id = create(code("spaschema"), "", ANCHOR);
+        String body = "{\"version\":\"1.0\",\"mimeType\":\"application/json\",\"schemaType\":\"JSON_SCHEMA\","
+                + "\"schema\":\"{\\n  \\\"type\\\": \\\"object\\\"\\n}\"}";
+        var r = http.post("/bff/event-types/" + id + "/schemas", body, ANCHOR);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        var stored = new EventTypeRepository(TestPg.dataSource()).findById(id).orElseThrow().specVersions().getFirst();
+        assertThat(stored.schemaContent().isObject()).as("the document, not a JSON string: " + stored.schemaContent()).isTrue();
+        assertThat(stored.schemaContent().get("type").asString()).isEqualTo("object");
+        assertThat(stored.mimeType()).isEqualTo("application/json");
+    }
 }

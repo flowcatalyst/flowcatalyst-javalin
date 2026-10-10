@@ -35,9 +35,9 @@ Spec version:
 |---|---|---|
 | `id` | `sch_` + TSID | |
 | `version` | string, unique per event type | typically semver; `major()` = text before the first `.`/`-`/`+` |
-| `mimeType` | string | always `application/schema+json` |
+| `mimeType` | string | add-schema's `mimeType` (≤ 100 chars), else the schema type's default: `application/schema+json` / `application/xml` (XSD) / `application/x-protobuf` (PROTO); the initial 1.0 is always `application/schema+json` |
 | `schemaContent` | JSON, optional | `null` when none stored |
-| `schemaType` | `JSON_SCHEMA` \| `XSD` \| `PROTO` | always `JSON_SCHEMA` today; read aliases `XML_SCHEMA`→`XSD`, `PROTOBUF`→`PROTO` |
+| `schemaType` | `JSON_SCHEMA` \| `XSD` \| `PROTO` | add-schema's `schemaType` (case-insensitive; blank = `JSON_SCHEMA`), the initial 1.0 always `JSON_SCHEMA`; read aliases `XML_SCHEMA`→`XSD`, `PROTOBUF`→`PROTO` |
 | `status` | `FINALISING` \| `CURRENT` \| `DEPRECATED` | new versions start `FINALISING` |
 
 Lenient enum reads: unknown `status` → `CURRENT`; unknown `source` → `UI`;
@@ -109,6 +109,9 @@ Wire shapes:
 | AddSchema / Finalise / Deprecate | `eventTypeId` non-blank | `ID_REQUIRED` | |
 | AddSchema / Finalise / Deprecate | `version` non-blank | `VERSION_REQUIRED` | |
 | AddSchema | `schema` present and not JSON `null` | `SCHEMA_REQUIRED` | |
+| AddSchema | `mimeType` ≤ 100 characters | `INVALID_MIME_TYPE` | bug 3, 2026-10-10 |
+| AddSchema | `schemaType` blank or one of `JSON_SCHEMA`/`XSD`/`PROTO` (legacy aliases accepted) | `INVALID_SCHEMA_TYPE` | bug 3 |
+| AddSchema | the schema matches its type: a JSON Schema sent as a JSON **string** must hold a document (object/array) and is stored as that document, not double-encoded; XSD/PROTO must be a JSON string (stored as text) | `INVALID_SCHEMA` | bug 3; `/api/event-types/{id}/schemas` has no type fields (JSON Schema), the SPA's `/bff` route passes `mimeType`/`schemaType` |
 | Sync | `applicationCode` non-blank | `APPLICATION_CODE_REQUIRED` | |
 | Sync | each input code well-formed (checked in execute, per row) | `INVALID_CODE` | `<format message> (offending code: "<code>")`; the first bad row aborts the whole sync |
 

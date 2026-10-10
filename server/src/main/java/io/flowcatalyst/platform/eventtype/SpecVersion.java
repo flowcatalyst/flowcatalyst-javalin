@@ -13,7 +13,7 @@ import java.util.Objects;
 /// @param id            `sch_…` TSID
 /// @param eventTypeId   owning event type
 /// @param version       the schema version string, typically semver (`1.0`)
-/// @param mimeType      `application/schema+json` for JSON Schema
+/// @param mimeType      the version's MIME type ([SchemaType#defaultMimeType] unless given)
 /// @param schemaContent the schema document, or `null` when none was stored
 /// @param schemaType    payload language
 /// @param status        lifecycle state
@@ -45,9 +45,16 @@ public record SpecVersion(
 
     /// Mints a new JSON-Schema version in the `FINALISING` state.
     public static SpecVersion initial(String eventTypeId, String version, JsonNode schemaContent) {
+        return initial(eventTypeId, version, schemaContent, SchemaType.JSON_SCHEMA, JSON_SCHEMA_MIME_TYPE);
+    }
+
+    /// Mints a new version of `schemaType` in the `FINALISING` state; the
+    /// content is already in its stored form ([SchemaType#normaliseContent]).
+    public static SpecVersion initial(String eventTypeId, String version, JsonNode schemaContent, SchemaType schemaType,
+                                      String mimeType) {
         Instant now = Instant.now();
-        return new SpecVersion(EntityType.SCHEMA.generate(), eventTypeId, version, JSON_SCHEMA_MIME_TYPE,
-                schemaContent, SchemaType.JSON_SCHEMA, SpecVersionStatus.FINALISING, now, now);
+        return new SpecVersion(EntityType.SCHEMA.generate(), eventTypeId, version, mimeType,
+                schemaContent, schemaType, SpecVersionStatus.FINALISING, now, now);
     }
 
     public boolean isCurrent() {

@@ -264,7 +264,7 @@ public final class EventTypesBff {
 
     public record AddSchemaRequest(JsonNode schema, String mimeType, String schemaType, String version) {
         public AddSchemaCommand toCommand(String id) {
-            return new AddSchemaCommand(id, version, schema);
+            return new AddSchemaCommand(id, version, schema, mimeType, schemaType);
         }
     }
 

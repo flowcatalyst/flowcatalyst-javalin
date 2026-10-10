@@ -41,6 +41,8 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import tools.jackson.databind.node.StringNode;
+import io.flowcatalyst.platform.eventtype.SchemaType;
 
 /// The event-type use cases against the embedded Postgres (spec §4–9):
 /// validation, the per-resource authorization, persistence, and the
@@ -414,6 +416,54 @@ class EventTypeOperationsTest {
         var seeded = createdWithSchema(code("etadddup", "created"), "Dup Version");
         assertUseCaseError(() -> runAsAnchor(AddSchema.of(repo), new AddSchemaCommand(seeded.eventTypeId(), "1.0", SCHEMA)),
                 UseCaseError.Conflict.class, "VERSION_EXISTS");
+    }
+
+    /// Bug 3: AddSchema stores what the user wrote. A JSON Schema typed into a
+    /// text field and sent as a JSON string is stored as the document, not
+    /// double-encoded; the MIME type and schema type are honoured; XSD/PROTO
+    /// text is stored as text. (Go `TestAddSchema_StoresTheDocumentWithMimeAndSchemaType`.)
+    @Test
+    void addSchemaStoresTheDocumentWithMimeAndSchemaType() {
+        var seeded = created(code("etstore", "created"), "Storage");
+        String xsd = "<xs:schema xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"/>";
+        runAsAnchor(AddSchema.of(repo), new AddSchemaCommand(seeded.eventTypeId(), "1.0",
+                StringNode.valueOf("{\"type\":\"object\",\"title\":\"typed\"}"), "application/json", "JSON_SCHEMA"));
+        runAsAnchor(AddSchema.of(repo), new AddSchemaCommand(seeded.eventTypeId(), "1.1", StringNode.valueOf(xsd), null, "xsd"));
+        runAsAnchor(AddSchema.of(repo), new AddSchemaCommand(seeded.eventTypeId(), "1.2", json("{\"type\":\"string\"}")));
+
+        var got = reload(seeded.eventTypeId());
+        var v10 = specVersion(got, "1.0");
+        assertThat(v10.schemaContent()).as("the document, not a JSON string")
+                .isEqualTo(json("{\"type\":\"object\",\"title\":\"typed\"}"));
+        assertThat(v10.mimeType()).isEqualTo("application/json");
+        assertThat(v10.schemaType()).isEqualTo(SchemaType.JSON_SCHEMA);
+
+        var v11 = specVersion(got, "1.1");
+        assertThat(v11.schemaContent().isString()).as("XSD is stored as text").isTrue();
+        assertThat(v11.schemaContent().asString()).isEqualTo(xsd);
+        assertThat(v11.schemaType()).isEqualTo(SchemaType.XSD);
+        assertThat(v11.mimeType()).as("the schema type's default MIME type").isEqualTo("application/xml");
+
+        var v12 = specVersion(got, "1.2");
+        assertThat(v12.mimeType()).as("defaults unchanged for a plain document").isEqualTo("application/schema+json");
+        assertThat(v12.schemaType()).isEqualTo(SchemaType.JSON_SCHEMA);
+    }
+
+    @Test
+    void addSchemaRefusesSchemasThatDoNotMatchTheirType() {
+        var seeded = created(code("etstorebad", "created"), "Storage bad");
+        String id = seeded.eventTypeId();
+        assertUseCaseError(() -> runAsAnchor(AddSchema.of(repo), new AddSchemaCommand(id, "9.0", StringNode.valueOf("{not json"))),
+                UseCaseError.Validation.class, "INVALID_SCHEMA");
+        assertUseCaseError(() -> runAsAnchor(AddSchema.of(repo), new AddSchemaCommand(id, "9.0", StringNode.valueOf("plain text"))),
+                UseCaseError.Validation.class, "INVALID_SCHEMA");
+        assertUseCaseError(() -> runAsAnchor(AddSchema.of(repo), new AddSchemaCommand(id, "9.0", json("{\"a\":1}"), null, "XSD")),
+                UseCaseError.Validation.class, "INVALID_SCHEMA");
+        assertUseCaseError(() -> runAsAnchor(AddSchema.of(repo), new AddSchemaCommand(id, "9.0", json("{}"), null, "AVRO")),
+                UseCaseError.Validation.class, "INVALID_SCHEMA_TYPE");
+        assertUseCaseError(() -> runAsAnchor(AddSchema.of(repo), new AddSchemaCommand(id, "9.0", json("{}"), "x".repeat(101), null)),
+                UseCaseError.Validation.class, "INVALID_MIME_TYPE");
+        assertThat(reload(id).specVersions()).as("nothing stored").isEmpty();
     }
 
     @Test

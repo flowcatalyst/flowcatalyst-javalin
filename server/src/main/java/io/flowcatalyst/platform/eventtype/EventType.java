@@ -112,12 +112,20 @@ public record EventType(
     ///
     /// @throws UseCaseException conflict `VERSION_EXISTS` when this event type already has `version`
     public EventType addSchemaVersion(String version, JsonNode schema) {
+        return addSchemaVersion(version, schema, SchemaType.JSON_SCHEMA, SpecVersion.JSON_SCHEMA_MIME_TYPE);
+    }
+
+    /// Appends a new `FINALISING` version of `schemaType` with `mimeType`;
+    /// `schema` is already in its stored form ([SchemaType#normaliseContent]).
+    ///
+    /// @throws UseCaseException conflict `VERSION_EXISTS` when this event type already has `version`
+    public EventType addSchemaVersion(String version, JsonNode schema, SchemaType schemaType, String mimeType) {
         if (specVersion(version).isPresent()) {
             throw UseCaseException.conflict("VERSION_EXISTS",
                     "Schema version '" + version + "' already exists for this event type");
         }
         var versions = new ArrayList<>(specVersions);
-        versions.add(SpecVersion.initial(id, version, schema));
+        versions.add(SpecVersion.initial(id, version, schema, schemaType, mimeType));
         return withSpecVersions(versions);
     }
 
