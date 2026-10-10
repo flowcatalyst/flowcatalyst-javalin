@@ -1,0 +1,1 @@
+const u=[{label:"Default",value:"DEFAULT"},{label:"High priority",value:"HIGH_PRIORITY"}];function I(e){return(e??"").trim().toUpperCase()==="HIGH_PRIORITY"?"HIGH_PRIORITY":"DEFAULT"}export{u as Q,I as q};

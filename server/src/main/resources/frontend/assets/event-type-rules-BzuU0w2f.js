@@ -1,0 +1,1 @@
+function t(s){return!!s&&s.status!=="ARCHIVED"}function n(s){return!s||s.status!=="CURRENT"?!1:s.specVersions.every(e=>e.status==="DEPRECATED")}function r(s){return s?s.status==="ARCHIVED"?!0:s.status==="CURRENT"&&s.specVersions.every(e=>e.status==="FINALISING"):!1}export{n as a,r as b,t as c};
