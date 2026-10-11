@@ -110,9 +110,13 @@ class EventTypesBffTest {
     @Test
     void createReturnsTheFullResponseWithExpectedKeySet() {
         String c = code("create");
-        // clientId is required for a non-anchor create: CreateEventType authorises
-        // create() against cmd.clientId(), and a platform-wide (null) create is anchor-only.
-        var r = http.post("/bff/event-types", "{\"code\":\"" + c + "\",\"name\":\"N\",\"description\":\"d\",\"clientId\":\"" + CLIENT + "\"}", WRITER);
+        // Every event type is platform-wide: a non-anchor create is refused even
+        // naming its own client, and an anchor's clientId is ignored (2026-10-11 F2).
+        String body0 = "{\"code\":\"" + c + "\",\"name\":\"N\",\"description\":\"d\",\"clientId\":\"" + CLIENT + "\"}";
+        var refused = http.post("/bff/event-types", body0, WRITER);
+        assertThat(refused.statusCode()).as(refused.body()).isEqualTo(403);
+        assertThat(json(refused).get("error").asText()).isEqualTo("SCOPE_FORBIDDEN");
+        var r = http.post("/bff/event-types", body0, ANCHOR);
         assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
         var body = json(r);
         assertThat(body.propertyNames()).containsExactlyInAnyOrder("id", "code", "application", "subdomain",

@@ -1,6 +1,6 @@
 {
   "name": "event-types: schema/version routes, filters, 4xx, scope-forbidden confinement",
-  "why": "The S0 smoke scenario already pins plain CRUD. This file adds the two schema-version routes (both the canonical /versions and the historical /schemas alias must answer identically), every documented list filter, the version state-machine conflicts, and — the load-bearing part — that a CLIENT-scoped principal can never successfully write to ANY event type, even one it created itself, because clientId is never persisted (docs/spec/eventtype.md §5, 'accident?'). If Go actually lets a CLIENT-scoped writer update its own client-scoped event type, that is a real behavioural DIFF, not a wording one.",
+  "why": "The S0 smoke scenario already pins plain CRUD. This file adds the two schema-version routes (both the canonical /versions and the historical /schemas alias must answer identically), every documented list filter, the version state-machine conflicts, and — the load-bearing part — that a CLIENT-scoped principal can never successfully write to ANY event type: event types are platform-wide, so a create needs anchor reach and a clientId on it is ignored, even one naming the caller's own client (docs/spec/eventtype.md §5; Go 0a8df19, Java F2 2026-10-11).",
   "covers": ["listEventTypes", "createEventType", "getEventType", "getEventTypeByCode", "updateEventType",
              "addEventTypeSchema", "addEventTypeVersion", "createClient", "createPrincipal", "assignPrincipalRoles"],
   "steps": [
@@ -124,15 +124,14 @@
                    "body": { "code": "s1cetb${run}:orders:order:foreign", "name": "X",
                              "clientId": "${client.id}" } } },
 
-    { "id": "b-can-create-scoped-to-own-client",
+    { "id": "b-cannot-create-even-naming-its-own-client",
       "request": { "method": "POST", "path": "/api/event-types",
                    "body": { "code": "s1cetb${run}:orders:order:own", "name": "X",
                              "clientId": "${clientBId}" } },
-      "expect": { "status": 201 },
-      "capture": { "ownEtId": "/id" } },
+      "expect": { "status": 403 } },
 
-    { "id": "b-cannot-update-even-its-own-client-scoped-event-type",
-      "request": { "method": "PUT", "path": "/api/event-types/${ownEtId}", "body": { "name": "Touched" } } },
+    { "id": "b-cannot-update-an-anchors-event-type",
+      "request": { "method": "PUT", "path": "/api/event-types/${etId}", "body": { "name": "Touched" } } },
 
     { "id": "b-cannot-add-schema-to-anchors-event-type",
       "request": { "method": "POST", "path": "/api/event-types/${etId}/schemas",

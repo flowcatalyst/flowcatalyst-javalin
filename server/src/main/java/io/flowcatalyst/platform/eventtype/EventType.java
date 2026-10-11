@@ -21,10 +21,11 @@ import java.util.Optional;
 /// load → transition → event. The repository persists whatever copy it is
 /// handed and stamps `updatedAt` itself.
 ///
-/// `clientId` is carried by the aggregate, the create command and the
-/// `created` event and is what per-resource authorization checks — but
-/// `msg_event_types` has no such column, so it is never persisted and reads
-/// back `null` (spec §1, open question 1).
+/// `clientId` is a component of the aggregate and the `created` event, but
+/// `msg_event_types` has no such column: event types are platform-wide, it is
+/// never set (create ignores a wire `clientId` and needs anchor reach,
+/// 2026-10-11 F2), never persisted and always reads back `null` (spec §1,
+/// open question 1). The read paths' client filter on it is dead code.
 ///
 /// @param id           `evt_…` TSID
 /// @param code         `application:subdomain:aggregate:event`, unique
@@ -38,7 +39,7 @@ import java.util.Optional;
 /// @param subdomain    second code segment
 /// @param aggregate    third code segment
 /// @param eventName    fourth code segment
-/// @param clientId     optional client scope (not persisted, see above)
+/// @param clientId     always `null` (see above)
 /// @param createdBy    creating principal, `null` for pre-audit rows and sync-created rows
 /// @param createdAt    creation time
 /// @param updatedAt    last change
@@ -241,11 +242,6 @@ public record EventType(
     public EventType withSource(EventTypeSource newSource) {
         return new EventType(id, code, name, description, specVersions, status, newSource, clientScoped,
                 application, subdomain, aggregate, eventName, clientId, createdBy, createdAt, updatedAt);
-    }
-
-    public EventType withClientId(String newClientId) {
-        return new EventType(id, code, name, description, specVersions, status, source, clientScoped,
-                application, subdomain, aggregate, eventName, newClientId, createdBy, createdAt, updatedAt);
     }
 
     /// Owner ruling 2026-09-06 #7: the create/update request's `clientScoped`

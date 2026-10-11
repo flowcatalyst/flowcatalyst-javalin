@@ -28,10 +28,12 @@ public final class CreateEventType {
                     }
                     EventTypeCode.parse(cmd.code());
                 })
-                // The target client is a command field, so the per-resource check
-                // can run before execute: a client-bound create needs access to that
-                // client; a platform-wide (null clientId) create needs anchor.
-                .authorize(cmd -> Checks.checkScopeAccess(Auth.current(), cmd.clientId()))
+                // Every event type is platform-wide, so creating one is a
+                // platform-level act: anchor (or super-admin) reach, the scope
+                // check on no client. A clientId sent on the wire used to pass
+                // this check for the caller's own client and then be dropped,
+                // creating a platform-wide type (spec §5, 2026-10-11 F2).
+                .authorize(_ -> Checks.checkScopeAccess(Auth.current(), null))
                 .execute((cmd, ec) -> {
                     if (repo.findByCode(cmd.code()).isPresent()) {
                         throw UseCaseException.conflict("CODE_EXISTS",
@@ -39,7 +41,6 @@ public final class CreateEventType {
                     }
                     EventType et = EventType.create(cmd.code(), cmd.name())
                             .withDescription(cmd.description())
-                            .withClientId(cmd.clientId())
                             .withClientScoped(cmd.clientScoped())
                             .withCreatedBy(ec.principalId());
                     if (cmd.schema() != null && !cmd.schema().isNull()) {

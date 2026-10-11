@@ -24,7 +24,7 @@ segments are denormalised onto the row (`application`, `subdomain`,
 | `status` | `CURRENT` \| `ARCHIVED` | default `CURRENT` |
 | `source` | `CODE` \| `API` \| `UI` | `UI` from the admin API, `API` from sync; `CODE` is read-only legacy |
 | `clientScoped` | boolean | always `false` today — **load-bearing or accident?** (column exists, nothing sets it) |
-| `clientId` | string, optional | carried on the aggregate, the create command and the `created` event, and used for authorization — but `msg_event_types` has **no such column**, so it is never persisted and every read returns `null`. **load-bearing or accident?** Today it means: creates bound to a client are scope-checked at create time only; afterwards the row is platform-level. |
+| `clientId` | string, optional | `msg_event_types` has **no such column**: event types are platform-wide. A `clientId` on create is accepted on the wire and **ignored** (not on the command, not on the `created` event); every read returns `null` (2026-10-11 F2, Go `0a8df19`). The read paths' client filter is dead code. |
 | `createdBy` | principal id, optional | set by create; **not** set by sync (**accident?**) |
 | `createdAt`, `updatedAt` | timestamps | `updatedAt` is stamped `now()` on every persist |
 | `specVersions` | list of spec version | ordered by `(event_type_id, version)` text order on read |
@@ -87,7 +87,7 @@ Wire shapes:
 
 | Schema | Fields | Notes |
 |---|---|---|
-| `CreateEventTypeRequest` | `code`*, `name`*, `description`, `clientId`, `schema` (JSON) | `schema` present ⇒ spec version `1.0` minted `FINALISING` |
+| `CreateEventTypeRequest` | `code`*, `name`*, `description`, `clientId` (ignored), `schema` (JSON) | `schema` present ⇒ spec version `1.0` minted `FINALISING` |
 | `UpdateEventTypeRequest` | `name`*, `description` | |
 | `AddSchemaRequest` | `version`*, `schema`* | |
 | `EventTypeResponse` | `id, code, name, application, subdomain, aggregate, eventName, description?, status, source, clientId?, createdBy?, createdAt, updatedAt, specVersions[]` | optional fields omitted when null; timestamps RFC 3339 with 6 fractional digits, `Z` |
@@ -122,7 +122,7 @@ Malformed JSON body → 400 `INVALID_JSON` (transport).
 | Where | What |
 |---|---|
 | Handler | coarse permission (table above); unauthenticated → 403 `UNAUTHENTICATED` |
-| Create — `authorize` phase | `checkScopeAccess(principal, cmd.clientId)`: client-bound create requires access to that client; `clientId` absent (platform-wide) requires anchor / super-admin → else 403 `SCOPE_FORBIDDEN` |
+| Create — `authorize` phase | `checkScopeAccess(principal, null)`: every event type is platform-wide, so a create requires anchor / super-admin whatever the body's `clientId` says → else 403 `SCOPE_FORBIDDEN` "anchor scope required for this resource" (2026-10-11 F2: a `clientId` naming the caller's own client used to pass and create a platform-wide type) |
 | Update / Delete / Archive / AddSchema / Finalise / Deprecate — `execute`, right after load + 404 | `checkScopeAccess(principal, loaded.clientId)` — with `clientId` never persisted this is always the platform-wide rule: anchor / super-admin only. **accident?** (a CLIENT-scoped principal holding `event-type:update` can never update anything) |
 | Sync | `publicAccess` — gated by its two entry points |
 | Reads | handler only: list filters client-scoped rows; get-by-id/code → 403 `FORBIDDEN` `No access to this event type` |
@@ -193,7 +193,7 @@ Delete removes spec versions then the row. Sync uses the same `Persist`.
 
 ## 10. Open questions for the owner (summary)
 
-1. `clientId` never persisted — keep the carried-but-not-stored field, or add the column (new behaviour), or drop it from the aggregate?
+1. ~~`clientId` never persisted~~ — ruled 2026-10-10 (Go F2): accepted on create and ignored; create needs anchor reach.
 2. Post-create writes are effectively anchor-only (because `clientId` reads back null). Intended?
 3. `clientId` query param suppresses the default `status=CURRENT` while filtering nothing.
 4. Create/update/add-schema gated by *any* write permission rather than the specific verb.

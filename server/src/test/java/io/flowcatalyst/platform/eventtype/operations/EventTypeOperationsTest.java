@@ -87,11 +87,11 @@ class EventTypeOperationsTest {
     }
 
     private static EventTypeCreated created(String code, String name) {
-        return runAsAnchor(CreateEventType.of(repo), new CreateCommand(code, name, null, null, null));
+        return runAsAnchor(CreateEventType.of(repo), new CreateCommand(code, name, null, null));
     }
 
     private static EventTypeCreated createdWithSchema(String code, String name) {
-        return runAsAnchor(CreateEventType.of(repo), new CreateCommand(code, name, null, null, SCHEMA));
+        return runAsAnchor(CreateEventType.of(repo), new CreateCommand(code, name, null, SCHEMA));
     }
 
     private static EventType reload(String id) {
@@ -138,7 +138,7 @@ class EventTypeOperationsTest {
     void createWritesTheRowTheEventAndTheAuditTogether() {
         String code = code("etcreate", "created");
         var ev = runAsAnchor(CreateEventType.of(repo),
-                new CreateCommand(code, "Order Created", "Order was created", null, SCHEMA));
+                new CreateCommand(code, "Order Created", "Order was created", SCHEMA));
 
         assertThat(ev.eventTypeId()).startsWith("evt_");
         assertThat(ev.code()).isEqualTo(code);
@@ -182,11 +182,11 @@ class EventTypeOperationsTest {
 
     static Stream<Arguments> malformedCreateCommands() {
         return Stream.of(
-                Arguments.of("null code", new CreateCommand(null, "X", null, null, null), "CODE_REQUIRED"),
-                Arguments.of("blank code", new CreateCommand("  ", "X", null, null, null), "CODE_REQUIRED"),
-                Arguments.of("null name", new CreateCommand("a:b:c:d", null, null, null, null), "NAME_REQUIRED"),
-                Arguments.of("three segments", new CreateCommand("a:b:c", "X", null, null, null), "INVALID_CODE_FORMAT"),
-                Arguments.of("blank segment", new CreateCommand("a: :c:d", "X", null, null, null), "INVALID_CODE_FORMAT"));
+                Arguments.of("null code", new CreateCommand(null, "X", null, null), "CODE_REQUIRED"),
+                Arguments.of("blank code", new CreateCommand("  ", "X", null, null), "CODE_REQUIRED"),
+                Arguments.of("null name", new CreateCommand("a:b:c:d", null, null, null), "NAME_REQUIRED"),
+                Arguments.of("three segments", new CreateCommand("a:b:c", "X", null, null), "INVALID_CODE_FORMAT"),
+                Arguments.of("blank segment", new CreateCommand("a: :c:d", "X", null, null), "INVALID_CODE_FORMAT"));
     }
 
     @ParameterizedTest(name = "{0} → {2}")
@@ -197,9 +197,9 @@ class EventTypeOperationsTest {
 
     @Test
     void createNamesTheBlankCodeSegment() {
-        assertThatThrownBy(() -> runAsAnchor(CreateEventType.of(repo), new CreateCommand("a:b:c", "X", null, null, null)))
+        assertThatThrownBy(() -> runAsAnchor(CreateEventType.of(repo), new CreateCommand("a:b:c", "X", null, null)))
                 .hasMessageContaining("Event type code must follow format: application:subdomain:aggregate:event");
-        assertThatThrownBy(() -> runAsAnchor(CreateEventType.of(repo), new CreateCommand("a: :c:d", "X", null, null, null)))
+        assertThatThrownBy(() -> runAsAnchor(CreateEventType.of(repo), new CreateCommand("a: :c:d", "X", null, null)))
                 .hasMessageContaining("Event type code part 'subdomain' cannot be empty");
     }
 
@@ -207,42 +207,32 @@ class EventTypeOperationsTest {
     void createRejectsADuplicateCode() {
         String code = code("etdup", "created");
         created(code, "First");
-        assertUseCaseError(() -> runAsAnchor(CreateEventType.of(repo), new CreateCommand(code, "Second", null, null, null)),
+        assertUseCaseError(() -> runAsAnchor(CreateEventType.of(repo), new CreateCommand(code, "Second", null, null)),
                 UseCaseError.Conflict.class, "CODE_EXISTS");
     }
 
     /// The use case's per-resource authorization: the coarse "may create event
-    /// types" permission is the handler's job, but the use case enforces that
-    /// you can only bind an event type to a client you can access (and that
-    /// platform-wide event types require anchor).
+    /// types" permission is the handler's job, but every event type is
+    /// platform-wide, so the use case requires anchor reach. A client-scoped
+    /// principal is denied (a wire `clientId` is ignored, see
+    /// `EventTypeApiTest.createIgnoresTheClientIdAndNeedsAnchorReach`).
     @Test
-    void createEnforcesClientScopeOnTheTargetClient() {
+    void createNeedsAnchorReach() {
         String ownClient = "cli_etscope_own_" + RUN;
         var clientCtx = new AuthContext(EntityType.PRINCIPAL.generate(), Scope.CLIENT, "c@x.io", List.of(ownClient),
                 List.of(), List.of(), true, List.of("platform:messaging:event-type:create"));
         var clientEc = ExecutionContext.of(clientCtx.principalId());
 
-        // Platform-wide (null clientId) → anchor required → denied.
         assertUseCaseError(() -> Auth.runAs(clientCtx, () -> CreateEventType.of(repo).run(uow,
-                        new CreateCommand(code("etscope", "platform"), "X", null, null, null), clientEc)),
+                        new CreateCommand(code("etscope", "platform"), "X", null, null), clientEc)),
                 UseCaseError.Authorization.class, "SCOPE_FORBIDDEN");
-
-        // Bound to a client the principal cannot access → denied.
-        assertUseCaseError(() -> Auth.runAs(clientCtx, () -> CreateEventType.of(repo).run(uow,
-                        new CreateCommand(code("etscope", "other"), "X", null, "cli_etscope_other_" + RUN, null), clientEc)),
-                UseCaseError.Authorization.class, "SCOPE_FORBIDDEN");
+        assertThat(repo.findByCode(code("etscope", "platform"))).isEmpty();
 
         // Unauthenticated (no bound principal) → denied before anything is written.
         assertUseCaseError(() -> CreateEventType.of(repo).run(uow,
-                        new CreateCommand(code("etscope", "anon"), "X", null, null, null), ExecutionContext.of(null)),
+                        new CreateCommand(code("etscope", "anon"), "X", null, null), ExecutionContext.of(null)),
                 UseCaseError.Authorization.class, "UNAUTHENTICATED");
         assertThat(repo.findByCode(code("etscope", "anon"))).isEmpty();
-
-        // Bound to the principal's own client → allowed.
-        var ev = Auth.runAs(clientCtx, () -> CreateEventType.of(repo).run(uow,
-                new CreateCommand(code("etscope", "own"), "Mine", null, ownClient, null), clientEc));
-        assertThat(ev.code()).isEqualTo(code("etscope", "own"));
-        assertThat(ev.clientId()).isEqualTo(ownClient);
     }
 
     // ── Update ─────────────────────────────────────────────────────────────

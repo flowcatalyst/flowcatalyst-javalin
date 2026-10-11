@@ -159,11 +159,13 @@ public final class EventTypeApi {
 
     // ── Wire DTOs (lockfile components) ────────────────────────────────────
 
-    /// Body of `POST /api/event-types`.
+    /// Body of `POST /api/event-types`. `clientId` is accepted and ignored:
+    /// event types are platform-wide and have no client (the SDKs expose the
+    /// field, so it is not a 400; the lockfile documents it as ignored).
     public record CreateEventTypeRequest(String code, String name, String description, String clientId, JsonNode schema,
             Boolean clientScoped) {
         public CreateCommand toCommand() {
-            return new CreateCommand(code, name, description, clientId, schema, Boolean.TRUE.equals(clientScoped));
+            return new CreateCommand(code, name, description, schema, Boolean.TRUE.equals(clientScoped));
         }
     }
 

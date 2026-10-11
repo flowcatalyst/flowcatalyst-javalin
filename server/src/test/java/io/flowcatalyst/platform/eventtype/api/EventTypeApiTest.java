@@ -19,6 +19,8 @@ import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.testpg.TestPg;
+import org.jooq.SQLDialect;
+import org.jooq.impl.DSL;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -305,10 +307,41 @@ class EventTypeApiTest {
         var r = send("POST", "/api/event-types", "{\"code\":\"" + APP + ":scope:thing:platform\",\"name\":\"X\"}", CLIENT_WRITER);
         assertThat(r.statusCode()).isEqualTo(403);
         assertThat(json(r).get("error").asText()).isEqualTo("SCOPE_FORBIDDEN");
+    }
 
+    /// Event types have no client (`msg_event_types` has no client column). A
+    /// `clientId` in the create body (the SDKs expose it) is accepted and
+    /// ignored: the type is platform-wide, its created event names no client,
+    /// and creating it needs anchor reach whatever `clientId` says. It used to
+    /// pass the scope check for the caller's own client and then be dropped, so
+    /// a client user created a platform-wide event type (2026-10-11 F2).
+    @Test
+    void createIgnoresTheClientIdAndNeedsAnchorReach() {
+        String code = APP + ":ignore:order:created";
+        String id = create(code, "N", ",\"clientId\":\"cli_etignore_" + RUN + "\"");
+        var got = json(send("GET", "/api/event-types/" + id, null, ANCHOR));
+        assertThat(got.has("clientId")).as(got.toString()).isFalse();
+        var data = DSL.using(TestPg.dataSource(), SQLDialect.POSTGRES).fetchOne(
+                "SELECT data::text FROM msg_events WHERE type = 'platform:admin:eventtype:created' AND data->>'eventTypeId' = ?", id);
+        assertThat(data).as("the created event").isNotNull();
+        assertThat(json(data.get(0, String.class)).has("clientId"))
+                .as("the created event must not name a client the type does not have").isFalse();
+
+        // A client user naming its own client is refused: the type would be platform-wide.
+        String shipped = APP + ":ignore:order:shipped";
         var own = send("POST", "/api/event-types",
-                "{\"code\":\"" + APP + ":scope:thing:own\",\"name\":\"X\",\"clientId\":\"cli_etapi_" + RUN + "\"}", CLIENT_WRITER);
-        assertThat(own.statusCode()).as(own.body()).isEqualTo(201);
+                "{\"code\":\"" + shipped + "\",\"name\":\"X\",\"clientId\":\"cli_etapi_" + RUN + "\"}", CLIENT_WRITER);
+        assertThat(own.statusCode()).as(own.body()).isEqualTo(403);
+        assertThat(json(own).get("error").asText()).isEqualTo("SCOPE_FORBIDDEN");
+        assertThat(send("GET", "/api/event-types/by-code/" + shipped, null, ANCHOR).statusCode()).isEqualTo(404);
+    }
+
+    private static JsonNode json(String s) {
+        try {
+            return Json.MAPPER.readTree(s);
+        } catch (Exception e) {
+            throw new IllegalStateException("not JSON: " + s, e);
+        }
     }
 
     @Test
