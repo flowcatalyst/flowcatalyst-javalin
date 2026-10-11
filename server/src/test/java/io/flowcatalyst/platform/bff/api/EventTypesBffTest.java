@@ -209,6 +209,13 @@ class EventTypesBffTest {
         assertThat(body.propertyNames()).containsExactlyInAnyOrder("created", "updated", "deleted", "total", "schemas");
         assertThat(body.get("schemas").propertyNames()).containsExactlyInAnyOrder("created", "updated", "unchanged");
         assertThat(body.get("total").asInt()).isGreaterThan(0);
+
+        // The catalogue's schemas are applied as each type's 1.0: a second run
+        // finds every one the same (the tally used to be zeros whatever happened).
+        var again = json(http.post("/bff/event-types/sync-platform", null, ANCHOR));
+        assertThat(again.get("updated").asInt()).isZero();
+        assertThat(again.get("schemas").get("unchanged").asInt()).isEqualTo(again.get("total").asInt());
+        assertThat(again.get("schemas").get("created").asInt() + again.get("schemas").get("updated").asInt()).isZero();
     }
 
     /// Owner ruling 2026-09-25 (backlog "Overnight review" item 16): the body may not

@@ -77,6 +77,11 @@ public record SpecVersion(
         return version;
     }
 
+    /// Same version with new schema content, `updatedAt` bumped (a sync rewriting `1.0`).
+    SpecVersion withContent(JsonNode newContent) {
+        return new SpecVersion(id, eventTypeId, version, mimeType, newContent, schemaType, status, createdAt, Instant.now());
+    }
+
     /// Same version in a new state, `updatedAt` bumped.
     SpecVersion withStatus(SpecVersionStatus newStatus) {
         return new SpecVersion(id, eventTypeId, version, mimeType, schemaContent, schemaType, newStatus, createdAt, Instant.now());

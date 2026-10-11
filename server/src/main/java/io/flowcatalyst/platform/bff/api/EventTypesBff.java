@@ -187,9 +187,8 @@ public final class EventTypesBff {
     /// `a3414cc`: anchor scope is reach, not authority): bulk-syncs the
     /// platform's built-in event-type catalogue
     /// (`seed.PlatformEventTypes`), defaulting `applicationCode` to
-    /// `"platform"` when the body is absent/blank. The schema tally is
-    /// wire-compatible but not instrumented on this path — `SyncEventTypes`
-    /// applies name/description only, never a schema (Go parity, event_types.go).
+    /// `"platform"` when the body is absent/blank. The catalogue's schemas are
+    /// applied as each type's spec version `1.0`; `schemas` reports what that did.
     private static void syncPlatform(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         Checks.requireAny(Auth.current(), EVENT_TYPE_SYNC, EVENT_TYPE_MANAGE); // the tier is reach, the permission authority
@@ -210,7 +209,7 @@ public final class EventTypesBff {
         var cmd = new SyncEventTypesCommand(applicationCode, inputs, true);
         var event = SyncEventTypes.of(s.repo()).run(s.uow(), cmd, Auth.executionContext());
         ctx.json(new SyncPlatformResponse(event.created(), event.updated(), event.deleted(), defs.size(),
-                new SyncPlatformSchemas(0, 0, 0)));
+                new SyncPlatformSchemas(event.schemas().created(), event.schemas().updated(), event.schemas().unchanged())));
     }
 
     // ── Read-side helpers ──────────────────────────────────────────────────

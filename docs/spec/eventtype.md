@@ -150,14 +150,22 @@ segment equals `applicationCode`.
 
 | Input row | Effect | Per-row event |
 |---|---|---|
-| code exists | `name`, `description` replaced (source, status, schema untouched) | `updated` |
-| code new | created with `source=API`, `createdBy` unset, no spec version | `created` |
+| code exists | `name`, `description` replaced; a listed `schema` applied as spec version `1.0` (see below); source and status untouched. Nothing changed (name, description by value, schema) ⇒ not saved, no event, not counted (bug 6) | `updated` |
+| code new | created with `source=API`, `createdBy` unset; a listed `schema` minted as spec version `1.0` `FINALISING` | `created` |
 | `removeUnlisted` and existing row with `source=API` not in input | hard-deleted | `deleted` |
 | `removeUnlisted` and existing row with `source` `UI`/`CODE` not in input | untouched | — |
 
-`schema` on a sync input is accepted but **ignored** (no spec version is
-minted). **load-bearing or accident?** The result/rollup carries
-`created/updated/deleted` counts and `syncedCodes` (input codes, in order).
+`schema` on a sync input is the type's spec version `1.0` (2026-10-11 owner
+ruling, as Go `57cf4d3`): minted `FINALISING` when absent, its content
+rewritten when it differs — compared by value (key order and number spelling
+do not count) — left alone otherwise; the version's status is never touched;
+an input without a schema leaves the type's versions alone. The SDK's sync
+(`/api/applications/{appCode}/event-types/sync`) sends no schemas; the BFF
+platform sync sends the catalogue's. The result/rollup carries
+`created/updated/deleted` counts, `syncedCodes` (input codes, in order) and the
+schema tally `created/updated/unchanged` (an input without a schema counts as
+unchanged), which the BFF sync-platform response reports as `schemas`; the
+tally is not in the rollup event's `data`.
 All row writes, per-row events and the rollup commit in one transaction; one
 audit row per per-row event, all with `operation = SyncEventTypesCommand`.
 
@@ -197,7 +205,7 @@ Delete removes spec versions then the row. Sync uses the same `Persist`.
 2. Post-create writes are effectively anchor-only (because `clientId` reads back null). Intended?
 3. `clientId` query param suppresses the default `status=CURRENT` while filtering nothing.
 4. Create/update/add-schema gated by *any* write permission rather than the specific verb.
-5. Sync ignores `schema` and does not set `createdBy`.
+5. ~~Sync ignores `schema`~~ (ruled 2026-10-11: applied as `1.0`); sync does not set `createdBy`.
 6. `/schemas` alias of `/versions` — confirm still needed by the SPA.
 7. Lenient enum reads mask bad rows.
 8. `DELETE` summary says "Archive" in the lockfile; behaviour is a hard delete.

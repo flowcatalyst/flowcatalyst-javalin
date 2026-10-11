@@ -195,6 +195,36 @@ class EventTypeTest {
                 .isInstanceOf(SchemaType.UnrecognisedSchemaTypeException.class);
     }
 
+    /// A sync's schema is spec version 1.0: minted when absent, rewritten when
+    /// it differs by value, left alone otherwise (key order and number spelling
+    /// do not count); no schema leaves the type as it was.
+    @Test
+    void syncSchemaMintsRewritesOrLeavesVersionOne() {
+        var bare = EventType.create("a:b:c:d", "Name");
+        assertThat(bare.syncSchema(null).outcome()).isEqualTo(EventType.SchemaSyncOutcome.UNCHANGED);
+        assertThat(bare.syncSchema(Json.MAPPER.nullNode()).eventType()).isSameAs(bare);
+
+        var minted = bare.syncSchema(json("{\"type\":\"object\",\"maximum\":1}"));
+        assertThat(minted.outcome()).isEqualTo(EventType.SchemaSyncOutcome.CREATED);
+        assertThat(minted.eventType().specVersion("1.0").orElseThrow().status()).isEqualTo(SpecVersionStatus.FINALISING);
+
+        var finalised = minted.eventType().finaliseSchema("1.0").eventType();
+        var same = finalised.syncSchema(json("{\"maximum\":1.0,\"type\":\"object\"}"));
+        assertThat(same.outcome()).as("reordered, 1 vs 1.0").isEqualTo(EventType.SchemaSyncOutcome.UNCHANGED);
+        assertThat(same.eventType()).isSameAs(finalised);
+
+        var changed = finalised.syncSchema(json("{\"type\":\"object\",\"maximum\":2}"));
+        assertThat(changed.outcome()).isEqualTo(EventType.SchemaSyncOutcome.UPDATED);
+        var v = changed.eventType().specVersion("1.0").orElseThrow();
+        assertThat(v.schemaContent()).isEqualTo(json("{\"type\":\"object\",\"maximum\":2}"));
+        assertThat(v.status()).as("the status is not touched").isEqualTo(SpecVersionStatus.CURRENT);
+        assertThat(changed.eventType().specVersions()).hasSize(1);
+    }
+
+    private static JsonNode json(String s) {
+        return Json.MAPPER.readTree(s);
+    }
+
     private static UseCaseError assertUseCaseError(ThrowingCallable call, Class<? extends UseCaseError> kind, String code) {
         assertThatThrownBy(call)
                 .isInstanceOf(UseCaseException.class)

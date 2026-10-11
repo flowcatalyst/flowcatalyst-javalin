@@ -7,6 +7,7 @@ import io.flowcatalyst.sdk.usecase.EventMetadata;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
 
 import java.util.List;
+import java.util.Objects;
 
 /// The event-type aggregate's domain events (spec §8): the type strings,
 /// the source, the subject builders and one record per event. Every event
@@ -170,18 +171,21 @@ public final class EventTypeEvents {
     /// The rollup emitted by [SyncEventTypes]: subject
     /// `platform.eventtypes.{applicationCode}`, message group
     /// `platform:eventtypes:{applicationCode}` so one application's syncs
-    /// are delivered in order.
+    /// are delivered in order. `schemas` is the tally of what the sync did to
+    /// each listed type's spec version `1.0` (the BFF sync-platform response
+    /// reports it); it is not part of the event's `data`.
     public record EventTypesSynced(EventMetadata metadata, String applicationCode, int created, int updated,
-                                   int deleted, List<String> syncedCodes) implements DomainEvent {
+                                   int deleted, List<String> syncedCodes, SchemaTally schemas) implements DomainEvent {
 
         public EventTypesSynced {
             syncedCodes = syncedCodes == null ? List.of() : List.copyOf(syncedCodes);
+            Objects.requireNonNull(schemas, "schemas");
         }
 
         public static EventTypesSynced of(ExecutionContext ec, String applicationCode, int created, int updated,
-                                          int deleted, List<String> syncedCodes) {
+                                          int deleted, List<String> syncedCodes, SchemaTally schemas) {
             return new EventTypesSynced(EventMetadata.of(ec, SYNCED, SOURCE, syncSubjectFor(applicationCode)),
-                    applicationCode, created, updated, deleted, syncedCodes);
+                    applicationCode, created, updated, deleted, syncedCodes, schemas);
         }
 
         @Override
@@ -196,5 +200,10 @@ public final class EventTypeEvents {
 
         private record Data(String applicationCode, int created, int updated, int deleted, List<String> syncedCodes) {
         }
+    }
+
+    /// How many listed types' spec version `1.0` a sync created, changed or
+    /// left as it was (a type sent without a schema counts as unchanged).
+    public record SchemaTally(int created, int updated, int unchanged) {
     }
 }

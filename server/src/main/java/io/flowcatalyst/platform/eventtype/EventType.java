@@ -166,6 +166,54 @@ public record EventType(
         return withSpecVersions(versions);
     }
 
+    /// The spec version a sync's schema is: the type's first version, as create mints it.
+    public static final String SYNC_SCHEMA_VERSION = "1.0";
+
+    /// What [#syncSchema] did to spec version [#SYNC_SCHEMA_VERSION].
+    public enum SchemaSyncOutcome {
+        CREATED, UPDATED, UNCHANGED
+    }
+
+    /// The outcome of [#syncSchema]: the (possibly) changed aggregate and what happened.
+    public record SchemaSynced(EventType eventType, SchemaSyncOutcome outcome) {
+        public SchemaSynced {
+            Objects.requireNonNull(eventType, "eventType");
+            Objects.requireNonNull(outcome, "outcome");
+        }
+
+        public boolean changed() {
+            return outcome != SchemaSyncOutcome.UNCHANGED;
+        }
+    }
+
+    /// A sync's schema becomes spec version `1.0` (spec §7): minted
+    /// `FINALISING` when absent (as create mints it), its content rewritten when
+    /// it differs — compared by value, since the stored copy comes back from
+    /// JSONB with keys reordered — and left alone when the same. A type synced
+    /// without a schema (`null` or JSON `null`) is unchanged. The version's
+    /// status is never touched.
+    public SchemaSynced syncSchema(JsonNode schema) {
+        if (schema == null || schema.isNull()) return new SchemaSynced(this, SchemaSyncOutcome.UNCHANGED);
+        Optional<SpecVersion> existing = specVersion(SYNC_SCHEMA_VERSION);
+        if (existing.isEmpty()) {
+            return new SchemaSynced(addSchemaVersion(SYNC_SCHEMA_VERSION, schema), SchemaSyncOutcome.CREATED);
+        }
+        if (sameJson(existing.get().schemaContent(), schema)) return new SchemaSynced(this, SchemaSyncOutcome.UNCHANGED);
+        return new SchemaSynced(withSpecVersions(specVersions.stream()
+                .map(sv -> sv.version().equals(SYNC_SCHEMA_VERSION) ? sv.withContent(schema) : sv)
+                .toList()), SchemaSyncOutcome.UPDATED);
+    }
+
+    /// JSON equality by value: object key order is ignored (Jackson's object
+    /// equality is a map equality) and numbers compare by value, so `1` and
+    /// `1.0` from different readers are the same schema.
+    private static boolean sameJson(JsonNode a, JsonNode b) {
+        if (a == null) return false;
+        return a.equals((x, y) -> x.isNumber() && y.isNumber()
+                ? x.decimalValue().compareTo(y.decimalValue())
+                : x.equals(y) ? 0 : 1, b);
+    }
+
     /// `FINALISING` → `CURRENT` for `version`. At most one sibling — the first
     /// `CURRENT` version with the same [SpecVersion#major] — is auto-deprecated
     /// in the same change; its version string is reported so the event can

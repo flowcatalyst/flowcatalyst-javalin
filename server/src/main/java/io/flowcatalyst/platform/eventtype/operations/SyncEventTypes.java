@@ -1,6 +1,8 @@
 package io.flowcatalyst.platform.eventtype.operations;
 
 import io.flowcatalyst.platform.eventtype.EventType;
+import io.flowcatalyst.platform.eventtype.EventType.SchemaSyncOutcome;
+import io.flowcatalyst.platform.eventtype.EventType.SchemaSynced;
 import io.flowcatalyst.platform.eventtype.EventTypeCode;
 import io.flowcatalyst.platform.eventtype.EventTypeRepository;
 import io.flowcatalyst.platform.eventtype.EventTypeSource;
@@ -8,6 +10,7 @@ import io.flowcatalyst.platform.eventtype.operations.EventTypeEvents.EventTypeCr
 import io.flowcatalyst.platform.eventtype.operations.EventTypeEvents.EventTypeDeleted;
 import io.flowcatalyst.platform.eventtype.operations.EventTypeEvents.EventTypeUpdated;
 import io.flowcatalyst.platform.eventtype.operations.EventTypeEvents.EventTypesSynced;
+import io.flowcatalyst.platform.eventtype.operations.EventTypeEvents.SchemaTally;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.SyncDelete;
 import io.flowcatalyst.sdk.usecase.jdbc.SyncSave;
@@ -15,6 +18,7 @@ import io.flowcatalyst.sdk.usecase.op.Operation;
 import io.flowcatalyst.sdk.usecase.op.Plan;
 
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,12 +28,16 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /// Bulk-upserts an application's event-type catalogue in one transaction
-/// (spec §7): existing codes get name + description replaced — a listed code
-/// whose name and description are unchanged (by value; `null` equals `null`
-/// only) is neither saved nor counted as updated (bug 6) — new codes are
-/// created `API`-sourced, and with `removeUnlisted` the `API`-sourced rows
-/// not in the batch are deleted (`UI`/`CODE` rows are never touched). One
-/// per-row event per row touched plus one [EventTypesSynced] rollup.
+/// (spec §7): existing codes get name + description replaced and a listed
+/// schema applied as spec version `1.0` ([EventType#syncSchema]) — a listed
+/// code whose name, description (by value; `null` equals `null` only) and
+/// schema are unchanged is neither saved nor counted as updated (bug 6) — new
+/// codes are created `API`-sourced with their schema, and with
+/// `removeUnlisted` the `API`-sourced rows not in the batch are deleted
+/// (`UI`/`CODE` rows are never touched). One per-row event per row touched
+/// plus one [EventTypesSynced] rollup carrying the schema tally (2026-10-11
+/// owner ruling: apply schemas as Go does). The SDK's sync sends no schemas;
+/// the BFF platform sync does.
 ///
 /// Authorization is deliberately [Operation.Authorize#publicAccess()]: the
 /// operation is reached from the app-scoped SDK sync and the anchor-only BFF
@@ -57,18 +65,25 @@ public final class SyncEventTypes {
                     var deletes = new ArrayList<SyncDelete<EventType>>();
                     int created = 0;
                     int updated = 0;
+                    var schemas = new EnumMap<SchemaSyncOutcome, Integer>(SchemaSyncOutcome.class);
                     for (SyncEventTypeInput in : cmd.eventTypes()) {
                         EventType existing = existingByCode.get(in.code());
                         if (existing != null) {
-                            if (Objects.equals(existing.name(), in.name())
-                                    && Objects.equals(existing.description(), in.description())) {
+                            boolean renamed = !Objects.equals(existing.name(), in.name())
+                                    || !Objects.equals(existing.description(), in.description());
+                            SchemaSynced synced = existing.withName(in.name()).withDescription(in.description())
+                                    .syncSchema(in.schema());
+                            schemas.merge(synced.outcome(), 1, Integer::sum);
+                            if (!renamed && !synced.changed()) {
                                 continue; // unchanged: neither written nor counted as updated (bug 6)
                             }
-                            EventType et = existing.withName(in.name()).withDescription(in.description());
+                            EventType et = synced.eventType();
                             saves.add(new SyncSave<>(et, EventTypeUpdated.of(ec, et)));
                             updated++;
                         } else {
-                            EventType et = fromSync(in);
+                            SchemaSynced synced = fromSync(in).syncSchema(in.schema());
+                            schemas.merge(synced.outcome(), 1, Integer::sum);
+                            EventType et = synced.eventType();
                             saves.add(new SyncSave<>(et, EventTypeCreated.of(ec, et)));
                             created++;
                         }
@@ -80,7 +95,10 @@ public final class SyncEventTypes {
                     }
 
                     List<String> syncedCodes = cmd.eventTypes().stream().map(SyncEventTypeInput::code).toList();
-                    var rollup = EventTypesSynced.of(ec, cmd.applicationCode(), created, updated, deletes.size(), syncedCodes);
+                    var tally = new SchemaTally(schemas.getOrDefault(SchemaSyncOutcome.CREATED, 0),
+                            schemas.getOrDefault(SchemaSyncOutcome.UPDATED, 0),
+                            schemas.getOrDefault(SchemaSyncOutcome.UNCHANGED, 0));
+                    var rollup = EventTypesSynced.of(ec, cmd.applicationCode(), created, updated, deletes.size(), syncedCodes, tally);
                     return Plan.sync(repo, saves, deletes, rollup);
                 });
     }

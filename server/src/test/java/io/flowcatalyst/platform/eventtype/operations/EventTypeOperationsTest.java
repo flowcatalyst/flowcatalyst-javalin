@@ -401,6 +401,44 @@ class EventTypeOperationsTest {
         assertThat(eventsFor(before.id(), EventTypeEvents.UPDATED)).hasSize(1);
     }
 
+    /// The sync used to ignore every schema it was sent, and the BFF
+    /// sync-platform response reported a schema tally of zeros. A listed type's
+    /// schema is now its spec version 1.0: minted, rewritten when it changed,
+    /// left alone (and counted unchanged) when the same — compared by value,
+    /// since JSONB hands the stored copy back reordered (2026-10-11 owner
+    /// ruling; Go `57cf4d3`).
+    @Test
+    void syncAppliesSchemasAsVersionOneAndTalliesThem() {
+        String application = app("etschtally");
+        String a = application + ":orders:order:created";
+        String b = application + ":orders:order:shipped";
+
+        var first = runAsAnchor(SyncEventTypes.of(repo), new SyncEventTypesCommand(application, List.of(
+                new SyncEventTypeInput(a, "A", null, json("{\"type\":\"object\",\"required\":[\"id\"]}")),
+                new SyncEventTypeInput(b, "B", null, null)), false));
+        assertThat(first.schemas()).isEqualTo(new EventTypeEvents.SchemaTally(1, 0, 1));
+        assertThat(repo.findByCode(b).orElseThrow().specVersions()).as("a type sent without a schema has none").isEmpty();
+
+        var second = runAsAnchor(SyncEventTypes.of(repo), new SyncEventTypesCommand(application, List.of(
+                new SyncEventTypeInput(a, "A", null, json("{ \"required\": [\"id\"], \"type\": \"object\" }")),
+                new SyncEventTypeInput(b, "B", null, json("{\"type\":\"object\"}"))), false));
+        assertThat(second.schemas()).as("B's first schema; A's, reordered, is the same schema")
+                .isEqualTo(new EventTypeEvents.SchemaTally(1, 0, 1));
+        assertThat(second.updated()).as("B changed (its schema), A did not").isEqualTo(1);
+
+        var third = runAsAnchor(SyncEventTypes.of(repo), new SyncEventTypesCommand(application, List.of(
+                new SyncEventTypeInput(a, "A", null, json("{\"type\":\"object\",\"required\":[\"id\",\"total\"]}")),
+                new SyncEventTypeInput(b, "B", null, json("{\"type\":\"object\"}"))), false));
+        assertThat(third.schemas()).isEqualTo(new EventTypeEvents.SchemaTally(0, 1, 1));
+        assertThat(third.updated()).as("a schema change alone is an update").isEqualTo(1);
+
+        var got = repo.findByCode(a).orElseThrow();
+        assertThat(got.specVersions()).as("a sync rewrites version 1.0, it does not add versions").hasSize(1);
+        assertThat(got.specVersion("1.0").orElseThrow().schemaContent())
+                .isEqualTo(json("{\"type\":\"object\",\"required\":[\"id\",\"total\"]}"));
+        assertThat(got.specVersion("1.0").orElseThrow().status()).isEqualTo(SpecVersionStatus.FINALISING);
+    }
+
     @Test
     void syncRejectsAMissingApplicationCodeAndAbortsOnTheFirstBadRow() {
         assertUseCaseError(() -> runAsAnchor(SyncEventTypes.of(repo), new SyncEventTypesCommand(null, List.of(), false)),
