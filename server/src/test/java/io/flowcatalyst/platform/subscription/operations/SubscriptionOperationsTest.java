@@ -1316,4 +1316,22 @@ class SubscriptionOperationsTest {
         assertThat(reload(id).clientIdentifier()).isEqualTo(identifier);
         assertThat(reload(created(code("subci-p"), "Platform").subscriptionId()).clientIdentifier()).isNull();
     }
+
+    /// A subscription the code-first sync creates stores its client's
+    /// identifier, as create does (2026-10-11 F5, Go `3f0dba4`); a platform
+    /// sync stores none.
+    @Test
+    void syncStoresTheClientIdentifier() {
+        String identifier = "subsci" + RUN;
+        var client = Client.create("Client " + identifier, ClientIdentifier.parse(identifier));
+        uow.inTransaction(tx -> {
+            new ClientRepository(DS).persist(client, tx.dbTx());
+            return null;
+        });
+        String appCode = "subsci" + RUN;
+        runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appCode, client.id(), false, row(code("subsci-c"), "C")));
+        assertThat(repo.findByCode(code("subsci-c"), appCode, client.id()).orElseThrow().clientIdentifier()).isEqualTo(identifier);
+        runAsAnchor(SyncSubscriptions.of(repo, connections, pools), sync(appCode, false, row(code("subsci-p"), "P")));
+        assertThat(repo.findByCode(code("subsci-p"), appCode, null).orElseThrow().clientIdentifier()).isNull();
+    }
 }

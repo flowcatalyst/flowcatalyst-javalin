@@ -69,6 +69,9 @@ public final class SyncSubscriptions {
                     Set<String> incomingCodes = subs.stream()
                             .map(SyncSubscriptionInput::code).collect(Collectors.toSet());
 
+                    // A subscription the sync creates stores its client's identifier, as create
+                    // does (2026-10-11 F5); rows the sync updates are not backfilled.
+                    String clientIdentifier = repo.clientIdentifier(cmd.clientId()).orElse(null);
                     var saves = new ArrayList<SyncSave<Subscription>>(subs.size());
                     var deletes = new ArrayList<SyncDelete<Subscription>>();
                     int created = 0;
@@ -86,6 +89,7 @@ public final class SyncSubscriptions {
                             Subscription s = applyInput(Subscription.create(in.code(), in.name(), in.target())
                                     .withApplicationCode(cmd.applicationCode())
                                     .withClientId(cmd.clientId())
+                                    .withClientIdentifier(clientIdentifier)
                                     .withSource(SubscriptionSource.API)
                                     .withCreatedBy(ec.principalId()), in, resolvedConnectionId, pools);
                             saves.add(new SyncSave<>(s, SubscriptionCreated.of(ec, s)));

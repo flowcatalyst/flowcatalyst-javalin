@@ -4,6 +4,9 @@ import io.flowcatalyst.platform.serviceaccount.SigningAccounts;
 import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ApplicationType;
+import io.flowcatalyst.platform.client.Client;
+import io.flowcatalyst.platform.client.ClientIdentifier;
+import io.flowcatalyst.platform.client.ClientRepository;
 import io.flowcatalyst.platform.connection.Connection;
 import io.flowcatalyst.platform.connection.ConnectionCode;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
@@ -438,4 +441,24 @@ class SyncConnectionsTest {
                 ConnectionEvents.CREATED, ConnectionEvents.subjectFor(createdRow.id()));
         assertThat(createdRows).hasSize(1);
     }
+
+    /// A connection the code-first sync creates stores its client's identifier,
+    /// as create does (2026-10-11 F5, Go `3f0dba4`); a platform sync stores none.
+    @Test
+    void syncStoresTheClientIdentifier() {
+        Application app = applicationWithServiceAccount("conci");
+        String identifier = "conci" + RUN;
+        var client = Client.create("Client " + identifier, ClientIdentifier.parse(identifier));
+        uow.inTransaction(tx -> {
+            new ClientRepository(DS).persist(client, tx.dbTx());
+            return null;
+        });
+        sync(new SyncConnectionsCommand(app.id(), app.code(), client.id(),
+                List.of(new SyncConnectionInput(code("ci-c"), "C", null, null)), false));
+        assertThat(repo.findByCode(code("ci-c"), app.code(), client.id()).orElseThrow().clientIdentifier()).isEqualTo(identifier);
+        sync(new SyncConnectionsCommand(app.id(), app.code(), null,
+                List.of(new SyncConnectionInput(code("ci-p"), "P", null, null)), false));
+        assertThat(repo.findByCode(code("ci-p"), app.code(), null).orElseThrow().clientIdentifier()).isNull();
+    }
 }
+

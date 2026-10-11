@@ -87,6 +87,9 @@ public final class SyncConnections {
                     Map<String, Connection> existingByCode = repo.findByApplicationAndClient(cmd.applicationCode(), cmd.clientId()).stream()
                             .collect(Collectors.toMap(Connection::code, Function.identity(), (a, _) -> a, LinkedHashMap::new));
 
+                    // A connection the sync creates stores its client's identifier, as create
+                    // does (2026-10-11 F5); rows the sync updates are not backfilled.
+                    String clientIdentifier = repo.clientIdentifier(cmd.clientId()).orElse(null);
                     var saves = new ArrayList<SyncSave<Connection>>(cmd.connections().size());
                     List<String> syncedCodes = new ArrayList<>(cmd.connections().size());
                     Set<String> syncedSet = new HashSet<>();
@@ -112,6 +115,7 @@ public final class SyncConnections {
                                     .withDescription(in.description())
                                     .withExternalId(in.externalId())
                                     .withClientId(cmd.clientId())
+                                    .withClientIdentifier(clientIdentifier)
                                     .withApplicationCode(cmd.applicationCode())
                                     .withSource(ConnectionSource.API);
                             saves.add(new SyncSave<>(c, ConnectionCreated.of(ec, c)));

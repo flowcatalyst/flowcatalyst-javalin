@@ -37,7 +37,7 @@ it lands in Java).
 | `name` | string, required | admin create/update: trimmed; sync: as given |
 | `description` | string, optional | |
 | `clientId` | string, optional | `null` = platform-wide; persisted; drives authorization, list visibility and `matchesClient`. **K3**: also the second part of sync's ownership key — a sync scopes its matching/creation/removal to `(applicationCode, clientId)`, `NULL` matching `NULL` only (`code-first-connections.md` §3) |
-| `clientIdentifier` | string, optional | set by admin create from `tnt_clients.identifier` for the client id (2026-10-10; none for no client or an id naming none; sync does not set it; existing rows not backfilled) |
+| `clientIdentifier` | string, optional | set by admin create from `tnt_clients.identifier` for the client id (2026-10-10; none for no client or an id naming none; the code-first sync sets it on the rows it creates, 2026-10-11 F5; existing rows not backfilled) |
 | `clientScoped` | boolean | set by create's optional `clientScoped` (default `false`; bug 9, 2026-10-10); update leaves it |
 | `eventTypes` | list of binding | ≥ 1 on create; replaced wholesale on update/sync |
 | `connectionId` | string, optional | ~~not a foreign key; validated to exist **only by sync** (`CONNECTION_NOT_FOUND`), not by admin create/update — **load-bearing or accident?**~~ **Superseded 2026-09-25** (`security-fixes-2026-09-24.md` S3.1, commit `b1ce6e55`): still not a foreign key, but admin create, and any admin update that changes it, now require the resolved connection — and, when the connection names a service account, that account — to be one the caller may sign with (`SigningReach`, §10 open question 13) |

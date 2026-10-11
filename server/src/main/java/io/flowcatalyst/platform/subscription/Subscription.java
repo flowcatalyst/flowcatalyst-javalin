@@ -31,7 +31,7 @@ import java.util.Objects;
 /// @param name             human-readable name
 /// @param description      optional description
 /// @param clientId         optional client scope; `null` = platform-wide
-/// @param clientIdentifier optional; set by admin create from the client id (2026-10-10); sync does not set it
+/// @param clientIdentifier optional; set from the client id by admin create (2026-10-10) and by the code-first sync on the rows it creates (2026-10-11 F5)
 /// @param clientScoped     subscribes to client-scoped event types; set at create (bug 9), default `false`
 /// @param eventTypes       the patterns, in stored order; replaced wholesale on update
 /// @param connectionId     optional delivery connection (not a foreign key)

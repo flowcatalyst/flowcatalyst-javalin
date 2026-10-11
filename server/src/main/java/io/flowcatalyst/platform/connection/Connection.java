@@ -31,7 +31,7 @@ import java.util.Objects;
 ///                         always produce `UI`
 /// @param serviceAccountId the owning service account (not validated today, spec §1)
 /// @param clientId         optional client scope; `null` = platform-wide
-/// @param clientIdentifier optional; set by admin create from the client id (2026-10-10); sync does not set it
+/// @param clientIdentifier optional; set from the client id by admin create (2026-10-10) and by the code-first sync on the rows it creates (2026-10-11 F5)
 /// @param createdAt        creation time
 /// @param updatedAt        last change
 public record Connection(
