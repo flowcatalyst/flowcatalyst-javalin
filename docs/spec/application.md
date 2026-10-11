@@ -77,7 +77,7 @@ delete = `application:delete`.
 | `PUT /api/applications/{id}` | `application:update` | `UpdateApplicationRequest` → `UpdateCommand` | 204 | PATCH semantics: absent field = unchanged |
 | `POST /api/applications/{id}/activate` | `application:update` | `ActivateCommand{id}` | 200 `ApplicationResponse` (re-read) | |
 | `POST /api/applications/{id}/deactivate` | `application:update` | `DeactivateCommand{id}` | 200 `ApplicationResponse` (re-read) | |
-| `DELETE /api/applications/{id}` | `application:delete` | `DeleteCommand{id}` | 204; 409 `APPLICATION_ACTIVE` "Deactivate the application first." for an active application (bug 14, 2026-10-10, checked first) | hard delete; client configs are **not** cascaded (**accident?** — orphaned `app_client_configs` rows) |
+| `DELETE /api/applications/{id}` | `application:delete` | `DeleteCommand{id}` | 204; 409 `APPLICATION_ACTIVE` "Deactivate the application first." for an active application (bug 14, 2026-10-10, checked first); 409 `APPLICATION_HAS_REFERENCES` "Cannot delete application '<code>' — <n access grants, n client configs, n service accounts, n application roles, n principal refs> still reference it. Remove those before deleting." (non-zero counts only, in that order) while access grants, **enabled** client configs, service accounts, application-scoped roles or principals' application refs name it (2026-10-11 owner ruling, Go decisions #53/#55); then 409 `APPLICATION_HAS_FUNCTIONS` | hard delete; the application's **disabled** client configs are removed in the same transaction, nothing else is cascaded |
 | `POST /api/applications/{id}/service-account` | anchor + `APPLICATION_UPDATE` | `AttachServiceAccountRequest{serviceAccountId, serviceAccountCode}` → `AttachServiceAccountCommand` | 204 | |
 | `GET /api/applications/{id}/clients` | `application:view` | — | 200 `ClientConfigListResponse` `{items}` | ordered by `createdAt`; an unknown application id lists `[]`, not 404 (**accident?**) |
 | `GET /api/applications/{id}/clients/{clientId}` | `application:view` | — | 200 `ClientConfigResponse` | 404 `ClientConfig_NOT_FOUND`, id rendered `{appId}:{clientId}` |
@@ -193,8 +193,8 @@ command) in the same transaction as the row change.
 ## 9. Persistence
 
 Application: upsert `ON CONFLICT (id)`; `created_at` insert-only;
-`updated_at` stamped `now()` at persist. Delete removes only the
-`app_applications` row. Client config: upsert `ON CONFLICT (id)` updating
+`updated_at` stamped `now()` at persist. Delete removes the
+`app_applications` row and its disabled `app_client_configs` rows (2026-10-11). Client config: upsert `ON CONFLICT (id)` updating
 `enabled, updated_at` only (`application_id` / `client_id` are insert-only).
 
 Cross-aggregate reads the operations need (read-only, by id):
@@ -250,7 +250,7 @@ authority). Each now also requires a permission:
 3. ~~`hasLoginClient` always `false`~~ **Done (2026-09-05): implemented**, see §10; `baseUrlOverride` / `configJson` never populated.
 4. `active=<anything but "true">` lists inactive applications.
 5. `type` is not validated (unknown → `APPLICATION`).
-6. Delete leaves orphaned `app_client_configs` rows.
+6. ~~Delete leaves orphaned `app_client_configs` rows.~~ Ruled 2026-10-11: a referenced application is refused (`APPLICATION_HAS_REFERENCES`); disabled configs are removed with it.
 7. `GET …/{id}/clients` and `…/by-id/{id}/roles` answer `[]` for an unknown application instead of 404.
 8. `service-account-provisioned.serviceAccountId` carries the SA id while the row stores the principal id.
 9. `""` on an optional update field is stored verbatim (the clear-a-field idiom).

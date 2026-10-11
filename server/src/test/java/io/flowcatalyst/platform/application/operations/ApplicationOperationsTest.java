@@ -302,6 +302,62 @@ class ApplicationOperationsTest {
         assertThat(repo.findById(seeded.applicationId())).isEmpty();
     }
 
+    /// The delete is refused (409 `APPLICATION_HAS_REFERENCES`) while anything
+    /// still references the application — each kind alone blocks it, and the
+    /// message names every non-zero count — and a disabled client config does
+    /// not block it but is removed with the application (spec §3; Go owner
+    /// decisions #53/#55, ruled for Java 2026-10-11).
+    @Test
+    void deleteIsRefusedWhileAnythingReferencesTheApplication() {
+        var seeded = created("appdelrefs", "Referenced");
+        String app = seeded.applicationId();
+        deactivate(app);
+        String clientId = client("appdelrefs");
+        String prn = EntityType.PRINCIPAL.generate();
+        List<String[]> kinds = List.of(
+                new String[]{"access grants",
+                        "INSERT INTO iam_principal_application_access (principal_id, application_id) VALUES ('" + prn + "', '" + app + "')",
+                        "DELETE FROM iam_principal_application_access WHERE application_id = '" + app + "'"},
+                new String[]{"client configs",
+                        "INSERT INTO app_client_configs (id, application_id, client_id, enabled) VALUES ('" + EntityType.APP_CLIENT_CONFIG.generate() + "', '" + app + "', '" + clientId + "', true)",
+                        "DELETE FROM app_client_configs WHERE application_id = '" + app + "'"},
+                new String[]{"service accounts",
+                        "INSERT INTO iam_service_accounts (id, code, name, application_id) VALUES ('" + EntityType.SERVICE_ACCOUNT.generate() + "', 'appdelrefs-" + RUN + "', 'x', '" + app + "')",
+                        "DELETE FROM iam_service_accounts WHERE application_id = '" + app + "'"},
+                new String[]{"application roles",
+                        "INSERT INTO iam_roles (id, name, display_name, application_id) VALUES ('" + EntityType.ROLE.generate() + "', 'appdelrefs" + RUN + ":r', 'x', '" + app + "')",
+                        "DELETE FROM iam_roles WHERE application_id = '" + app + "'"},
+                new String[]{"principal refs",
+                        "INSERT INTO iam_principals (id, type, name, application_id) VALUES ('" + prn + "', 'USER', 'x', '" + app + "')",
+                        "DELETE FROM iam_principals WHERE application_id = '" + app + "'"});
+        for (String[] k : kinds) {
+            DB.execute(k[1]);
+            assertThatThrownBy(() -> runAsAnchor(DeleteApplication.of(repo, functions), new DeleteCommand(app)))
+                    .isInstanceOfSatisfying(UseCaseException.class, e -> {
+                        assertThat(e.error()).isInstanceOf(UseCaseError.Conflict.class);
+                        assertThat(e.error().code()).isEqualTo("APPLICATION_HAS_REFERENCES");
+                        assertThat(e.error().message()).isEqualTo("Cannot delete application '" + code("appdelrefs") + "' — 1 "
+                                + k[0] + " still reference it. Remove those before deleting.");
+                    });
+            DB.execute(k[2]);
+        }
+        kinds.forEach(k -> DB.execute(k[1]));
+        assertThatThrownBy(() -> runAsAnchor(DeleteApplication.of(repo, functions), new DeleteCommand(app)))
+                .isInstanceOfSatisfying(UseCaseException.class, e -> assertThat(e.error().message()).isEqualTo(
+                        "Cannot delete application '" + code("appdelrefs") + "' — 1 access grants, 1 client configs, "
+                        + "1 service accounts, 1 application roles, 1 principal refs still reference it. Remove those before deleting."));
+        assertThat(repo.findById(app)).as("the refused application survives").isPresent();
+        assertThat(eventsFor(app, ApplicationEvents.DELETED)).isEmpty();
+        kinds.forEach(k -> DB.execute(k[2]));
+
+        // A disabled client config does not block the delete and goes with it.
+        DB.execute("INSERT INTO app_client_configs (id, application_id, client_id, enabled) VALUES ('"
+                + EntityType.APP_CLIENT_CONFIG.generate() + "', '" + app + "', '" + clientId + "', false)");
+        runAsAnchor(DeleteApplication.of(repo, functions), new DeleteCommand(app));
+        assertThat(repo.findById(app)).isEmpty();
+        assertThat(DB.fetchCount(DSL.table("app_client_configs"), DSL.field("application_id").eq(app))).isZero();
+    }
+
     private static void deactivate(String id) {
         runAsAnchor(DeactivateApplication.of(repo), new DeactivateCommand(id));
     }

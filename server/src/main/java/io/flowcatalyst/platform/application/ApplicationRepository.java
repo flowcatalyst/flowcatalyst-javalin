@@ -20,7 +20,11 @@ import java.util.Objects;
 import java.util.Optional;
 
 import static io.flowcatalyst.db.generated.Tables.APP_APPLICATIONS;
+import static io.flowcatalyst.db.generated.Tables.APP_CLIENT_CONFIGS;
 import static io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS;
+import static io.flowcatalyst.db.generated.Tables.IAM_PRINCIPAL_APPLICATION_ACCESS;
+import static io.flowcatalyst.db.generated.Tables.IAM_ROLES;
+import static io.flowcatalyst.db.generated.Tables.IAM_SERVICE_ACCOUNTS;
 import static io.flowcatalyst.db.generated.Tables.TNT_CLIENTS;
 
 /// `app_applications` via jOOQ. Reads go through the pool; writes happen only
@@ -120,10 +124,46 @@ public final class ApplicationRepository implements Persist<Application> {
                 .execute();
     }
 
-    /// Removes the application row only (spec §3, open question 6).
+    /// Removes the application row and its **disabled** per-client configs in
+    /// the same transaction (a disabled config does not block the delete,
+    /// [References]); nothing else is cascaded (spec §3).
     @Override
     public void delete(Application a, DbTx tx) {
-        DSL.using(tx.connection(), SQLDialect.POSTGRES).deleteFrom(T).where(T.ID.eq(a.id())).execute();
+        DSLContext txDsl = DSL.using(tx.connection(), SQLDialect.POSTGRES);
+        txDsl.deleteFrom(APP_CLIENT_CONFIGS)
+                .where(APP_CLIENT_CONFIGS.APPLICATION_ID.eq(a.id()).and(APP_CLIENT_CONFIGS.ENABLED.isFalse()))
+                .execute();
+        txDsl.deleteFrom(T).where(T.ID.eq(a.id())).execute();
+    }
+
+    /// What still points at an application (spec §3, the delete guard). None
+    /// of these columns has a foreign key, so each is a place the application
+    /// must be unwired from before it can be deleted; only **enabled** client
+    /// configs count.
+    ///
+    /// @param accessGrants    principals' application-access rows
+    /// @param clientConfigs   enabled per-client configs
+    /// @param serviceAccounts service accounts bound to the application
+    /// @param roles           application-scoped roles
+    /// @param principalRefs   principals whose application ref names it
+    public record References(long accessGrants, long clientConfigs, long serviceAccounts, long roles,
+                             long principalRefs) {
+    }
+
+    /// [References] for an application, in one query.
+    public References countReferences(String id) {
+        var r = dsl.select(
+                        DSL.selectCount().from(IAM_PRINCIPAL_APPLICATION_ACCESS)
+                                .where(IAM_PRINCIPAL_APPLICATION_ACCESS.APPLICATION_ID.eq(id)).asField(),
+                        DSL.selectCount().from(APP_CLIENT_CONFIGS)
+                                .where(APP_CLIENT_CONFIGS.APPLICATION_ID.eq(id).and(APP_CLIENT_CONFIGS.ENABLED.isTrue())).asField(),
+                        DSL.selectCount().from(IAM_SERVICE_ACCOUNTS)
+                                .where(IAM_SERVICE_ACCOUNTS.APPLICATION_ID.eq(id)).asField(),
+                        DSL.selectCount().from(IAM_ROLES).where(IAM_ROLES.APPLICATION_ID.eq(id)).asField(),
+                        DSL.selectCount().from(IAM_PRINCIPALS).where(IAM_PRINCIPALS.APPLICATION_ID.eq(id)).asField())
+                .fetchSingle();
+        return new References(r.get(0, Long.class), r.get(1, Long.class), r.get(2, Long.class), r.get(3, Long.class),
+                r.get(4, Long.class));
     }
 
     // ── Row ↔ entity ───────────────────────────────────────────────────────
