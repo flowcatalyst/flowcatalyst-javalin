@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.serviceaccount.operations;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccount;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.serviceaccount.operations.ServiceAccountEvents.ServiceAccountDeleted;
+import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.op.Operation;
 import io.flowcatalyst.sdk.usecase.op.Plan;
@@ -17,7 +18,7 @@ public final class DeleteServiceAccount {
     public static Operation<DeleteCommand, ServiceAccountDeleted> of(ServiceAccountRepository repo) {
         return Operation.<DeleteCommand, ServiceAccountDeleted>named("DeleteServiceAccount")
                 .validate(cmd -> UseCaseException.requireNonBlank(cmd.id(), "ID_REQUIRED", "id is required"))
-                .authorize(Operation.Authorize.publicAccess()) // admin-managed, no per-client resource check (spec §4.2)
+                .authorize(cmd -> Access.requireWrite(repo, Auth.current(), cmd.id())) // application confinement (F4); the permission and anchor reach are the handler's
                 .execute((cmd, ec) -> {
                     ServiceAccount sa = Access.byId(repo, cmd.id());
                     return Plan.delete(sa, repo, ServiceAccountDeleted.of(ec, sa));

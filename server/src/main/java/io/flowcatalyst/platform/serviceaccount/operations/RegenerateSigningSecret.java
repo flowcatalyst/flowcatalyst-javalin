@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.serviceaccount.operations;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccount;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.serviceaccount.operations.ServiceAccountEvents.ServiceAccountSecretRegenerated;
+import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.op.Operation;
 import io.flowcatalyst.sdk.usecase.op.Plan;
@@ -22,7 +23,7 @@ public final class RegenerateSigningSecret {
         Objects.requireNonNull(disclose, "disclose");
         return Operation.<RegenerateSigningSecretCommand, ServiceAccountSecretRegenerated>named("RegenerateSigningSecret")
                 .validate(cmd -> UseCaseException.requireNonBlank(cmd.serviceAccountId(), "SERVICE_ACCOUNT_ID_REQUIRED", "Service account ID is required"))
-                .authorize(Operation.Authorize.publicAccess()) // anchor-only gate is enforced at the handler (spec §3)
+                .authorize(cmd -> Access.requireWrite(repo, Auth.current(), cmd.serviceAccountId())) // application confinement (F4); the permission and anchor reach are the handler's
                 .execute((cmd, ec) -> {
                     ServiceAccount sa = Access.byId(repo, cmd.serviceAccountId());
                     String secret = WebhookSecrets.generateSigningSecret();

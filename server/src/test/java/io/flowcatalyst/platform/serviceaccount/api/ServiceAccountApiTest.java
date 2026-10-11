@@ -125,11 +125,12 @@ class ServiceAccountApiTest {
                 Authenticator.TEST_PERMISSIONS, "platform:*:*:*"};
     }
 
+    /// An anchor principal (every service-account write needs anchor reach,
+    /// spec §3) with all-applications access, holding exactly `permissions`.
     private static String[] withPermissions(String... permissions) {
         return new String[] {
                 Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
-                Authenticator.TEST_SCOPE, "CLIENT",
-                Authenticator.TEST_CLIENTS, "clt_saapi_" + RUN,
+                Authenticator.TEST_SCOPE, "ANCHOR",
                 Authenticator.TEST_PERMISSIONS, String.join(",", permissions)};
     }
 
@@ -319,9 +320,11 @@ class ServiceAccountApiTest {
     /// cannot be combined with an `applicationId`.
     @Test
     void allApplicationsNeedsACallerWhoHoldsItAndExcludesAnApplicationId() {
+        String ownApp = EntityType.APPLICATION.generate();
         String[] confinedWriter = {
                 Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
                 Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_APPLICATIONS, ownApp,
                 Authenticator.TEST_ALL_APPLICATIONS, "false",
                 Authenticator.TEST_PERMISSIONS, "platform:iam:service-account:create"};
         String withFlag = "{\"code\":\"" + code("allappsdenied") + "\",\"name\":\"X\",\"allApplications\":true}";
@@ -329,8 +332,9 @@ class ServiceAccountApiTest {
         assertThat(http.get("/api/service-accounts/code/" + code("allappsdenied"), anchor()).statusCode())
                 .as("nothing was created").isEqualTo(404);
         assertThat(http.post("/api/service-accounts",
-                        "{\"code\":\"" + code("allappsplain") + "\",\"name\":\"X\"}", confinedWriter).statusCode())
-                .as("the same caller may still create an account without it").isEqualTo(201);
+                        "{\"code\":\"" + code("allappsplain") + "\",\"name\":\"X\",\"applicationId\":\"" + ownApp + "\"}",
+                        confinedWriter).statusCode())
+                .as("the same caller may still create an account (of its own application) without it").isEqualTo(201);
 
         var both = http.post("/api/service-accounts", "{\"code\":\"" + code("allappsboth") + "\",\"name\":\"X\","
                 + "\"allApplications\":true,\"applicationId\":\"" + EntityType.APPLICATION.generate() + "\"}", anchor());
@@ -584,7 +588,7 @@ class ServiceAccountApiTest {
         String id = created.get("serviceAccount").get("id").asText();
 
         var forbidden = http.put("/api/service-accounts/" + id + "/roles", "{\"roles\":[\"" + grantedRole.name() + "\"]}", WRITER);
-        assertThat(forbidden.statusCode()).as("write permission is not anchor").isEqualTo(403);
+        assertThat(forbidden.statusCode()).as("the create permission is not update").isEqualTo(403);
 
         var assigned = http.put("/api/service-accounts/" + id + "/roles", "{\"roles\":[\"" + grantedRole.name() + "\"]}", anchor());
         assertThat(assigned.statusCode()).isEqualTo(200);
@@ -659,7 +663,7 @@ class ServiceAccountApiTest {
     // ── Regenerate token / secret: one-shot disclosure (spec §5) ────────────
 
     @Test
-    void regenerateAuthTokenIsPermissionGatedNotAnchorOnlyAndDisclosesOnce() {
+    void regenerateAuthTokenNeedsTheUpdatePermissionAndDisclosesOnce() {
         var created = create(code("regtok"), "RegTok");
         String id = created.get("serviceAccount").get("id").asText();
         String originalToken = created.get("webhook").get("authToken").asText();
@@ -667,13 +671,16 @@ class ServiceAccountApiTest {
         assertThat(http.post("/api/service-accounts/" + id + "/regenerate-token", null, VIEWER).statusCode())
                 .as("view alone must not rotate").isEqualTo(403);
 
-        var r = http.post("/api/service-accounts/" + id + "/regenerate-token", null, WRITER);
+        assertThat(http.post("/api/service-accounts/" + id + "/regenerate-token", null, WRITER).statusCode())
+                .as("a rotation is an update, not a create (owner ruling 2026-10-11)").isEqualTo(403);
+
+        var r = http.post("/api/service-accounts/" + id + "/regenerate-token", null, UPDATER);
         assertThat(r.statusCode()).isEqualTo(200);
         String newToken = json(r).get("authToken").asText();
         assertThat(newToken).isNotBlank().isNotEqualTo(originalToken);
 
         // The alias behaves identically.
-        var r2 = http.post("/api/service-accounts/" + id + "/regenerate-auth-token", null, WRITER);
+        var r2 = http.post("/api/service-accounts/" + id + "/regenerate-auth-token", null, UPDATER);
         assertThat(r2.statusCode()).isEqualTo(200);
         assertThat(json(r2).get("authToken").asText()).isNotBlank().isNotEqualTo(newToken);
 
@@ -689,12 +696,14 @@ class ServiceAccountApiTest {
         String id = created.get("serviceAccount").get("id").asText();
         String originalSecret = created.get("webhook").get("signingSecret").asText();
 
-        var r = http.post("/api/service-accounts/" + id + "/regenerate-secret", null, WRITER);
+        assertThat(http.post("/api/service-accounts/" + id + "/regenerate-secret", null, WRITER).statusCode())
+                .as("a rotation is an update, not a create").isEqualTo(403);
+        var r = http.post("/api/service-accounts/" + id + "/regenerate-secret", null, UPDATER);
         assertThat(r.statusCode()).isEqualTo(200);
         String newSecret = json(r).get("signingSecret").asText();
         assertThat(newSecret).isNotBlank().isNotEqualTo(originalSecret);
 
-        var r2 = http.post("/api/service-accounts/" + id + "/regenerate-signing-secret", null, WRITER);
+        var r2 = http.post("/api/service-accounts/" + id + "/regenerate-signing-secret", null, UPDATER);
         assertThat(r2.statusCode()).isEqualTo(200);
         assertThat(json(r2).get("signingSecret").asText()).isNotBlank().isNotEqualTo(newSecret);
     }
@@ -709,7 +718,7 @@ class ServiceAccountApiTest {
         http.put("/api/service-accounts/" + id + "/roles", "{\"roles\":[\"" + grantedRole.name() + "\"]}", anchor());
 
         assertThat(http.post("/api/service-accounts/" + id + "/token", null, WRITER).statusCode())
-                .as("write permission is not anchor").isEqualTo(403);
+                .as("the create permission is not update").isEqualTo(403);
 
         var r = http.post("/api/service-accounts/" + id + "/token", null, anchor());
         assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
@@ -864,17 +873,122 @@ class ServiceAccountApiTest {
     // ── Per-operation permission ───────────────────────────────────────────
 
     /// Each write needs the permission for its operation, never any of
-    /// create/update/delete: create needs create; update and deactivate need
-    /// update; delete needs delete.
+    /// create/update/delete: create needs create; delete needs delete; update,
+    /// deactivate, assigning roles, both rotations (and their aliases) and the
+    /// token mint need update (owner ruling 2026-10-11, F4).
     @Test
     void eachWriteNeedsTheOperationsPermission() {
+        WriteGates.assertEachWriteNeedsItsPermission(http, writes(),
+                Permission.SERVICE_ACCOUNT_CREATE, Permission.SERVICE_ACCOUNT_UPDATE, Permission.SERVICE_ACCOUNT_DELETE);
+    }
+
+    /// Every service-account write route and the permission it needs.
+    private static List<Write> writes() {
         String p = "/api/service-accounts/sac_gate000000001";
         String g = "gate" + Long.toString(System.nanoTime(), 36);
-        WriteGates.assertEachWriteNeedsItsPermission(http, List.of(
-                        Write.of("create", "POST", "/api/service-accounts", "{\"code\":\"" + g + "\",\"name\":\"G\"}", Permission.SERVICE_ACCOUNT_CREATE),
-                        Write.of("update", "PUT", p, "{}", Permission.SERVICE_ACCOUNT_UPDATE),
-                        Write.of("deactivate", "POST", p + "/deactivate", null, Permission.SERVICE_ACCOUNT_UPDATE),
-                        Write.of("delete", "DELETE", p, null, Permission.SERVICE_ACCOUNT_DELETE)),
-                Permission.SERVICE_ACCOUNT_CREATE, Permission.SERVICE_ACCOUNT_UPDATE, Permission.SERVICE_ACCOUNT_DELETE);
+        return List.of(
+                Write.of("create", "POST", "/api/service-accounts", "{\"code\":\"" + g + "\",\"name\":\"G\"}", Permission.SERVICE_ACCOUNT_CREATE),
+                Write.of("update", "PUT", p, "{}", Permission.SERVICE_ACCOUNT_UPDATE),
+                Write.of("deactivate", "POST", p + "/deactivate", null, Permission.SERVICE_ACCOUNT_UPDATE),
+                Write.of("delete", "DELETE", p, null, Permission.SERVICE_ACCOUNT_DELETE),
+                Write.of("assign roles", "PUT", p + "/roles", "{\"roles\":[]}", Permission.SERVICE_ACCOUNT_UPDATE),
+                Write.of("regenerate-token", "POST", p + "/regenerate-token", null, Permission.SERVICE_ACCOUNT_UPDATE),
+                Write.of("regenerate-auth-token", "POST", p + "/regenerate-auth-token", null, Permission.SERVICE_ACCOUNT_UPDATE),
+                Write.of("regenerate-secret", "POST", p + "/regenerate-secret", null, Permission.SERVICE_ACCOUNT_UPDATE),
+                Write.of("regenerate-signing-secret", "POST", p + "/regenerate-signing-secret", null, Permission.SERVICE_ACCOUNT_UPDATE),
+                Write.of("mint", "POST", p + "/token", null, Permission.SERVICE_ACCOUNT_UPDATE));
+    }
+
+    /// Every write needs anchor reach on top of the permission (owner ruling
+    /// 2026-10-11, Go decision #19): a service account's `SERVICE` principal is
+    /// anchor-tier, so a non-anchor administrator holding the permissions must
+    /// not create, change, rotate or mint one. Deactivate and the rotations
+    /// checked the permission only.
+    @Test
+    void everyWriteNeedsAnchorReach() {
+        var created = create(code("anchorgate"), "AnchorGate");
+        String id = created.get("serviceAccount").get("id").asText();
+        String[] clientAdmin = {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "CLIENT",
+                Authenticator.TEST_CLIENTS, "clt_saapi_" + RUN,
+                Authenticator.TEST_PERMISSIONS, "platform:iam:service-account:*"};
+        var wrong = new java.util.ArrayList<String>();
+        for (Write w : writes()) {
+            var r = http.send(w.method(), w.path().replace("sac_gate000000001", id), w.body(), clientAdmin);
+            if (r.statusCode() != 403 || !"ANCHOR_REQUIRED".equals(json(r).path("error").asText())) {
+                wrong.add(w.name() + ": " + r.statusCode() + " " + r.body());
+            }
+        }
+        assertThat(wrong).as("writes a non-anchor holding the permissions was not refused ANCHOR_REQUIRED").isEmpty();
+        var after = json(http.get("/api/service-accounts/" + id, anchor()));
+        assertThat(after.get("active").asBoolean()).as("nothing was changed").isTrue();
+        assertThat(after.get("name").asText()).isEqualTo("AnchorGate");
+    }
+
+    /// An application-scoped caller (no all-applications access, as an
+    /// application's own service account) manages only service accounts bound
+    /// to an application it can access: never a platform-wide one or another
+    /// application's, even at anchor tier with the permissions. A caller with
+    /// all-applications access is not confined (F4, Go `0ae0988`).
+    @Test
+    void anApplicationScopedCallerManagesOnlyItsOwnApplicationsAccounts() {
+        String ownApp = EntityType.APPLICATION.generate();
+        String otherApp = EntityType.APPLICATION.generate();
+        String ownSa = createFor(code("reach-own"), ownApp);
+        String otherSa = createFor(code("reach-other"), otherApp);
+        String platformSa = create(code("reach-platform"), "Platform").get("serviceAccount").get("id").asText();
+        String[] confined = {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_APPLICATIONS, ownApp,
+                Authenticator.TEST_PERMISSIONS, "platform:iam:service-account:create,platform:iam:service-account:update,platform:iam:service-account:delete"};
+
+        for (String id : List.of(otherSa, platformSa)) {
+            String p = "/api/service-accounts/" + id;
+            for (var r : List.of(
+                    http.post(p + "/deactivate", null, confined),
+                    http.post(p + "/regenerate-secret", null, confined),
+                    http.post(p + "/regenerate-token", null, confined),
+                    http.post(p + "/token", null, confined),
+                    http.put(p + "/roles", "{\"roles\":[]}", confined),
+                    http.put(p, "{\"name\":\"Taken\"}", confined),
+                    http.delete(p, confined))) {
+                assertThat(r.statusCode()).as(r.body()).isEqualTo(403);
+                assertThat(json(r).get("error").asText()).isEqualTo("APPLICATION_ACCESS_REQUIRED");
+            }
+            var after = json(http.get(p, anchor()));
+            assertThat(after.get("active").asBoolean()).isTrue();
+            assertThat(after.get("name").asText()).isNotEqualTo("Taken");
+        }
+        // Creating a platform-wide account or another application's is refused.
+        for (String body : List.of(
+                "{\"code\":\"" + code("reach-new1") + "\",\"name\":\"N\"}",
+                "{\"code\":\"" + code("reach-new2") + "\",\"name\":\"N\",\"applicationId\":\"" + otherApp + "\"}")) {
+            var r = http.post("/api/service-accounts", body, confined);
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(403);
+            assertThat(json(r).get("error").asText()).isEqualTo("APPLICATION_ACCESS_REQUIRED");
+        }
+        assertThat(http.get("/api/service-accounts/code/" + code("reach-new1"), anchor()).statusCode()).isEqualTo(404);
+        // An unknown id is 404 for the confined caller.
+        assertThat(http.post("/api/service-accounts/sac_doesnotexist9/deactivate", null, confined).statusCode()).isEqualTo(404);
+
+        // Its own application's account: managed.
+        assertThat(http.post("/api/service-accounts/" + ownSa + "/regenerate-secret", null, confined).statusCode()).isEqualTo(200);
+        assertThat(http.post("/api/service-accounts/" + ownSa + "/deactivate", null, confined).statusCode()).isEqualTo(204);
+        assertThat(http.post("/api/service-accounts", "{\"code\":\"" + code("reach-new3") + "\",\"name\":\"N\",\"applicationId\":\"" + ownApp + "\"}",
+                confined).statusCode()).isEqualTo(201);
+
+        // All-applications access is not confined.
+        assertThat(http.post("/api/service-accounts/" + otherSa + "/deactivate", null, UPDATER).statusCode()).isEqualTo(204);
+        assertThat(http.post("/api/service-accounts/" + platformSa + "/deactivate", null, UPDATER).statusCode()).isEqualTo(204);
+    }
+
+    /// Creates an account bound to `applicationId` as an anchor; returns its id.
+    private static String createFor(String code, String applicationId) {
+        var r = http.post("/api/service-accounts",
+                "{\"code\":\"" + code + "\",\"name\":\"" + code + "\",\"applicationId\":\"" + applicationId + "\"}", anchor());
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        return json(r).get("serviceAccount").get("id").asText();
     }
 }

@@ -6,6 +6,7 @@ import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccount;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.serviceaccount.operations.ServiceAccountEvents.ServiceAccountUpdated;
+import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.op.Operation;
 import io.flowcatalyst.sdk.usecase.op.TxOperation;
@@ -32,7 +33,7 @@ public final class UpdateServiceAccount {
                         throw UseCaseException.validation("NAME_REQUIRED", "name cannot be empty");
                     }
                 })
-                .authorize(Operation.Authorize.publicAccess()) // admin-managed update, no per-client resource check (spec §4.2)
+                .authorize(cmd -> Access.requireWrite(repo, Auth.current(), cmd.id())) // application confinement (F4); the permission and anchor reach are the handler's
                 .execute((scoped, cmd, ec) -> {
                     if (cmd.clientIds() != null) {
                         for (String clientId : cmd.clientIds()) {

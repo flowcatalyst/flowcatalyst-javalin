@@ -15,6 +15,7 @@ import io.flowcatalyst.platform.serviceaccount.WebhookCredentials;
 import io.flowcatalyst.platform.serviceaccount.operations.ServiceAccountEvents.ServiceAccountCreated;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
+import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.op.Operation;
 import io.flowcatalyst.sdk.usecase.op.TxOperation;
@@ -85,9 +86,9 @@ public final class CreateServiceAccountWithCredentials {
                                 "allApplications cannot be combined with applicationId");
                     }
                 })
-                // Admin-managed create, no per-client resource check (spec §4.1); the coarse
-                // "may write service accounts" permission is enforced at the handler.
-                .authorize(Operation.Authorize.publicAccess())
+                // The permission and anchor reach are the handler's; a caller confined to
+                // its applications may create only an account bound to one of them (F4).
+                .authorize(cmd -> Access.requireApplicationReach(Auth.current(), cmd.applicationId()))
                 .execute((scoped, cmd, ec) -> {
                     ServiceAccountCode code = ServiceAccountCode.parseUserChosen(cmd.code());
                     if (saRepo.findByCode(code.value()).isPresent()) {

@@ -14,6 +14,7 @@ import io.flowcatalyst.platform.serviceaccount.ServiceAccount;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.serviceaccount.WebhookAuthType;
 import io.flowcatalyst.platform.serviceaccount.WebhookCredentials;
+import io.flowcatalyst.platform.serviceaccount.operations.Access;
 import io.flowcatalyst.platform.serviceaccount.operations.AssignRolesCommand;
 import io.flowcatalyst.platform.serviceaccount.operations.AssignRolesToServiceAccount;
 import io.flowcatalyst.platform.serviceaccount.operations.CreateCommand;
@@ -33,6 +34,7 @@ import io.flowcatalyst.platform.serviceaccount.operations.UpdateServiceAccount;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Checks;
+import io.flowcatalyst.platform.shared.auth.Permission;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.httperror.HttpError;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
@@ -56,10 +58,12 @@ import static io.flowcatalyst.platform.shared.auth.Permission.SERVICE_ACCOUNT_VI
 
 /// The `/api/service-accounts` surface (spec §3). A write handler does
 /// exactly: coarse permission → command from DTO → `Operation.run` →
-/// response; role-assignment and token-mint are gated **anchor reach AND a
-/// permission** (spec §3: "both hand out authority rather than editing a
-/// record"; the permission since security-fixes S1.2 — the tier is reach,
-/// never authority). Every handler runs inside [Auth#scoped] so operations can read
+/// response; every write is gated **the operation's permission AND anchor
+/// reach** (spec §3; the permission since security-fixes S1.2 — the tier is
+/// reach, never authority; anchor on create/update/delete/deactivate and the
+/// rotations since 2026-10-11 F4), and the operations confine an
+/// application-scoped caller to its own applications' accounts ([Access]).
+/// Every handler runs inside [Auth#scoped] so operations can read
 /// [Auth#current()].
 ///
 /// | Method | Path | Status |
@@ -72,10 +76,10 @@ import static io.flowcatalyst.platform.shared.auth.Permission.SERVICE_ACCOUNT_VI
 /// | POST | `/api/service-accounts/{id}/deactivate` | 204 |
 /// | DELETE | `/api/service-accounts/{id}` | 204 |
 /// | GET | `/api/service-accounts/{id}/roles` | 200 [ServiceAccountRoleListResponse] |
-/// | PUT | `/api/service-accounts/{id}/roles` | 200 [ServiceAccountRolesAssignedResponse] (anchor + `SERVICE_ACCOUNT_UPDATE`) |
+/// | PUT | `/api/service-accounts/{id}/roles` | 200 [ServiceAccountRolesAssignedResponse] |
 /// | POST | `/api/service-accounts/{id}/regenerate-token` (+`regenerate-auth-token` alias) | 200 [RegenerateAuthTokenResponse] |
 /// | POST | `/api/service-accounts/{id}/regenerate-secret` (+`regenerate-signing-secret` alias) | 200 [RegenerateSigningSecretResponse] |
-/// | POST | `/api/service-accounts/{id}/token` | 200 [ServiceAccountTokenResponse] (anchor + `SERVICE_ACCOUNT_UPDATE`) |
+/// | POST | `/api/service-accounts/{id}/token` | 200 [ServiceAccountTokenResponse] |
 ///
 /// `POST /api/service-accounts/{id}/token`'s "best-effort audit row: who
 /// obtained a credential for which account" (spec §8 step 8) is written
@@ -173,7 +177,7 @@ public final class ServiceAccountApi {
 
     private static void create(Exchange ctx, State s) {
         AuthContext ac = Auth.current();
-        Checks.require(ac, SERVICE_ACCOUNT_CREATE);
+        requireAnchorWriter(ac, SERVICE_ACCOUNT_CREATE);
         var cmd = ctx.bodyAsClass(CreateServiceAccountRequest.class).toCommand();
         // Same rule as assigning application access (PrincipalApi): only a caller that
         // itself holds all-applications access may grant it.
@@ -193,20 +197,20 @@ public final class ServiceAccountApi {
     }
 
     private static void update(Exchange ctx, State s) {
-        Checks.require(Auth.current(), SERVICE_ACCOUNT_UPDATE);
+        requireAnchorWriter(Auth.current(), SERVICE_ACCOUNT_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateServiceAccountRequest.class).toCommand(ctx.pathParam("id"));
         UpdateServiceAccount.of(s.repo(), s.principals(), s.clients()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
     private static void deactivate(Exchange ctx, State s) {
-        Checks.require(Auth.current(), SERVICE_ACCOUNT_UPDATE);
+        requireAnchorWriter(Auth.current(), SERVICE_ACCOUNT_UPDATE);
         DeactivateServiceAccount.of(s.repo()).run(s.uow(), new DeactivateCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
 
     private static void delete(Exchange ctx, State s) {
-        Checks.require(Auth.current(), SERVICE_ACCOUNT_DELETE);
+        requireAnchorWriter(Auth.current(), SERVICE_ACCOUNT_DELETE);
         DeleteServiceAccount.of(s.repo()).run(s.uow(), new DeleteCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(204);
     }
@@ -218,14 +222,13 @@ public final class ServiceAccountApi {
         ctx.json(new ServiceAccountRoleListResponse(rolesOf(s, id).stream().map(RoleAssignmentResponse::from).toList()));
     }
 
-    /// Anchor reach (spec §3) AND `SERVICE_ACCOUNT_UPDATE` (security-fixes
+    /// `SERVICE_ACCOUNT_UPDATE` AND anchor reach (spec §3, security-fixes
     /// S1.2): role assignment grants authority in the `principal` aggregate,
     /// and the anchor tier is reach, never authority — without the permission
     /// an application's own anchor-reach service account could assign itself
-    /// `platform:super-admin`.
+    /// `platform:super-admin`. The operation adds the application confinement.
     private static void assignRoles(Exchange ctx, State s) {
-        Checks.requireAnchor(Auth.current());
-        Checks.require(Auth.current(), SERVICE_ACCOUNT_UPDATE);
+        requireAnchorWriter(Auth.current(), SERVICE_ACCOUNT_UPDATE);
         String id = ctx.pathParam("id");
         var body = ctx.bodyAsClass(AssignRolesRequest.class);
         var event = AssignRolesToServiceAccount.of(s.repo(), s.principals(), s.rolePermissions())
@@ -234,11 +237,11 @@ public final class ServiceAccountApi {
         ctx.json(new ServiceAccountRolesAssignedResponse(roles, event.rolesAdded(), event.rolesRemoved()));
     }
 
-    /// Permission-gated, NOT anchor-only (spec §3 explicitly names only
-    /// role-assignment and token-mint as the anchor-only pair) — this diverges
-    /// from Go, which anchor-gates rotation too; the spec wins (CONVENTIONS §8).
+    /// A rotation is an update (owner ruling 2026-10-11): `SERVICE_ACCOUNT_UPDATE`
+    /// and anchor reach, plus the operation's application confinement — it
+    /// hands out a new credential of the account (spec §3, F4).
     private static void regenerateAuthToken(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
+        requireAnchorWriter(Auth.current(), SERVICE_ACCOUNT_UPDATE);
         String id = ctx.pathParam("id");
         // The sink is a local: the plaintext cannot outlive this request, and is
         // only read below, on the success path — a failed commit discloses nothing.
@@ -248,21 +251,21 @@ public final class ServiceAccountApi {
     }
 
     private static void regenerateSigningSecret(Exchange ctx, State s) {
-        Checks.requireAny(Auth.current(), SERVICE_ACCOUNT_CREATE, SERVICE_ACCOUNT_UPDATE, SERVICE_ACCOUNT_DELETE);
+        requireAnchorWriter(Auth.current(), SERVICE_ACCOUNT_UPDATE);
         String id = ctx.pathParam("id");
         var secret = new AtomicReference<String>();
         RegenerateSigningSecret.of(s.repo(), secret::set).run(s.uow(), new RegenerateSigningSecretCommand(id), Auth.executionContext());
         ctx.json(new RegenerateSigningSecretResponse(id, secret.get()));
     }
 
-    /// Anchor reach + `SERVICE_ACCOUNT_UPDATE` (security-fixes S1.2: the
+    /// `SERVICE_ACCOUNT_UPDATE` + anchor reach (security-fixes S1.2: the
     /// caller obtains a bearer that acts as the account — a credential, so a
-    /// permission, not the tier alone), best-effort-audited (spec §3, §8;
-    /// owner ruling 2026-09-06 #15).
+    /// permission, not the tier alone) + the application confinement (F4),
+    /// best-effort-audited (spec §3, §8; owner ruling 2026-09-06 #15).
     private static void mintToken(Exchange ctx, State s) {
-        Checks.requireAnchor(Auth.current());
-        Checks.require(Auth.current(), SERVICE_ACCOUNT_UPDATE);
+        requireAnchorWriter(Auth.current(), SERVICE_ACCOUNT_UPDATE);
         String id = ctx.pathParam("id");
+        Access.requireWrite(s.repo(), Auth.current(), id);
         var result = MintServiceAccountToken.mint(s.repo(), s.principals(), s.minter(), s.flattenPermissions(), id);
         // A bearer was handed out for this account — a use of its credentials
         // (spec §9.2). Best-effort: a failed stamp must never fail the mint.
@@ -282,6 +285,17 @@ public final class ServiceAccountApi {
         }
         String scope = result.permissions().isEmpty() ? null : String.join(" ", result.permissions());
         ctx.json(new ServiceAccountTokenResponse(result.accessToken(), "Bearer", result.expiresInSeconds(), scope));
+    }
+
+    /// The coarse gate on every service-account write: the permission for the
+    /// operation, then anchor reach (spec §3; owner rulings 2026-09-28 #19 and
+    /// 2026-10-11). A service account's `SERVICE` principal is anchor-tier, so
+    /// with the permission alone a non-anchor administrator could mint an
+    /// anchor-tier credential. The per-account application confinement is the
+    /// operations' ([Access]).
+    private static void requireAnchorWriter(AuthContext ac, Permission permission) {
+        Checks.require(ac, permission);
+        Checks.requireAnchor(ac);
     }
 
     // ── Read-side helpers ────────────────────────────────────────────────────

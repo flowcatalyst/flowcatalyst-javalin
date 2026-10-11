@@ -72,23 +72,34 @@ come from roles; the anchor tier is reach, never authority — owner ruling 2026
 `permissions-from-roles.md`): **read** = `SERVICE_ACCOUNT_VIEW`; **create** =
 `SERVICE_ACCOUNT_CREATE`; **update** and **deactivate** = `SERVICE_ACCOUNT_UPDATE`;
 **delete** = `SERVICE_ACCOUNT_DELETE` (ruled 2026-10-10: the permission for the
-operation; `docs/go-mirror/2026-10-10-platform-bug-fixes.md`). **write** (the
-token/secret rotations below) is still any of `SERVICE_ACCOUNT_{CREATE,UPDATE,DELETE}`.
+operation; `docs/go-mirror/2026-10-10-platform-bug-fixes.md`). **rotate** (the
+token/secret rotations), role assignment and the token mint = `SERVICE_ACCOUNT_UPDATE`
+(owner ruling 2026-10-11: a rotation is an update).
+
+**Every write** (create, update, deactivate, delete, roles, both rotations, mint)
+checks the permission, then **anchor reach** (`ANCHOR_REQUIRED`; owner ruling
+2026-10-11, Go decision #19: the account's `SERVICE` principal is anchor-tier), and
+the operation confines an **application-scoped** caller (no all-applications access,
+e.g. an application's own service account) to accounts bound to an application it
+can access: a platform-wide account or another application's is 403
+`APPLICATION_ACCESS_REQUIRED`; create refuses it a platform-wide account or another
+application's (`operations/Access`; `docs/go-mirror/2026-10-11-platform-bug-fixes-2.md`
+F4, Go `0ae0988`). For a confined caller an unknown id is 404 at that check.
 
 | Method / path | Gate | Success |
 |---|---|---|
 | `GET /api/service-accounts` | read | 200 `{serviceAccounts[], total}` |
-| `POST /api/service-accounts` | `SERVICE_ACCOUNT_CREATE` | 201 `ServiceAccountResponse` |
+| `POST /api/service-accounts` | `SERVICE_ACCOUNT_CREATE` + anchor | 201 `ServiceAccountResponse` |
 | `GET /api/service-accounts/code/{code}` | read | 200; unknown → 404 `ServiceAccount_NOT_FOUND` |
 | `GET /api/service-accounts/{id}` | read | 200; unknown → 404 |
-| `PUT /api/service-accounts/{id}` | `SERVICE_ACCOUNT_UPDATE` | 204 |
-| `POST /api/service-accounts/{id}/deactivate` | `SERVICE_ACCOUNT_UPDATE` | 204 |
-| `DELETE /api/service-accounts/{id}` | **delete** | 204 |
+| `PUT /api/service-accounts/{id}` | `SERVICE_ACCOUNT_UPDATE` + anchor | 204 |
+| `POST /api/service-accounts/{id}/deactivate` | `SERVICE_ACCOUNT_UPDATE` + anchor | 204 |
+| `DELETE /api/service-accounts/{id}` | **delete** + anchor | 204 |
 | `GET /api/service-accounts/{id}/roles` | read | 200 role list |
 | `PUT /api/service-accounts/{id}/roles` | **anchor** + `SERVICE_ACCOUNT_UPDATE` | 200 `ServiceAccountRolesAssignedResponse` |
-| `POST /api/service-accounts/{id}/regenerate-token` | write | 200 (see §5) |
+| `POST /api/service-accounts/{id}/regenerate-token` | rotate + anchor | 200 (see §5) |
 | `POST /api/service-accounts/{id}/regenerate-auth-token` | write | 200 — **alias of the row above** |
-| `POST /api/service-accounts/{id}/regenerate-secret` | write | 200 (see §5) |
+| `POST /api/service-accounts/{id}/regenerate-secret` | rotate + anchor | 200 (see §5) |
 | `POST /api/service-accounts/{id}/regenerate-signing-secret` | write | 200 — **alias** |
 | `POST /api/service-accounts/{id}/token` | **anchor** + `SERVICE_ACCOUNT_UPDATE`, audited | 200 `ServiceAccountTokenResponse` (§8) |
 

@@ -31,7 +31,7 @@ public final class AssignRolesToServiceAccount {
                                                                                RoleCeiling.RolePermissions permissionsOf) {
         return Operation.<AssignRolesCommand, ServiceAccountRolesAssigned>named("AssignRolesToServiceAccount")
                 .validate(cmd -> UseCaseException.requireNonBlank(cmd.serviceAccountId(), "SERVICE_ACCOUNT_ID_REQUIRED", "Service account ID is required"))
-                .authorize(Operation.Authorize.publicAccess()) // anchor-only gate is enforced at the handler (spec §3)
+                .authorize(cmd -> Access.requireWrite(saRepo, Auth.current(), cmd.serviceAccountId())) // application confinement (F4); the permission and anchor reach are the handler's
                 .execute((cmd, ec) -> {
                     ServiceAccount sa = Access.byId(saRepo, cmd.serviceAccountId());
                     Principal principal = principals.findByServiceAccount(sa.id())
