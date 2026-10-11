@@ -11,8 +11,8 @@ import java.util.Objects;
 /// The platform's built-in event-type catalogue —
 /// `internal/platform/seed/event_types.go`. Codes are
 /// `{application}:{subdomain}:{aggregate}:{event}`; names are derived
-/// (`titleCase(aggregate) + " " + titleCase(event)`) unless pushed with an
-/// explicit name.
+/// (`titleCase(aggregate) + " " + titleCase(event)`) unless grouped under an
+/// explicit label or pushed with an explicit name.
 public final class PlatformEventTypes {
 
     /// One catalogue entry. `code` must be four non-empty `:`-separated
@@ -68,7 +68,7 @@ public final class PlatformEventTypes {
 
     private static List<Definition> build() {
         Map<String, JsonNode> schemas = PlatformEventSchemas.all();
-        var out = new ArrayList<Definition>(64);
+        var out = new ArrayList<Definition>(160);
         var b = new Builder(out, schemas);
 
         // ── platform:iam ────────────────────────────────────────────────────
@@ -76,12 +76,13 @@ public final class PlatformEventTypes {
                 "created", "updated", "activated", "deactivated", "deleted",
                 "roles-assigned", "application-access-assigned",
                 "client-access-granted", "client-access-revoked",
-                "logged-in", "password-reset-requested", "password-reset-completed");
+                "logged-in", "password-reset-requested", "password-reset-completed",
+                "developer-credential-set", "developer-credential-revoked");
         b.push("platform:iam:principals:synced", "Principals Synced");
 
         b.group("platform:iam:serviceaccount",
-                "created", "updated", "deleted", "roles-assigned",
-                "token-regenerated", "secret-regenerated");
+                "created", "updated", "deactivated", "deleted", "roles-assigned",
+                "token-regenerated", "secret-regenerated", "token-minted");
 
         // Client lifecycle events are emitted under platform:admin (the client
         // operations, client/operations/ClientEvents); enabling applications for
@@ -99,6 +100,12 @@ public final class PlatformEventTypes {
         b.group("platform:iam:anchor-domain", "created", "deleted");
 
         b.group("platform:iam:auth-config", "created", "updated", "deleted");
+
+        // The passkey and reset-approval operations emit under platform:iam
+        // (Go's passkey events are platform:admin:passkey:*; Go has no
+        // reset-approval events).
+        b.group("platform:iam:passkey", "registered", "authenticated", "revoked");
+        b.group("platform:iam:reset-approval", "queued", "decided");
 
         // ── platform:admin ──────────────────────────────────────────────────
         b.group("platform:admin:client",
@@ -118,11 +125,64 @@ public final class PlatformEventTypes {
         b.group("platform:admin:connection", "created", "updated", "deleted", "synced");
 
         b.group("platform:admin:dispatch-pool",
-                "created", "updated", "archived", "deleted");
+                "created", "updated", "suspended", "activated", "archived", "deleted");
         b.push("platform:admin:dispatch-pools:synced", "Dispatch Pools Synced");
 
         b.group("platform:admin:subscription",
                 "created", "updated", "paused", "resumed", "deleted", "synced");
+
+        // Identity and access administration (the auth-admin, identity-provider,
+        // email-domain-mapping, OAuth-client and role operations emit these
+        // under platform:admin).
+        b.group("platform:admin:anchor-domain", "created", "updated", "deleted");
+        b.group("platform:admin:auth-config", "created", "updated", "deleted");
+        b.groupAs("platform:admin:oauth-client", "OAuth Client",
+                "created", "updated", "activated", "deactivated", "deleted",
+                "secret-rotated", "previous-secret-revoked");
+        b.group("platform:admin:identity-provider", "created", "updated", "deleted");
+        b.group("platform:admin:email-domain-mapping",
+                "created", "updated", "provider-changed", "deleted");
+        b.groupAs("platform:admin:idp-role-mapping", "IdP Role Mapping", "created", "deleted");
+        b.group("platform:admin:role",
+                "created", "updated", "deleted", "permission-granted", "permission-revoked");
+        b.push("platform:admin:roles:synced", "Roles Synced");
+
+        b.group("platform:admin:platform-config", "property-set");
+
+        b.group("platform:admin:process", "created", "updated", "archived", "deleted");
+        b.push("platform:admin:processes:synced", "Processes Synced");
+
+        b.group("platform:admin:scheduled-job",
+                "created", "updated", "paused", "resumed", "archived", "deleted", "fired-manually");
+        b.push("platform:admin:scheduledjobs:synced", "Scheduled Jobs Synced");
+
+        // The requeue operations (Go's resend is platform:messaging:dispatch-jobs:resent).
+        b.groupAs("platform:admin:dispatchjob", "Dispatch Job", "requeued");
+        b.push("platform:admin:dispatchjobs:requeued", "Dispatch Jobs Requeued");
+
+        b.group("platform:admin:audit-log", "redacted");
+
+        // ── platform:messaging ──────────────────────────────────────────────
+        b.group("platform:messaging:dispatch-job", "cancelled", "completed");
+
+        // ── platform:developer ──────────────────────────────────────────────
+        b.push("platform:developer:application-openapi:synced", "Application OpenAPI Synced");
+
+        // ── platform:portal ─────────────────────────────────────────────────
+        b.groupAs("platform:portal:app", "Portal App", "created", "updated", "deleted");
+        b.groupAs("platform:portal:identity", "Portal Identity",
+                "ensured", "status-set", "deleted", "app-granted", "app-revoked");
+
+        // ── platform:function ───────────────────────────────────────────────
+        // The function platform's own events (FunctionEvents; Go's function
+        // runner emits a different set under platform:admin:function*).
+        b.groupAs("platform:function:function", "Function", "created", "updated", "deleted");
+        b.groupAs("platform:function:version", "Function Version", "published", "ready", "retired");
+        b.groupAs("platform:function:alias", "Function Alias", "changed", "removed");
+        b.groupAs("platform:function:config", "Function Config", "updated");
+        b.groupAs("platform:function:secret", "Function Secret", "set", "deleted");
+        b.groupAs("platform:function:policy", "Function Policy", "updated");
+        b.groupAs("platform:function:domain", "Function Domain", "claimed", "released");
 
         return List.copyOf(out);
     }
@@ -131,12 +191,17 @@ public final class PlatformEventTypes {
     /// named code (`push`), looking each code's schema up as it goes.
     private record Builder(List<Definition> out, Map<String, JsonNode> schemas) {
 
-        void group(String prefix, String... events) {
-            String aggregate = lastSegment(prefix, ':');
+        /// Names each event `"<label> <Event>"` (Go's `groupAs`).
+        void groupAs(String prefix, String label, String... events) {
             for (String ev : events) {
                 String code = prefix + ":" + ev;
-                out.add(new Definition(code, titleCase(aggregate) + " " + titleCase(ev), schemas.get(code)));
+                out.add(new Definition(code, label + " " + titleCase(ev), schemas.get(code)));
             }
+        }
+
+        /// [#groupAs] with the label derived from the aggregate segment.
+        void group(String prefix, String... events) {
+            groupAs(prefix, titleCase(lastSegment(prefix, ':')), events);
         }
 
         void push(String code, String name) {

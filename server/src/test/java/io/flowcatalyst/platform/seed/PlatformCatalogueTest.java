@@ -19,12 +19,13 @@ class PlatformCatalogueTest {
     void eventTypeCatalogueShape() {
         List<PlatformEventTypes.Definition> defs = PlatformEventTypes.all();
         assertThat(defs).hasSizeGreaterThanOrEqualTo(41);
-        assertThat(defs).hasSize(75);
+        assertThat(defs).hasSize(156);
         Set<String> seen = new HashSet<>();
         for (var d : defs) {
             assertThat(seen.add(d.code())).as("duplicate definition: %s", d.code()).isTrue();
-            assertThat(d.code()).as("unexpected prefix on %s — must be platform:iam or platform:admin", d.code())
-                    .matches("^platform:(iam|admin):.*");
+            assertThat(d.code())
+                    .as("unexpected code %s — must be platform:{iam|admin|messaging|developer|portal|function}:…", d.code())
+                    .matches("^platform:(iam|admin|messaging|developer|portal|function):.*");
             assertThat(d.name()).as("%s: empty name", d.code()).isNotEmpty();
             assertThat(d.code().split(":", -1)).hasSize(4);
         }

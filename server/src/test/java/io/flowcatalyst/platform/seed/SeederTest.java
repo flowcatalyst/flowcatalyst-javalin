@@ -124,7 +124,7 @@ class SeederTest {
                 .map(r -> line("eventtype", r.getCode(), r.getName(), r.getStatus(), r.getSource(),
                         r.getClientScoped(), r.getApplication(), r.getSubdomain(), r.getAggregate()))
                 .toList();
-        assertThat(actual).hasSize(75).containsExactlyInAnyOrderElementsOf(expected.get("eventtype"));
+        assertThat(actual).hasSize(156).containsExactlyInAnyOrderElementsOf(expected.get("eventtype"));
         assertThat(db.selectFrom(MSG_EVENT_TYPES).fetch()).allSatisfy(r -> {
             assertThat(r.getId()).startsWith("evt_");
             assertThat(r.getDescription()).isNull();
@@ -151,7 +151,7 @@ class SeederTest {
             assertThat(f[4]).isEqualTo("JSON_SCHEMA");
             assertThat(f[5]).isEqualTo("CURRENT");
         }
-        assertThat(expectedSchemas).hasSize(75);
+        assertThat(expectedSchemas).hasSize(156);
 
         var rows = db.select(MSG_EVENT_TYPES.CODE, MSG_EVENT_TYPE_SPEC_VERSIONS.ID,
                         MSG_EVENT_TYPE_SPEC_VERSIONS.VERSION, MSG_EVENT_TYPE_SPEC_VERSIONS.MIME_TYPE,
@@ -160,7 +160,7 @@ class SeederTest {
                 .from(MSG_EVENT_TYPE_SPEC_VERSIONS)
                 .join(MSG_EVENT_TYPES).on(MSG_EVENT_TYPES.ID.eq(MSG_EVENT_TYPE_SPEC_VERSIONS.EVENT_TYPE_ID))
                 .fetch();
-        assertThat(rows).hasSize(75);
+        assertThat(rows).hasSize(156);
         Map<String, JsonNode> actualSchemas = new TreeMap<>();
         for (var r : rows) {
             assertThat(r.value2()).startsWith("sch_");
@@ -261,8 +261,8 @@ class SeederTest {
         assertThat(secondRun).isEqualTo(firstRun);
         assertThat(firstRun.get("iam_roles")).hasSize(18);
         assertThat(firstRun.get("iam_role_permissions")).hasSize(213);
-        assertThat(firstRun.get("msg_event_types")).hasSize(75);
-        assertThat(firstRun.get("msg_event_type_spec_versions")).hasSize(75);
+        assertThat(firstRun.get("msg_event_types")).hasSize(156);
+        assertThat(firstRun.get("msg_event_type_spec_versions")).hasSize(156);
         assertThat(firstRun.get("app_applications")).hasSize(1);
         assertThat(firstRun.get("msg_processes")).hasSize(1);
         assertThat(firstRun.get("oauth_identity_providers")).hasSize(1);
@@ -283,6 +283,42 @@ class SeederTest {
         assertThat(row.getName()).isEqualTo("User Created");
         assertThat(db.fetchCount(MSG_EVENT_TYPES, MSG_EVENT_TYPES.CODE.eq("platform:iam:user:created"))).isEqualTo(1);
         assertThat(snapshot(db)).isEqualTo(firstRun);
+    }
+
+    /// F9 (Go 8ddaed4): a database seeded before the catalogue grew gains
+    /// the new codes, each with its 1.0 schema, on the next boot's seed run;
+    /// the rows it already had keep their ids. No migration is involved.
+    @Test
+    void aDatabaseSeededBeforeTheCatalogueGrewGainsTheNewCodesOnTheNextRun() {
+        DataSource older = TestPg.newDatabase("seed_older");
+        Migrator.migrate(older);
+        DSLContext d = DSL.using(older, SQLDialect.POSTGRES);
+        new Seeder(older, new EnvReader(Map.of())).run();
+        // The catalogue before F9: drop a sample of the rows (and schemas) added since.
+        List<String> added = List.of("platform:admin:oauth-client:created", "platform:function:function:created",
+                "platform:portal:identity:ensured", "platform:admin:audit-log:redacted");
+        var addedIds = d.select(MSG_EVENT_TYPES.ID).from(MSG_EVENT_TYPES).where(MSG_EVENT_TYPES.CODE.in(added));
+        d.deleteFrom(MSG_EVENT_TYPE_SPEC_VERSIONS).where(MSG_EVENT_TYPE_SPEC_VERSIONS.EVENT_TYPE_ID.in(addedIds)).execute();
+        d.deleteFrom(MSG_EVENT_TYPES).where(MSG_EVENT_TYPES.CODE.in(added)).execute();
+        String keptId = d.select(MSG_EVENT_TYPES.ID).from(MSG_EVENT_TYPES)
+                .where(MSG_EVENT_TYPES.CODE.eq("platform:iam:user:created")).fetchOne(MSG_EVENT_TYPES.ID);
+        assertThat(d.fetchCount(MSG_EVENT_TYPES)).isEqualTo(156 - added.size());
+
+        new Seeder(older, new EnvReader(Map.of())).run();
+
+        assertThat(d.fetchCount(MSG_EVENT_TYPES)).isEqualTo(156);
+        assertThat(d.fetchCount(MSG_EVENT_TYPE_SPEC_VERSIONS)).isEqualTo(156);
+        for (String code : added) {
+            var schema = d.select(MSG_EVENT_TYPE_SPEC_VERSIONS.VERSION, MSG_EVENT_TYPE_SPEC_VERSIONS.SCHEMA_CONTENT)
+                    .from(MSG_EVENT_TYPE_SPEC_VERSIONS)
+                    .join(MSG_EVENT_TYPES).on(MSG_EVENT_TYPES.ID.eq(MSG_EVENT_TYPE_SPEC_VERSIONS.EVENT_TYPE_ID))
+                    .where(MSG_EVENT_TYPES.CODE.eq(code)).fetchOne();
+            assertThat(schema).as("%s gained its schema", code).isNotNull();
+            assertThat(schema.value1()).isEqualTo("1.0");
+            assertThat(readTree(schema.value2().data())).as(code).isEqualTo(PlatformEventSchemas.all().get(code));
+        }
+        assertThat(d.select(MSG_EVENT_TYPES.ID).from(MSG_EVENT_TYPES)
+                .where(MSG_EVENT_TYPES.CODE.eq("platform:iam:user:created")).fetchOne(MSG_EVENT_TYPES.ID)).isEqualTo(keptId);
     }
 
     @Test
@@ -317,7 +353,7 @@ class SeederTest {
         assertThat(d.fetchCount(IAM_PRINCIPAL_ROLES)).isZero();
         // everything else is still seeded
         assertThat(d.fetchCount(IAM_ROLES)).isEqualTo(PlatformRoles.all().size());
-        assertThat(d.fetchCount(MSG_EVENT_TYPES)).isEqualTo(75);
+        assertThat(d.fetchCount(MSG_EVENT_TYPES)).isEqualTo(156);
         assertThat(d.fetchCount(APP_APPLICATIONS)).isEqualTo(1);
 
         // email only / password only → still skipped

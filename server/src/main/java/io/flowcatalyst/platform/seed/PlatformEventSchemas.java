@@ -230,6 +230,192 @@ public final class PlatformEventSchemas {
                 reqU32("created"), reqU32("updated"), reqU32("deleted"),
                 reqStrArray("syncedCodes")));
 
+        // The schemas below describe the data each operation emits (its
+        // `data()` record through `Json.MAPPER`, which drops nulls): a field
+        // that can be null is optional. Where Go emits the same code with the
+        // same data the schema is equal to Go's (8ddaed4); the two
+        // codes whose Java data differs, and the Java-only codes, are marked.
+        // EmittedEventSchemaTest validates each against a serialised event.
+
+        // ── platform:iam:user (developer credentials) ───────────────────────
+        m.put("platform:iam:user:developer-credential-set", obj(reqStr("userId")));
+        m.put("platform:iam:user:developer-credential-revoked", obj(reqStr("userId")));
+
+        // ── platform:iam:serviceaccount ─────────────────────────────────────
+        m.put("platform:iam:serviceaccount:deactivated", obj(reqStr("serviceAccountId")));
+        // Java only. servicePrincipalId is absent when the account has no principal.
+        m.put("platform:iam:serviceaccount:token-minted", obj(
+                reqStr("serviceAccountId"), optStr("servicePrincipalId"),
+                reqU32("expiresInSeconds"), reqStrArray("permissions")));
+
+        // ── platform:iam:passkey (Java only; Go emits platform:admin:passkey:*
+        // with the same data) ───────────────────────────────────────────────
+        m.put("platform:iam:passkey:registered", obj(reqStr("credentialId"), reqStr("userId"), optStr("name")));
+        m.put("platform:iam:passkey:authenticated", obj(reqStr("credentialId"), reqStr("userId")));
+        m.put("platform:iam:passkey:revoked", obj(reqStr("credentialId"), reqStr("userId")));
+
+        // ── platform:iam:reset-approval (Java only) ─────────────────────────
+        m.put("platform:iam:reset-approval:queued", obj(reqStr("requestId"), reqStr("userId"), reqStr("clientId")));
+        m.put("platform:iam:reset-approval:decided", obj(
+                reqStr("requestId"), reqStr("userId"), reqStr("status"), reqStr("decidedBy")));
+
+        // ── platform:admin:dispatch-pool ────────────────────────────────────
+        m.put("platform:admin:dispatch-pool:suspended", obj(reqStr("poolId"), reqStr("code")));
+        m.put("platform:admin:dispatch-pool:activated", obj(reqStr("poolId"), reqStr("code")));
+
+        // ── platform:admin:anchor-domain ────────────────────────────────────
+        m.put("platform:admin:anchor-domain:created", obj(reqStr("anchorDomainId"), reqStr("domain")));
+        m.put("platform:admin:anchor-domain:updated", obj(reqStr("anchorDomainId"), reqStr("domain")));
+        m.put("platform:admin:anchor-domain:deleted", obj(reqStr("anchorDomainId"), reqStr("domain")));
+
+        // ── platform:admin:auth-config ──────────────────────────────────────
+        m.put("platform:admin:auth-config:created", obj(reqStr("authConfigId"), reqStr("emailDomain")));
+        m.put("platform:admin:auth-config:updated", obj(reqStr("authConfigId"), reqStr("emailDomain")));
+        m.put("platform:admin:auth-config:deleted", obj(reqStr("authConfigId"), reqStr("emailDomain")));
+
+        // ── platform:admin:oauth-client ─────────────────────────────────────
+        m.put("platform:admin:oauth-client:created", obj(
+                reqStr("oauthClientId"), reqStr("clientId"), reqStr("clientName")));
+        m.put("platform:admin:oauth-client:updated", obj(reqStr("oauthClientId"), reqStr("clientName")));
+        m.put("platform:admin:oauth-client:activated", obj(reqStr("oauthClientId")));
+        m.put("platform:admin:oauth-client:deactivated", obj(reqStr("oauthClientId")));
+        m.put("platform:admin:oauth-client:deleted", obj(reqStr("oauthClientId"), reqStr("clientId")));
+        m.put("platform:admin:oauth-client:secret-rotated", obj(
+                reqStr("oauthClientId"), optDateTime("previousSecretExpiresAt")));
+        // Differs from Go: Java also says whether a previous secret was dropped.
+        m.put("platform:admin:oauth-client:previous-secret-revoked", obj(
+                reqStr("oauthClientId"), reqBool("dropped")));
+
+        // ── platform:admin:identity-provider ────────────────────────────────
+        m.put("platform:admin:identity-provider:created", obj(reqStr("identityProviderId"), reqStr("code")));
+        m.put("platform:admin:identity-provider:updated", obj(reqStr("identityProviderId"), reqStr("code")));
+        m.put("platform:admin:identity-provider:deleted", obj(reqStr("identityProviderId"), reqStr("code")));
+
+        // ── platform:admin:email-domain-mapping ─────────────────────────────
+        m.put("platform:admin:email-domain-mapping:created", obj(reqStr("mappingId"), reqStr("emailDomain")));
+        m.put("platform:admin:email-domain-mapping:updated", obj(reqStr("mappingId"), reqStr("emailDomain")));
+        m.put("platform:admin:email-domain-mapping:provider-changed", obj(
+                reqStr("mappingId"), reqStr("emailDomain"),
+                reqStr("fromIdentityProviderId"), reqStr("toIdentityProviderId")));
+        m.put("platform:admin:email-domain-mapping:deleted", obj(reqStr("mappingId"), reqStr("emailDomain")));
+
+        // ── platform:admin:idp-role-mapping ─────────────────────────────────
+        m.put("platform:admin:idp-role-mapping:created", obj(
+                reqStr("mappingId"), reqStr("idpType"), reqStr("idpRoleName"), reqStr("platformRoleName")));
+        // Differs from Go (mappingId, idpRoleName): Java's delete carries the
+        // same fields as the create.
+        m.put("platform:admin:idp-role-mapping:deleted", obj(
+                reqStr("mappingId"), reqStr("idpType"), reqStr("idpRoleName"), reqStr("platformRoleName")));
+
+        // ── platform:admin:role ─────────────────────────────────────────────
+        m.put("platform:admin:role:created", obj(reqStr("roleId"), reqStr("name")));
+        m.put("platform:admin:role:updated", obj(reqStr("roleId"), reqStr("name")));
+        m.put("platform:admin:role:deleted", obj(reqStr("roleId"), reqStr("name")));
+        m.put("platform:admin:role:permission-granted", obj(
+                reqStr("roleId"), reqStr("roleName"), reqStr("permission")));
+        m.put("platform:admin:role:permission-revoked", obj(
+                reqStr("roleId"), reqStr("roleName"), reqStr("permission")));
+        // The application-scoped sync sets applicationCode and syncedCodes; the
+        // platform-catalogue sync leaves both out.
+        m.put("platform:admin:roles:synced", obj(
+                reqU32("created"), reqU32("updated"), reqU32("removed"), reqU32("total"),
+                optStr("applicationCode"), optStrArray("syncedCodes")));
+
+        // ── platform:admin:platform-config ──────────────────────────────────
+        m.put("platform:admin:platform-config:property-set", obj(
+                reqStr("configId"), reqStr("applicationCode"), reqStr("section"), reqStr("property")));
+
+        // ── platform:admin:process ──────────────────────────────────────────
+        m.put("platform:admin:process:created", obj(reqStr("processId"), reqStr("code"), reqStr("name")));
+        m.put("platform:admin:process:updated", obj(reqStr("processId"), reqStr("name")));
+        m.put("platform:admin:process:archived", obj(reqStr("processId"), reqStr("code")));
+        m.put("platform:admin:process:deleted", obj(reqStr("processId"), reqStr("code")));
+        m.put("platform:admin:processes:synced", obj(
+                reqStr("applicationCode"),
+                reqU32("created"), reqU32("updated"), reqU32("deleted"),
+                reqStrArray("syncedCodes")));
+
+        // ── platform:admin:scheduled-job ────────────────────────────────────
+        for (String ev : List.of("created", "updated", "paused", "resumed", "archived", "deleted")) {
+            m.put("platform:admin:scheduled-job:" + ev, obj(reqStr("scheduledJobId"), reqStr("code")));
+        }
+        m.put("platform:admin:scheduled-job:fired-manually", obj(
+                reqStr("scheduledJobId"), reqStr("code"), reqStr("instanceId")));
+        // Each list holds scheduled-job ids. Go writes an empty one as null;
+        // Java writes [], which the schema also admits.
+        m.put("platform:admin:scheduledjobs:synced", obj(
+                reqStr("applicationCode"),
+                reqNullableStrArray("created"), reqNullableStrArray("updated"), reqNullableStrArray("archived")));
+
+        // ── platform:admin:dispatchjob (Java only) ──────────────────────────
+        m.put("platform:admin:dispatchjob:requeued", obj(
+                reqStr("dispatchJobId"), reqStr("code"), reqStr("previousStatus"),
+                optStr("messageGroup"), optStr("clientId")));
+        m.put("platform:admin:dispatchjobs:requeued", obj(
+                reqStr("batchId"), reqStrArray("dispatchJobIds"), reqU32("requeued")));
+
+        // ── platform:admin:audit-log (Java only) ────────────────────────────
+        m.put("platform:admin:audit-log:redacted", obj(reqU32("scanned"), reqU32("redacted")));
+
+        // ── platform:messaging:dispatch-job ─────────────────────────────────
+        m.put("platform:messaging:dispatch-job:cancelled", obj(reqStr("dispatchJobId")));
+        m.put("platform:messaging:dispatch-job:completed", obj(reqStr("dispatchJobId")));
+
+        // ── platform:developer:application-openapi ──────────────────────────
+        m.put("platform:developer:application-openapi:synced", obj(
+                reqStr("applicationId"), reqStr("applicationCode"), reqStr("specId"),
+                reqStr("version"), reqStr("specHash"), optStr("archivedPriorVersion"),
+                reqBool("hasBreaking"), reqBool("unchanged")));
+
+        // ── platform:portal ─────────────────────────────────────────────────
+        for (String ev : List.of("created", "updated", "deleted")) {
+            m.put("platform:portal:app:" + ev, obj(
+                    reqStr("portalAppId"), reqStr("clientId"), reqStr("code"), reqStr("name")));
+        }
+        m.put("platform:portal:identity:ensured", obj(
+                reqStr("identityId"), reqStr("clientId"), reqStr("email"), reqBool("created"),
+                reqStr("source"), optStr("portalAppId"), optStr("portalAppCode")));
+        m.put("platform:portal:identity:status-set", obj(reqStr("identityId"), reqStr("clientId"), reqStr("status")));
+        m.put("platform:portal:identity:deleted", obj(reqStr("identityId"), reqStr("clientId"), reqStr("email")));
+        m.put("platform:portal:identity:app-granted", obj(
+                reqStr("identityId"), reqStr("clientId"), reqStr("portalAppId"), reqStr("portalAppCode"),
+                reqStr("source")));
+        m.put("platform:portal:identity:app-revoked", obj(
+                reqStr("identityId"), reqStr("clientId"), reqStr("portalAppId"), reqStr("portalAppCode")));
+
+        // ── platform:function (Java only; FunctionEvents) ───────────────────
+        m.put("platform:function:function:created", obj(
+                reqStr("functionId"), reqStr("address"), reqStr("applicationId"), optStr("clientId"),
+                reqStr("runtime")));
+        m.put("platform:function:function:updated", obj(
+                reqStr("functionId"), reqStr("address"), optStr("description"), reqStr("status")));
+        m.put("platform:function:function:deleted", obj(reqStr("functionId"), reqStr("address")));
+        // The signer pair is absent together (a version published unsigned).
+        m.put("platform:function:version:published", obj(
+                reqStr("functionId"), reqStr("address"), reqStr("versionId"), reqU32("version"),
+                reqStr("digest"), reqStr("pool"), optStr("signerIssuer"), optStr("signerSubject")));
+        m.put("platform:function:version:ready", obj(
+                reqStr("functionId"), reqStr("address"), reqStr("versionId"), reqU32("version"),
+                reqStr("hostId")));
+        m.put("platform:function:version:retired", obj(
+                reqStr("functionId"), reqStr("address"), reqStr("versionId"), reqU32("version")));
+        // previousVersionId is absent on a first promotion.
+        m.put("platform:function:alias:changed", obj(
+                reqStr("functionId"), reqStr("address"), reqStr("alias"), reqStr("versionId"),
+                reqU32("version"), optStr("previousVersionId")));
+        m.put("platform:function:alias:removed", obj(
+                reqStr("functionId"), reqStr("address"), reqStr("alias"), reqStr("versionId"),
+                reqU32("version")));
+        // Keys only, never values.
+        m.put("platform:function:config:updated", obj(
+                reqStr("functionId"), reqStr("address"), reqStrArray("keys")));
+        m.put("platform:function:secret:set", obj(reqStr("functionId"), reqStr("address"), reqStr("key")));
+        m.put("platform:function:secret:deleted", obj(reqStr("functionId"), reqStr("address"), reqStr("key")));
+        // owner is "platform" or the owning client's id; the count, never the signers.
+        m.put("platform:function:policy:updated", obj(reqStr("owner"), reqU32("signerCount")));
+        m.put("platform:function:domain:claimed", obj(reqStr("domainId"), reqStr("hostname"), reqStr("owner")));
+        m.put("platform:function:domain:released", obj(reqStr("domainId"), reqStr("hostname"), reqStr("owner")));
+
         return Collections.unmodifiableMap(m);
     }
 
@@ -324,6 +510,25 @@ public final class PlatformEventSchemas {
 
     static Prop reqStrArray(String name) {
         return new Prop(name, stringArray(), true);
+    }
+
+    /// A string array the producer leaves out when empty.
+    static Prop optStrArray(String name) {
+        return new Prop(name, stringArray(), false);
+    }
+
+    /// A string array always present, null when empty (Go's nil slice).
+    static Prop reqNullableStrArray(String name) {
+        ObjectNode n = nullable("array");
+        n.set("items", type("string"));
+        return new Prop(name, n, true);
+    }
+
+    /// An RFC 3339 timestamp the producer leaves out when unset.
+    static Prop optDateTime(String name) {
+        ObjectNode n = type("string");
+        n.put("format", "date-time");
+        return new Prop(name, n, false);
     }
 
     private static ObjectNode type(String t) {
