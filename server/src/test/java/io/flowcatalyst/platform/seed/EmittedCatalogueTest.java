@@ -30,13 +30,18 @@ class EmittedCatalogueTest {
     /// A `static final String NAME = "…";` constant.
     private static final Pattern CONSTANT = Pattern.compile("static\\s+final\\s+String\\s+(\\w+)\\s*=\\s*\"([^\"]+)\"\\s*;");
 
+    /// A type declaring that it is a `DomainEvent`.
+    private static final Pattern DOMAIN_EVENT = Pattern.compile("implements\\s+(?:[\\w.]+\\s*,\\s*)*DomainEvent\\b");
+
     /// Event types the platform emits that the seeded catalogue does not list
     /// yet (found 2026-10-11 while aligning the client events; Go's list is
     /// `knownUncataloguedEventTypes`, which differs by the Java-only function,
-    /// reset-approval, token-minted and requeue events). A subscription cannot
+    /// reset-approval, token-minted, requeue and audit-log redaction events; the
+    /// last was found 2026-10-11 when the scan grew past `*Events.java`). A subscription cannot
     /// pick them from the catalogue. The list may only shrink: an entry that
     /// becomes catalogued, or stops being emitted, fails the test until removed.
     private static final Set<String> KNOWN_UNCATALOGUED = Set.of(
+            "platform:admin:audit-log:redacted",
             "platform:admin:anchor-domain:created",
             "platform:admin:anchor-domain:deleted",
             "platform:admin:anchor-domain:updated",
@@ -119,14 +124,20 @@ class EmittedCatalogueTest {
             "platform:portal:identity:status-set");
 
     /// Code → `File: CONSTANT` for every event-type constant in an `*Events.java`
-    /// under the platform sources (one events file per aggregate, CONVENTIONS §2).
+    /// under the platform sources (one events file per aggregate, CONVENTIONS §2),
+    /// and in any other source file declaring a `DomainEvent` (`AuditLogsRedacted`
+    /// stands alone, outside an events file).
     private static Map<String, String> emittedEventTypes() {
         Path root = Path.of("src/main/java/io/flowcatalyst/platform");
         assertThat(root).as("platform sources (surefire runs in the server module)").isDirectory();
         Map<String, String> out = new TreeMap<>();
         try (Stream<Path> files = Files.walk(root)) {
-            for (Path f : files.filter(p -> p.getFileName().toString().endsWith("Events.java")).toList()) {
-                var m = CONSTANT.matcher(Files.readString(f));
+            for (Path f : files.filter(p -> p.getFileName().toString().endsWith(".java")).toList()) {
+                String source = Files.readString(f);
+                if (!f.getFileName().toString().endsWith("Events.java") && !DOMAIN_EVENT.matcher(source).find()) {
+                    continue;
+                }
+                var m = CONSTANT.matcher(source);
                 while (m.find()) {
                     if (EVENT_CODE.matcher(m.group(2)).matches()) {
                         out.put(m.group(2), f.getFileName() + ": " + m.group(1));
