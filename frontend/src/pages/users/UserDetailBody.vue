@@ -19,6 +19,8 @@ import { passwordPolicyError } from "@/utils/passwordPolicy";
 import { useClientOptions } from "@/composables/useClientOptions";
 import { useDirtyForm } from "@/composables/useDirtyForm";
 import { useConfirm } from "primevue/useconfirm";
+import { useAuthStore } from "@/stores/auth";
+import { canAssignUserRoles } from "@/utils/admin-permissions";
 
 const props = defineProps<{
 	userId: string;
@@ -148,6 +150,10 @@ const canSendPasswordReset = computed(
 const canResetPassword = computed(() => user.value?.idpType === "INTERNAL");
 
 const isAnchorUser = computed(() => user.value?.isAnchorUser ?? false);
+// Changing roles needs user:assign-roles (not user:update); without it the
+// roles are shown read-only.
+const authStore = useAuthStore();
+const canAssignRoles = computed(() => canAssignUserRoles(authStore.user));
 
 // Confirmed second factors on the account (from the principal detail read).
 // Empty ⇒ no 2FA enrolled — which is the case that gets a self-service
@@ -1025,13 +1031,13 @@ function formatDate(dateStr: string | null | undefined) {
 
     <!-- Roles -->
     <FcFormSection title="Roles" flat>
-      <template #actions>
+      <template v-if="canAssignRoles" #actions>
         <Button label="Manage Roles" icon="pi pi-pencil" text @click="openRolePicker" />
       </template>
 
       <div v-if="roleAssignments.length === 0" class="no-roles-notice">
         <p>No roles assigned to this user.</p>
-        <Button label="Assign Roles" icon="pi pi-plus" text @click="openRolePicker" />
+        <Button v-if="canAssignRoles" label="Assign Roles" icon="pi pi-plus" text @click="openRolePicker" />
       </div>
 
       <DataTable v-else :value="roleAssignments" size="small">
