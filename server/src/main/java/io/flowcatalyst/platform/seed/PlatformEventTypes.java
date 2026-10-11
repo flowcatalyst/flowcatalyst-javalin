@@ -83,8 +83,11 @@ public final class PlatformEventTypes {
                 "created", "updated", "deleted", "roles-assigned",
                 "token-regenerated", "secret-regenerated");
 
-        b.group("platform:iam:client",
-                "created", "updated", "activated", "suspended", "deleted", "note-added");
+        // Client lifecycle events are emitted under platform:admin (the client
+        // operations, client/operations/ClientEvents); enabling applications for
+        // a client is emitted under platform:iam by the application operations.
+        // V25 renamed the platform:iam:client:* rows an older seed wrote.
+        b.group("platform:iam:client", "applications-updated");
 
         b.group("platform:iam:role", "created", "updated", "deleted");
         b.push("platform:iam:roles:synced", "Roles Synced");
@@ -98,6 +101,9 @@ public final class PlatformEventTypes {
         b.group("platform:iam:auth-config", "created", "updated", "deleted");
 
         // ── platform:admin ──────────────────────────────────────────────────
+        b.group("platform:admin:client",
+                "created", "updated", "activated", "suspended", "deactivated", "deleted", "note-added");
+
         b.group("platform:admin:cors", "origin-added", "origin-deleted");
 
         b.group("platform:admin:idp", "created", "updated", "deleted");

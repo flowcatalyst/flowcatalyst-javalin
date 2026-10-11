@@ -124,7 +124,7 @@ class SeederTest {
                 .map(r -> line("eventtype", r.getCode(), r.getName(), r.getStatus(), r.getSource(),
                         r.getClientScoped(), r.getApplication(), r.getSubdomain(), r.getAggregate()))
                 .toList();
-        assertThat(actual).hasSize(73).containsExactlyInAnyOrderElementsOf(expected.get("eventtype"));
+        assertThat(actual).hasSize(75).containsExactlyInAnyOrderElementsOf(expected.get("eventtype"));
         assertThat(db.selectFrom(MSG_EVENT_TYPES).fetch()).allSatisfy(r -> {
             assertThat(r.getId()).startsWith("evt_");
             assertThat(r.getDescription()).isNull();
@@ -151,7 +151,7 @@ class SeederTest {
             assertThat(f[4]).isEqualTo("JSON_SCHEMA");
             assertThat(f[5]).isEqualTo("CURRENT");
         }
-        assertThat(expectedSchemas).hasSize(73);
+        assertThat(expectedSchemas).hasSize(75);
 
         var rows = db.select(MSG_EVENT_TYPES.CODE, MSG_EVENT_TYPE_SPEC_VERSIONS.ID,
                         MSG_EVENT_TYPE_SPEC_VERSIONS.VERSION, MSG_EVENT_TYPE_SPEC_VERSIONS.MIME_TYPE,
@@ -160,7 +160,7 @@ class SeederTest {
                 .from(MSG_EVENT_TYPE_SPEC_VERSIONS)
                 .join(MSG_EVENT_TYPES).on(MSG_EVENT_TYPES.ID.eq(MSG_EVENT_TYPE_SPEC_VERSIONS.EVENT_TYPE_ID))
                 .fetch();
-        assertThat(rows).hasSize(73);
+        assertThat(rows).hasSize(75);
         Map<String, JsonNode> actualSchemas = new TreeMap<>();
         for (var r : rows) {
             assertThat(r.value2()).startsWith("sch_");
@@ -261,8 +261,8 @@ class SeederTest {
         assertThat(secondRun).isEqualTo(firstRun);
         assertThat(firstRun.get("iam_roles")).hasSize(18);
         assertThat(firstRun.get("iam_role_permissions")).hasSize(213);
-        assertThat(firstRun.get("msg_event_types")).hasSize(73);
-        assertThat(firstRun.get("msg_event_type_spec_versions")).hasSize(73);
+        assertThat(firstRun.get("msg_event_types")).hasSize(75);
+        assertThat(firstRun.get("msg_event_type_spec_versions")).hasSize(75);
         assertThat(firstRun.get("app_applications")).hasSize(1);
         assertThat(firstRun.get("msg_processes")).hasSize(1);
         assertThat(firstRun.get("oauth_identity_providers")).hasSize(1);
@@ -317,7 +317,7 @@ class SeederTest {
         assertThat(d.fetchCount(IAM_PRINCIPAL_ROLES)).isZero();
         // everything else is still seeded
         assertThat(d.fetchCount(IAM_ROLES)).isEqualTo(PlatformRoles.all().size());
-        assertThat(d.fetchCount(MSG_EVENT_TYPES)).isEqualTo(73);
+        assertThat(d.fetchCount(MSG_EVENT_TYPES)).isEqualTo(75);
         assertThat(d.fetchCount(APP_APPLICATIONS)).isEqualTo(1);
 
         // email only / password only → still skipped

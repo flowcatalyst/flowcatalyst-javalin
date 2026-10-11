@@ -97,16 +97,20 @@ public final class PlatformEventSchemas {
         m.put("platform:iam:serviceaccount:secret-regenerated", obj(
                 reqStr("serviceAccountId"), reqStr("code")));
 
+        // ── platform:admin:client ───────────────────────────────────────────
+        // The data each client operation emits (client/operations/ClientEvents).
+        m.put("platform:admin:client:created", obj(reqStr("clientId"), reqStr("name"), reqStr("identifier")));
+        m.put("platform:admin:client:updated", obj(reqStr("clientId"), reqStr("name")));
+        m.put("platform:admin:client:activated", obj(reqStr("clientId")));
+        m.put("platform:admin:client:suspended", obj(reqStr("clientId"), reqStr("reason")));
+        m.put("platform:admin:client:deactivated", obj(reqStr("clientId"), optStr("reason")));
+        m.put("platform:admin:client:deleted", obj(reqStr("clientId"), reqStr("identifier")));
+        m.put("platform:admin:client:note-added", obj(reqStr("clientId"), reqStr("category"), reqStr("text")));
+
         // ── platform:iam:client ─────────────────────────────────────────────
-        m.put("platform:iam:client:created", obj(
-                reqStr("clientId"), reqStr("name"), reqStr("identifier"), optStr("description")));
-        m.put("platform:iam:client:updated", obj(
-                reqStr("clientId"), optStr("name"), optStr("description")));
-        m.put("platform:iam:client:activated", obj(reqStr("clientId"), reqStr("previousStatus")));
-        m.put("platform:iam:client:suspended", obj(reqStr("clientId"), reqStr("reason")));
-        m.put("platform:iam:client:deleted", obj(reqStr("clientId"), reqStr("name"), reqStr("identifier")));
-        m.put("platform:iam:client:note-added", obj(
-                reqStr("clientId"), reqStr("category"), reqStr("text"), reqStr("author")));
+        m.put("platform:iam:client:applications-updated", obj(
+                reqStr("clientId"), reqStrArray("enabledApplicationIds"),
+                reqStrArray("enabledAdded"), reqStrArray("disabledRemoved")));
 
         // ── platform:iam:role ───────────────────────────────────────────────
         m.put("platform:iam:role:created", obj(

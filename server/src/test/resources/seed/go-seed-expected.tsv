@@ -28,6 +28,10 @@
 # row's JSON is hand-edited (not re-dumped) to add `"clientId":{"type":["string","null"]}`, read
 # verbatim from Go `internal/platform/seed/event_schemas.go` at `07184da` (`56aea7c`+), which adds
 # `optStr("clientId")` to that schema — mirrors the `connection:synced` row above, same reason.
+# Go 25c3ed6 / Java F3 (2026-10-11): the six `platform:iam:client:*` eventtype/schema rows are
+# replaced by the seven `platform:admin:client:*` codes the client operations emit plus
+# `platform:iam:client:applications-updated`, hand-edited (not re-dumped) from Go
+# `internal/platform/seed/{event_types,event_schemas}.go` at `25c3ed6`.
 role	platform:super-admin	Platform Super Admin	Full access to all platform operations	CODE	platform	false
 role	platform:admin	Platform Admin	Manages clients, applications, and platform configuration	CODE	platform	false
 role	platform:admin-readonly	Platform Admin Read-Only	View-only access to clients, applications, and platform configuration	CODE	platform	false
@@ -278,12 +282,7 @@ eventtype	platform:iam:serviceaccount:deleted	Serviceaccount Deleted	CURRENT	UI	
 eventtype	platform:iam:serviceaccount:roles-assigned	Serviceaccount Roles Assigned	CURRENT	UI	false	platform	iam	serviceaccount
 eventtype	platform:iam:serviceaccount:token-regenerated	Serviceaccount Token Regenerated	CURRENT	UI	false	platform	iam	serviceaccount
 eventtype	platform:iam:serviceaccount:secret-regenerated	Serviceaccount Secret Regenerated	CURRENT	UI	false	platform	iam	serviceaccount
-eventtype	platform:iam:client:created	Client Created	CURRENT	UI	false	platform	iam	client
-eventtype	platform:iam:client:updated	Client Updated	CURRENT	UI	false	platform	iam	client
-eventtype	platform:iam:client:activated	Client Activated	CURRENT	UI	false	platform	iam	client
-eventtype	platform:iam:client:suspended	Client Suspended	CURRENT	UI	false	platform	iam	client
-eventtype	platform:iam:client:deleted	Client Deleted	CURRENT	UI	false	platform	iam	client
-eventtype	platform:iam:client:note-added	Client Note Added	CURRENT	UI	false	platform	iam	client
+eventtype	platform:iam:client:applications-updated	Client Applications Updated	CURRENT	UI	false	platform	iam	client
 eventtype	platform:iam:role:created	Role Created	CURRENT	UI	false	platform	iam	role
 eventtype	platform:iam:role:updated	Role Updated	CURRENT	UI	false	platform	iam	role
 eventtype	platform:iam:role:deleted	Role Deleted	CURRENT	UI	false	platform	iam	role
@@ -301,6 +300,13 @@ eventtype	platform:iam:anchor-domain:deleted	Anchor Domain Deleted	CURRENT	UI	fa
 eventtype	platform:iam:auth-config:created	Auth Config Created	CURRENT	UI	false	platform	iam	auth-config
 eventtype	platform:iam:auth-config:updated	Auth Config Updated	CURRENT	UI	false	platform	iam	auth-config
 eventtype	platform:iam:auth-config:deleted	Auth Config Deleted	CURRENT	UI	false	platform	iam	auth-config
+eventtype	platform:admin:client:created	Client Created	CURRENT	UI	false	platform	admin	client
+eventtype	platform:admin:client:updated	Client Updated	CURRENT	UI	false	platform	admin	client
+eventtype	platform:admin:client:activated	Client Activated	CURRENT	UI	false	platform	admin	client
+eventtype	platform:admin:client:suspended	Client Suspended	CURRENT	UI	false	platform	admin	client
+eventtype	platform:admin:client:deactivated	Client Deactivated	CURRENT	UI	false	platform	admin	client
+eventtype	platform:admin:client:deleted	Client Deleted	CURRENT	UI	false	platform	admin	client
+eventtype	platform:admin:client:note-added	Client Note Added	CURRENT	UI	false	platform	admin	client
 eventtype	platform:admin:cors:origin-added	Cors Origin Added	CURRENT	UI	false	platform	admin	cors
 eventtype	platform:admin:cors:origin-deleted	Cors Origin Deleted	CURRENT	UI	false	platform	admin	cors
 eventtype	platform:admin:idp:created	Idp Created	CURRENT	UI	false	platform	admin	idp
@@ -351,12 +357,7 @@ schema	platform:iam:serviceaccount:deleted	1.0	application/schema+json	JSON_SCHE
 schema	platform:iam:serviceaccount:roles-assigned	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"rolesAdded":{"items":{"type":"string"},"type":"array"},"rolesRemoved":{"items":{"type":"string"},"type":"array"},"serviceAccountId":{"type":"string"}},"required":["serviceAccountId","rolesAdded","rolesRemoved"],"type":"object"}
 schema	platform:iam:serviceaccount:token-regenerated	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"serviceAccountId":{"type":"string"}},"required":["serviceAccountId","code"],"type":"object"}
 schema	platform:iam:serviceaccount:secret-regenerated	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"serviceAccountId":{"type":"string"}},"required":["serviceAccountId","code"],"type":"object"}
-schema	platform:iam:client:created	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"description":{"type":["string","null"]},"identifier":{"type":"string"},"name":{"type":"string"}},"required":["clientId","name","identifier"],"type":"object"}
-schema	platform:iam:client:updated	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"description":{"type":["string","null"]},"name":{"type":["string","null"]}},"required":["clientId"],"type":"object"}
-schema	platform:iam:client:activated	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"previousStatus":{"type":"string"}},"required":["clientId","previousStatus"],"type":"object"}
-schema	platform:iam:client:suspended	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"reason":{"type":"string"}},"required":["clientId","reason"],"type":"object"}
-schema	platform:iam:client:deleted	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"identifier":{"type":"string"},"name":{"type":"string"}},"required":["clientId","name","identifier"],"type":"object"}
-schema	platform:iam:client:note-added	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"author":{"type":"string"},"category":{"type":"string"},"clientId":{"type":"string"},"text":{"type":"string"}},"required":["clientId","category","text","author"],"type":"object"}
+schema	platform:iam:client:applications-updated	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"disabledRemoved":{"items":{"type":"string"},"type":"array"},"enabledAdded":{"items":{"type":"string"},"type":"array"},"enabledApplicationIds":{"items":{"type":"string"},"type":"array"}},"required":["clientId","enabledApplicationIds","enabledAdded","disabledRemoved"],"type":"object"}
 schema	platform:iam:role:created	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"applicationCode":{"type":"string"},"code":{"type":"string"},"displayName":{"type":"string"},"permissions":{"items":{"type":"string"},"type":"array"},"roleId":{"type":"string"}},"required":["roleId","code","displayName","applicationCode","permissions"],"type":"object"}
 schema	platform:iam:role:updated	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"description":{"type":["string","null"]},"displayName":{"type":["string","null"]},"permissionsAdded":{"items":{"type":"string"},"type":"array"},"permissionsRemoved":{"items":{"type":"string"},"type":"array"},"roleId":{"type":"string"}},"required":["roleId","permissionsAdded","permissionsRemoved"],"type":"object"}
 schema	platform:iam:role:deleted	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"roleId":{"type":"string"}},"required":["roleId","code"],"type":"object"}
@@ -374,6 +375,13 @@ schema	platform:iam:anchor-domain:deleted	1.0	application/schema+json	JSON_SCHEM
 schema	platform:iam:auth-config:created	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"authConfigId":{"type":"string"},"configType":{"type":"string"},"emailDomain":{"type":"string"}},"required":["authConfigId","emailDomain","configType"],"type":"object"}
 schema	platform:iam:auth-config:updated	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"authConfigId":{"type":"string"},"emailDomain":{"type":"string"}},"required":["authConfigId","emailDomain"],"type":"object"}
 schema	platform:iam:auth-config:deleted	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"authConfigId":{"type":"string"},"emailDomain":{"type":"string"}},"required":["authConfigId","emailDomain"],"type":"object"}
+schema	platform:admin:client:created	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"identifier":{"type":"string"},"name":{"type":"string"}},"required":["clientId","name","identifier"],"type":"object"}
+schema	platform:admin:client:updated	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"name":{"type":"string"}},"required":["clientId","name"],"type":"object"}
+schema	platform:admin:client:activated	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"}},"required":["clientId"],"type":"object"}
+schema	platform:admin:client:suspended	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"reason":{"type":"string"}},"required":["clientId","reason"],"type":"object"}
+schema	platform:admin:client:deactivated	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"reason":{"type":["string","null"]}},"required":["clientId"],"type":"object"}
+schema	platform:admin:client:deleted	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"identifier":{"type":"string"}},"required":["clientId","identifier"],"type":"object"}
+schema	platform:admin:client:note-added	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"category":{"type":"string"},"clientId":{"type":"string"},"text":{"type":"string"}},"required":["clientId","category","text"],"type":"object"}
 schema	platform:admin:cors:origin-added	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"origin":{"type":"string"},"originId":{"type":"string"}},"required":["originId","origin"],"type":"object"}
 schema	platform:admin:cors:origin-deleted	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"origin":{"type":"string"},"originId":{"type":"string"}},"required":["originId","origin"],"type":"object"}
 schema	platform:admin:idp:created	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"idpId":{"type":"string"},"idpType":{"type":"string"},"name":{"type":"string"}},"required":["idpId","code","name","idpType"],"type":"object"}
