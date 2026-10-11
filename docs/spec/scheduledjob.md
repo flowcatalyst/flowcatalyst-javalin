@@ -151,7 +151,13 @@ permission for their operation (ruled 2026-10-10, bug 17): create =
 `scheduled-job:create`; update, pause, resume and archive =
 `scheduled-job:update`; delete = `scheduled-job:delete`; fire =
 `scheduled-job:fire`. "write" (the runner's instance log/complete reports
-only) = any of `scheduled-job:{create|update|delete}`.
+only) = any of `scheduled-job:{create|update|delete}`, or
+`application-service:scheduled-job-instance:write` (an application's SDK
+service account). A caller admitted only by the latter reports only on
+firings of a job whose application it can access; another application's job,
+or a job of no application, is 403 `APPLICATION_ACCESS_REQUIRED` (2026-10-11,
+`docs/go-mirror/2026-10-11-platform-bug-fixes-2.md` F1). The instance's client
+scope applies to both.
 
 | Method / path | Gate (handler) | Body → command | Success | Notes |
 |---|---|---|---|---|

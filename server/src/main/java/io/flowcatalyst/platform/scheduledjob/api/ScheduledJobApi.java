@@ -201,19 +201,13 @@ public final class ScheduledJobApi {
     }
 
     private static void writeInstanceLog(Exchange ctx, State s) {
-        AuthContext ac = Auth.current();
-        requireWrite(ac);
-        ScheduledJobInstance inst = instance(s, ctx.pathParam("instanceId"));
-        Checks.checkScopeAccess(ac, inst.clientId());
+        ScheduledJobInstance inst = reportableInstance(s, ctx.pathParam("instanceId"));
         s.instances().writeLog(ctx.bodyAsClass(WriteInstanceLogRequest.class).toLog(inst));
         ctx.status(204);
     }
 
     private static void completeInstance(Exchange ctx, State s) {
-        AuthContext ac = Auth.current();
-        requireWrite(ac);
-        ScheduledJobInstance inst = instance(s, ctx.pathParam("instanceId"));
-        Checks.checkScopeAccess(ac, inst.clientId());
+        ScheduledJobInstance inst = reportableInstance(s, ctx.pathParam("instanceId"));
         var c = ctx.bodyAsClass(CompleteInstanceRequest.class).resolve();
         s.instances().markComplete(inst.id(), c.status(), c.completionStatus(), c.result());
         ctx.status(204);
@@ -221,11 +215,22 @@ public final class ScheduledJobApi {
 
     // ── Read-side helpers ──────────────────────────────────────────────────
 
-    /// The runner's instance reports (log, complete): any of create / update /
-    /// delete (spec §4). Job writes check the permission for their operation
-    /// instead (create; update for update, pause, resume, archive; delete).
-    private static void requireWrite(AuthContext ac) {
-        Checks.requireAny(ac, SCHEDULED_JOB_CREATE, SCHEDULED_JOB_UPDATE, SCHEDULED_JOB_DELETE);
+    /// Loads the firing a runner reports on (a log line or its completion) and
+    /// authorizes the report (spec §4). The messaging create / update / delete
+    /// grants (any of them — these are the runner's reports, not job writes)
+    /// report on any firing; an application's SDK service account, holding the
+    /// application-service `scheduled-job-instance:write`, reports only on
+    /// firings of its own applications' jobs (`APPLICATION_ACCESS_REQUIRED`
+    /// otherwise, a job of no application included). The per-instance client
+    /// scope applies to both.
+    private static ScheduledJobInstance reportableInstance(State s, String instanceId) {
+        AuthContext ac = Auth.current();
+        Checks.requireScheduledJobInstanceReportAny(ac);
+        ScheduledJobInstance inst = instance(s, instanceId);
+        String applicationId = s.repo().findById(inst.scheduledJobId()).map(ScheduledJob::applicationId).orElse(null);
+        Checks.requireScheduledJobInstanceReport(ac, applicationId);
+        Checks.checkScopeAccess(ac, inst.clientId());
+        return inst;
     }
 
     /// Query params → filter (spec §4): `clientId=platform` selects

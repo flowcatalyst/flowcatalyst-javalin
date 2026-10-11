@@ -382,4 +382,78 @@ class ScheduledJobApiTest {
                         Write.of("delete", "DELETE", p, null, Permission.SCHEDULED_JOB_DELETE)),
                 Permission.SCHEDULED_JOB_CREATE, Permission.SCHEDULED_JOB_UPDATE, Permission.SCHEDULED_JOB_DELETE);
     }
+
+    // ── Runner reports by an application's service account ─────────────────
+
+    /// An application's SDK reports on the firings it receives (log lines, the
+    /// completion) with its own service account, which holds the seeded
+    /// application-service role (`scheduled-job-instance:write`), not the
+    /// messaging scheduled-job grants. It reports on its own application's jobs
+    /// only; the messaging grants keep reporting on any firing; nothing else is
+    /// admitted.
+    @Test
+    void anApplicationsServiceAccountReportsOnlyOnItsOwnJobsFirings() {
+        String ownApp = "app_" + RUN + "rptown";
+        String otherApp = "app_" + RUN + "rptoth";
+        String ownFiring = fire(create(code("rpt-own"), ",\"applicationId\":\"" + ownApp + "\""));
+        String otherFiring = fire(create(code("rpt-other"), ",\"applicationId\":\"" + otherApp + "\""));
+        String noAppFiring = fire(create(code("rpt-noapp"), ""));
+
+        String[] appServiceAccount = {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_APPLICATIONS, ownApp,
+                Authenticator.TEST_PRINCIPAL_TYPE, "SERVICE",
+                Authenticator.TEST_PERMISSIONS, "platform:application-service:scheduled-job-instance:write"};
+
+        // Its own application's firing: logged and completed.
+        assertThat(log(ownFiring, appServiceAccount).statusCode()).isEqualTo(204);
+        assertThat(complete(ownFiring, appServiceAccount).statusCode()).isEqualTo(204);
+        var own = json(http.get("/api/scheduled-jobs/instances/" + ownFiring, ANCHOR));
+        assertThat(own.get("status").asText()).isEqualTo("COMPLETED");
+        assertThat(json(http.get("/api/scheduled-jobs/instances/" + ownFiring + "/logs", ANCHOR))).hasSize(1);
+
+        // Another application's firing, and a firing of a job with no application.
+        for (String firing : List.of(otherFiring, noAppFiring)) {
+            assertRefused(log(firing, appServiceAccount), "APPLICATION_ACCESS_REQUIRED");
+            assertRefused(complete(firing, appServiceAccount), "APPLICATION_ACCESS_REQUIRED");
+        }
+        assertThat(json(http.get("/api/scheduled-jobs/instances/" + otherFiring + "/logs", ANCHOR))).isEmpty();
+
+        // A principal with neither grant (only the job view) is refused.
+        String[] viewer = {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:messaging:scheduled-job:view"};
+        assertRefused(log(ownFiring, viewer), "PERMISSION_REQUIRED");
+        assertRefused(complete(ownFiring, viewer), "PERMISSION_REQUIRED");
+
+        // The messaging grants report on any firing, as before.
+        String[] messagingWriter = {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_APPLICATIONS, ownApp,
+                Authenticator.TEST_PERMISSIONS, "platform:messaging:scheduled-job:update"};
+        for (String firing : List.of(otherFiring, noAppFiring)) {
+            assertThat(log(firing, messagingWriter).statusCode()).isEqualTo(204);
+            assertThat(complete(firing, messagingWriter).statusCode()).isEqualTo(204);
+        }
+    }
+
+    private static String fire(String jobId) {
+        return json(http.post("/api/scheduled-jobs/" + jobId + "/fire", null, ANCHOR)).get("instanceId").asText();
+    }
+
+    private static HttpResponse<String> log(String instanceId, String... as) {
+        return http.post("/api/scheduled-jobs/instances/" + instanceId + "/log", "{\"level\":\"INFO\",\"message\":\"ran\"}", as);
+    }
+
+    private static HttpResponse<String> complete(String instanceId, String... as) {
+        return http.post("/api/scheduled-jobs/instances/" + instanceId + "/complete", "{\"status\":\"SUCCESS\"}", as);
+    }
+
+    private static void assertRefused(HttpResponse<String> r, String code) {
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(403);
+        assertThat(json(r).get("error").asText()).isEqualTo(code);
+    }
 }

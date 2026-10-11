@@ -203,6 +203,40 @@ public final class Checks {
         return a != null && a.hasPermission(EVENT_TYPE_UPDATE);
     }
 
+    // ── Scheduled-job runner reports (application-service confinement) ─────
+
+    /// Coarse guard on the runner's reports on a firing (`POST
+    /// /api/scheduled-jobs/instances/{instanceId}/log` and `/complete`): any of
+    /// the messaging scheduled-job create/update/delete grants, or the
+    /// application-service `scheduled-job-instance:write` an application's SDK
+    /// service account holds. A caller admitted only by the latter is confined
+    /// to firings of its own applications' jobs
+    /// ([#requireScheduledJobInstanceReport]).
+    public static void requireScheduledJobInstanceReportAny(AuthContext a) {
+        requireAny(a, SCHEDULED_JOB_CREATE, SCHEDULED_JOB_UPDATE, SCHEDULED_JOB_DELETE,
+                APP_SVC_SCHEDULED_JOB_INSTANCE_WRITE);
+    }
+
+    /// Resource-level rule for reporting on one firing of a job owned by
+    /// `applicationId` (`null` = a job of no application). A holder of a
+    /// messaging scheduled-job write grant reports on any firing; a caller
+    /// holding only the application-service grant reports only on firings of a
+    /// job whose application it can access ([AuthContext#canAccessApplication]);
+    /// a job of no application is refused to it, all-applications access or not.
+    ///
+    /// @throws UseCaseException `UNAUTHENTICATED` | `PERMISSION_REQUIRED` |
+    ///                          `APPLICATION_ACCESS_REQUIRED`
+    public static void requireScheduledJobInstanceReport(AuthContext a, String applicationId) {
+        requireScheduledJobInstanceReportAny(a);
+        if (a.hasPermission(SCHEDULED_JOB_CREATE) || a.hasPermission(SCHEDULED_JOB_UPDATE)
+                || a.hasPermission(SCHEDULED_JOB_DELETE)) {
+            return;
+        }
+        if (applicationId != null && a.canAccessApplication(applicationId)) return;
+        throw UseCaseException.authorization("APPLICATION_ACCESS_REQUIRED",
+                "not authorised for this scheduled job's application");
+    }
+
     // ── Portal users (CLIENT-delegable) ────────────────────────────────────
 
     /// Listing a client's portal identities: reach to the client (anchors
