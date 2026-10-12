@@ -249,6 +249,97 @@ class IngestClientRulesTest {
         assertThat(eventClient(partnerType)).isEqualTo(CLIENT_A);
     }
 
+    // ── Dispatch jobs: clientCode ────────────────────────────────────────
+
+    private static String job(String code, String extra) {
+        return "{\"code\":\"" + code + "\",\"targetUrl\":\"https://target.test/hook\"" + extra + "}";
+    }
+
+    private static String single(String code, String extra) {
+        return "{\"code\":\"" + code + "\",\"targetUrl\":\"https://target.test/hook\",\"payload\":\"{}\",\"serviceAccountId\":\"sa\""
+                + extra + "}";
+    }
+
+    /// Before: the routes had no clientCode; it was ignored and an anchor's
+    /// job was written platform-scoped.
+    @Test
+    void anAnchorsDispatchJobCodeResolvesAnExplicitIdWinsAndABlankCodeIsIgnored() {
+        String resolved = uniqueType("djanchorcode");
+        String resolvedToo = uniqueType("djanchorcode2");
+        String explicit = uniqueType("djexplicit");
+        String blank = uniqueType("djblankcode");
+        int before = clientLookups.get();
+        var r = http.post("/api/dispatch-jobs/batch", "{\"items\":[" + String.join(",",
+                job(resolved, ",\"clientCode\":\"" + CODE_B + "\""),
+                job(resolvedToo, ",\"clientCode\":\"" + CODE_B + "\""),
+                job(explicit, ",\"clientId\":\"" + CLIENT_A + "\",\"clientCode\":\"" + CODE_B + "\""),
+                job(blank, ",\"clientCode\":\"  \"")) + "]}", ANCHOR);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        assertThat(jobClient(resolved)).isEqualTo(CLIENT_B);
+        assertThat(jobClient(resolvedToo)).isEqualTo(CLIENT_B);
+        assertThat(jobClient(explicit)).as("the clientId wins").isEqualTo(CLIENT_A);
+        assertThat(jobClient(blank)).as("a blank code is not given").isNull();
+        assertThat(clientLookups.get() - before).as("one lookup per distinct code").isEqualTo(1);
+
+        String one = uniqueType("djanchorsingle");
+        var s = http.post("/api/dispatch-jobs", single(one, ",\"clientCode\":\"" + CODE_B + "\""), ANCHOR);
+        assertThat(s.statusCode()).as(s.body()).isEqualTo(201);
+        assertThat(jobClient(one)).isEqualTo(CLIENT_B);
+    }
+
+    /// A job is never written unscoped because of an unknown code.
+    @Test
+    void anAnchorsUnknownDispatchJobCodeIsClientNotFoundAndNothingIsWritten() {
+        String valid = uniqueType("djanchorvalid");
+        String unknown = uniqueType("djanchorunknown");
+        var r = http.post("/api/dispatch-jobs/batch", "{\"items\":[" + job(valid, "") + ","
+                + job(unknown, ",\"clientCode\":\"" + UNKNOWN_CODE + "\"") + "]}", ANCHOR);
+        assertRefused(r, 400, "CLIENT_NOT_FOUND", "Client not found: " + UNKNOWN_CODE);
+        assertThat(countJobs(valid)).as("the whole batch is refused").isZero();
+        assertThat(countJobs(unknown)).isZero();
+
+        String one = uniqueType("djanchorsingleunknown");
+        var s = http.post("/api/dispatch-jobs", single(one, ",\"clientCode\":\"" + UNKNOWN_CODE + "\""), ANCHOR);
+        assertRefused(s, 400, "CLIENT_NOT_FOUND", "Client not found: " + UNKNOWN_CODE);
+        assertThat(countJobs(one)).isZero();
+    }
+
+    @Test
+    void aNonAnchorsDispatchJobCodeMustNameAClientItReaches() {
+        String own = uniqueType("djowncode");
+        String explicit = uniqueType("djownexplicit");
+        var r = http.post("/api/dispatch-jobs/batch", "{\"items\":[" + String.join(",",
+                job(own, ",\"clientCode\":\"" + CODE_A + "\""),
+                job(explicit, ",\"clientId\":\"" + CLIENT_A + "\",\"clientCode\":\"" + CODE_B + "\"")) + "]}", CLIENT_CALLER);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        assertThat(jobClient(own)).isEqualTo(CLIENT_A);
+        assertThat(jobClient(explicit)).isEqualTo(CLIENT_A);
+
+        // Another client's code and an unknown one: the same refusal, naming the code. Before,
+        // both were ignored and the job was written under the caller's own client.
+        for (String code : new String[] {CODE_B, UNKNOWN_CODE}) {
+            String valid = uniqueType("djclientvalid");
+            String refused = uniqueType("djclientrefused");
+            var b = http.post("/api/dispatch-jobs/batch", "{\"items\":[" + job(valid, "") + ","
+                    + job(refused, ",\"clientCode\":\"" + code + "\"") + "]}", CLIENT_CALLER);
+            assertRefused(b, 403, "FORBIDDEN", "No access to client: " + code);
+            assertThat(countJobs(valid)).as("the whole batch is refused").isZero();
+            assertThat(countJobs(refused)).isZero();
+
+            String one = uniqueType("djclientsingle");
+            var s = http.post("/api/dispatch-jobs", single(one, ",\"clientCode\":\"" + code + "\""), CLIENT_CALLER);
+            assertRefused(s, 403, "FORBIDDEN", "No access to client: " + code);
+            assertThat(countJobs(one)).isZero();
+        }
+
+        // A caller reaching two clients names one by its code (before: no client, refused).
+        String partner = uniqueType("djpartnercode");
+        var p = http.post("/api/dispatch-jobs/batch", "{\"items\":[" + job(partner, ",\"clientCode\":\"" + CODE_B + "\"") + "]}",
+                PARTNER);
+        assertThat(p.statusCode()).as(p.body()).isEqualTo(201);
+        assertThat(jobClient(partner)).isEqualTo(CLIENT_B);
+    }
+
     // ── Dispatch jobs: blank clientId ────────────────────────────────────
 
     /// Before: a blank `clientId` was refused "No access to client: " for a

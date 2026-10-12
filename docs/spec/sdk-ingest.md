@@ -169,7 +169,7 @@ refused for a non-anchor and stored as sent for an anchor).
 ## 4. Dispatch jobs and audit logs
 
 ### 4.1 `POST /api/dispatch-jobs/batch` — `BatchItem`
-`{id?, externalId?, kind?, code, source?, subject?, targetUrl, payload?, payloadContentType?, dataOnly, eventId?, correlationId?, clientId?, subscriptionId?, serviceAccountId?, dispatchPoolId?, messageGroup?, mode?, sequence?, timeoutSeconds?, maxRetries?, metadata?:[{key,value}]}`.
+`{id?, externalId?, kind?, code, source?, subject?, targetUrl, payload?, payloadContentType?, dataOnly, eventId?, correlationId?, clientId?, clientCode?, subscriptionId?, serviceAccountId?, dispatchPoolId?, messageGroup?, mode?, sequence?, timeoutSeconds?, maxRetries?, metadata?:[{key,value}]}`.
 - Defaults applied in the domain: `kind` absent → `EVENT`; a non-empty
   unrecognised `kind` → 400 `INVALID_KIND` "unknown dispatch job kind %q;
   must be EVENT or TASK" (X-06 at the write boundary); `mode` via the
@@ -179,10 +179,28 @@ refused for a non-anchor and stored as sent for an anchor).
   `HTTP_WEBHOOK`; `retryStrategy` = `EXPONENTIAL_BACKOFF`; `status` =
   `PENDING`. `id` absent → **13-char untyped TSID** (`msg_dispatch_jobs.id`
   is `VARCHAR(13)`); supplied → stored as given.
-- Tenant guard per item: `clientId` set (not blank, §3.4) and not
-  accessible → 403 `No access to client: <clientId>`, whole batch; no
-  client → §3.4's no-client rule (anchor: platform-scoped; one client:
-  that client; anyone else 403).
+- Client, per item (owner rulings 2026-10-12, Go F14 `ResolveJobClient`;
+  Java `IngestClients.resolveJobClient`), blank meaning absent as in §3.4.
+  `clientCode` (the client's identifier slug, memoised per request) is
+  never stored itself.
+  1. A `clientId` wins (any `clientCode` is then ignored, even one naming
+     another client) and must be reachable: 403 `FORBIDDEN`
+     `No access to client: <clientId>`.
+  2. Else a `clientCode` naming a client the caller reaches resolves to it.
+  3. A code naming another client, or no client, from a non-anchor: 403
+     `FORBIDDEN` `No access to client: <clientCode>` (one refusal for both,
+     naming the code).
+  4. A code naming no client, from an anchor: **400 `CLIENT_NOT_FOUND`
+     `Client not found: <clientCode>`**. A job is never written unscoped
+     because of an unknown code (unscoped, it would be delivered with no
+     client header; events differ, §3.4: the event is a fact, kept).
+  5. Neither: §3.4's no-client rule (anchor: platform-scoped; one client:
+     that client; anyone else 403 `clientId is required: …`). **Java only**:
+     Go writes a non-anchor's job platform-scoped here with no refusal; the
+     owner left that divergence as is (2026-10-12).
+
+  Any refusal rejects the whole batch before anything is written (no
+  `items[i]` prefix, unlike application confinement).
 - Insert: one `INSERT … ON CONFLICT (id, created_at) DO NOTHING` per job in
   a single pgx batch (the table is partitioned on `created_at`). A repeated
   SDK-supplied id is dropped silently and still reported `SUCCESS` (§5 D4).
@@ -193,7 +211,8 @@ Same mapping as a batch of one (Go `TestCreateDispatchJob_PersistsAndMatchesBatc
 plus singular-only fields the tests name (`TestCreateDispatchJob_SingularOnlyFields`,
 `…InvalidRetryStrategyRejected`): the port reads `dispatch_job_create.go` for
 the exact extra fields (`retryStrategy` is validated there and rejected
-when unrecognised) and pins them the same way.
+when unrecognised) and pins them the same way. `clientId` / `clientCode`
+follow §4.1's client rule exactly.
 
 ### 4.3 `POST /api/audit-logs/batch` — `AuditBatchItem`
 `{entityType, entityId, operation, operationData?, principalId?, performedAt?, applicationCode?, clientCode?}`; limit **100**.

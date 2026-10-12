@@ -225,7 +225,8 @@ public final class IngestApi {
         }
         if (req.payload() == null) throw HttpError.badRequest("VALIDATION", "payload is required");
         if (req.serviceAccountId() == null) throw HttpError.badRequest("VALIDATION", "serviceAccountId is required");
-        String clientId = IngestClients.requireWritableClient(ac, req.clientId());
+        // The client (spec §4.1/§4.2, IngestClients#resolveJobClient), clientCode included.
+        String clientId = new IngestClients(s.clientLookup()).resolveJobClient(ac, req.clientId(), req.clientCode());
 
         var job = DispatchJobIngestMapper.toJob(new DispatchJobIngestMapper.RawItem(
                 null, req.externalId(), req.kind(), req.code(), req.source(), req.subject(), req.targetUrl(),
@@ -250,12 +251,15 @@ public final class IngestApi {
         }
 
         DeliverySigningGuard signing = s.signing().perRequest();
+        var clients = new IngestClients(s.clientLookup());
         List<DispatchJob> jobs = new ArrayList<>(items.size());
         Set<String> suppliedIds = new LinkedHashSet<>();
         var scope = newScope(s);
         for (int idx = 0; idx < items.size(); idx++) {
             var item = items.get(idx);
-            String clientId = IngestClients.requireWritableClient(ac, item.clientId());
+            // The client (spec §4.1, IngestClients#resolveJobClient): any refusal rejects the
+            // whole batch before anything is written.
+            String clientId = clients.resolveJobClient(ac, item.clientId(), item.clientCode());
             var job = DispatchJobIngestMapper.toJob(new DispatchJobIngestMapper.RawItem(
                     item.id(), item.externalId(), item.kind(), item.code(), item.source(), item.subject(),
                     item.targetUrl(), item.payload(), item.payloadContentType(), item.dataOnly(), item.eventId(),
@@ -504,6 +508,7 @@ public final class IngestApi {
             String eventId,
             String correlationId,
             String clientId,
+            String clientCode,
             String subscriptionId,
             String serviceAccountId,
             String dispatchPoolId,
@@ -536,6 +541,7 @@ public final class IngestApi {
             boolean dataOnly,
             String serviceAccountId,
             String clientId,
+            String clientCode,
             String subscriptionId,
             String mode,
             String dispatchPoolId,

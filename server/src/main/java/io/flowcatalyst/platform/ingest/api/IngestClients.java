@@ -85,4 +85,28 @@ final class IngestClients {
         }
         return id;
     }
+
+    /// The dispatch-job client rule (Go `ResolveJobClient`): an explicit
+    /// `clientId` wins (any code is then ignored) and goes through
+    /// [#requireWritableClient]; otherwise a `clientCode` naming a client the
+    /// caller reaches resolves to it; one naming another client, or none, from
+    /// a non-anchor is 403 "No access to client: <clientCode>"; one naming no
+    /// client from an anchor is 400 `CLIENT_NOT_FOUND` "Client not found:
+    /// <clientCode>" (a job is never written unscoped because of an unknown
+    /// code: it would be delivered with no client header).
+    ///
+    /// Neither given: [#requireWritableClient] with no client, unchanged (Go
+    /// writes a non-anchor's job platform-scoped there, with no refusal; the
+    /// owner left that divergence as is).
+    String resolveJobClient(AuthContext ac, String clientId, String clientCode) {
+        if (nonBlank(clientId) != null) return requireWritableClient(ac, clientId);
+        String code = nonBlank(clientCode);
+        if (code == null) return requireWritableClient(ac, null);
+        String id = resolve(code).orElse(null);
+        if (id != null && ac.canAccessClient(id)) return id;
+        if (id == null && ac.isAnchor()) {
+            throw HttpError.badRequest("CLIENT_NOT_FOUND", "Client not found: " + code);
+        }
+        throw HttpError.forbidden("No access to client: " + code);
+    }
 }
