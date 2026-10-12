@@ -65,6 +65,9 @@ import java.util.Set;
 ///     the target's home client is entitled to ([Access#assignableRolesProblem];
 ///     a new principal has no client, so no role at all); an anchor, as there,
 ///     any existing role.
+///   - **The role ceiling** ([RoleCeiling]) bounds every role the sync adds or
+///     removes, removal by `removeUnlisted` included, on both routes
+///     ([#requireCeiling]).
 ///   - **`passwordHash`** is stored verbatim on a principal the sync
 ///     creates; on an existing principal it is never applied, whoever the
 ///     caller (owner ruling 2026-09-25, backlog item 4). The rest of the entry
@@ -131,7 +134,7 @@ public final class SyncPrincipals {
                                         .addKeyValue("principalId", existing.id())
                                         .log();
                             }
-                            requireCeiling(cmd, ac, roles, existing.roleNames(), p.roleNames());
+                            requireCeiling(ac, roles, existing.roleNames(), p.roleNames());
                             saves.add(new SyncSave<>(p, UserUpdated.of(ec, p)));
                             updated++;
                         } else {
@@ -140,7 +143,7 @@ public final class SyncPrincipals {
                                     .withActive(in.active())
                                     .withRoles(roleNames.stream().map(r -> new RoleAssignment(r, RoleAssignment.SDK_SYNC, now)).toList());
                             if (in.hasPasswordHash()) p = p.withPasswordHash(in.passwordHash());
-                            requireCeiling(cmd, ac, roles, List.of(), p.roleNames());
+                            requireCeiling(ac, roles, List.of(), p.roleNames());
                             saves.add(new SyncSave<>(p, UserCreated.of(ec, p)));
                             created++;
                         }
@@ -157,7 +160,7 @@ public final class SyncPrincipals {
                             // roles are in scope — another application's survive.
                             if (!pr.hasRolesFrom(RoleAssignment.SDK_SYNC, cmd.applicationCode())) continue;
                             Principal stripped = pr.stripSourcedRoles(RoleAssignment.SDK_SYNC, cmd.applicationCode());
-                            requireCeiling(cmd, ac, roles, pr.roleNames(), stripped.roleNames());
+                            requireCeiling(ac, roles, pr.roleNames(), stripped.roleNames());
                             saves.add(new SyncSave<>(stripped, UserUpdated.of(ec, stripped)));
                             deactivated++;
                         }
@@ -168,14 +171,16 @@ public final class SyncPrincipals {
                 });
     }
 
-    /// The role ceiling (owner ruling 2026-09-25) on the platform route only.
-    /// An application's own sync is bounded by what the application owns
-    /// instead: every role it names is its own ([#requireSyncableRoles]), and
-    /// its roles hold only its own permissions unless a super-admin put others
-    /// there.
-    private static void requireCeiling(SyncPrincipalsCommand cmd, AuthContext ac, RoleRepository roles,
-                                       List<String> before, List<String> after) {
-        if (appScoped(cmd)) return;
+    /// The role ceiling (owner ruling 2026-09-25) on every role the sync adds
+    /// or removes, on both routes: 403 `ROLE_ABOVE_CALLER`, and the whole sync
+    /// is refused before anything is written. On an application's route every
+    /// role it names is its own ([#requireSyncableRoles]) and its roles hold
+    /// only its own permissions, which the ceiling does not count, so an SDK
+    /// syncing its own roles passes for any caller; the ceiling stops the case
+    /// that confinement leaves open, an application role a super-admin gave
+    /// platform permissions (Go F8 `e08eee4` applies it to both routes; this
+    /// route was exempt before).
+    private static void requireCeiling(AuthContext ac, RoleRepository roles, List<String> before, List<String> after) {
         RoleCeiling.requireRoles(ac, RoleCeiling.changed(before, after), roles);
     }
 

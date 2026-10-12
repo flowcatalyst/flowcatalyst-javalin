@@ -194,6 +194,41 @@ class SdkSyncApiTest {
         return "/api/applications/" + APP + "/" + leaf + "/sync";
     }
 
+    // ── Principals: the role ceiling (Go F8 e08eee4) ─────────────────────────
+
+    /// The application route applies the role ceiling too: an application
+    /// role holding only its application's permissions syncs for a caller
+    /// holding none of them; one a super-admin gave a platform permission is
+    /// 403 `ROLE_ABOVE_CALLER` and nobody is written.
+    @Test
+    void principalsSyncIsBoundedByTheRoleCeiling() {
+        var roles = new RoleRepository(TestPg.dataSource());
+        var own = io.flowcatalyst.platform.role.Role.create(APP, "ceil-viewer", "Viewer")
+                .withPermissions(java.util.List.of(APP + ":order:view"));
+        var elevated = io.flowcatalyst.platform.role.Role.create(APP, "ceil-elevated", "Elevated")
+                .withPermissions(java.util.List.of("platform:iam:role:update"), io.flowcatalyst.platform.role.Role.CrossApplication.ALLOWED);
+        UOW.inTransaction(tx -> { roles.persist(own, tx.dbTx()); roles.persist(elevated, tx.dbTx()); return null; });
+        String[] sdk = {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_APPLICATIONS, appId,
+                Authenticator.TEST_PERMISSIONS, "platform:iam:user:create"};
+        var principals = new PrincipalRepository(TestPg.dataSource());
+        String ownEmail = "ceilown" + RUN + "@example.test";
+        String upEmail = "ceilup" + RUN + "@example.test";
+
+        var ok = post(syncPath("principals"),
+                "{\"principals\":[{\"email\":\"" + ownEmail + "\",\"name\":\"Own\",\"roles\":[\"" + own.name() + "\"],\"active\":true}]}", sdk);
+        assertThat(ok.statusCode()).as(ok.body()).isEqualTo(200);
+        assertThat(principals.findByEmail(ownEmail)).isPresent();
+
+        var refused = post(syncPath("principals"),
+                "{\"principals\":[{\"email\":\"" + upEmail + "\",\"name\":\"Up\",\"roles\":[\"" + elevated.name() + "\"],\"active\":true}]}", sdk);
+        assertThat(refused.statusCode()).as(refused.body()).isEqualTo(403);
+        assertThat(json(refused).get("error").asText()).isEqualTo("ROLE_ABOVE_CALLER");
+        assertThat(principals.findByEmail(upEmail)).as("nothing written").isEmpty();
+    }
+
     // ── Gates ──────────────────────────────────────────────────────────────
 
     @Test

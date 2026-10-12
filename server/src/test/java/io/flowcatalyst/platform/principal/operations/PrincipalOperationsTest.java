@@ -594,6 +594,59 @@ class PrincipalOperationsTest {
         assertThat(reload(self).roleNames()).as("no platform role landed").isEmpty();
     }
 
+    /// Go F8 (`e08eee4`): the role ceiling bounds an application's sync too.
+    /// An application role holding only its application's permissions passes
+    /// for a caller holding none of them (an SDK syncing its own roles); one a
+    /// super-admin gave a platform permission is refused, adding it or
+    /// removing it (by a re-sync or a `removeUnlisted` sweep), and nothing is
+    /// written; a caller holding the permission syncs it.
+    @Test
+    void anApplicationsSyncIsBoundedByTheRoleCeiling() {
+        String app = "f8sync";
+        Role own = Role.create(app + RUN, "viewer", "viewer").withPermissions(List.of(app + RUN + ":order:view"));
+        Role elevated = Role.create(app + RUN, "elevated", "elevated")
+                .withPermissions(List.of("platform:iam:role:update"), Role.CrossApplication.ALLOWED);
+        uow.inTransaction(tx -> { roles.persist(own, tx.dbTx()); roles.persist(elevated, tx.dbTx()); return null; });
+        String code = app + RUN;
+        var sdk = new AuthContext(EntityType.PRINCIPAL.generate(), Scope.ANCHOR, null, List.of("*"), List.of(), List.of(), true,
+                List.of("platform:iam:user:create"));
+        String above = "You may only assign or remove roles whose permissions you hold yourself: " + elevated.name();
+
+        var ok = runAs(sdk, sync(), new SyncPrincipalsCommand(code, List.of(
+                new SyncPrincipalInput(email("f8own"), "Own", List.of(own.name()), true, null)), false));
+        assertThat(ok.created()).as("an application's own roles pass for any caller").isEqualTo(1);
+
+        assertThatThrownBy(() -> runAs(sdk, sync(), new SyncPrincipalsCommand(code, List.of(
+                        new SyncPrincipalInput(email("f8new"), "New", List.of(), true, null),
+                        new SyncPrincipalInput(email("f8up"), "Up", List.of(elevated.name()), true, null)), false)))
+                .isInstanceOf(UseCaseException.class)
+                .satisfies(t -> {
+                    var err = ((UseCaseException) t).error();
+                    assertThat(err).isInstanceOf(UseCaseError.Authorization.class);
+                    assertThat(err.code()).isEqualTo("ROLE_ABOVE_CALLER");
+                    assertThat(err.message()).isEqualTo(above);
+                });
+        assertThat(repo.findByEmail(email("f8new"))).as("the whole sync is refused").isEmpty();
+        assertThat(repo.findByEmail(email("f8up"))).isEmpty();
+
+        // Removal counts: a user holding the elevated role from this application's sync.
+        runAsAnchor(sync(), new SyncPrincipalsCommand(code, List.of(
+                new SyncPrincipalInput(email("f8held"), "Held", List.of(elevated.name()), true, null)), false));
+        String held = repo.findByEmail(email("f8held")).orElseThrow().id();
+        assertUseCaseError(() -> runAs(sdk, sync(), new SyncPrincipalsCommand(code, List.of(
+                        new SyncPrincipalInput(email("f8held"), "Held", List.of(), true, null)), false)),
+                UseCaseError.Authorization.class, "ROLE_ABOVE_CALLER");
+        assertUseCaseError(() -> runAs(sdk, sync(), new SyncPrincipalsCommand(code, List.of(
+                        new SyncPrincipalInput(email("f8own"), "Own", List.of(own.name()), true, null)), true)),
+                UseCaseError.Authorization.class, "ROLE_ABOVE_CALLER");
+        assertThat(reload(held).roleNames()).as("the elevated role was not stripped").containsExactly(elevated.name());
+
+        var holder = new AuthContext(EntityType.PRINCIPAL.generate(), Scope.ANCHOR, null, List.of("*"), List.of(), List.of(), true,
+                List.of("platform:iam:user:create", "platform:iam:role:update"));
+        assertThat(runAs(holder, sync(), new SyncPrincipalsCommand(code, List.of(
+                new SyncPrincipalInput(email("f8up"), "Up", List.of(elevated.name()), true, null)), false)).created()).isEqualTo(1);
+    }
+
     /// Role names must exist and, on an application's route, belong to that
     /// application — for an anchor super-admin too: an SDK credential cannot
     /// hand out another application's (or the platform's) roles.
