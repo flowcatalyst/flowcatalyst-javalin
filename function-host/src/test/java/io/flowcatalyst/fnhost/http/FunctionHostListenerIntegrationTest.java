@@ -126,6 +126,11 @@ class FunctionHostListenerIntegrationTest {
     /// (`docs/STATUS.md`'s intermittent-failure investigation, 2026-09-20).
     private static javax.sql.DataSource DS;
 
+    /// The seeded platform:application-service role's permissions.
+    private static final String APPLICATION_SERVICE_PERMISSIONS = String.join(",",
+            io.flowcatalyst.platform.seed.PlatformRoles.all().stream()
+                    .filter(r -> r.name().equals("platform:application-service")).findFirst().orElseThrow().permissions());
+
     private static final String[] ADMIN = {
             io.flowcatalyst.platform.shared.auth.Authenticator.TEST_PRINCIPAL, "prn_" + RUN,
             io.flowcatalyst.platform.shared.auth.Authenticator.TEST_SCOPE, "ANCHOR",
@@ -138,8 +143,9 @@ class FunctionHostListenerIntegrationTest {
                     "platform:admin:application:update", "platform:iam:service-account:create", "platform:iam:service-account:update",
                     "platform:iam:service-account:view",
                     // The role ceiling (owner ruling 2026-09-25): assigning the host account
-                    // platform:application-service and platform:function-host needs their permissions.
-                    "platform:application-service:*:*", "platform:function:host:control", "platform:messaging:router:view", "platform:function:domain:manage")
+                    // platform:function-host needs its permission, and provisioning it
+                    // platform:application-service needs that role's (Go F8 8b1cb0f).
+                    APPLICATION_SERVICE_PERMISSIONS, "platform:function:host:control", "platform:messaging:router:view", "platform:function:domain:manage")
     };
 
     @BeforeAll
