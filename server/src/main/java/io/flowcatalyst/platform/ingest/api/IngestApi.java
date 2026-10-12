@@ -17,6 +17,7 @@ import io.flowcatalyst.platform.event.Event;
 import io.flowcatalyst.platform.event.EventRepository;
 import io.flowcatalyst.platform.event.api.EventApi.ContextEntryDTO;
 import io.flowcatalyst.platform.ingest.AuditLogIngestMapper;
+import io.flowcatalyst.platform.ingest.EncodedJson;
 import io.flowcatalyst.platform.ingest.DispatchJobIngestMapper;
 import io.flowcatalyst.platform.ingest.EventIngestMapper;
 import io.flowcatalyst.platform.subscription.Subscription;
@@ -189,8 +190,12 @@ public final class IngestApi {
             }
             clientId = requireWritableClient(ac, clientId);
             requireEventSignable(signing, ac, item.type());
+            // The SDK outbox writers send data as a JSON string holding the encoded object; store
+            // the object (owner ruling 2026-10-12, Go 8bf67d1; EncodedJson for the exact rule).
+            // The singular POST /api/events is not changed.
             events.add(EventIngestMapper.toEvent(new EventIngestMapper.RawItem(
-                    item.id(), item.specVersion(), item.type(), item.source(), item.subject(), item.data(),
+                    item.id(), item.specVersion(), item.type(), item.source(), item.subject(),
+                    EncodedJson.unwrap(item.data()),
                     item.deduplicationId(), item.correlationId(), item.causationId(), item.messageGroup(),
                     clientId, contextEntries(item.contextData()))));
             eventSlot.add(i);
@@ -352,8 +357,11 @@ public final class IngestApi {
             // before it ever reaches AuditLogRepository, so SDK versions predating the
             // source-side redaction (and apps writing their own outbox rows) never leak a
             // secret into an ingested aud_logs row. Only the name rule applies here — there
-            // is no live command to ask for declared masked fields.
-            var redactedOperationData = AuditRedaction.redact(item.operationData(), Set.of());
+            // is no live command to ask for declared masked fields. The SDK outbox writers
+            // send operationData as a JSON string holding the encoded object: it is unwrapped
+            // first (owner ruling 2026-10-12, Go 8bf67d1; EncodedJson), so the object is stored
+            // and the redaction sees inside it.
+            var redactedOperationData = AuditRedaction.redact(EncodedJson.unwrap(item.operationData()), Set.of());
             var log = AuditLogIngestMapper.toLog(item.entityType(), item.entityId(), item.operation(),
                     redactedOperationData, item.principalId().strip(), item.performedAt(), applicationId, clientId);
             logs.add(log);

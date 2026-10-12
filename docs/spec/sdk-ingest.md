@@ -86,6 +86,59 @@ Response 201 `CreateEventResponse{event: CreatedEvent, dispatchJobCount: 0, isDu
 here (the stream processor creates dispatch jobs later) and duplicate
 detection is not surfaced.
 
+### 3.3 Encoded `data` and `operationData` at batch ingest
+Owner ruling 2026-10-12 (Go `8bf67d1`, Go `docs/wire-contract.md` "Encoded
+`data` and `operationData` at batch ingest"; Java ledger
+`docs/go-mirror/2026-10-13-platform-bug-fixes-4.md`). The SDK outbox writers
+(Java, TypeScript, Laravel, Rust, the framework) put an event's `data` and an
+audit entry's `operationData` into the batch item as a JSON **string**
+holding the serialised value (`"data":"{\"a\":1}"`); the Go SDK sends the
+value itself. `POST /api/events/batch` (`data`; also the SPA's
+`/bff/events/batch`, the same handler) and `POST /api/audit-logs/batch`
+(`operationData`) unwrap it at ingest (`io.flowcatalyst.platform.ingest.EncodedJson`),
+so the stored event, the dispatch jobs fanned out from it, the delivery
+envelope's `data`, a `dataOnly` body and the audit view all carry the object.
+
+The rule, applied once per member:
+- A member that is not a JSON string (object, array, number, boolean, null,
+  or absent) is stored as sent.
+- A string whose text, less surrounding JSON whitespace (space, tab, LF, CR
+  only), starts with `{` or `[` and is exactly one valid JSON value is
+  replaced by that value.
+- Every other string is stored as sent: `"hello"`, `""`, `"42"`, `"true"`,
+  `"null"` (Java's encoding of a null map; unwrapping it would make the event
+  `data is required`), an encoded string, and text that only looks like JSON
+  (`"{not json"`, `"[1,"`, `"{} trailing"`, `"{}{}"`).
+- At most one level is removed; the result is never a string, so nothing is
+  unwrapped twice, and a value encoded twice is kept as sent.
+- The audit redaction backstop (`AuditRedaction`) runs after the unwrap, so
+  it sees inside the value.
+
+**Accepted cost** (Go's, the same): a direct API caller that means a string
+whose text is a JSON object or array gets the object; nothing tells it apart
+from an SDK's encoding (none of the platform's writers sends one). To send
+such text as text, wrap it in an object.
+
+**Not changed**: the singular `POST /api/events` (it receives the value
+itself; a string `data` stays a string), dispatch-job `payload` (a string by
+contract, with `payloadContentType`), function-emitted events, and rows
+stored before the fix (`jsonb_typeof(data) = 'string'` in `msg_events`,
+`jsonb_typeof(operation_json) = 'string'` in `aud_logs`; no migration, the
+owner decides, as in Go).
+
+**Where Java's parse differs from Go's.** Both refuse what JSON refuses
+(trailing tokens, comments, single quotes, `NaN`, leading zeros, raw control
+characters). Go stores the inner text byte for byte (JSONB then normalises
+it); Java parses it with the platform mapper, the same parse a value sent as
+itself gets:
+- A fractional number is read as a `double`, so digits beyond double
+  precision are lost (Go/JSONB keep them). The same holds for `data` sent as
+  itself to Java.
+- Jackson's read limits apply: a value nested deeper than 500 levels (or
+  past another of its `StreamReadConstraints`) is not parsed and the string
+  is stored as sent (Go unwraps it; the same value sent as itself is refused
+  by Java's body parse).
+
 ## 4. Dispatch jobs and audit logs
 
 ### 4.1 `POST /api/dispatch-jobs/batch` — `BatchItem`
@@ -119,7 +172,8 @@ rejection**: unknown `applicationCode` → `{id:"", status:"SKIPPED"}`;
 unknown `clientCode` → SKIPPED; resolved client not accessible to the
 caller → SKIPPED. Codes are memoised per batch. `performedAt` parsed as
 RFC 3339, **any parse failure silently falls back to now** (§5 D5);
-absent → now. `principalId` absent → the caller's principal. Rows go into
+absent → now. An `operationData` sent as an encoded string is unwrapped
+before redaction (§3.3). `principalId` absent → the caller's principal. Rows go into
 `aud_logs` via `InsertBatch`; each written item → `{id, "SUCCESS"}`; 200.
 
 ## 5. Defects and questions for the owner
