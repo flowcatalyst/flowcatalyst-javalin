@@ -47,6 +47,10 @@
 # `platform:admin:idp:*` (3), `platform:admin:edm:*` (3), `platform:iam:user:password-reset-requested`).
 # Go 4c23adf / migration 072 (Java V27, 2026-10-12): the 28 older `schema` rows whose JSON did not
 # describe the emitted data carry the corrected forms, read verbatim from 072's new_schema values.
+# Java V28 (2026-10-12, docs/go-mirror/2026-10-13-platform-bug-fixes-4.md): the three Java-only
+# `platform:iam:passkey:*` eventtype/schema rows become Go's `platform:admin:passkey:*` rows
+# (subdomain `admin`; name and schema unchanged), read from Go `internal/platform/seed/`
+# `event_types.go` and `event_schemas.go`. Java-only codes are now 20; Go codes Java does not emit, 18.
 role	platform:super-admin	Platform Super Admin	Full access to all platform operations	CODE	platform	false
 role	platform:admin	Platform Admin	Manages clients, applications, and platform configuration	CODE	platform	false
 role	platform:admin-readonly	Platform Admin Read-Only	View-only access to clients, applications, and platform configuration	CODE	platform	false
@@ -341,9 +345,9 @@ eventtype	platform:iam:user:developer-credential-set	User Developer Credential S
 eventtype	platform:iam:user:developer-credential-revoked	User Developer Credential Revoked	CURRENT	UI	false	platform	iam	user
 eventtype	platform:iam:serviceaccount:deactivated	Serviceaccount Deactivated	CURRENT	UI	false	platform	iam	serviceaccount
 eventtype	platform:iam:serviceaccount:token-minted	Serviceaccount Token Minted	CURRENT	UI	false	platform	iam	serviceaccount
-eventtype	platform:iam:passkey:registered	Passkey Registered	CURRENT	UI	false	platform	iam	passkey
-eventtype	platform:iam:passkey:authenticated	Passkey Authenticated	CURRENT	UI	false	platform	iam	passkey
-eventtype	platform:iam:passkey:revoked	Passkey Revoked	CURRENT	UI	false	platform	iam	passkey
+eventtype	platform:admin:passkey:registered	Passkey Registered	CURRENT	UI	false	platform	admin	passkey
+eventtype	platform:admin:passkey:authenticated	Passkey Authenticated	CURRENT	UI	false	platform	admin	passkey
+eventtype	platform:admin:passkey:revoked	Passkey Revoked	CURRENT	UI	false	platform	admin	passkey
 eventtype	platform:iam:reset-approval:queued	Reset Approval Queued	CURRENT	UI	false	platform	iam	reset-approval
 eventtype	platform:iam:reset-approval:decided	Reset Approval Decided	CURRENT	UI	false	platform	iam	reset-approval
 eventtype	platform:admin:dispatch-pool:suspended	Dispatch Pool Suspended	CURRENT	UI	false	platform	admin	dispatch-pool
@@ -481,9 +485,9 @@ schema	platform:iam:user:developer-credential-set	1.0	application/schema+json	JS
 schema	platform:iam:user:developer-credential-revoked	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"userId":{"type":"string"}},"required":["userId"],"type":"object"}
 schema	platform:iam:serviceaccount:deactivated	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"serviceAccountId":{"type":"string"}},"required":["serviceAccountId"],"type":"object"}
 schema	platform:iam:serviceaccount:token-minted	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"expiresInSeconds":{"minimum":0,"type":"integer"},"permissions":{"items":{"type":"string"},"type":"array"},"serviceAccountId":{"type":"string"},"servicePrincipalId":{"type":["string","null"]}},"required":["serviceAccountId","expiresInSeconds","permissions"],"type":"object"}
-schema	platform:iam:passkey:registered	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"credentialId":{"type":"string"},"name":{"type":["string","null"]},"userId":{"type":"string"}},"required":["credentialId","userId"],"type":"object"}
-schema	platform:iam:passkey:authenticated	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"credentialId":{"type":"string"},"userId":{"type":"string"}},"required":["credentialId","userId"],"type":"object"}
-schema	platform:iam:passkey:revoked	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"credentialId":{"type":"string"},"userId":{"type":"string"}},"required":["credentialId","userId"],"type":"object"}
+schema	platform:admin:passkey:registered	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"credentialId":{"type":"string"},"name":{"type":["string","null"]},"userId":{"type":"string"}},"required":["credentialId","userId"],"type":"object"}
+schema	platform:admin:passkey:authenticated	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"credentialId":{"type":"string"},"userId":{"type":"string"}},"required":["credentialId","userId"],"type":"object"}
+schema	platform:admin:passkey:revoked	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"credentialId":{"type":"string"},"userId":{"type":"string"}},"required":["credentialId","userId"],"type":"object"}
 schema	platform:iam:reset-approval:queued	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"clientId":{"type":"string"},"requestId":{"type":"string"},"userId":{"type":"string"}},"required":["requestId","userId","clientId"],"type":"object"}
 schema	platform:iam:reset-approval:decided	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"decidedBy":{"type":"string"},"requestId":{"type":"string"},"status":{"type":"string"},"userId":{"type":"string"}},"required":["requestId","userId","status","decidedBy"],"type":"object"}
 schema	platform:admin:dispatch-pool:suspended	1.0	application/schema+json	JSON_SCHEMA	CURRENT	{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"code":{"type":"string"},"poolId":{"type":"string"}},"required":["poolId","code"],"type":"object"}

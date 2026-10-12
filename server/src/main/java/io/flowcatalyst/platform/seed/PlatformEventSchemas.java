@@ -188,12 +188,6 @@ public final class PlatformEventSchemas {
                 reqStr("serviceAccountId"), optStr("servicePrincipalId"),
                 reqU32("expiresInSeconds"), reqStrArray("permissions")));
 
-        // ── platform:iam:passkey (Java only; Go emits platform:admin:passkey:*
-        // with the same data) ───────────────────────────────────────────────
-        m.put("platform:iam:passkey:registered", obj(reqStr("credentialId"), reqStr("userId"), optStr("name")));
-        m.put("platform:iam:passkey:authenticated", obj(reqStr("credentialId"), reqStr("userId")));
-        m.put("platform:iam:passkey:revoked", obj(reqStr("credentialId"), reqStr("userId")));
-
         // ── platform:iam:reset-approval (Java only) ─────────────────────────
         m.put("platform:iam:reset-approval:queued", obj(reqStr("requestId"), reqStr("userId"), reqStr("clientId")));
         m.put("platform:iam:reset-approval:decided", obj(
@@ -260,6 +254,11 @@ public final class PlatformEventSchemas {
         m.put("platform:admin:roles:synced", obj(
                 reqU32("created"), reqU32("updated"), reqU32("removed"), reqU32("total"),
                 optStr("applicationCode"), optStrArray("syncedCodes")));
+
+        // ── platform:admin:passkey (Go's and Rust's codes and data) ─────────
+        m.put("platform:admin:passkey:registered", obj(reqStr("credentialId"), reqStr("userId"), optStr("name")));
+        m.put("platform:admin:passkey:authenticated", obj(reqStr("credentialId"), reqStr("userId")));
+        m.put("platform:admin:passkey:revoked", obj(reqStr("credentialId"), reqStr("userId")));
 
         // ── platform:admin:platform-config ──────────────────────────────────
         m.put("platform:admin:platform-config:property-set", obj(

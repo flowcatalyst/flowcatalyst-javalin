@@ -5,16 +5,18 @@ import io.flowcatalyst.sdk.usecase.DomainEvent;
 import io.flowcatalyst.sdk.usecase.EventMetadata;
 import io.flowcatalyst.sdk.usecase.ExecutionContext;
 
-/// Passkey events (`docs/spec/auth-identity.md` §7.5 with ruling I-Q25):
-/// source `platform:iam`, subject `platform.passkey.<id>`, message group
-/// `platform:passkey:<id>`. The event about a principal names it `userId`
-/// (the `principalId()` accessor is the actor).
+/// Passkey events (`docs/spec/auth-identity.md` §7.5): codes
+/// `platform:admin:passkey:*` and source `platform:admin`, as Go and Rust emit
+/// them (owner ruling 2026-10-12, superseding I-Q25's `platform:iam`), subject
+/// `platform.passkey.<id>`, message group `platform:passkey:<id>`. The event
+/// about a principal names it `userId` (the `principalId()` accessor is the
+/// actor).
 public final class PasskeyEvents {
 
-    public static final String SOURCE = "platform:iam";
-    public static final String REGISTERED = "platform:iam:passkey:registered";
-    public static final String AUTHENTICATED = "platform:iam:passkey:authenticated";
-    public static final String REVOKED = "platform:iam:passkey:revoked";
+    public static final String SOURCE = "platform:admin";
+    public static final String REGISTERED = "platform:admin:passkey:registered";
+    public static final String AUTHENTICATED = "platform:admin:passkey:authenticated";
+    public static final String REVOKED = "platform:admin:passkey:revoked";
 
     private PasskeyEvents() {
     }

@@ -127,7 +127,7 @@ class PasskeyApiTest {
         assertThat(stored.get("transport").toString()).isEqualTo("[\"internal\"]");
         assertThat(SENT).extracting(Mail::subject).contains("A new passkey was registered");
         assertThat(DB.fetchCount(OAUTH_OIDC_PAYLOADS, OAUTH_OIDC_PAYLOADS.ID.eq("WebauthnRegistration:" + b.get("stateId").asString()))).as("consumed").isZero();
-        assertThat(events(credentialId, "platform:iam:passkey:registered")).isEqualTo(1);
+        assertThat(events(credentialId, "platform:admin:passkey:registered")).isEqualTo(1);
 
         // Sign in with it.
         var ab = http.post("/auth/webauthn/authenticate/begin", Json.write(Map.of("email", email.toUpperCase(Locale.ROOT))));
@@ -151,7 +151,7 @@ class PasskeyApiTest {
         var after = DB.selectFrom(WEBAUTHN_CREDENTIALS).where(WEBAUTHN_CREDENTIALS.ID.eq(credentialId)).fetchOne();
         assertThat(Json.MAPPER.readTree(after.getPasskeyData().data()).get("authenticator").get("signCount").asLong()).isEqualTo(1);
         assertThat(after.getLastUsedAt()).isNotNull();
-        assertThat(events(credentialId, "platform:iam:passkey:authenticated")).isEqualTo(1);
+        assertThat(events(credentialId, "platform:admin:passkey:authenticated")).isEqualTo(1);
         var attempt = DB.selectFrom(IAM_LOGIN_ATTEMPTS).where(IAM_LOGIN_ATTEMPTS.PRINCIPAL_ID.eq(pid)).orderBy(IAM_LOGIN_ATTEMPTS.ATTEMPTED_AT.desc()).limit(1).fetchOne();
         assertThat(attempt.getOutcome()).isEqualTo("SUCCESS");
         assertThat(attempt.getUserAgent()).isEqualTo("SoftAuth/1");
@@ -195,7 +195,7 @@ class PasskeyApiTest {
                 .as("not the caller's: 404, never 403").isEqualTo(404);
         assertThat(http.delete("/auth/webauthn/credentials/" + credentialId, "Cookie", session(pid, email)).statusCode()).isEqualTo(204);
         assertThat(CREDS.findById(credentialId)).isEmpty();
-        assertThat(events(credentialId, "platform:iam:passkey:revoked")).isEqualTo(1);
+        assertThat(events(credentialId, "platform:admin:passkey:revoked")).isEqualTo(1);
     }
 
     @Test

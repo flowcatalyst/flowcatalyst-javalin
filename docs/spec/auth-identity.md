@@ -62,7 +62,7 @@ behaviour stays visible.
 | Q21 | Trusted-device items use the platform time shape; no `principalId`. §6.4 |
 | Q22 / defect 12 | System actor spelled `"system"` for new rows. §2 |
 | Q24 | `authenticate/begin` 429 in the platform `TOO_MANY_REQUESTS` envelope. §7 |
-| Q25 / defect 13 | Passkey events under `platform:iam`. §7.5 |
+| Q25 / defect 13 | Passkey events under `platform:iam`. §7.5 **Superseded** (owner ruling 2026-10-12): `platform:admin:passkey:*`, source `platform:admin`, as Go and Rust emit; V28 renames the catalogue rows (`docs/go-mirror/2026-10-13-platform-bug-fixes-4.md`). |
 | defect 10 | 2FA trusted-device / method DELETE → 404 when nothing was deleted. §6.4 |
 | defect 11 | `EXPIRED` written by the purger; the reviewer `note` persisted. §3.7, §8.6 |
 | defects 2, 3, 4 | Dead code; not ported. |

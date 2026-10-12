@@ -116,4 +116,19 @@ class EmittedCatalogueTest {
                 "platform:admin:client:note-added", "platform:iam:client:applications-updated");
         assertThat(catalogued).noneMatch(c -> c.startsWith("platform:iam:client:") && !c.endsWith(":applications-updated"));
     }
+
+    /// The passkey events carry Go's and Rust's codes, `platform:admin:passkey:*`
+    /// (owner ruling 2026-10-12; Java emitted `platform:iam:passkey:*` with the
+    /// same data, and V28 renamed the rows an older seed wrote). Emitted and
+    /// catalogued under those codes, and nothing under the old family.
+    @Test
+    void thePasskeyEventsUseGoAndRustsCodes() {
+        Set<String> passkey = Set.of(
+                "platform:admin:passkey:registered", "platform:admin:passkey:authenticated", "platform:admin:passkey:revoked");
+        Set<String> catalogued = PlatformEventTypes.all().stream()
+                .map(PlatformEventTypes.Definition::code).collect(Collectors.toSet());
+        Set<String> emitted = emittedEventTypes().keySet();
+        assertThat(catalogued).containsAll(passkey).noneMatch(c -> c.startsWith("platform:iam:passkey:"));
+        assertThat(emitted).containsAll(passkey).noneMatch(c -> c.startsWith("platform:iam:passkey:"));
+    }
 }

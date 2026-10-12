@@ -140,7 +140,7 @@ Defect 6 is ruled with I-Q5 (Batch A). **All three batches are ruled; Phase 3 is
 - **I-Q19** — RULED: keep `RequireStrongFactorForReset = false`; the approval queue stays ported but idle.
 - **I-Q20** — RULED: keep the mounting as is — the mfaToken (purpose-bound, short-lived, never a cookie substitute) is the token routes' credential and the tests pin that; a remount would add the stale-Bearer 401 failure for no gain.
 - **I-Q24** — RULED: align `authenticate/begin`'s 429 to the platform `TOO_MANY_REQUESTS` envelope.
-- **I-Q25** — RULED: passkey events under `platform:iam`.
+- **I-Q25** — RULED: passkey events under `platform:iam`. **Superseded 2026-10-12** (owner): passkey events are `platform:admin:passkey:*` with source `platform:admin`, the codes Go and Rust emit; V28 renames the catalogue rows and re-points subscription bindings (`docs/go-mirror/2026-10-13-platform-bug-fixes-4.md`).
 - **defect 11** — RULED: write `EXPIRED` (purger marks PENDING past expiry) and the reviewer's `note`.
 
 ## What I will do without a ruling (superseded — every batch is ruled)

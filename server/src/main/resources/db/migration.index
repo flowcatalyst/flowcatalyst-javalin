@@ -25,3 +25,4 @@ V24__application_service_batch_permissions.sql
 V25__client_event_type_codes.sql
 V26__prune_unemitted_event_types.sql
 V27__platform_event_schema_fixes.sql
+V28__passkey_event_type_codes.sql

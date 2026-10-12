@@ -101,10 +101,8 @@ public final class PlatformEventTypes {
                 "created", "updated", "activated", "deactivated", "deleted",
                 "service-account-provisioned", "enabled-for-client", "disabled-for-client");
 
-        // The passkey and reset-approval operations emit under platform:iam
-        // (Go's passkey events are platform:admin:passkey:*; Go has no
+        // The reset-approval operations emit under platform:iam (Go has no
         // reset-approval events).
-        b.group("platform:iam:passkey", "registered", "authenticated", "revoked");
         b.group("platform:iam:reset-approval", "queued", "decided");
 
         // ── platform:admin ──────────────────────────────────────────────────
@@ -142,6 +140,9 @@ public final class PlatformEventTypes {
         b.group("platform:admin:role",
                 "created", "updated", "deleted", "permission-granted", "permission-revoked");
         b.push("platform:admin:roles:synced", "Roles Synced");
+        // Passkeys under platform:admin, as Go and Rust emit them (owner
+        // ruling 2026-10-12; V28 renamed the platform:iam:passkey:* rows).
+        b.group("platform:admin:passkey", "registered", "authenticated", "revoked");
 
         b.group("platform:admin:platform-config", "property-set");
 

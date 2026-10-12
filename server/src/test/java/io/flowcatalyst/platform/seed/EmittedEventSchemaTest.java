@@ -72,7 +72,7 @@ class EmittedEventSchemaTest {
     private static final Map<String, Set<String>> MAY_BE_ABSENT = Map.ofEntries(
             // no principal linked to the account
             Map.entry("platform:iam:serviceaccount:token-minted", Set.of("servicePrincipalId")),
-            Map.entry("platform:iam:passkey:registered", Set.of("name")),
+            Map.entry("platform:admin:passkey:registered", Set.of("name")),
             // no previous secret kept
             Map.entry("platform:admin:oauth-client:secret-rotated", Set.of("previousSecretExpiresAt")),
             // the platform-catalogue sync: no application, no code list
@@ -169,9 +169,9 @@ class EmittedEventSchemaTest {
         m.put("platform:iam:user:developer-credential-revoked", PrincipalEvents.DeveloperCredentialRevoked.class);
         m.put("platform:iam:serviceaccount:deactivated", ServiceAccountEvents.ServiceAccountDeactivated.class);
         m.put("platform:iam:serviceaccount:token-minted", ServiceAccountEvents.ServiceAccountTokenMinted.class);
-        m.put("platform:iam:passkey:registered", PasskeyEvents.PasskeyRegistered.class);
-        m.put("platform:iam:passkey:authenticated", PasskeyEvents.PasskeyAuthenticated.class);
-        m.put("platform:iam:passkey:revoked", PasskeyEvents.PasskeyRevoked.class);
+        m.put("platform:admin:passkey:registered", PasskeyEvents.PasskeyRegistered.class);
+        m.put("platform:admin:passkey:authenticated", PasskeyEvents.PasskeyAuthenticated.class);
+        m.put("platform:admin:passkey:revoked", PasskeyEvents.PasskeyRevoked.class);
         m.put("platform:iam:reset-approval:queued", ResetApprovalEvents.ResetApprovalQueued.class);
         m.put("platform:iam:reset-approval:decided", ResetApprovalEvents.ResetApprovalDecided.class);
         m.put("platform:admin:dispatch-pool:suspended", DispatchPoolEvents.DispatchPoolSuspended.class);
