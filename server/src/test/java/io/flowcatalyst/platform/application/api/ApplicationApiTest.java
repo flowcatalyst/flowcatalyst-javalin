@@ -7,7 +7,9 @@ import io.flowcatalyst.platform.oauthclient.ClientType;
 import io.flowcatalyst.platform.oauthclient.OAuthClient;
 import io.flowcatalyst.platform.oauthclient.OAuthClientRepository;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
+import io.flowcatalyst.platform.role.Role;
 import io.flowcatalyst.platform.role.RoleRepository;
+import io.flowcatalyst.platform.seed.PlatformRoles;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.shared.TestHttp;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
@@ -81,8 +83,21 @@ class ApplicationApiTest {
             OAUTH_CLIENTS, ENCRYPTION, new io.flowcatalyst.platform.function.FunctionRepository(TestPg.dataSource()));
     private static TestHttp http;
 
+    /// The seeded `platform:application-service` role's permissions: what a
+    /// caller must hold to provision (the role ceiling, Go F8 `8b1cb0f`).
+    private static final List<String> APPLICATION_SERVICE_PERMISSIONS = PlatformRoles.all().stream()
+            .filter(r -> r.name().equals("platform:application-service")).findFirst().orElseThrow().permissions();
+
     @BeforeAll
     static void start() {
+        // The role every provisioned account is given, as the seeder installs it
+        // (this class's database is migrated, not seeded).
+        state.uow().inTransaction(tx -> {
+            new RoleRepository(TestPg.dataSource()).persist(
+                    Role.create("platform", "application-service", "Application Service Account")
+                            .withPermissions(APPLICATION_SERVICE_PERMISSIONS), tx.dbTx());
+            return null;
+        });
         var keys = SigningKeys.generateEphemeral();
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
@@ -334,6 +349,38 @@ class ApplicationApiTest {
         assertThat(countOAuthClientsForApp(id)).as("no duplicate oauth client row").isEqualTo(oauthBefore);
     }
 
+    /// Go F8 (`8b1cb0f`): the gate holder must also hold the platform
+    /// permissions of `platform:application-service`, the role the provisioned
+    /// account is given, or it could hand itself that authority by taking the
+    /// client secret: 403 `ROLE_ABOVE_CALLER` naming the role, nothing
+    /// provisioned. Holding them (or the wildcard) provisions.
+    @Test
+    void provisionServiceAccountIsBoundedByTheApplicationServiceRole() {
+        String id = create(code("provceil"), "Provision Ceiling", "");
+        String gate = "platform:admin:application:view,platform:admin:application:update,platform:iam:service-account:create";
+
+        var refused = http.post("/api/applications/" + id + "/provision-service-account", null, anchorWith(gate));
+        assertThat(refused.statusCode()).as(refused.body()).isEqualTo(403);
+        assertThat(json(refused).get("error").asText()).isEqualTo("ROLE_ABOVE_CALLER");
+        assertThat(json(refused).get("message").asText()).isEqualTo(
+                "You may only assign or remove roles whose permissions you hold yourself: platform:application-service");
+        assertThat(countServiceAccountsForApp(id)).as("no service account").isZero();
+        assertThat(countPrincipalsForApp(id)).as("no principal").isZero();
+        assertThat(countOAuthClientsForApp(id)).as("no OAuth client").isZero();
+        var app = json(http.get("/api/applications/" + id, ANCHOR));
+        assertThat(app.path("serviceAccountId").isMissingNode() || app.path("serviceAccountId").isNull()).isTrue();
+
+        // Lacking just one of the role's permissions is enough to refuse.
+        var oneShort = http.post("/api/applications/" + id + "/provision-service-account", null,
+                anchorWith(gate + "," + String.join(",", APPLICATION_SERVICE_PERMISSIONS.subList(1, APPLICATION_SERVICE_PERMISSIONS.size()))));
+        assertThat(oneShort.statusCode()).as(oneShort.body()).isEqualTo(403);
+
+        var r = http.post("/api/applications/" + id + "/provision-service-account", null,
+                anchorWith(gate + "," + String.join(",", APPLICATION_SERVICE_PERMISSIONS)));
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        assertThat(countServiceAccountsForApp(id)).isEqualTo(1);
+    }
+
     @Test
     void provisionServiceAccountIsAnchorOnly() {
         String id = create(code("provanchor"), "Anchor Only", "");
@@ -517,7 +564,8 @@ class ApplicationApiTest {
         assertThat(http.post("/api/applications/" + id + "/clients/" + clientId + "/disable", null,
                 anchorWith("platform:admin:application:disable-client")).statusCode()).isEqualTo(204);
         assertThat(http.post("/api/applications/" + id + "/provision-service-account", null,
-                anchorWith("platform:admin:application:update,platform:iam:service-account:create")).statusCode()).isEqualTo(201);
+                anchorWith("platform:admin:application:update,platform:iam:service-account:create,"
+                        + String.join(",", APPLICATION_SERVICE_PERMISSIONS))).statusCode()).isEqualTo(201);
         assertThat(http.post("/api/applications/" + id + "/provision-login-client", "{\"redirectUris\":[\"https://s12.example/cb\"]}",
                 anchorWith("platform:admin:application:update,platform:auth:oauth-client:create")).statusCode()).isEqualTo(201);
     }

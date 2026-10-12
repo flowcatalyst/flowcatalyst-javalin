@@ -81,7 +81,8 @@ public final class ApplicationApi {
     private ApplicationApi() {
     }
 
-    /// The handlers' dependencies. `roles` answers the roles listing only.
+    /// The handlers' dependencies. `roles` answers the roles listing and the
+    /// provisioning's role ceiling.
     /// `serviceAccounts` / `principals` / `oauthClients` / `encryption` back
     /// the two provisioning routes (spec §10) and `hasLoginClient` (spec §11
     /// q3).
@@ -203,11 +204,15 @@ public final class ApplicationApi {
     /// Gate (security-fixes S1.2): anchor reach, `SERVICE_ACCOUNT_CREATE` (it
     /// creates a service account and issues its credential — the
     /// `/api/service-accounts` create permission) and `APPLICATION_UPDATE`
-    /// (it rewrites the application's service-account link).
+    /// (it rewrites the application's service-account link). Then the role
+    /// ceiling on the `platform:application-service` role the account is given
+    /// (Go F8 `8b1cb0f`): 403 `ROLE_ABOVE_CALLER` for a caller lacking one of
+    /// its platform permissions.
     private static void provisionServiceAccount(Exchange ctx, State s) {
         Checks.requireAnchor(Auth.current());
         Checks.require(Auth.current(), SERVICE_ACCOUNT_CREATE);
         Checks.require(Auth.current(), APPLICATION_UPDATE);
+        ProvisionServiceAccount.requireProvisionWithinCaller(Auth.current(), s.roles());
         var result = ProvisionServiceAccount.of(s.repo(), s.serviceAccounts(), s.principals(), s.oauthClients(), s.encryption())
                 .run(s.uow(), new ProvisionServiceAccountCommand(ctx.pathParam("id")), Auth.executionContext());
         ctx.status(201).json(new ApplicationProvisionServiceAccountResponse("Service account provisioned",

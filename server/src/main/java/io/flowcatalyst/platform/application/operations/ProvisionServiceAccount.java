@@ -11,12 +11,15 @@ import io.flowcatalyst.platform.oauthclient.operations.Secrets;
 import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.principal.RoleAssignment;
+import io.flowcatalyst.platform.role.RoleCeiling;
+import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccount;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountCode;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.platform.serviceaccount.WebhookCredentials;
 import io.flowcatalyst.platform.serviceaccount.operations.ServiceAccountEvents.ServiceAccountCreated;
 import io.flowcatalyst.platform.serviceaccount.operations.WebhookSecrets;
+import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
@@ -52,6 +55,18 @@ public final class ProvisionServiceAccount {
     private static final String PROVISIONED = "PROVISIONED";
 
     private ProvisionServiceAccount() {
+    }
+
+    /// The role ceiling on provisioning (Go F8 `8b1cb0f`, `RequireProvisionWithinCaller`):
+    /// the provisioned account is given [#APPLICATION_SERVICE_ROLE] and its client secret
+    /// is handed to the caller, so the caller must hold that role's platform permissions
+    /// ([RoleCeiling], 403 `ROLE_ABOVE_CALLER`). The API handler calls it with the
+    /// request's caller, after its permission gate; the operation itself does not, so a
+    /// system path running it for no caller is unchanged.
+    ///
+    /// @throws UseCaseException authorization `ROLE_ABOVE_CALLER`
+    public static void requireProvisionWithinCaller(AuthContext caller, RoleRepository roles) {
+        RoleCeiling.requireRoles(caller, List.of(APPLICATION_SERVICE_ROLE), roles);
     }
 
     /// @param principalId       the linked `SERVICE` principal's id — what the application's `serviceAccountId` stores
