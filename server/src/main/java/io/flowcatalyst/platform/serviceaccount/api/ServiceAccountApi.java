@@ -119,7 +119,7 @@ public final class ServiceAccountApi {
             Objects.requireNonNull(flattenPermissions, "flattenPermissions");
         }
 
-        /// One role's permissions, for the role-assignment ceiling.
+        /// One role's permissions, for the role ceiling on assigning roles and on the mint.
         public io.flowcatalyst.platform.role.RoleCeiling.RolePermissions rolePermissions() {
             return name -> flattenPermissions.apply(List.of(name));
         }
@@ -260,13 +260,15 @@ public final class ServiceAccountApi {
 
     /// `SERVICE_ACCOUNT_UPDATE` + anchor reach (security-fixes S1.2: the
     /// caller obtains a bearer that acts as the account — a credential, so a
-    /// permission, not the tier alone) + the application confinement (F4),
+    /// permission, not the tier alone) + the application confinement (F4) +
+    /// the role ceiling on the account's roles (Go F8 `09b33e8`, in the mint),
     /// best-effort-audited (spec §3, §8; owner ruling 2026-09-06 #15).
     private static void mintToken(Exchange ctx, State s) {
         requireAnchorWriter(Auth.current(), SERVICE_ACCOUNT_UPDATE);
         String id = ctx.pathParam("id");
         Access.requireWrite(s.repo(), Auth.current(), id);
-        var result = MintServiceAccountToken.mint(s.repo(), s.principals(), s.minter(), s.flattenPermissions(), id);
+        var result = MintServiceAccountToken.mint(s.repo(), s.principals(), s.minter(), s.flattenPermissions(),
+                Auth.current(), s.rolePermissions(), id);
         // A bearer was handed out for this account — a use of its credentials
         // (spec §9.2). Best-effort: a failed stamp must never fail the mint.
         s.repo().touchLastUsed(id);

@@ -660,6 +660,42 @@ class ServiceAccountApiTest {
                 .as("removal counts").isEqualTo(403);
     }
 
+    /// Go F8 (`09b33e8`): the mint is bounded too. A holder of
+    /// `service-account:update` may not mint a token for an account a
+    /// super-admin made stronger than the caller: 403 `ROLE_ABOVE_CALLER`
+    /// naming the role, no token, no `token-minted` event. An account holding
+    /// nothing above the caller still mints.
+    @Test
+    void mintTokenIsBoundedByTheCallersPermissions() {
+        String id = create(code("mintceil"), "MintCeil").get("serviceAccount").get("id").asText();
+        String[] updaterOnly = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:iam:service-account:update,platform:iam:service-account:view"};
+        assertThat(http.post("/api/service-accounts/" + id + "/token", null, updaterOnly).statusCode())
+                .as("no role above the caller yet").isEqualTo(200);
+
+        assertThat(http.put("/api/service-accounts/" + id + "/roles", "{\"roles\":[\"" + grantedRole.name() + "\"]}", anchor())
+                .statusCode()).isEqualTo(200);
+        var db = org.jooq.impl.DSL.using(TestPg.dataSource(), org.jooq.SQLDialect.POSTGRES);
+        int mintedBefore = db.fetchCount(db.selectFrom("msg_events").where("subject = ? AND type = ?",
+                "platform.serviceaccount." + id, "platform:iam:serviceaccount:token-minted"));
+
+        var refused = http.post("/api/service-accounts/" + id + "/token", null, updaterOnly);
+        assertThat(refused.statusCode()).as(refused.body()).isEqualTo(403);
+        assertThat(json(refused).get("error").asText()).isEqualTo("ROLE_ABOVE_CALLER");
+        assertThat(json(refused).get("message").asText()).isEqualTo(
+                "You may only mint a token for a service account whose roles' permissions you hold yourself: " + grantedRole.name());
+        assertThat(refused.body()).doesNotContain("accessToken");
+        assertThat(db.fetchCount(db.selectFrom("msg_events").where("subject = ? AND type = ?",
+                "platform.serviceaccount." + id, "platform:iam:serviceaccount:token-minted")))
+                .as("no token-minted event for a refused mint").isEqualTo(mintedBefore);
+
+        String[] updaterHolding = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:iam:service-account:update," + GRANTED_PERMISSION};
+        assertThat(http.post("/api/service-accounts/" + id + "/token", null, updaterHolding).statusCode()).isEqualTo(200);
+    }
+
     // ── Regenerate token / secret: one-shot disclosure (spec §5) ────────────
 
     @Test

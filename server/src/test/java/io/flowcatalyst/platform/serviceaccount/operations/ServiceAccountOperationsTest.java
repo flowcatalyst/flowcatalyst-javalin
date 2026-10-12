@@ -11,6 +11,7 @@ import io.flowcatalyst.platform.oauthclient.operations.OAuthClientEvents;
 import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.principal.UserScope;
+import io.flowcatalyst.platform.role.RoleCeiling;
 import io.flowcatalyst.platform.serviceaccount.CorruptServiceAccountException;
 import io.flowcatalyst.platform.serviceaccount.RoleAssignment;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccount;
@@ -48,6 +49,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 
 import javax.sql.DataSource;
 import java.util.List;
+import java.util.function.Function;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
@@ -84,6 +86,9 @@ class ServiceAccountOperationsTest {
     private static final String ACTOR = EntityType.PRINCIPAL.generate();
     private static final AuthContext ANCHOR = new AuthContext(ACTOR, Scope.ANCHOR, "anchor@x.io",
             List.of("*"), List.of(), List.of(), true, List.of());
+    /// Holds `platform:*:*:*`: above every role ceiling.
+    private static final AuthContext SUPER_ADMIN = new AuthContext(ACTOR, Scope.ANCHOR, "admin@x.io",
+            List.of("*"), List.of(), List.of(), true, List.of("platform:*:*:*"));
     private static final ExecutionContext EC = ExecutionContext.of(ACTOR);
 
     // ── Fixture ────────────────────────────────────────────────────────────
@@ -659,9 +664,12 @@ class ServiceAccountOperationsTest {
 
         var keys = SigningKeys.generateEphemeral();
         var minter = new RsaServiceAccountTokenMinter(keys, "https://fc.test", "https://fc.test");
-        var result = MintServiceAccountToken.mint(repo, principals, minter,
-                roleNames -> roleNames.contains("orders:admin") ? List.of("platform:events:create") : List.of(),
-                res.serviceAccount().id());
+        Function<List<String>, List<String>> flatten =
+                roleNames -> roleNames.contains("orders:admin") ? List.of("platform:events:create") : List.of();
+        // The role ceiling is mintTokenIsBoundedByTheCallersPermissions's; this
+        // sample's three-segment permission is no real platform code.
+        var result = MintServiceAccountToken.mint(repo, principals, minter, flatten,
+                SUPER_ADMIN, name -> List.of(), res.serviceAccount().id());
 
         assertThat(result.permissions()).containsExactly("platform:events:create");
         assertThat(result.accessToken()).isNotBlank();
@@ -686,7 +694,7 @@ class ServiceAccountOperationsTest {
         runAsAnchor(DeactivateServiceAccount.of(repo), new DeactivateCommand(res.serviceAccount().id()));
 
         var minter = new RsaServiceAccountTokenMinter(SigningKeys.generateEphemeral(), "https://fc.test", null);
-        assertThatThrownBy(() -> MintServiceAccountToken.mint(repo, principals, minter, null, res.serviceAccount().id()))
+        assertThatThrownBy(() -> MintServiceAccountToken.mint(repo, principals, minter, null, ANCHOR, name -> List.of(), res.serviceAccount().id()))
                 .isInstanceOf(UseCaseException.class)
                 .satisfies(t -> {
                     var err = ((UseCaseException) t).error();
@@ -710,7 +718,7 @@ class ServiceAccountOperationsTest {
         });
 
         var minter = new RsaServiceAccountTokenMinter(SigningKeys.generateEphemeral(), "https://fc.test", null);
-        assertThatThrownBy(() -> MintServiceAccountToken.mint(repo, principals, minter, null, res.serviceAccount().id()))
+        assertThatThrownBy(() -> MintServiceAccountToken.mint(repo, principals, minter, null, ANCHOR, name -> List.of(), res.serviceAccount().id()))
                 .isInstanceOf(UseCaseException.class)
                 .satisfies(t -> {
                     var err = ((UseCaseException) t).error();
@@ -724,7 +732,45 @@ class ServiceAccountOperationsTest {
     @Test
     void mintTokenFailsWith500WhenNoMinterIsWired() {
         var res = createWithCredentials(code("samintnowire"), "NoWire", null);
-        assertUseCaseError(() -> MintServiceAccountToken.mint(repo, principals, null, null, res.serviceAccount().id()),
+        assertUseCaseError(() -> MintServiceAccountToken.mint(repo, principals, null, null, ANCHOR, name -> List.of(), res.serviceAccount().id()),
                 UseCaseError.Internal.class, "TOKEN");
+    }
+
+    /// Go F8 (`09b33e8`): the minted bearer carries the account's whole
+    /// authority, so the caller must hold every platform permission of every
+    /// role the account holds. A caller lacking one is refused, naming the role;
+    /// one holding it (or the wildcard) mints; application permissions are
+    /// outside the ceiling; an unwired role lookup refuses.
+    @Test
+    void mintTokenIsBoundedByTheCallersPermissions() {
+        var res = createWithCredentials(code("samintceil"), "MintCeiling", null);
+        runAsAnchor(AssignRolesToServiceAccount.of(repo, principals, name -> List.of()),
+                new AssignRolesCommand(res.serviceAccount().id(), List.of("ceil:platform-role", "ceil:app-role")));
+        RoleCeiling.RolePermissions perms = name -> switch (name) {
+            case "ceil:platform-role" -> List.of("platform:messaging:event:create");
+            case "ceil:app-role" -> List.of("orders:order:create");
+            default -> List.of();
+        };
+        var minter = new RsaServiceAccountTokenMinter(SigningKeys.generateEphemeral(), "https://fc.test", null);
+        AuthContext lacking = new AuthContext(ACTOR, Scope.ANCHOR, "lacking@x.io", List.of("*"), List.of(), List.of(), true,
+                List.of("platform:iam:service-account:update"));
+        AuthContext holding = new AuthContext(ACTOR, Scope.ANCHOR, "holding@x.io", List.of("*"), List.of(), List.of(), true,
+                List.of("platform:iam:service-account:update", "platform:messaging:*:*"));
+
+        assertThatThrownBy(() -> MintServiceAccountToken.mint(repo, principals, minter, null, lacking, perms, res.serviceAccount().id()))
+                .isInstanceOf(UseCaseException.class)
+                .satisfies(t -> {
+                    var err = ((UseCaseException) t).error();
+                    assertThat(err).isInstanceOf(UseCaseError.Authorization.class);
+                    assertThat(err.code()).isEqualTo("ROLE_ABOVE_CALLER");
+                    assertThat(err.message()).isEqualTo(
+                            "You may only mint a token for a service account whose roles' permissions you hold yourself: ceil:platform-role");
+                });
+        assertThat(MintServiceAccountToken.mint(repo, principals, minter, null, holding, perms, res.serviceAccount().id()).accessToken())
+                .as("a held wildcard covers the role; the application role is outside the ceiling").isNotBlank();
+        assertThat(MintServiceAccountToken.mint(repo, principals, minter, null, SUPER_ADMIN, perms, res.serviceAccount().id()).accessToken())
+                .isNotBlank();
+        assertUseCaseError(() -> MintServiceAccountToken.mint(repo, principals, minter, null, SUPER_ADMIN, null, res.serviceAccount().id()),
+                UseCaseError.Internal.class, "ROLES");
     }
 }

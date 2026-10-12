@@ -2,7 +2,9 @@ package io.flowcatalyst.platform.serviceaccount.operations;
 
 import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
+import io.flowcatalyst.platform.role.RoleCeiling;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccount;
+import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.serviceaccount.ServiceAccountRepository;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 
@@ -27,7 +29,12 @@ import java.util.function.Function;
 /// 3. account inactive → 400 `SERVICE_ACCOUNT_INACTIVE`;
 /// 4. load the linked `SERVICE` principal, absent → 500 `PRINCIPAL`;
 /// 5. principal inactive → 400 `SERVICE_ACCOUNT_INACTIVE` (a different message, spec §8);
-/// 6. flatten the principal's roles to a permission ceiling and mint with that scope.
+/// 6. the role ceiling: the minted bearer carries the account's whole authority, so
+///    the caller must hold every platform permission of every role the account holds
+///    ([RoleCeiling], Go F8 `09b33e8`), else 403 `ROLE_ABOVE_CALLER` naming the roles.
+///    Otherwise a holder of `service-account:update` could mint a token for an account
+///    a super-admin had made stronger than the caller;
+/// 7. flatten the principal's roles to a permission ceiling and mint with that scope.
 public final class MintServiceAccountToken {
 
     private MintServiceAccountToken() {
@@ -42,11 +49,15 @@ public final class MintServiceAccountToken {
     /// @param flattenPermissions resolves role names to a permission ceiling — the same
     ///                           computation the `client_credentials` grant runs. `null`
     ///                           mints with no scope claim (no permission-flattening wired).
+    /// @param caller             who asks for the token (`null` holds nothing)
+    /// @param rolePermissions    one role's permissions, for the role ceiling; `null` refuses
+    ///                           (internal `ROLES`, fail closed)
     /// @throws UseCaseException internal `TOKEN` (minting not wired), not-found `ServiceAccount_NOT_FOUND`,
-    ///                          validation `SERVICE_ACCOUNT_INACTIVE` (account or principal), internal `PRINCIPAL`
+    ///                          validation `SERVICE_ACCOUNT_INACTIVE` (account or principal), internal `PRINCIPAL`,
+    ///                          internal `ROLES`, authorization `ROLE_ABOVE_CALLER`
     public static Result mint(ServiceAccountRepository saRepo, PrincipalRepository principals,
                               ServiceAccountTokenMinter minter, Function<List<String>, List<String>> flattenPermissions,
-                              String serviceAccountId) {
+                              AuthContext caller, RoleCeiling.RolePermissions rolePermissions, String serviceAccountId) {
         if (minter == null) {
             throw UseCaseException.internal("TOKEN", "token minting is not wired", null);
         }
@@ -64,8 +75,26 @@ public final class MintServiceAccountToken {
                     "the service account's principal is deactivated");
         }
 
+        requireMintWithinCaller(caller, principal.roleNames(), rolePermissions);
+
         List<String> permissions = flattenPermissions == null ? List.of() : flattenPermissions.apply(principal.roleNames());
         var minted = minter.mint(principal, permissions);
         return new Result(minted.accessToken(), minted.expiresInSeconds(), permissions);
+    }
+
+    /// Step 6: refuses a mint for an account holding a role the caller could not
+    /// assign ([RoleCeiling#rolesAboveCaller]), naming the roles. Go's
+    /// `requireMintWithinCaller`, same code and message.
+    private static void requireMintWithinCaller(AuthContext caller, List<String> roleNames,
+                                                RoleCeiling.RolePermissions rolePermissions) {
+        if (rolePermissions == null) {
+            throw UseCaseException.internal("ROLES", "role ceiling is not wired", null);
+        }
+        List<String> above = RoleCeiling.rolesAboveCaller(caller, roleNames, rolePermissions);
+        if (!above.isEmpty()) {
+            throw UseCaseException.authorization("ROLE_ABOVE_CALLER",
+                    "You may only mint a token for a service account whose roles' permissions you hold yourself: "
+                            + String.join(", ", above));
+        }
     }
 }
