@@ -131,11 +131,12 @@ public final class IngestApi {
             throw HttpError.forbidden(IngestAppScope.EVENT_REFUSED);
         }
 
-        String clientId = req.clientId();
+        // A blank clientId counts as absent (F14, spec §3.4).
+        String clientId = IngestClients.nonBlank(req.clientId());
         if (clientId == null && !ac.isAnchor() && !ac.clients().isEmpty()) {
             clientId = ac.clients().get(0); // spec §3.2: singular-only default (§5 D3)
         }
-        clientId = requireWritableClient(ac, clientId);
+        clientId = IngestClients.requireWritableClient(ac, clientId);
         requireEventSignable(s.signing(), ac, req.eventType());
 
         var event = EventIngestMapper.toEvent(new EventIngestMapper.RawItem(
@@ -158,7 +159,7 @@ public final class IngestApi {
         // results — an item missing type/source/data reports BAD_REQUEST in its own slot,
         // the valid items are still written (one insert, all of them or none). A tenant
         // violation still refuses the whole batch before anything is written (spec §2).
-        Map<String, Optional<String>> clientCodeCache = new HashMap<>();
+        var clients = new IngestClients(s.clientLookup());
         var signing = s.signing().perRequest();
         var scope = newScope(s);
         List<Event> events = new ArrayList<>(items.size());
@@ -178,17 +179,11 @@ public final class IngestApi {
                         IngestAppScope.EVENT_REFUSED);
                 continue;
             }
-            String clientId = item.clientId();
-            if (clientId == null && item.clientCode() != null && !item.clientCode().isBlank()) {
-                // §5 D2: an unknown code leaves the row unscoped (clientId null), not rejected —
-                // for an anchor. A non-anchor may never write an unscoped row (S3.2), so for it
-                // a code naming no client is the same refusal as one naming another tenant.
-                clientId = resolveClientId(clientCodeCache, s.clientLookup(), item.clientCode()).orElse(null);
-                if (clientId == null && !ac.isAnchor()) {
-                    throw HttpError.forbidden("No access to client: " + item.clientCode());
-                }
-            }
-            clientId = requireWritableClient(ac, clientId);
+            // The client (spec §3.4, IngestClients#resolveEventClient): an explicit clientId
+            // wins, else the clientCode resolves; the caller must reach it. An anchor's unknown
+            // code leaves the event unscoped (§5 D2); a non-anchor's code naming another client
+            // or none is one refusal naming the code. Any refusal rejects the whole batch.
+            String clientId = clients.resolveEventClient(ac, item.clientId(), item.clientCode());
             requireEventSignable(signing, ac, item.type());
             // The SDK outbox writers send data as a JSON string holding the encoded object; store
             // the object (owner ruling 2026-10-12, Go 8bf67d1; EncodedJson for the exact rule).
@@ -230,7 +225,7 @@ public final class IngestApi {
         }
         if (req.payload() == null) throw HttpError.badRequest("VALIDATION", "payload is required");
         if (req.serviceAccountId() == null) throw HttpError.badRequest("VALIDATION", "serviceAccountId is required");
-        String clientId = requireWritableClient(ac, req.clientId());
+        String clientId = IngestClients.requireWritableClient(ac, req.clientId());
 
         var job = DispatchJobIngestMapper.toJob(new DispatchJobIngestMapper.RawItem(
                 null, req.externalId(), req.kind(), req.code(), req.source(), req.subject(), req.targetUrl(),
@@ -260,7 +255,7 @@ public final class IngestApi {
         var scope = newScope(s);
         for (int idx = 0; idx < items.size(); idx++) {
             var item = items.get(idx);
-            String clientId = requireWritableClient(ac, item.clientId());
+            String clientId = IngestClients.requireWritableClient(ac, item.clientId());
             var job = DispatchJobIngestMapper.toJob(new DispatchJobIngestMapper.RawItem(
                     item.id(), item.externalId(), item.kind(), item.code(), item.source(), item.subject(),
                     item.targetUrl(), item.payload(), item.payloadContentType(), item.dataOnly(), item.eventId(),
@@ -305,7 +300,7 @@ public final class IngestApi {
         }
 
         Map<String, Optional<String>> appCodeCache = new HashMap<>();
-        Map<String, Optional<String>> clientCodeCache = new HashMap<>();
+        var clients = new IngestClients(s.clientLookup());
         List<BatchResultItem> results = new ArrayList<>(items.size());
         List<AuditLog> logs = new ArrayList<>(items.size());
         var scope = newScope(s);
@@ -336,7 +331,7 @@ public final class IngestApi {
             }
             String clientId = null;
             if (item.clientCode() != null && !item.clientCode().isBlank()) {
-                var resolved = resolveClientId(clientCodeCache, s.clientLookup(), item.clientCode());
+                var resolved = clients.resolve(item.clientCode());
                 if (resolved.isEmpty()) {
                     results.add(SKIPPED);
                     continue;
@@ -380,31 +375,6 @@ public final class IngestApi {
 
     // ── Shared helpers ───────────────────────────────────────────────────
 
-    /// Whole-batch tenant guard (spec §2): a resolved `clientId` the caller
-    /// cannot access is a 403 for the whole request, before anything is
-    /// written. Answers the client the row is written under.
-    ///
-    /// `null` (platform-scoped) passes for an anchor only
-    /// (`docs/spec/security-fixes-2026-09-24.md` S3.2): a platform-scoped
-    /// event matches platform-wide subscriptions, and a platform-scoped job
-    /// is outside every tenant's view, so a client-scoped caller writing one
-    /// acts beyond its reach. For a caller confined to exactly one client an
-    /// absent client means that client — unambiguous, and what an SDK outbox
-    /// (which never sends a `clientId` on a dispatch job) needs to keep
-    /// working under a client-scoped credential; any other non-anchor must
-    /// name one.
-    private static String requireWritableClient(AuthContext ac, String clientId) {
-        if (clientId == null) {
-            if (ac.isAnchor()) return null;
-            if (ac.clients().size() == 1) return ac.clients().getFirst();
-            throw HttpError.forbidden("clientId is required: a client-scoped caller cannot write platform-scoped rows");
-        }
-        if (!ac.canAccessClient(clientId)) {
-            throw HttpError.forbidden("No access to client: " + clientId);
-        }
-        return clientId;
-    }
-
     /// An event of an application's type only from a caller that may sign as that
     /// application ([DeliverySigningGuard#checkEvent]) — a whole-request 403 before
     /// anything is written.
@@ -420,14 +390,6 @@ public final class IngestApi {
         if (signing.check(ac, job) instanceof Result.Err<DispatchJob, DeliverySigningGuard.Refusal>(var refusal)) {
             throw HttpError.forbidden(refusal.message());
         }
-    }
-
-    /// One [ClientRepository#findByIdentifier] per distinct code per
-    /// request (spec §3.1, §4.3): `cache` is a fresh map the caller builds
-    /// once per request.
-    private static Optional<String> resolveClientId(Map<String, Optional<String>> cache,
-                                                      Function<String, Optional<Client>> lookup, String code) {
-        return cache.computeIfAbsent(code, c -> lookup.apply(c).map(Client::id));
     }
 
     private static List<Event.ContextEntry> contextEntries(List<ContextEntryDTO> dtos) {

@@ -63,13 +63,14 @@ item — a missing one is that item's `BAD_REQUEST` slot, §2).
 - `id` absent → server mints an event TSID. Supplied id is stored as given
   (SDK-side idempotency).
 - `clientId` wins; else `clientCode` is resolved through
-  `client.FindByIdentifier` **once per distinct code per batch** (memoised);
-  an unknown code → `clientId` null (the row is still written, unscoped —
-  §5 D2). Tenant guard **per item**: a resolved client the caller cannot
-  access → 403 `No access to client: <id>` for the whole batch.
+  `client.FindByIdentifier` **once per distinct code per batch** (memoised).
+  The client rule, its refusals and the blank-means-absent rule are §3.4:
+  a refusal on any item is a 403 for the whole batch, before anything is
+  written; an anchor's unknown code leaves the row unscoped (§5 D2).
 - Non-anchor caller with no `clientId`/`clientCode` and ≥1 accessible
   client (singular route only): defaults to the caller's first client.
-  Batch items do not default (§5 D3).
+  Batch items do not default (§5 D3), except through §3.4's single-client
+  rule.
 - Insert: `INSERT … ON CONFLICT DO NOTHING` — the conflict target is the
   unique index `(deduplication_id, created_at)`, so a repeated
   `deduplicationId` is silently dropped **and still reported `SUCCESS`
@@ -139,6 +140,32 @@ itself gets:
   is stored as sent (Go unwraps it; the same value sent as itself is refused
   by Java's body parse).
 
+### 3.4 Client
+Owner rulings 2026-10-12 (Go F14, `internal/platform/shared/sdk/client_code.go`,
+Go `docs/wire-contract.md` "SDK ingest: client and source"; Java
+`io.flowcatalyst.platform.ingest.api.IngestClients`, ledger
+`docs/go-mirror/2026-10-13-platform-bug-fixes-5.md`). A `clientId` or
+`clientCode` that is absent, `null`, empty or only whitespace counts as not
+given (before, Java treated only `null` as absent: a blank `clientId` was
+refused for a non-anchor and stored as sent for an anchor).
+
+- A `clientId` the caller cannot reach:
+  `403 {"error":"FORBIDDEN","message":"No access to client: <clientId>"}`.
+- Batch only, no `clientId`: a `clientCode` naming a client the caller
+  reaches resolves to it; one naming another client, or no client, from a
+  non-anchor: `403 FORBIDDEN "No access to client: <clientCode>"` (one
+  refusal for both, naming the code: it neither confirms that a code exists
+  nor reveals another tenant's client id; before, Java named the id the code
+  resolved to); an anchor's unknown code leaves the event platform-scoped.
+- No client at all (singular: a non-anchor first defaults to its first
+  client, §5 D3): an anchor writes a platform-scoped event; a caller whose
+  `clients` is exactly one id writes under it; anyone else:
+  `403 FORBIDDEN "clientId is required: a client-scoped caller cannot write platform-scoped rows"`
+  (security-fixes S3.2).
+- In the batch these refusals reject the whole request (nothing written);
+  type/source/data problems and application confinement stay per item
+  (`BAD_REQUEST` in that item's `results[]` slot) and are checked first.
+
 ## 4. Dispatch jobs and audit logs
 
 ### 4.1 `POST /api/dispatch-jobs/batch` — `BatchItem`
@@ -152,7 +179,10 @@ itself gets:
   `HTTP_WEBHOOK`; `retryStrategy` = `EXPONENTIAL_BACKOFF`; `status` =
   `PENDING`. `id` absent → **13-char untyped TSID** (`msg_dispatch_jobs.id`
   is `VARCHAR(13)`); supplied → stored as given.
-- Tenant guard per item: `clientId` set and not accessible → 403 whole batch.
+- Tenant guard per item: `clientId` set (not blank, §3.4) and not
+  accessible → 403 `No access to client: <clientId>`, whole batch; no
+  client → §3.4's no-client rule (anchor: platform-scoped; one client:
+  that client; anyone else 403).
 - Insert: one `INSERT … ON CONFLICT (id, created_at) DO NOTHING` per job in
   a single pgx batch (the table is partitioned on `created_at`). A repeated
   SDK-supplied id is dropped silently and still reported `SUCCESS` (§5 D4).
