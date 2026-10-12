@@ -53,6 +53,7 @@ import io.flowcatalyst.db.generated.tables.MsgScheduledJobInstances;
 import io.flowcatalyst.db.generated.tables.MsgScheduledJobs;
 import io.flowcatalyst.db.generated.tables.MsgSubscriptionCustomConfigs;
 import io.flowcatalyst.db.generated.tables.MsgSubscriptionEventTypes;
+import io.flowcatalyst.db.generated.tables.MsgSubscriptionEventTypesArchive;
 import io.flowcatalyst.db.generated.tables.MsgSubscriptions;
 import io.flowcatalyst.db.generated.tables.OauthClientAllowedOrigins;
 import io.flowcatalyst.db.generated.tables.OauthClientApplicationIds;
@@ -233,6 +234,7 @@ public class Indexes {
     public static final Index IDX_MSG_SPEC_VERSIONS_EVENT_TYPE = Internal.createIndex(DSL.name("idx_msg_spec_versions_event_type"), MsgEventTypeSpecVersions.MSG_EVENT_TYPE_SPEC_VERSIONS, new OrderField[] { MsgEventTypeSpecVersions.MSG_EVENT_TYPE_SPEC_VERSIONS.EVENT_TYPE_ID }, false);
     public static final Index IDX_MSG_SPEC_VERSIONS_STATUS = Internal.createIndex(DSL.name("idx_msg_spec_versions_status"), MsgEventTypeSpecVersions.MSG_EVENT_TYPE_SPEC_VERSIONS, new OrderField[] { MsgEventTypeSpecVersions.MSG_EVENT_TYPE_SPEC_VERSIONS.STATUS }, false);
     public static final Index IDX_MSG_SUB_CONFIGS_SUBSCRIPTION = Internal.createIndex(DSL.name("idx_msg_sub_configs_subscription"), MsgSubscriptionCustomConfigs.MSG_SUBSCRIPTION_CUSTOM_CONFIGS, new OrderField[] { MsgSubscriptionCustomConfigs.MSG_SUBSCRIPTION_CUSTOM_CONFIGS.SUBSCRIPTION_ID }, false);
+    public static final Index IDX_MSG_SUB_EVENT_TYPES_ARCHIVE_SUBSCRIPTION = Internal.createIndex(DSL.name("idx_msg_sub_event_types_archive_subscription"), MsgSubscriptionEventTypesArchive.MSG_SUBSCRIPTION_EVENT_TYPES_ARCHIVE, new OrderField[] { MsgSubscriptionEventTypesArchive.MSG_SUBSCRIPTION_EVENT_TYPES_ARCHIVE.SUBSCRIPTION_ID }, false);
     public static final Index IDX_MSG_SUB_EVENT_TYPES_EVENT_TYPE = Internal.createIndex(DSL.name("idx_msg_sub_event_types_event_type"), MsgSubscriptionEventTypes.MSG_SUBSCRIPTION_EVENT_TYPES, new OrderField[] { MsgSubscriptionEventTypes.MSG_SUBSCRIPTION_EVENT_TYPES.EVENT_TYPE_ID }, false);
     public static final Index IDX_MSG_SUB_EVENT_TYPES_SUBSCRIPTION = Internal.createIndex(DSL.name("idx_msg_sub_event_types_subscription"), MsgSubscriptionEventTypes.MSG_SUBSCRIPTION_EVENT_TYPES, new OrderField[] { MsgSubscriptionEventTypes.MSG_SUBSCRIPTION_EVENT_TYPES.SUBSCRIPTION_ID }, false);
     public static final Index IDX_MSG_SUBSCRIPTIONS_CLIENT_ID = Internal.createIndex(DSL.name("idx_msg_subscriptions_client_id"), MsgSubscriptions.MSG_SUBSCRIPTIONS, new OrderField[] { MsgSubscriptions.MSG_SUBSCRIPTIONS.CLIENT_ID }, false);

@@ -56,7 +56,7 @@ class DevBootstrapTest {
 
     @Test
     void freshTruncatesTheGoTableListInOneStatement() {
-        assertThat(FreshCommand.FRESH_TABLES).hasSize(43).startsWith("aud_logs").endsWith("app_platform_configs");
+        assertThat(FreshCommand.FRESH_TABLES).hasSize(44).startsWith("aud_logs").endsWith("app_platform_configs");
         assertThat(FreshCommand.truncateSql()).startsWith("TRUNCATE TABLE aud_logs, msg_events_read").endsWith(" RESTART IDENTITY CASCADE");
     }
 

@@ -69,7 +69,6 @@ public final class PlatformEventSchemas {
                 reqStr("principalId"), reqStr("clientId")));
         // logged-in carries a richer payload — federatedClaims oneOf, etc.
         m.put("platform:iam:user:logged-in", loggedIn());
-        m.put("platform:iam:user:password-reset-requested", obj(reqStr("principalId"), reqStr("email")));
         m.put("platform:iam:user:password-reset-completed", obj(reqStr("principalId"), reqStr("email")));
 
         // ── platform:iam:principals (sync — plural aggregate) ───────────────
@@ -112,19 +111,6 @@ public final class PlatformEventSchemas {
                 reqStr("clientId"), reqStrArray("enabledApplicationIds"),
                 reqStrArray("enabledAdded"), reqStrArray("disabledRemoved")));
 
-        // ── platform:iam:role ───────────────────────────────────────────────
-        m.put("platform:iam:role:created", obj(
-                reqStr("roleId"), reqStr("code"), reqStr("displayName"),
-                reqStr("applicationCode"), reqStrArray("permissions")));
-        m.put("platform:iam:role:updated", obj(
-                reqStr("roleId"), optStr("displayName"), optStr("description"),
-                reqStrArray("permissionsAdded"), reqStrArray("permissionsRemoved")));
-        m.put("platform:iam:role:deleted", obj(reqStr("roleId"), reqStr("code")));
-        m.put("platform:iam:roles:synced", obj(
-                reqStr("applicationCode"),
-                reqU32("created"), reqU32("updated"), reqU32("deleted"),
-                reqStrArray("syncedNames")));
-
         // ── platform:iam:application ────────────────────────────────────────
         m.put("platform:iam:application:created", obj(
                 reqStr("applicationId"), reqStr("code"), reqStr("name"), reqStr("applicationType")));
@@ -142,32 +128,9 @@ public final class PlatformEventSchemas {
         m.put("platform:iam:application:disabled-for-client", obj(
                 reqStr("applicationId"), reqStr("clientId"), reqStr("configId")));
 
-        // ── platform:iam:anchor-domain ──────────────────────────────────────
-        m.put("platform:iam:anchor-domain:created", obj(reqStr("anchorDomainId"), reqStr("domain")));
-        m.put("platform:iam:anchor-domain:deleted", obj(reqStr("anchorDomainId"), reqStr("domain")));
-
-        // ── platform:iam:auth-config ────────────────────────────────────────
-        m.put("platform:iam:auth-config:created", obj(
-                reqStr("authConfigId"), reqStr("emailDomain"), reqStr("configType")));
-        m.put("platform:iam:auth-config:updated", obj(reqStr("authConfigId"), reqStr("emailDomain")));
-        m.put("platform:iam:auth-config:deleted", obj(reqStr("authConfigId"), reqStr("emailDomain")));
-
         // ── platform:admin:cors ─────────────────────────────────────────────
         m.put("platform:admin:cors:origin-added", obj(reqStr("originId"), reqStr("origin")));
         m.put("platform:admin:cors:origin-deleted", obj(reqStr("originId"), reqStr("origin")));
-
-        // ── platform:admin:idp ──────────────────────────────────────────────
-        m.put("platform:admin:idp:created", obj(
-                reqStr("idpId"), reqStr("code"), reqStr("name"), reqStr("idpType")));
-        m.put("platform:admin:idp:updated", obj(reqStr("idpId"), optStr("name")));
-        m.put("platform:admin:idp:deleted", obj(reqStr("idpId"), reqStr("code")));
-
-        // ── platform:admin:edm ──────────────────────────────────────────────
-        m.put("platform:admin:edm:created", obj(
-                reqStr("mappingId"), reqStr("emailDomain"),
-                reqStr("identityProviderId"), reqStr("scopeType")));
-        m.put("platform:admin:edm:updated", obj(reqStr("mappingId"), reqStr("emailDomain")));
-        m.put("platform:admin:edm:deleted", obj(reqStr("mappingId"), reqStr("emailDomain")));
 
         // ── platform:admin:eventtype ────────────────────────────────────────
         m.put("platform:admin:eventtype:created", obj(

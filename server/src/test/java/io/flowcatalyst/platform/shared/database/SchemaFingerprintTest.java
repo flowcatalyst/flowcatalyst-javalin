@@ -79,6 +79,29 @@ class SchemaFingerprintTest {
     static final List<String> SCHEDULER_INDEXES_V22 = List.of(
             "INDEX\tmsg_dispatch_jobs\tidx_dispatch_jobs_status_group\tCREATE INDEX idx_dispatch_jobs_status_group ON ONLY public.msg_dispatch_jobs USING btree (status, message_group, sequence, created_at, id)\ttrue");
 
+    /// V26 (Go `071_prune_unemitted_event_types.sql`, statement for statement)
+    /// creates `msg_subscription_event_types_archive`. The fixture is the Go
+    /// schema captured at goose 57, before Go 071, so it lacks the table. Not a
+    /// Java-only table (Go creates and reads it too): its lines are named and
+    /// exact, and the Java schema must hold exactly these for it. Drop the list
+    /// when the fixture is next re-captured from a Go database at 071 or later.
+    static final String ARCHIVE_TABLE_GO_071 = "msg_subscription_event_types_archive";
+    static final List<String> ARCHIVE_TABLE_LINES_GO_071 = List.of(
+            "COLUMN\tmsg_subscription_event_types_archive\tarchived_at\t7\ttimestamp with time zone\t\t\tNO\tnow()\tNO",
+            "COLUMN\tmsg_subscription_event_types_archive\tarchived_reason\t6\tcharacter varying\t100\t\tNO\t\tNO",
+            "COLUMN\tmsg_subscription_event_types_archive\tevent_type_code\t4\tcharacter varying\t255\t\tNO\t\tNO",
+            "COLUMN\tmsg_subscription_event_types_archive\tevent_type_id\t3\tcharacter varying\t17\t\tYES\t\tNO",
+            "COLUMN\tmsg_subscription_event_types_archive\tid\t1\tinteger\t\t32\tNO\t\tNO",
+            "COLUMN\tmsg_subscription_event_types_archive\tspec_version\t5\tcharacter varying\t50\t\tYES\t\tNO",
+            "COLUMN\tmsg_subscription_event_types_archive\tsubscription_id\t2\tcharacter varying\t17\t\tNO\t\tNO",
+            "INDEX\tmsg_subscription_event_types_archive\tidx_msg_sub_event_types_archive_subscription\tCREATE INDEX idx_msg_sub_event_types_archive_subscription ON public.msg_subscription_event_types_archive USING btree (subscription_id)\ttrue",
+            "TABLE\tmsg_subscription_event_types_archive\tr\t");
+
+    static boolean isArchiveTableLine(String fingerprintLine) {
+        String[] fields = fingerprintLine.split("\t", -1);
+        return fields.length > 1 && ARCHIVE_TABLE_GO_071.equals(fields[1]);
+    }
+
     /// V21 created `msg_dispatch_queue` and V23 (Go 068, dispatch step 4) drops it again: the table is NOT in the
     /// Java schema and was never in the Go fixture, so no allowance remains — only the assertion that it is gone.
     static final String DISPATCH_QUEUE_TABLE = "msg_dispatch_queue";
@@ -184,7 +207,15 @@ class SchemaFingerprintTest {
         assertThat(expected.lines().filter(SchemaFingerprintTest::isDispatchQueueLine).toList())
                 .as("the fixture predates the table").isEmpty();
 
+        // V26's table (Go 071), which the fixture predates: exactly Go's lines.
+        assertThat(javaLines.stream().filter(SchemaFingerprintTest::isArchiveTableLine).toList())
+                .as("msg_subscription_event_types_archive as Go 071 creates it, exactly")
+                .containsExactlyInAnyOrderElementsOf(ARCHIVE_TABLE_LINES_GO_071);
+        assertThat(expected.lines().filter(SchemaFingerprintTest::isArchiveTableLine).toList())
+                .as("the fixture predates Go 071").isEmpty();
+
         var javaLinesExceptDivergent = javaLines.stream().filter(l -> !isDivergentConstraintLine(l))
+                .filter(l -> !isArchiveTableLine(l))
                 .filter(l -> !SCHEDULER_INDEXES_V22.contains(l)).toList();
         var expectedLinesExceptDivergent = expected.lines().filter(l -> !isDivergentConstraintLine(l))
                 .filter(l -> !SCHEDULER_INDEXES_GO_057.contains(l)).toList();

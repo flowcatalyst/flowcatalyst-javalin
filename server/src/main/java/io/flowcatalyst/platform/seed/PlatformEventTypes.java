@@ -66,6 +66,13 @@ public final class PlatformEventTypes {
         return ALL;
     }
 
+    /// Every code here is one an operation emits (`EmittedCatalogueTest` checks
+    /// both directions). Older seeds also listed 16 codes nothing emits
+    /// (`platform:iam:role:*`, `platform:iam:roles:synced`,
+    /// `platform:iam:anchor-domain:*`, `platform:iam:auth-config:*`,
+    /// `platform:admin:idp:*`, `platform:admin:edm:*`,
+    /// `platform:iam:user:password-reset-requested`); V26 removed them from
+    /// existing databases (Go 071).
     private static List<Definition> build() {
         Map<String, JsonNode> schemas = PlatformEventSchemas.all();
         var out = new ArrayList<Definition>(160);
@@ -76,7 +83,7 @@ public final class PlatformEventTypes {
                 "created", "updated", "activated", "deactivated", "deleted",
                 "roles-assigned", "application-access-assigned",
                 "client-access-granted", "client-access-revoked",
-                "logged-in", "password-reset-requested", "password-reset-completed",
+                "logged-in", "password-reset-completed",
                 "developer-credential-set", "developer-credential-revoked");
         b.push("platform:iam:principals:synced", "Principals Synced");
 
@@ -90,16 +97,9 @@ public final class PlatformEventTypes {
         // V25 renamed the platform:iam:client:* rows an older seed wrote.
         b.group("platform:iam:client", "applications-updated");
 
-        b.group("platform:iam:role", "created", "updated", "deleted");
-        b.push("platform:iam:roles:synced", "Roles Synced");
-
         b.group("platform:iam:application",
                 "created", "updated", "activated", "deactivated", "deleted",
                 "service-account-provisioned", "enabled-for-client", "disabled-for-client");
-
-        b.group("platform:iam:anchor-domain", "created", "deleted");
-
-        b.group("platform:iam:auth-config", "created", "updated", "deleted");
 
         // The passkey and reset-approval operations emit under platform:iam
         // (Go's passkey events are platform:admin:passkey:*; Go has no
@@ -112,10 +112,6 @@ public final class PlatformEventTypes {
                 "created", "updated", "activated", "suspended", "deactivated", "deleted", "note-added");
 
         b.group("platform:admin:cors", "origin-added", "origin-deleted");
-
-        b.group("platform:admin:idp", "created", "updated", "deleted");
-
-        b.group("platform:admin:edm", "created", "updated", "deleted");
 
         b.group("platform:admin:eventtype",
                 "created", "updated", "archived", "deleted",

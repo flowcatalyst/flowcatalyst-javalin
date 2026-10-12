@@ -23,3 +23,4 @@ V22__dispatch_queue_claim.sql
 V23__retire_dispatch_queue.sql
 V24__application_service_batch_permissions.sql
 V25__client_event_type_codes.sql
+V26__prune_unemitted_event_types.sql

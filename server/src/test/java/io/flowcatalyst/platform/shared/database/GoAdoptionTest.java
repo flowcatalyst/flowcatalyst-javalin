@@ -75,13 +75,15 @@ class GoAdoptionTest {
         // index set) is a real change on this goose-57 database: it replaces
         // three msg_dispatch_jobs indexes, exactly as Go 065 does. V25 (Go 070,
         // the client event-type renames) is data-only and a no-op here: this
-        // fixture has no seeded event types.
-        assertThat(result.migrationsExecuted).isEqualTo(24);
+        // fixture has no seeded event types. V26 (Go 071, the unemitted event
+        // types pruned) creates msg_subscription_event_types_archive, which this
+        // goose-57 database predates, and its data step is a no-op here.
+        assertThat(result.migrationsExecuted).isEqualTo(25);
         assertThat(result.migrations).extracting(m -> m.version)
-                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25");
+                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26");
 
         MigrationInfo[] applied = Migrator.flyway(ds).info().applied();
-        assertThat(applied).hasSize(25);
+        assertThat(applied).hasSize(26);
         assertThat(applied[0].getVersion().getVersion()).isEqualTo("1");
         assertThat(applied[0].getState()).isEqualTo(MigrationState.BASELINE);
         for (int i = 1; i < applied.length; i++) {
@@ -101,7 +103,7 @@ class GoAdoptionTest {
                 assertThat(rs.getString(1)).isEqualTo("BASELINE");
                 assertThat(rs.getString(2)).isEqualTo("1");
                 assertThat(rs.getBoolean(3)).isTrue();
-                for (int v = 2; v <= 25; v++) {
+                for (int v = 2; v <= 26; v++) {
                     assertThat(rs.next()).isTrue();
                     assertThat(rs.getString(2)).isEqualTo(String.valueOf(v));
                     assertThat(rs.getBoolean(3)).isTrue();
@@ -290,8 +292,14 @@ class GoAdoptionTest {
         // V21 added msg_dispatch_queue and V23 dropped it: no line of it before or after.
         assertThat(before.lines().filter(SchemaFingerprintTest::isDispatchQueueLine).toList()).isEmpty();
         assertThat(afterLines.stream().filter(SchemaFingerprintTest::isDispatchQueueLine).toList()).isEmpty();
+        // V26 (Go 071) creates msg_subscription_event_types_archive, which this
+        // goose-57 database predates: exactly Go's lines arrive.
+        assertThat(before.lines().filter(SchemaFingerprintTest::isArchiveTableLine).toList()).isEmpty();
+        assertThat(afterLines.stream().filter(SchemaFingerprintTest::isArchiveTableLine).toList())
+                .containsExactlyInAnyOrderElementsOf(SchemaFingerprintTest.ARCHIVE_TABLE_LINES_GO_071);
         List<String> afterWithoutNewLines = afterLines.stream()
                 .filter(l -> !javaOnlyTableLines.contains(l))
+                .filter(l -> !SchemaFingerprintTest.isArchiveTableLine(l))
                 .filter(l -> !SchemaFingerprintTest.isDivergentConstraintLine(l))
                 .filter(l -> !SchemaFingerprintTest.SCHEDULER_INDEXES_V22.contains(l))
                 .map(l -> l.equals(SchemaFingerprintTest.WIDENED_COLUMN_JAVA) ? SchemaFingerprintTest.WIDENED_COLUMN_GO : l)
@@ -301,7 +309,7 @@ class GoAdoptionTest {
                 .filter(l -> !SchemaFingerprintTest.SCHEDULER_INDEXES_GO_057.contains(l))
                 .toList();
         assertThat(afterWithoutNewLines)
-                .as("V2..V7, V9, V10, V12 and V14 change nothing beyond V8's/V13's new Java-only tables, the one named divergent constraint, V18's one widened column and V20/V22's three replaced indexes and one new one, and V23 leaves no queue table")
+                .as("V2..V7, V9, V10, V12 and V14 change nothing beyond V8's/V13's new Java-only tables, the one named divergent constraint, V18's one widened column, V20/V22's three replaced indexes and one new one, V26's archive table, and V23 leaves no queue table")
                 .containsExactlyInAnyOrderElementsOf(beforeWithoutDivergent);
         assertThat(javaOnlyTableLines).as("V8 adds mail_outbox and V13 adds the fn_ tables").isNotEmpty();
 

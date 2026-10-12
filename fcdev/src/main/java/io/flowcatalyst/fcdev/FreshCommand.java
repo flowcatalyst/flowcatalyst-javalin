@@ -44,6 +44,7 @@ public final class FreshCommand implements Callable<Integer> {
             "msg_dispatch_job_attempts",
             "msg_scheduled_job_instances",
             "msg_subscription_event_types",
+            "msg_subscription_event_types_archive",
             "msg_event_type_spec_versions",
             "msg_subscriptions",
             "msg_event_types",

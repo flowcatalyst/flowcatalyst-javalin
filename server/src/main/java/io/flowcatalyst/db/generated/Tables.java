@@ -58,6 +58,7 @@ import io.flowcatalyst.db.generated.tables.MsgScheduledJobInstances;
 import io.flowcatalyst.db.generated.tables.MsgScheduledJobs;
 import io.flowcatalyst.db.generated.tables.MsgSubscriptionCustomConfigs;
 import io.flowcatalyst.db.generated.tables.MsgSubscriptionEventTypes;
+import io.flowcatalyst.db.generated.tables.MsgSubscriptionEventTypesArchive;
 import io.flowcatalyst.db.generated.tables.MsgSubscriptions;
 import io.flowcatalyst.db.generated.tables.OauthClientAllowedOrigins;
 import io.flowcatalyst.db.generated.tables.OauthClientApplicationIds;
@@ -363,6 +364,11 @@ public class Tables {
      * The table <code>public.msg_subscription_event_types</code>.
      */
     public static final MsgSubscriptionEventTypes MSG_SUBSCRIPTION_EVENT_TYPES = MsgSubscriptionEventTypes.MSG_SUBSCRIPTION_EVENT_TYPES;
+
+    /**
+     * The table <code>public.msg_subscription_event_types_archive</code>.
+     */
+    public static final MsgSubscriptionEventTypesArchive MSG_SUBSCRIPTION_EVENT_TYPES_ARCHIVE = MsgSubscriptionEventTypesArchive.MSG_SUBSCRIPTION_EVENT_TYPES_ARCHIVE;
 
     /**
      * The table <code>public.msg_subscriptions</code>.

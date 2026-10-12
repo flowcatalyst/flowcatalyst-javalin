@@ -19,7 +19,7 @@ class PlatformCatalogueTest {
     void eventTypeCatalogueShape() {
         List<PlatformEventTypes.Definition> defs = PlatformEventTypes.all();
         assertThat(defs).hasSizeGreaterThanOrEqualTo(41);
-        assertThat(defs).hasSize(156);
+        assertThat(defs).hasSize(140);
         Set<String> seen = new HashSet<>();
         for (var d : defs) {
             assertThat(seen.add(d.code())).as("duplicate definition: %s", d.code()).isTrue();

@@ -89,6 +89,23 @@ class EmittedCatalogueTest {
                 .as("no longer emitted; remove from KNOWN_UNCATALOGUED").isEmpty();
     }
 
+    /// Every catalogued event type is one an operation emits, so the catalogue
+    /// offers no event that never fires. Older seeds catalogued 16 codes
+    /// nothing emits (`platform:iam:role:*`, `platform:admin:idp:*`, …): a
+    /// subscription made to one never received anything. They were dropped and
+    /// V26 removed them from existing databases (Go 45537af / migration 071;
+    /// ledger docs/go-mirror/2026-10-12-platform-bug-fixes-3.md). Go's
+    /// `TestEveryCataloguedEventTypeIsEmitted`.
+    @Test
+    void everyCataloguedEventTypeIsEmitted() {
+        Map<String, String> emitted = emittedEventTypes();
+        Set<String> dead = new TreeSet<>();
+        for (var d : PlatformEventTypes.all()) {
+            if (!emitted.containsKey(d.code())) dead.add(d.code());
+        }
+        assertThat(dead).as("catalogued but no operation emits it").isEmpty();
+    }
+
     @Test
     void theClientEventsAreCataloguedUnderTheCodesTheOperationsEmit() {
         Set<String> catalogued = PlatformEventTypes.all().stream()
