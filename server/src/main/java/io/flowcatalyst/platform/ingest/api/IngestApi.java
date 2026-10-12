@@ -204,10 +204,12 @@ public final class IngestApi {
 
     /// The singular create's required fields, checked per batch item (Go's
     /// `validateBatchItem`): the message for the item's `BAD_REQUEST` slot, or
-    /// `null` when the item is acceptable.
+    /// `null` when the item is acceptable. A missing source is defaulted from
+    /// the type ([EventIngestMapper#eventSource], spec §3.5); only a type with
+    /// no application segment leaves none.
     private static String invalidBatchEventItem(BatchEventItem item) {
         if (item.type() == null || item.type().isBlank()) return "type is required";
-        if (item.source() == null || item.source().isBlank()) return "source is required";
+        if (EventIngestMapper.eventSource(item.source(), item.type()) == null) return "source is required";
         if (item.data() == null || item.data().isNull()) return "data is required";
         return null;
     }

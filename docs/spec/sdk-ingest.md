@@ -43,7 +43,7 @@ Malformed JSON → 400 `INVALID_JSON`. Over the limit → 400 `BATCH_TOO_LARGE`
 ("max 1000 items per batch" for events and dispatch jobs, "Maximum 100
 items per batch" for audit). **Owner ruling 2026-09-06 #10a (Go `ece54fe`,
 Java the same night): partial success with honest per-item results** — an
-event item missing `type`, `source` or `data` reports
+event item missing `type` or `data` (or a `source` with no default, §3.5) reports
 `{"id": <its id or "">, "status": "BAD_REQUEST", "error": "<field> is required"}`
 in its own slot and the valid items are still written (one insert, all of
 them or none); an audit item without `principalId` reports
@@ -58,8 +58,10 @@ per item: a batch is no longer one outcome.
 
 ### 3.1 `POST /api/events/batch` — `BatchEventItem`
 `{id?, type, source, subject?, specVersion?, data, deduplicationId?, correlationId?, causationId?, messageGroup?, clientId?, clientCode?, contextData?:[{key,value}]}`
-(all optional on the wire; `type`, `source` and `data` are required per
-item — a missing one is that item's `BAD_REQUEST` slot, §2).
+(all optional on the wire; `type` and `data` are required per item — a
+missing one is that item's `BAD_REQUEST` slot, §2; a missing `source` is
+defaulted from the type, §3.5, and is refused "source is required" only
+when the type has no application segment).
 - `id` absent → server mints an event TSID. Supplied id is stored as given
   (SDK-side idempotency).
 - `clientId` wins; else `clientCode` is resolved through
@@ -78,7 +80,8 @@ item — a missing one is that item's `BAD_REQUEST` slot, §2).
 - Every persisted item → `{id, "SUCCESS"}`; 201.
 
 ### 3.2 `POST /api/events` — `CreateEventRequest`
-`{eventType, source, data (required), subject?, specVersion?, deduplicationId?, correlationId?, causationId?, messageGroup?, clientId?, contextData?}`.
+`{eventType, data (required), source?, subject?, specVersion?, deduplicationId?, correlationId?, causationId?, messageGroup?, clientId?, contextData?}`
+(`source` optional in the lockfile since F14, defaulted as in §3.5).
 Same insert path as a batch of one (pinned in Go by
 `TestCreateEvent_PersistsAndMatchesBatchOfOne`, `…ContextDataPersisted`,
 `…ClientDefaultingAndTenantGuard`, `…BadPayloadEnvelopeMatchesBatch`).
@@ -165,6 +168,27 @@ refused for a non-anchor and stored as sent for an anchor).
 - In the batch these refusals reject the whole request (nothing written);
   type/source/data problems and application confinement stay per item
   (`BAD_REQUEST` in that item's `results[]` slot) and are checked first.
+
+### 3.5 Event source
+Owner ruling 2026-10-12 (Go F14 `4c3654a`, `eventSource`; Java
+`EventIngestMapper.eventSource`). The Java, TypeScript and Laravel SDKs omit
+an unset source and the Rust SDK's `event-minimal.json` has none; the batch
+refused such an item `BAD_REQUEST` "source is required" (terminal for the
+outbox row), the singular route's schema refused an absent one, and the
+singular route stored a `null` or blank one as `""`.
+
+Both event routes (and the SPA's `/bff/events/batch`, the same handler)
+store an absent, `null` or blank `source` as the trimmed type's
+`{application}:{subdomain}`, its first two `:` segments
+(`orders:sales:order:created` → `orders:sales`), or the first alone when
+there is no non-blank second (`orders` → `orders`, `orders: :x` → `orders`).
+That is the source every platform and SDK domain event carries
+(`platform:admin` for `platform:admin:client:created`), and it depends on
+the event alone, so Go, Java and Rust compute it identically. A type whose
+first segment is blank (`:sales:order:created`) still answers "source is
+required": batch item `BAD_REQUEST`; singular `400 VALIDATION`. A given
+source is stored as sent (not trimmed). Function-emitted events always
+carry `function:<address>` and are unaffected.
 
 ## 4. Dispatch jobs and audit logs
 

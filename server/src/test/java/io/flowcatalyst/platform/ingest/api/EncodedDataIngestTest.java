@@ -149,15 +149,17 @@ class EncodedDataIngestTest {
         assertThat(storedEvent(id)).isEqualTo(expect("object", "{\"orderId\":\"ord_1\",\"total\":1500}"));
         assertThat(DB.fetchValue("SELECT client_id FROM msg_events WHERE id = ?", id)).as("clientCode acme resolved").isEqualTo(clientId);
 
-        // The minimal fixture has no source, which the batch requires (refused in its slot).
-        var r = http.post("/api/events/batch", "{\"items\":[" + fixture("event-minimal.json") + "]}", ANCHOR);
-        assertThat(r.statusCode()).isEqualTo(201);
-        assertThat(json(r).get("results").get(0).get("status").asString()).isEqualTo("BAD_REQUEST");
-        assertThat(json(r).get("results").get(0).get("error").asString()).isEqualTo("source is required");
+        // The minimal fixture has no source: defaulted from its type (owner ruling 2026-10-12,
+        // Go F14; before, refused in its slot "source is required"), here and on the SPA's route.
+        for (String path : List.of("/api/events/batch", "/bff/events/batch")) {
+            id = ingest(path, 201, fixture("event-minimal.json")).getFirst();
+            assertThat(storedEvent(id)).as(path).isEqualTo(expect("object", "{}"));
+            assertThat(DB.fetchValue("SELECT source FROM msg_events WHERE id = ?", id)).as(path).isEqualTo("orders:sales");
+        }
         ObjectNode minimal = (ObjectNode) Json.MAPPER.readTree(fixture("event-minimal.json"));
         minimal.put("source", "orders");
         id = ingest("/api/events/batch", 201, minimal.toString()).getFirst();
-        assertThat(storedEvent(id)).isEqualTo(expect("object", "{}"));
+        assertThat(DB.fetchValue("SELECT source FROM msg_events WHERE id = ?", id)).as("a given source is kept").isEqualTo("orders");
 
         String[][] cases = {
                 {"{\"orderId\":\"ord_2\"}", "object", "{\"orderId\":\"ord_2\"}"}, // the Go SDK's form: the value itself

@@ -342,13 +342,87 @@ class IngestApiTest {
         assertThat(countEventsByType(t2)).as("the invalid one is not").isEqualTo(0);
         assertThat(countEventsByType(t3)).isEqualTo(1);
 
+        // A missing source is defaulted from the type (spec §3.5); only a type with no
+        // application segment leaves none.
         var missing = http.post("/api/events/batch", """
-                {"items":[{"id":"evt_MINE","source":"s","data":{}},{"type":"%s","data":{}}]}
+                {"items":[{"id":"evt_MINE","source":"s","data":{}},{"type":":%s","data":{}}]}
                 """.formatted(t1), EVENTS_WRITER);
         assertThat(missing.statusCode()).isEqualTo(201);
         assertThat(json(missing).get("results").get(0).get("error").asText()).isEqualTo("type is required");
         assertThat(json(missing).get("results").get(0).get("id").asText()).as("the item's own id is echoed").isEqualTo("evt_MINE");
         assertThat(json(missing).get("results").get(1).get("error").asText()).isEqualTo("source is required");
+    }
+
+    /// Owner ruling 2026-10-12 (Go F14, `4c3654a`; spec §3.5): the Java,
+    /// TypeScript and Laravel SDKs omit an unset source, and the batch refused
+    /// such an item `BAD_REQUEST` "source is required" (terminal for the outbox
+    /// row). An absent, `null` or blank source is now the type's
+    /// `{application}:{subdomain}`; a given one is stored as sent.
+    @Test
+    void theEventsBatchDefaultsAMissingSourceFromTheType() {
+        String app = "src" + DB.run;
+        String absent = app + ":sales:order:" + uniqueType("absent");
+        String nulled = app + ":sales:order:" + uniqueType("null");
+        String blank = app + ":sales:order:" + uniqueType("blank");
+        String given = app + ":sales:order:" + uniqueType("given");
+        String oneSegment = app + uniqueType("one");
+        var r = http.post("/api/events/batch", """
+                {"items":[{"type":"%s","data":{}},{"type":"%s","source":null,"data":{}},
+                          {"type":"%s","source":"  ","data":{}},{"type":"%s","source":"mine","data":{}},
+                          {"type":"%s","data":{}},{"type":":%s","data":{}}]}
+                """.formatted(absent, nulled, blank, given, oneSegment, absent), ANCHOR);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        var results = json(r).get("results");
+        for (int i = 0; i < 5; i++) assertThat(results.get(i).get("status").asText()).as(r.body()).isEqualTo("SUCCESS");
+        assertThat(results.get(5).get("status").asText()).isEqualTo("BAD_REQUEST");
+        assertThat(results.get(5).get("error").asText()).as("no application segment").isEqualTo("source is required");
+        for (String type : List.of(absent, nulled, blank)) {
+            assertThat(storedSource(type)).as(type).isEqualTo(app + ":sales");
+        }
+        assertThat(storedSource(given)).isEqualTo("mine");
+        assertThat(storedSource(oneSegment)).as("a single segment alone").isEqualTo(oneSegment);
+    }
+
+    /// The singular route: `source` is optional on the wire (lockfile) and
+    /// defaulted the same way; before, it was schema-required, and a JSON
+    /// `null` or blank source was stored as `""`.
+    @Test
+    void theSingularCreateDefaultsAMissingSourceFromTheType() {
+        String app = "src" + DB.run;
+        String absent = app + ":sales:order:" + uniqueType("sabsent");
+        var r = http.post("/api/events", """
+                {"eventType":"%s","data":{}}
+                """.formatted(absent), ANCHOR);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(201);
+        assertThat(json(r).get("event").get("source").asText()).isEqualTo(app + ":sales");
+        assertThat(storedSource(absent)).isEqualTo(app + ":sales");
+
+        String blank = app + ":sales:order:" + uniqueType("sblank");
+        var b = http.post("/api/events", """
+                {"eventType":"%s","source":" ","data":{}}
+                """.formatted(blank), ANCHOR);
+        assertThat(b.statusCode()).as(b.body()).isEqualTo(201);
+        assertThat(storedSource(blank)).isEqualTo(app + ":sales");
+
+        String given = app + ":sales:order:" + uniqueType("sgiven");
+        var g = http.post("/api/events", """
+                {"eventType":"%s","source":"mine","data":{}}
+                """.formatted(given), ANCHOR);
+        assertThat(g.statusCode()).as(g.body()).isEqualTo(201);
+        assertThat(storedSource(given)).isEqualTo("mine");
+
+        String none = ":sales:order:" + uniqueType("snone");
+        var n = http.post("/api/events", """
+                {"eventType":"%s","data":{}}
+                """.formatted(none), ANCHOR);
+        assertThat(n.statusCode()).as(n.body()).isEqualTo(400);
+        assertThat(json(n).get("error").asText()).isEqualTo("VALIDATION");
+        assertThat(json(n).get("message").asText()).isEqualTo("source is required");
+        assertThat(countEventsByType(none)).isZero();
+    }
+
+    private static String storedSource(String type) {
+        return DB.db.selectFrom(MSG_EVENTS).where(MSG_EVENTS.TYPE.eq(type)).fetchOne().getSource();
     }
 
     @Test
@@ -437,7 +511,7 @@ class IngestApiTest {
 
     @Test
     void eventsRoutesRequireTheEventsWritePermission() {
-        // Schema-valid bodies (CreateEventRequest requires eventType/source/data; BatchRequest
+        // Schema-valid bodies (CreateEventRequest requires eventType/data; BatchRequest
         // requires items): schema validation runs before the handler's own coarse permission
         // check (spec §3), so an empty {} would 400 VALIDATION before ever reaching
         // PERMISSION_REQUIRED / UNAUTHENTICATED — not what this test means to exercise.

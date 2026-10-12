@@ -63,6 +63,43 @@ class IngestMappingTest {
                 .hasMessageContaining("data is required");
     }
 
+    /// Owner ruling 2026-10-12 (Go F14 `eventSource`, spec §3.5): an absent or
+    /// blank source is the trimmed type's first two `:` segments, the first
+    /// alone when there is no non-blank second; `null` when the first is blank.
+    @ParameterizedTest(name = "[{0}] / [{1}] -> [{2}]")
+    @CsvSource(value = {
+            "NULL|orders:sales:order:created|orders:sales",
+            "''|orders:sales:order:created|orders:sales",
+            "'   '|orders:sales:order:created|orders:sales",
+            "orders|orders:sales:order:created|orders",                 // given: kept
+            "' my src '|orders:sales:order:created|' my src '",         // given: stored as sent
+            "NULL|' orders:sales:order:created '|orders:sales",         // type trimmed
+            "NULL|orders:sales|orders:sales",
+            "NULL|orders|orders",
+            "NULL|'orders: :x'|orders",                                 // blank second segment
+            "NULL|'orders::x'|orders",
+            "NULL|':sales:order:created'|NULL",                         // no application segment
+            "NULL|' :sales'|NULL",
+            "NULL|''|NULL",
+            "NULL|NULL|NULL",
+    }, delimiter = '|', nullValues = "NULL")
+    void aMissingSourceDefaultsToTheTypesApplicationAndSubdomain(String source, String type, String expected) {
+        assertThat(EventIngestMapper.eventSource(source, type)).isEqualTo(expected);
+    }
+
+    @Test
+    void theMapperStoresTheDefaultedSourceAndRefusesWhenThereIsNone() {
+        var data = tools.jackson.databind.node.JsonNodeFactory.instance.objectNode();
+        var defaulted = EventIngestMapper.toEvent(new EventIngestMapper.RawItem(
+                null, null, "orders:sales:order:created", null, null, data, null, null, null, null, null, List.of()));
+        assertThat(defaulted.source()).isEqualTo("orders:sales");
+
+        assertThatThrownBy(() -> EventIngestMapper.toEvent(new EventIngestMapper.RawItem(
+                null, null, ":sales:order:created", " ", null, data, null, null, null, null, null, List.of())))
+                .isInstanceOf(UseCaseException.class)
+                .hasMessageContaining("source is required");
+    }
+
     private static EventIngestMapper.RawItem rawEvent(String id, String specVersion, String deduplicationId) {
         var data = tools.jackson.databind.node.JsonNodeFactory.instance.objectNode().put("k", "v");
         return new EventIngestMapper.RawItem(id, specVersion, "it.event.type", "src", null, data,

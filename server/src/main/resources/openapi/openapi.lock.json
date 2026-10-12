@@ -1092,6 +1092,7 @@
             "type": "string"
           },
           "source": {
+            "description": "Event source. When absent or blank, the type's {application}:{subdomain} (its first two segments)",
             "type": "string"
           },
           "specVersion": {
@@ -2224,7 +2225,7 @@
             "type": "string"
           },
           "source": {
-            "description": "Event source URI",
+            "description": "Event source URI. When absent or blank, the type's {application}:{subdomain} (its first two segments)",
             "type": "string"
           },
           "subject": {
@@ -2234,7 +2235,6 @@
         },
         "required": [
           "eventType",
-          "source",
           "data"
         ],
         "type": "object"
