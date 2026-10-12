@@ -12,9 +12,13 @@ import java.util.Map;
 
 /// The JSON-Schema map for the platform event-type catalogue —
 /// `internal/platform/seed/event_schemas.go`. Keys match event-type codes
-/// exactly. The DSL helpers (`obj` / `reqStr` / `optStr` / …) build the
-/// schemas consumed cross-language — keep the emitted shapes stable for
-/// existing consumers.
+/// exactly. Each schema describes the data its operation emits (its `data()`
+/// record through `Json.MAPPER`, which drops nulls): a field always sent is
+/// required, one that can be null optional (`EmittedEventSchemaTest` checks
+/// every code both ways). The DSL helpers (`obj` / `reqStr` / `optStr` / …)
+/// build the schemas consumed cross-language. A schema change reaches an
+/// existing database only through a migration (the seeder never replaces an
+/// attached 1.0); see V27 (Go 072), which corrected 28 older schemas.
 ///
 /// The schemas land in `msg_event_type_spec_versions.schema_content`
 /// (`jsonb`), so key order is irrelevant; the *set* of keys and values is what
@@ -38,21 +42,11 @@ public final class PlatformEventSchemas {
         var m = new LinkedHashMap<String, JsonNode>();
 
         // ── platform:iam:user ───────────────────────────────────────────────
-        m.put("platform:iam:user:created", obj(
-                reqStr("principalId"),
-                reqStr("email"),
-                reqStr("emailDomain"),
-                reqStr("name"),
-                reqStr("scope"),
-                optStr("clientId"),
-                reqBool("isAnchorUser")));
-        m.put("platform:iam:user:updated", obj(
-                reqStr("principalId"),
-                optStr("name"),
-                optStr("email")));
+        m.put("platform:iam:user:created", obj(reqStr("principalId"), reqStr("email")));
+        m.put("platform:iam:user:updated", obj(reqStr("principalId"), reqStr("name")));
         m.put("platform:iam:user:activated", obj(reqStr("principalId")));
-        m.put("platform:iam:user:deactivated", obj(reqStr("principalId"), optStr("reason")));
-        m.put("platform:iam:user:deleted", obj(reqStr("principalId")));
+        m.put("platform:iam:user:deactivated", obj(reqStr("principalId")));
+        m.put("platform:iam:user:deleted", obj(reqStr("principalId"), reqStr("email")));
         m.put("platform:iam:user:roles-assigned", obj(
                 reqStr("principalId"),
                 reqStrArray("roles"),
@@ -69,7 +63,7 @@ public final class PlatformEventSchemas {
                 reqStr("principalId"), reqStr("clientId")));
         // logged-in carries a richer payload — federatedClaims oneOf, etc.
         m.put("platform:iam:user:logged-in", loggedIn());
-        m.put("platform:iam:user:password-reset-completed", obj(reqStr("principalId"), reqStr("email")));
+        m.put("platform:iam:user:password-reset-completed", obj(reqStr("principalId")));
 
         // ── platform:iam:principals (sync — plural aggregate) ───────────────
         m.put("platform:iam:principals:synced", obj(
@@ -81,11 +75,8 @@ public final class PlatformEventSchemas {
 
         // ── platform:iam:serviceaccount ─────────────────────────────────────
         m.put("platform:iam:serviceaccount:created", obj(
-                reqStr("serviceAccountId"), reqStr("code"), reqStr("name"),
-                optStr("applicationId"), reqStrArray("clientIds")));
-        m.put("platform:iam:serviceaccount:updated", obj(
-                reqStr("serviceAccountId"), optStr("name"), optStr("description"),
-                reqStrArray("clientIdsAdded"), reqStrArray("clientIdsRemoved")));
+                reqStr("serviceAccountId"), reqStr("code"), reqStr("name")));
+        m.put("platform:iam:serviceaccount:updated", obj(reqStr("serviceAccountId"), reqStr("name")));
         m.put("platform:iam:serviceaccount:deleted", obj(reqStr("serviceAccountId"), reqStr("code")));
         m.put("platform:iam:serviceaccount:roles-assigned", obj(
                 reqStr("serviceAccountId"),
@@ -107,19 +98,19 @@ public final class PlatformEventSchemas {
         m.put("platform:admin:client:note-added", obj(reqStr("clientId"), reqStr("category"), reqStr("text")));
 
         // ── platform:iam:client ─────────────────────────────────────────────
+        // Go writes an empty list as null; Java writes [], which the schema
+        // also admits.
         m.put("platform:iam:client:applications-updated", obj(
-                reqStr("clientId"), reqStrArray("enabledApplicationIds"),
-                reqStrArray("enabledAdded"), reqStrArray("disabledRemoved")));
+                reqStr("clientId"), reqNullableStrArray("enabledApplicationIds"),
+                reqNullableStrArray("enabledAdded"), reqNullableStrArray("disabledRemoved")));
 
         // ── platform:iam:application ────────────────────────────────────────
         m.put("platform:iam:application:created", obj(
-                reqStr("applicationId"), reqStr("code"), reqStr("name"), reqStr("applicationType")));
-        m.put("platform:iam:application:updated", obj(
-                reqStr("applicationId"), optStr("name"), optStr("description")));
-        m.put("platform:iam:application:activated", obj(reqStr("applicationId"), reqStr("code")));
-        m.put("platform:iam:application:deactivated", obj(reqStr("applicationId"), reqStr("code")));
-        m.put("platform:iam:application:deleted", obj(
                 reqStr("applicationId"), reqStr("code"), reqStr("name")));
+        m.put("platform:iam:application:updated", obj(reqStr("applicationId"), reqStr("name")));
+        m.put("platform:iam:application:activated", obj(reqStr("applicationId")));
+        m.put("platform:iam:application:deactivated", obj(reqStr("applicationId")));
+        m.put("platform:iam:application:deleted", obj(reqStr("applicationId"), reqStr("code")));
         m.put("platform:iam:application:service-account-provisioned", obj(
                 reqStr("applicationId"), reqStr("applicationCode"),
                 reqStr("serviceAccountId"), reqStr("serviceAccountCode")));
@@ -138,14 +129,13 @@ public final class PlatformEventSchemas {
                 reqStr("application"), reqStr("subdomain"), reqStr("aggregate"),
                 reqStr("eventName"), optStr("clientId")));
         m.put("platform:admin:eventtype:updated", obj(
-                reqStr("eventTypeId"), optStr("name"), optStr("description")));
+                reqStr("eventTypeId"), reqStr("name"), optStr("description")));
         m.put("platform:admin:eventtype:archived", obj(reqStr("eventTypeId"), reqStr("code")));
         m.put("platform:admin:eventtype:deleted", obj(reqStr("eventTypeId"), reqStr("code")));
-        m.put("platform:admin:eventtype:schema-added", obj(
-                reqStr("eventTypeId"), reqStr("version"), reqStr("mimeType"), reqStr("schemaType")));
+        m.put("platform:admin:eventtype:schema-added", obj(reqStr("eventTypeId"), reqStr("specVersion")));
         m.put("platform:admin:eventtype:schema-finalised", obj(
-                reqStr("eventTypeId"), reqStr("version"), optStr("deprecatedVersion")));
-        m.put("platform:admin:eventtype:schema-deprecated", obj(reqStr("eventTypeId"), reqStr("version")));
+                reqStr("eventTypeId"), reqStr("specVersion"), optStr("deprecatedVersion")));
+        m.put("platform:admin:eventtype:schema-deprecated", obj(reqStr("eventTypeId"), reqStr("specVersion")));
         m.put("platform:admin:eventtypes:synced", obj(
                 reqStr("applicationCode"),
                 reqU32("created"), reqU32("updated"), reqU32("deleted"),
@@ -153,26 +143,19 @@ public final class PlatformEventSchemas {
 
         // ── platform:admin:connection ───────────────────────────────────────
         m.put("platform:admin:connection:created", obj(
-                reqStr("connectionId"), reqStr("code"), reqStr("name"), reqStr("endpoint"),
-                reqStr("serviceAccountId"), optStr("clientId")));
-        m.put("platform:admin:connection:updated", obj(
-                reqStr("connectionId"), reqStr("code"),
-                optStr("name"), optStr("endpoint"), optStr("status")));
-        m.put("platform:admin:connection:deleted", obj(
-                reqStr("connectionId"), reqStr("code"), optStr("clientId")));
+                reqStr("connectionId"), reqStr("code"), reqStr("name")));
+        m.put("platform:admin:connection:updated", obj(reqStr("connectionId"), reqStr("name")));
+        m.put("platform:admin:connection:deleted", obj(reqStr("connectionId"), reqStr("code")));
         m.put("platform:admin:connection:synced", obj(
                 reqStr("applicationCode"), optStr("clientId"),
                 reqU32("created"), reqU32("updated"), reqU32("deleted"),
                 reqStrArray("syncedCodes")));
 
         // ── platform:admin:dispatch-pool ────────────────────────────────────
-        m.put("platform:admin:dispatch-pool:created", obj(
-                reqStr("dispatchPoolId"), reqStr("code"), reqStr("name"), optStr("clientId")));
-        m.put("platform:admin:dispatch-pool:updated", obj(
-                reqStr("dispatchPoolId"), optStr("name"),
-                optU32("rateLimit"), optU32("concurrency")));
-        m.put("platform:admin:dispatch-pool:archived", obj(reqStr("dispatchPoolId"), reqStr("code")));
-        m.put("platform:admin:dispatch-pool:deleted", obj(reqStr("dispatchPoolId"), reqStr("code")));
+        m.put("platform:admin:dispatch-pool:created", obj(reqStr("poolId"), reqStr("code"), reqStr("name")));
+        m.put("platform:admin:dispatch-pool:updated", obj(reqStr("poolId"), reqStr("name")));
+        m.put("platform:admin:dispatch-pool:archived", obj(reqStr("poolId"), reqStr("code")));
+        m.put("platform:admin:dispatch-pool:deleted", obj(reqStr("poolId"), reqStr("code")));
         m.put("platform:admin:dispatch-pools:synced", obj(
                 reqStr("applicationCode"),
                 reqU32("created"), reqU32("updated"), reqU32("deleted"),
@@ -180,25 +163,19 @@ public final class PlatformEventSchemas {
 
         // ── platform:admin:subscription ─────────────────────────────────────
         m.put("platform:admin:subscription:created", obj(
-                reqStr("subscriptionId"), reqStr("code"), reqStr("name"),
-                reqStr("connectionId"), reqStrArray("eventTypes"), optStr("clientId")));
-        m.put("platform:admin:subscription:updated", obj(
-                reqStr("subscriptionId"), optStr("name"),
-                reqStrArray("eventTypesAdded"), reqStrArray("eventTypesRemoved")));
-        m.put("platform:admin:subscription:paused", obj(reqStr("subscriptionId"), reqStr("code")));
-        m.put("platform:admin:subscription:resumed", obj(reqStr("subscriptionId"), reqStr("code")));
+                reqStr("subscriptionId"), reqStr("code"), reqStr("name")));
+        m.put("platform:admin:subscription:updated", obj(reqStr("subscriptionId"), reqStr("name")));
+        m.put("platform:admin:subscription:paused", obj(reqStr("subscriptionId")));
+        m.put("platform:admin:subscription:resumed", obj(reqStr("subscriptionId")));
         m.put("platform:admin:subscription:deleted", obj(reqStr("subscriptionId"), reqStr("code")));
         m.put("platform:admin:subscription:synced", obj(
                 reqStr("applicationCode"), optStr("clientId"),
                 reqU32("created"), reqU32("updated"), reqU32("deleted"),
                 reqStrArray("syncedCodes")));
 
-        // The schemas below describe the data each operation emits (its
-        // `data()` record through `Json.MAPPER`, which drops nulls): a field
-        // that can be null is optional. Where Go emits the same code with the
-        // same data the schema is equal to Go's (8ddaed4); the two
+        // The schemas below were added for F9. Where Go emits the same code
+        // with the same data the schema is equal to Go's (8ddaed4); the two
         // codes whose Java data differs, and the Java-only codes, are marked.
-        // EmittedEventSchemaTest validates each against a serialised event.
 
         // ── platform:iam:user (developer credentials) ───────────────────────
         m.put("platform:iam:user:developer-credential-set", obj(reqStr("userId")));
@@ -463,12 +440,6 @@ public final class PlatformEventSchemas {
         ObjectNode n = type("integer");
         n.put("minimum", 0);
         return new Prop(name, n, true);
-    }
-
-    static Prop optU32(String name) {
-        ObjectNode n = nullable("integer");
-        n.put("minimum", 0);
-        return new Prop(name, n, false);
     }
 
     static Prop reqStrArray(String name) {

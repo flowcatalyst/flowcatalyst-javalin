@@ -77,13 +77,14 @@ class GoAdoptionTest {
         // the client event-type renames) is data-only and a no-op here: this
         // fixture has no seeded event types. V26 (Go 071, the unemitted event
         // types pruned) creates msg_subscription_event_types_archive, which this
-        // goose-57 database predates, and its data step is a no-op here.
-        assertThat(result.migrationsExecuted).isEqualTo(25);
+        // goose-57 database predates, and its data step is a no-op here, as is
+        // V27 (Go 072, the seeded schema fixes): no seeded event types.
+        assertThat(result.migrationsExecuted).isEqualTo(26);
         assertThat(result.migrations).extracting(m -> m.version)
-                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26");
+                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27");
 
         MigrationInfo[] applied = Migrator.flyway(ds).info().applied();
-        assertThat(applied).hasSize(26);
+        assertThat(applied).hasSize(27);
         assertThat(applied[0].getVersion().getVersion()).isEqualTo("1");
         assertThat(applied[0].getState()).isEqualTo(MigrationState.BASELINE);
         for (int i = 1; i < applied.length; i++) {
@@ -103,7 +104,7 @@ class GoAdoptionTest {
                 assertThat(rs.getString(1)).isEqualTo("BASELINE");
                 assertThat(rs.getString(2)).isEqualTo("1");
                 assertThat(rs.getBoolean(3)).isTrue();
-                for (int v = 2; v <= 26; v++) {
+                for (int v = 2; v <= 27; v++) {
                     assertThat(rs.next()).isTrue();
                     assertThat(rs.getString(2)).isEqualTo(String.valueOf(v));
                     assertThat(rs.getBoolean(3)).isTrue();

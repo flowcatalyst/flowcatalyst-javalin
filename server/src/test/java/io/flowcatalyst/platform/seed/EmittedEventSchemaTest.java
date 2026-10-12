@@ -1,10 +1,15 @@
 package io.flowcatalyst.platform.seed;
 
+import io.flowcatalyst.platform.application.operations.ApplicationEvents;
 import io.flowcatalyst.platform.audit.operations.AuditLogsRedacted;
 import io.flowcatalyst.platform.authadmin.operations.AuthAdminEvents;
+import io.flowcatalyst.platform.client.operations.ClientEvents;
+import io.flowcatalyst.platform.connection.operations.ConnectionEvents;
+import io.flowcatalyst.platform.cors.operations.CorsOriginEvents;
 import io.flowcatalyst.platform.dispatchjob.operations.DispatchJobEvents;
 import io.flowcatalyst.platform.dispatchpool.operations.DispatchPoolEvents;
 import io.flowcatalyst.platform.emaildomainmapping.operations.EmailDomainMappingEvents;
+import io.flowcatalyst.platform.eventtype.operations.EventTypeEvents;
 import io.flowcatalyst.platform.function.operations.FunctionEvents;
 import io.flowcatalyst.platform.identityprovider.operations.IdentityProviderEvents;
 import io.flowcatalyst.platform.oauthclient.operations.OAuthClientEvents;
@@ -20,6 +25,7 @@ import io.flowcatalyst.platform.role.operations.RoleEvents;
 import io.flowcatalyst.platform.scheduledjob.operations.ScheduledJobEvents;
 import io.flowcatalyst.platform.serviceaccount.operations.ServiceAccountEvents;
 import io.flowcatalyst.platform.shared.json.Json;
+import io.flowcatalyst.platform.subscription.operations.SubscriptionEvents;
 import io.flowcatalyst.sdk.usecase.DomainEvent;
 import io.flowcatalyst.sdk.usecase.EventMetadata;
 import org.junit.jupiter.api.Test;
@@ -37,14 +43,19 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeSet;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// The catalogued schema of each code catalogued for F9 (Go 8ddaed4; ledger
-/// docs/go-mirror/2026-10-11-event-catalogue.md) admits the data its event
-/// really emits: each event record is built with every component set, and
+/// The catalogued schema of every catalogued code admits the data its event
+/// really emits, and makes optional exactly the fields its operation can leave
+/// out. Written for the 81 codes catalogued for F9 (Go 8ddaed4; ledger
+/// docs/go-mirror/2026-10-11-event-catalogue.md); extended to the older 59
+/// when 28 of their schemas were corrected (Go 4c23adf, V27; ledger
+/// docs/go-mirror/2026-10-12-platform-bug-fixes-3.md). Each event record is
+/// built with every component set, and
 /// again with its [#MAY_BE_ABSENT] components null (a list empty), its
 /// `data()` serialised through [Json#MAPPER] (as `PlatformSink` writes it)
 /// and checked against the schema by [#validate], which covers the subset of
@@ -77,10 +88,83 @@ class EmittedEventSchemaTest {
             // published unsigned
             Map.entry("platform:function:version:published", Set.of("signerIssuer", "signerSubject")),
             // a first promotion
-            Map.entry("platform:function:alias:changed", Set.of("previousVersionId")));
+            Map.entry("platform:function:alias:changed", Set.of("previousVersionId")),
+            // the older codes
+            Map.entry("platform:admin:client:deactivated", Set.of("reason")),
+            // description is optional; clientId is never set since F2
+            Map.entry("platform:admin:eventtype:created", Set.of("description", "clientId")),
+            Map.entry("platform:admin:eventtype:updated", Set.of("description")),
+            // the first finalised version deprecates none
+            Map.entry("platform:admin:eventtype:schema-finalised", Set.of("deprecatedVersion")),
+            // a sync for no client
+            Map.entry("platform:admin:connection:synced", Set.of("clientId")),
+            Map.entry("platform:admin:subscription:synced", Set.of("clientId")),
+            // an internal login: no identity provider, no federated claims
+            Map.entry("platform:iam:user:logged-in", Set.of("identityProviderCode", "federatedClaims")));
 
     private static Map<String, Class<? extends DomainEvent>> emitters() {
         var m = new LinkedHashMap<String, Class<? extends DomainEvent>>();
+        // The codes catalogued before F9.
+        m.put("platform:iam:user:created", PrincipalEvents.UserCreated.class);
+        m.put("platform:iam:user:updated", PrincipalEvents.UserUpdated.class);
+        m.put("platform:iam:user:activated", PrincipalEvents.UserActivated.class);
+        m.put("platform:iam:user:deactivated", PrincipalEvents.UserDeactivated.class);
+        m.put("platform:iam:user:deleted", PrincipalEvents.UserDeleted.class);
+        m.put("platform:iam:user:roles-assigned", PrincipalEvents.RolesAssigned.class);
+        m.put("platform:iam:user:application-access-assigned", PrincipalEvents.ApplicationAccessAssigned.class);
+        m.put("platform:iam:user:client-access-granted", PrincipalEvents.ClientAccessGranted.class);
+        m.put("platform:iam:user:client-access-revoked", PrincipalEvents.ClientAccessRevoked.class);
+        m.put("platform:iam:user:logged-in", PrincipalEvents.UserLoggedIn.class);
+        m.put("platform:iam:user:password-reset-completed", PrincipalEvents.UserPasswordReset.class);
+        m.put("platform:iam:principals:synced", PrincipalEvents.PrincipalsSynced.class);
+        m.put("platform:iam:serviceaccount:created", ServiceAccountEvents.ServiceAccountCreated.class);
+        m.put("platform:iam:serviceaccount:updated", ServiceAccountEvents.ServiceAccountUpdated.class);
+        m.put("platform:iam:serviceaccount:deleted", ServiceAccountEvents.ServiceAccountDeleted.class);
+        m.put("platform:iam:serviceaccount:roles-assigned", ServiceAccountEvents.ServiceAccountRolesAssigned.class);
+        m.put("platform:iam:serviceaccount:token-regenerated", ServiceAccountEvents.ServiceAccountTokenRegenerated.class);
+        m.put("platform:iam:serviceaccount:secret-regenerated", ServiceAccountEvents.ServiceAccountSecretRegenerated.class);
+        m.put("platform:iam:client:applications-updated", ApplicationEvents.ClientApplicationsUpdated.class);
+        m.put("platform:iam:application:created", ApplicationEvents.ApplicationCreated.class);
+        m.put("platform:iam:application:updated", ApplicationEvents.ApplicationUpdated.class);
+        m.put("platform:iam:application:activated", ApplicationEvents.ApplicationActivated.class);
+        m.put("platform:iam:application:deactivated", ApplicationEvents.ApplicationDeactivated.class);
+        m.put("platform:iam:application:deleted", ApplicationEvents.ApplicationDeleted.class);
+        m.put("platform:iam:application:service-account-provisioned", ApplicationEvents.ApplicationServiceAccountProvisioned.class);
+        m.put("platform:iam:application:enabled-for-client", ApplicationEvents.ApplicationEnabledForClient.class);
+        m.put("platform:iam:application:disabled-for-client", ApplicationEvents.ApplicationDisabledForClient.class);
+        m.put("platform:admin:client:created", ClientEvents.ClientCreated.class);
+        m.put("platform:admin:client:updated", ClientEvents.ClientUpdated.class);
+        m.put("platform:admin:client:activated", ClientEvents.ClientActivated.class);
+        m.put("platform:admin:client:suspended", ClientEvents.ClientSuspended.class);
+        m.put("platform:admin:client:deactivated", ClientEvents.ClientDeactivated.class);
+        m.put("platform:admin:client:deleted", ClientEvents.ClientDeleted.class);
+        m.put("platform:admin:client:note-added", ClientEvents.ClientNoteAdded.class);
+        m.put("platform:admin:cors:origin-added", CorsOriginEvents.CorsOriginAdded.class);
+        m.put("platform:admin:cors:origin-deleted", CorsOriginEvents.CorsOriginDeleted.class);
+        m.put("platform:admin:eventtype:created", EventTypeEvents.EventTypeCreated.class);
+        m.put("platform:admin:eventtype:updated", EventTypeEvents.EventTypeUpdated.class);
+        m.put("platform:admin:eventtype:archived", EventTypeEvents.EventTypeArchived.class);
+        m.put("platform:admin:eventtype:deleted", EventTypeEvents.EventTypeDeleted.class);
+        m.put("platform:admin:eventtype:schema-added", EventTypeEvents.EventTypeSchemaAdded.class);
+        m.put("platform:admin:eventtype:schema-finalised", EventTypeEvents.EventTypeSchemaFinalised.class);
+        m.put("platform:admin:eventtype:schema-deprecated", EventTypeEvents.EventTypeSchemaDeprecated.class);
+        m.put("platform:admin:eventtypes:synced", EventTypeEvents.EventTypesSynced.class);
+        m.put("platform:admin:connection:created", ConnectionEvents.ConnectionCreated.class);
+        m.put("platform:admin:connection:updated", ConnectionEvents.ConnectionUpdated.class);
+        m.put("platform:admin:connection:deleted", ConnectionEvents.ConnectionDeleted.class);
+        m.put("platform:admin:connection:synced", ConnectionEvents.ConnectionsSynced.class);
+        m.put("platform:admin:dispatch-pool:created", DispatchPoolEvents.DispatchPoolCreated.class);
+        m.put("platform:admin:dispatch-pool:updated", DispatchPoolEvents.DispatchPoolUpdated.class);
+        m.put("platform:admin:dispatch-pool:archived", DispatchPoolEvents.DispatchPoolArchived.class);
+        m.put("platform:admin:dispatch-pool:deleted", DispatchPoolEvents.DispatchPoolDeleted.class);
+        m.put("platform:admin:dispatch-pools:synced", DispatchPoolEvents.DispatchPoolsSynced.class);
+        m.put("platform:admin:subscription:created", SubscriptionEvents.SubscriptionCreated.class);
+        m.put("platform:admin:subscription:updated", SubscriptionEvents.SubscriptionUpdated.class);
+        m.put("platform:admin:subscription:paused", SubscriptionEvents.SubscriptionPaused.class);
+        m.put("platform:admin:subscription:resumed", SubscriptionEvents.SubscriptionResumed.class);
+        m.put("platform:admin:subscription:deleted", SubscriptionEvents.SubscriptionDeleted.class);
+        m.put("platform:admin:subscription:synced", SubscriptionEvents.SubscriptionsSynced.class);
+        // The codes catalogued for F9.
         m.put("platform:iam:user:developer-credential-set", PrincipalEvents.DeveloperCredentialSet.class);
         m.put("platform:iam:user:developer-credential-revoked", PrincipalEvents.DeveloperCredentialRevoked.class);
         m.put("platform:iam:serviceaccount:deactivated", ServiceAccountEvents.ServiceAccountDeactivated.class);
@@ -166,11 +250,11 @@ class EmittedEventSchemaTest {
     }
 
     @Test
-    void everyCodeCataloguedForF9IsSampled() {
-        assertThat(EMITTERS).hasSize(81);
+    void everyCataloguedCodeIsSampled() {
+        assertThat(EMITTERS).hasSize(140);
         Set<String> catalogued = PlatformEventTypes.all().stream()
-                .map(PlatformEventTypes.Definition::code).collect(Collectors.toSet());
-        assertThat(catalogued).containsAll(EMITTERS.keySet());
+                .map(PlatformEventTypes.Definition::code).collect(Collectors.toCollection(TreeSet::new));
+        assertThat(new TreeSet<>(EMITTERS.keySet())).isEqualTo(catalogued);
     }
 
     @Test
@@ -179,15 +263,17 @@ class EmittedEventSchemaTest {
         for (var e : EMITTERS.entrySet()) {
             JsonNode schema = PlatformEventSchemas.all().get(e.getKey());
             Set<String> mayBeAbsent = MAY_BE_ABSENT.getOrDefault(e.getKey(), Set.of());
-            assertThat(optionalProperties(schema)).as("%s: the schema's optional properties", e.getKey())
-                    .containsExactlyInAnyOrderElementsOf(mayBeAbsent);
+            if (!optionalProperties(schema).equals(mayBeAbsent)) {
+                errors.add(e.getKey() + ": optional properties " + new TreeSet<>(optionalProperties(schema))
+                        + ", the operation can leave out " + new TreeSet<>(mayBeAbsent));
+            }
             for (boolean optionalsUnset : new boolean[] {false, true}) {
                 DomainEvent event = sample(e.getValue(), e.getKey(), optionalsUnset ? mayBeAbsent : Set.of());
                 JsonNode data = Json.MAPPER.readTree(Json.write(event.data()));
                 validate(e.getKey() + (optionalsUnset ? " (optionals unset)" : "") + " $", schema, data, errors);
             }
         }
-        assertThat(errors).as("serialised event data the catalogued schema rejects").isEmpty();
+        assertThat(errors).as("serialised event data the catalogued schema rejects, or optional fields that are always sent").isEmpty();
     }
 
     /// [#validate] is not decorative: it rejects an extra property, a missing
@@ -254,7 +340,28 @@ class EmittedEventSchemaTest {
         if (type instanceof ParameterizedType p && List.class.isAssignableFrom((Class<?>) p.getRawType())) {
             return List.of(value(p.getActualTypeArguments()[0], name), value(p.getActualTypeArguments()[0], name));
         }
+        if (type instanceof ParameterizedType p && Map.class.isAssignableFrom((Class<?>) p.getRawType())) {
+            return Map.of(name + "-key", name + "-value");
+        }
         Class<?> c = (Class<?>) type;
+        if (c.isRecord()) {
+            try {
+                RecordComponent[] parts = c.getRecordComponents();
+                Class<?>[] types = new Class<?>[parts.length];
+                Object[] args = new Object[parts.length];
+                for (int i = 0; i < parts.length; i++) {
+                    types[i] = parts[i].getType();
+                    args[i] = value(parts[i].getGenericType(), parts[i].getName());
+                }
+                var ctor = c.getDeclaredConstructor(types);
+                ctor.setAccessible(true);
+                return ctor.newInstance(args);
+            } catch (ReflectiveOperationException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+        // UserLoggedIn's loginMethod is an enum on the wire.
+        if (c == String.class && name.equals("loginMethod")) return PrincipalEvents.UserLoggedIn.LOGIN_METHOD_OIDC;
         if (c == String.class) return name + "-1";
         if (c == int.class || c == Integer.class) return 3;
         if (c == long.class || c == Long.class) return 3L;
