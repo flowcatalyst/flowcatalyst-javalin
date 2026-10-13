@@ -78,7 +78,12 @@ nor `group`, `429` while another diagnostic is being produced or downloaded
 guard is Basic auth, and it is open when no user is configured. The
 diagnostics then answer `403 DIAGNOSTICS_REQUIRE_AUTH` rather than serve
 anyone. Set `FC_ROUTER_AUTH_USER`/`FC_ROUTER_AUTH_PASS`, or use `jcmd`
-locally.
+locally. A browser request whose `Sec-Fetch-Site` is present and neither
+`same-origin` nor `none` (a link or a fetch from another site, or a sibling
+subdomain) is `403 CROSS_ORIGIN_REQUEST` whatever the credential: Basic
+credentials a browser has cached are sent on such a navigation. Open the
+routes from the address bar, or use curl (tools send no `Sec-Fetch-Site`).
+The platform's session cookie is not accepted here.
 
 Which platform verifies the token: the router tier uses
 `FC_ROUTER_PLATFORM_URL` (as for the rest of its API); the API tier uses its

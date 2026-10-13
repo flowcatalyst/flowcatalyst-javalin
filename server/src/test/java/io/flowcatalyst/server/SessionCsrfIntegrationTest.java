@@ -333,6 +333,15 @@ class SessionCsrfIntegrationTest {
         assertThat(Json.MAPPER.readTree(r.body()).has("access_token")).isTrue();
     }
 
+    /// Go's debug gate accepts the anchor's cookie; this port's diagnostics (its debug
+    /// surface) take only a platform bearer (or Basic in dev mode), so the cookie
+    /// authenticates nothing there.
+    @Test
+    void theDiagnosticsDoNotAcceptTheSessionCookie() throws Exception {
+        var r = send("GET", "/router/diagnostics/thread-dump", null, "Cookie", cookie, "Sec-Fetch-Site", "none");
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(401);
+    }
+
     @Test
     void anInvalidCookieIsNotASession() throws Exception {
         // Unauthenticated, so the handler's own check answers, not the guard.

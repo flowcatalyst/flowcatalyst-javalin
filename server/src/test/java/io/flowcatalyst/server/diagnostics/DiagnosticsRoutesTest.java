@@ -37,6 +37,8 @@ class DiagnosticsRoutesTest {
     private static TestHttp guarded;
     /// Dev mode with no Basic user: the router API is open, diagnostics are not.
     private static TestHttp devOpen;
+    /// Dev mode with a Basic user: credentials a browser caches and replays.
+    private static TestHttp devBasic;
 
     private Optional<ContinuousRecording> recording = Optional.empty();
 
@@ -53,12 +55,18 @@ class DiagnosticsRoutesTest {
                     new RouterAuth.Settings(true, "NONE", "", "", PREFIX, "", ""));
             DiagnosticsRoutes.register(routes, PREFIX, guard.authenticates());
         });
+        devBasic = TestHttp.routes(routes -> {
+            var guard = RouterAuth.installGuard(routes,
+                    new RouterAuth.Settings(true, "", "ops", "secret", PREFIX, "", ""));
+            DiagnosticsRoutes.register(routes, PREFIX, guard.authenticates());
+        });
     }
 
     @AfterAll
     static void stop() {
         guarded.close();
         devOpen.close();
+        devBasic.close();
         jwks.close();
     }
 
@@ -99,6 +107,35 @@ class DiagnosticsRoutesTest {
 
         assertThat(response.statusCode()).as("mutant: serve whatever the guard lets through").isEqualTo(403);
         assertThat(response.body()).contains("DIAGNOSTICS_REQUIRE_AUTH");
+    }
+
+    // ── provenance (Go F16 follow-up, debug endpoints) ──────────────────────
+
+    /// Basic credentials a browser has cached are ambient, like a cookie: a link on
+    /// another site could start a recording. A request the browser marks as not from
+    /// this origin is refused on every credential; tools send no Sec-Fetch-Site.
+    @Test
+    @DisplayName("a cross-site or same-site browser fetch is refused, whatever the credential")
+    void crossSiteFetchesAreRefused() throws Exception {
+        String basic = "Basic " + java.util.Base64.getEncoder().encodeToString("ops:secret".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        for (String site : new String[] {"cross-site", "same-site"}) {
+            for (var pair : java.util.List.of(java.util.Map.entry(devBasic, basic), java.util.Map.entry(guarded, operate()))) {
+                var r = pair.getKey().get(PREFIX + "/diagnostics", "Authorization", pair.getValue(), "Sec-Fetch-Site", site);
+                assertThat(r.statusCode()).as(site + " " + r.body()).isEqualTo(403);
+                assertThat(Json.MAPPER.readTree(r.body()).get("error").asString()).isEqualTo("CROSS_ORIGIN_REQUEST");
+                var dump = pair.getKey().get(PREFIX + "/diagnostics/thread-dump", "Authorization", pair.getValue(), "Sec-Fetch-Site", site);
+                assertThat(dump.statusCode()).isEqualTo(403);
+            }
+        }
+        for (String site : new String[] {"same-origin", "none"}) {
+            assertThat(devBasic.get(PREFIX + "/diagnostics", "Authorization", basic, "Sec-Fetch-Site", site).statusCode()).isEqualTo(200);
+            assertThat(guarded.get(PREFIX + "/diagnostics", "Authorization", operate(), "Sec-Fetch-Site", site).statusCode()).isEqualTo(200);
+        }
+        // Tools: no Sec-Fetch-Site.
+        assertThat(devBasic.get(PREFIX + "/diagnostics", "Authorization", basic).statusCode()).isEqualTo(200);
+        assertThat(guarded.get(PREFIX + "/diagnostics", "Authorization", operate()).statusCode()).isEqualTo(200);
+        // Authentication still comes first.
+        assertThat(guarded.get(PREFIX + "/diagnostics", "Sec-Fetch-Site", "cross-site").statusCode()).isEqualTo(401);
     }
 
     // ── thread dump ─────────────────────────────────────────────────────────

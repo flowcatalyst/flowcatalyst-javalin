@@ -167,11 +167,29 @@ public final class DiagnosticsRoutes {
 
     private boolean refused(Exchange ctx) {
         if (guarded) {
+            // Provenance (Go F16 follow-up, the debug gate): Basic credentials a browser
+            // has cached are ambient, so a link on another site could start a dump or a
+            // recording. A request the browser marks as not from this origin is refused on
+            // every credential; tools (curl, jcmd wrappers) send no Sec-Fetch-Site. No
+            // cookie reaches this guard, so Go's cookie-without-Sec-Fetch-Site clause has
+            // nothing to apply to here.
+            if (fetchFromElsewhere(ctx.header("Sec-Fetch-Site"))) {
+                error(ctx, 403, "CROSS_ORIGIN_REQUEST", "the diagnostics answer only requests from this site or from tools; "
+                        + "open them from the address bar, or use a bearer token");
+                return true;
+            }
             return false;
         }
         error(ctx, 403, "DIAGNOSTICS_REQUIRE_AUTH", "diagnostics are never served anonymously: in dev mode set "
                 + "FC_ROUTER_AUTH_USER and FC_ROUTER_AUTH_PASS, or use jcmd against the process");
         return true;
+    }
+
+    /// A browser request that did not come from this origin or from the user:
+    /// `Sec-Fetch-Site` present and neither `same-origin` nor `none`.
+    static boolean fetchFromElsewhere(String secFetchSite) {
+        return secFetchSite != null && !secFetchSite.isEmpty()
+                && !secFetchSite.equals("same-origin") && !secFetchSite.equals("none");
     }
 
     private boolean acquire(Exchange ctx) {
