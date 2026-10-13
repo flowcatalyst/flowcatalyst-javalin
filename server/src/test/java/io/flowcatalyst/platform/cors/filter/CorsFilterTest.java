@@ -98,13 +98,14 @@ class CorsFilterTest {
     // ── Simple (non-preflight) requests ─────────────────────────────────────
 
     /// Pins two behaviours at once: the allowed origin is echoed verbatim on
-    /// `Access-Control-Allow-Origin` (mutant: echo replaced by `*` — a
-    /// literal `"*"` would fail the `isEqualTo(origin)` check even though a
-    /// browser would happily accept `*` for a non-credentialed request, which
-    /// is exactly the bug this pins), and `Access-Control-Allow-Credentials`
-    /// is present (mutant: credentials header dropped).
+    /// `Access-Control-Allow-Origin` (mutant: echo replaced by `*` — the
+    /// allowlist is a list, not "anyone"), and `Access-Control-Allow-Credentials`
+    /// is **absent** (spec §9.3, 2026-10-14: the platform never grants a
+    /// credentialed cross-origin read — a page on an allow-listed origin must not
+    /// be able to read a response the user's session cookie authenticated;
+    /// mutant: the header restored).
     @Test
-    void allowedSimpleRequestIsEchoedWithCredentialsAndTheRouteRuns() {
+    void allowedSimpleRequestIsEchoedWithoutCredentialsAndTheRouteRuns() {
         String o = origin("simple-allowed");
         addOrigin(o);
         int before = ROUTE_HITS.get();
@@ -114,8 +115,8 @@ class CorsFilterTest {
         assertThat(r.statusCode()).isEqualTo(200);
         assertThat(r.body()).isEqualTo("ok");
         assertThat(ROUTE_HITS.get()).as("a simple request still reaches the route handler").isEqualTo(before + 1);
-        assertThat(r.headers().firstValue("Access-Control-Allow-Origin")).as("echoed, not a wildcard").contains(o);
-        assertThat(r.headers().firstValue("Access-Control-Allow-Credentials")).contains("true");
+        assertThat(r.headers().allValues("Access-Control-Allow-Origin")).as("echoed once, not a wildcard").containsExactly(o);
+        assertThat(r.headers().firstValue("Access-Control-Allow-Credentials")).as("never credentialed").isEmpty();
         assertThat(r.headers().allValues("Vary")).anyMatch(v -> v.contains("Origin"));
     }
 
@@ -130,14 +131,38 @@ class CorsFilterTest {
         assertThat(ROUTE_HITS.get()).isEqualTo(before + 1);
         assertThat(r.headers().firstValue("Access-Control-Allow-Origin")).isEmpty();
         assertThat(r.headers().firstValue("Access-Control-Allow-Credentials")).isEmpty();
+        assertThat(r.headers().allValues("Vary")).as("the answer depended on the Origin").anyMatch(v -> v.contains("Origin"));
     }
 
+    /// Origins a reflecting implementation would get wrong: the opaque `null`
+    /// origin (sandboxed iframes, `file:`), a listed origin with a suffix, a
+    /// prefix, another scheme, another port, and different case. None is
+    /// listed, so none is echoed (mutant: reflect any `Origin`).
     @Test
-    void noOriginHeaderIsLeftEntirelyAlone() {
+    void anOriginThatIsNotListedIsNeverReflected() {
+        String o = origin("reflect");
+        addOrigin(o);
+        var hostOnly = o.substring("https://".length());
+        for (var probe : new String[] {"null", o + ".evil.test", o + ":8443", "http://" + hostOnly,
+                "https://evil" + hostOnly, o.toUpperCase(Locale.ROOT), o + "/", ""}) {
+            var r = getWithOrigin("/probe", probe);
+            assertThat(r.headers().firstValue("Access-Control-Allow-Origin")).as("Origin %s", probe).isEmpty();
+            assertThat(r.headers().firstValue("Access-Control-Allow-Credentials")).as("Origin %s", probe).isEmpty();
+        }
+    }
+
+    /// No `Origin`: nothing to grant, but the response still says it varies on
+    /// `Origin` — the same URL answered to an allow-listed origin carries
+    /// `Access-Control-Allow-Origin`, so a cache must not hand this copy to that
+    /// caller or the other way round (Fetch, "CORS protocol and HTTP caches";
+    /// mutant: `Vary` only when an `Origin` was sent).
+    @Test
+    void noOriginHeaderGetsNoCorsHeadersButStillVariesOnOrigin() {
         var r = http.get("/probe");
         assertThat(r.statusCode()).isEqualTo(200);
         assertThat(r.headers().firstValue("Access-Control-Allow-Origin")).isEmpty();
-        assertThat(r.headers().firstValue("Vary")).as("nothing depended on Origin, so no reason to vary on it").isEmpty();
+        assertThat(r.headers().firstValue("Access-Control-Allow-Credentials")).isEmpty();
+        assertThat(r.headers().allValues("Vary")).anyMatch(v -> v.contains("Origin"));
     }
 
     // ── Preflight ────────────────────────────────────────────────────────────
@@ -157,7 +182,10 @@ class CorsFilterTest {
         assertThat(r.statusCode()).isEqualTo(204);
         assertThat(r.body()).isEmpty();
         assertThat(r.headers().firstValue("Access-Control-Allow-Origin")).contains(o);
-        assertThat(r.headers().firstValue("Access-Control-Allow-Credentials")).contains("true");
+        assertThat(r.headers().firstValue("Access-Control-Allow-Credentials"))
+                .as("without it a browser refuses a credentialed request after this preflight")
+                .isEmpty();
+        assertThat(r.headers().allValues("Vary")).anyMatch(v -> v.contains("Origin"));
         assertThat(r.headers().firstValue("Access-Control-Allow-Methods")).contains("GET, POST, PUT, PATCH, DELETE, OPTIONS");
         assertThat(r.headers().firstValue("Access-Control-Allow-Headers"))
                 .as("no Access-Control-Request-Headers sent → the default trio")
@@ -189,6 +217,9 @@ class CorsFilterTest {
         assertThat(r.statusCode()).isEqualTo(403);
         assertThat(r.body()).contains("CORS_ORIGIN_NOT_ALLOWED");
         assertThat(r.headers().firstValue("Access-Control-Allow-Origin")).isEmpty();
+        assertThat(r.headers().firstValue("Access-Control-Allow-Credentials")).isEmpty();
+        assertThat(r.headers().firstValue("Access-Control-Allow-Methods")).isEmpty();
+        assertThat(r.headers().allValues("Vary")).anyMatch(v -> v.contains("Origin"));
         assertThat(ROUTE_HITS.get()).as("the route handler must not run for a denied preflight either").isEqualTo(before);
     }
 
@@ -204,6 +235,7 @@ class CorsFilterTest {
 
         var sub = getWithOrigin("/probe", "https://sub." + base);
         assertThat(sub.headers().firstValue("Access-Control-Allow-Origin")).as("subdomain is covered by the wildcard").contains("https://sub." + base);
+        assertThat(sub.headers().firstValue("Access-Control-Allow-Credentials")).as("a wildcard entry is no more credentialed").isEmpty();
 
         var apex = getWithOrigin("/probe", "https://" + base);
         assertThat(apex.headers().firstValue("Access-Control-Allow-Origin")).as("the apex itself is not a subdomain").isEmpty();

@@ -16,13 +16,26 @@ import java.util.Objects;
 /// sends ahead of a cross-origin request it expects to need permission for;
 /// an `OPTIONS` request without that header is an ordinary route, not CORS.
 ///
+/// **Never credentialed** (2026-10-14, the F16 follow-up): the filter never sends
+/// `Access-Control-Allow-Credentials`. The platform's cookie session is for its own
+/// same-origin SPA; a page on an allow-listed origin that sent the user's cookie
+/// (`credentials: "include"`) gets no grant, so the browser neither sends the
+/// credentialed non-simple request nor exposes a credentialed response to it.
+/// `SessionCsrf` refuses such writes; this is what keeps such reads closed. A
+/// cross-origin caller that authenticates with its own bearer token needs no
+/// credentials flag and keeps the allow-list.
+///
 /// Behaviour:
-///   - No `Origin` header: not a cross-origin request: this filter does
-///     nothing and lets the chain run.
+///   - Every request on the platform surface, `Origin` or not, gets `Vary: Origin`
+///     **appended** (never replacing an existing `Vary`): the same URL is answered
+///     with or without `Access-Control-Allow-Origin` depending on the caller's
+///     `Origin`, so a shared cache must not serve one caller's copy to another
+///     (Fetch, "CORS protocol and HTTP caches").
+///   - No `Origin` header: not a cross-origin request: nothing else is added and
+///     the chain runs.
 ///   - `Origin` present and [CorsAllowlist#matches] is `true`: the response
-///     echoes the origin back verbatim on `Access-Control-Allow-Origin`
-///     (never `*` — a wildcard origin is incompatible with credentials) and
-///     sets `Access-Control-Allow-Credentials: true`.
+///     echoes the origin back verbatim on `Access-Control-Allow-Origin` — never
+///     `*` (the allowlist is a list) and never a value that did not match.
 ///   - `Origin` present, allowed, and the request is a preflight: status 204
 ///     with no body, `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers`
 ///     (the request's `Access-Control-Request-Headers` echoed, else
@@ -37,15 +50,11 @@ import java.util.Objects;
 ///     normally — enforcement of a disallowed origin is the browser's job
 ///     (it will not expose the response to the disallowed page); the
 ///     platform does not also have to refuse the request server-side.
-///   - Any response that depended on the `Origin` header value gets
-///     `Vary: Origin` **appended** (never replacing an existing `Vary`) so a
-///     shared cache does not serve one origin's CORS headers to another.
 public final class CorsFilter implements Handler {
 
     static final String ORIGIN = "Origin";
     static final String ACCESS_CONTROL_REQUEST_METHOD = "Access-Control-Request-Method";
     static final String ACCESS_CONTROL_ALLOW_ORIGIN = "Access-Control-Allow-Origin";
-    static final String ACCESS_CONTROL_ALLOW_CREDENTIALS = "Access-Control-Allow-Credentials";
     static final String VARY = "Vary";
     static final String ACCESS_CONTROL_REQUEST_HEADERS = "Access-Control-Request-Headers";
     static final String ACCESS_CONTROL_ALLOW_METHODS = "Access-Control-Allow-Methods";
@@ -64,18 +73,19 @@ public final class CorsFilter implements Handler {
 
     @Override
     public void handle(Exchange ctx) {
+        // The answer for this URL depends on the caller's Origin (headers set or not),
+        // so every response says so, including one to a caller that sent none — append,
+        // never replace.
+        ctx.addHeader(VARY, ORIGIN);
         var origin = ctx.header(ORIGIN);
         if (origin == null) {
             return;
         }
-        // The response differs by the caller's Origin (headers set or not) whenever
-        // one was sent, regardless of the allow/deny outcome — append, never replace.
-        ctx.addHeader(VARY, ORIGIN);
 
         boolean allowed = allowlist.matches(origin);
         if (allowed) {
+            // No Access-Control-Allow-Credentials, ever: see the class comment.
             ctx.header(ACCESS_CONTROL_ALLOW_ORIGIN, origin);
-            ctx.header(ACCESS_CONTROL_ALLOW_CREDENTIALS, "true");
         }
 
         if (!isPreflight(ctx)) {

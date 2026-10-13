@@ -141,12 +141,24 @@ below settled here (no ruling arrived; these are the safe defaults).
 
 ### 9.1 Where it runs
 
-A Javalin `before` handler installed in `Platform.register` **ahead of the
+A `before` handler installed in `Platform.register` **ahead of the
 authenticator**, for every path `Platform.isPlatformPath` accepts (`/api/`,
-`/auth/`, `/oauth/`, `/bff/`, `/portal/`, `/.well-known/`). The router
-prefix, the metrics listener and the MCP listener are not covered. A request
-without an `Origin` header is untouched (same-origin browser calls, curl,
-SDKs).
+`/auth/`, `/oauth/`, `/bff/`, `/portal/`, `/.well-known/`, `/control/`). The
+router prefix, the metrics listener and the MCP listener are not covered. A
+request without an `Origin` header (same-origin browser GETs, curl, SDKs) gets
+nothing but `Vary: Origin` (§9.3).
+
+**Who uses it.** Nothing in this repository makes a cross-origin call to the
+platform: the SPA is served by the platform itself and calls relative paths
+(`frontend/src/api/client.ts`), and in development Vite proxies `/api`,
+`/bff`, `/auth`, `/oauth` and `/.well-known` from its own port, so the browser
+still sees one origin; the Playwright e2e suite and the parity harness drive
+the platform's own origin; the SDKs call server-side with bearer tokens. The
+filter exists because the owner ruled (2026-09-05, backlog "CORS filter driven
+by the allowlist") that the stored allowlist should drive real headers; Go
+stores the same table and emits no CORS headers at all. The legitimate caller
+it serves is a browser page on a listed origin that authenticates with **its
+own bearer token**.
 
 ### 9.2 Matching — `CorsAllowlist.matches(origin)`
 
@@ -161,23 +173,47 @@ SDKs).
   `https://app.example.com:8443`. Bare `https://*` matches any https origin
   (the format admits it; an operator who adds it gets what they asked for).
 - The allowlist never produces `Access-Control-Allow-Origin: *`. A match
-  **echoes the request's `Origin`**, because credentials are allowed (below)
-  and the CORS spec forbids `*` with credentials.
+  **echoes the request's `Origin`** (the allowlist is a list, not "anyone");
+  an origin that does not match is never echoed — not `null`, not a listed
+  origin with a suffix, prefix, other scheme, port or case.
 
 ### 9.3 Headers
 
-On a match, every response (including error responses and preflights) carries:
+Every response on the platform surface, with or without an `Origin` header,
+carries `Vary: Origin` (appended if a `Vary` is already present): the same URL
+is answered with or without `Access-Control-Allow-Origin` depending on the
+caller's `Origin`, so a shared cache must not hand one caller's copy to another
+(Fetch, "CORS protocol and HTTP caches"). *(Before 2026-10-14 it was added only
+when an `Origin` was sent.)*
+
+On a match, every response (including error responses and preflights) also carries:
 
 | Header | Value |
 |---|---|
 | `Access-Control-Allow-Origin` | the request's `Origin`, verbatim |
-| `Access-Control-Allow-Credentials` | `true` — the SPA authenticates with the `fc_session` cookie |
-| `Vary` | `Origin` (appended if a `Vary` is already present) |
+
+**`Access-Control-Allow-Credentials` is never sent** (2026-10-14, the F16
+follow-up, `docs/go-mirror/2026-10-14-platform-bug-fixes-7.md`). It was `true`
+on every match, on the reasoning that "the SPA authenticates with the
+`fc_session` cookie" — but the SPA is same-origin and never needed it. What it
+did grant was this: a page on a listed origin (a same-site sibling, which
+`SameSite=Lax` does not stop) could `fetch(…, {credentials: "include"})` and
+**read** whatever the user's session cookie authenticated. `SessionCsrf` now
+refuses its writes; without the credentials grant the browser also refuses to
+expose a credentialed response and fails a credentialed preflight, so reads are
+closed too. A bearer caller needs no credentials flag (`Authorization` is
+granted by `Access-Control-Allow-Headers` below) and is unaffected.
+
+There is **no switch** to turn credentials back on, not even for development:
+no cookie-credentialed cross-origin caller exists (§9.1). If one is ever
+needed (an SPA served from another port without the Vite proxy), it must be an
+explicit dev-only flag, off by default, refused when the public base URL is
+`https`, and documented as unsafe — not a change to this default.
 
 A **preflight** (`OPTIONS` with `Access-Control-Request-Method`) from a
 matching origin is answered by the filter itself — `204`, no body, the
 chain stops so the authenticator and the route never see it — with, in
-addition to the three above:
+addition to the two above:
 
 | Header | Value |
 |---|---|
@@ -215,17 +251,25 @@ precompiled matchers) in an `AtomicReference`, loaded from
 Matching: exact match; scheme, port and case mismatch rejected; wildcard
 matches one and several labels, not the bare apex, not another scheme/port;
 `https://*` matches any https origin. Filter over `TestHttp` with a real
-repository on the embedded Postgres: allowed origin → the three headers and
-the response body unchanged; disallowed → none of the headers, same
-status/body; no `Origin` → none; preflight from allowed → 204, all six
-headers, echoed request-headers, and the route handler was **not** invoked
-(a counter); preflight from disallowed → 403 envelope, no CORS headers;
-router-prefix path → untouched. Invalidation: with the TTL set to an hour,
-`POST /api/platform/cors` as anchor then an immediate request from the new
-origin is allowed; the mutant that drops `invalidate()` must fail that test.
-Mutants to run: echo replaced by `*`; wildcard matching the apex; the
-preflight not stopping the chain (handler counter); credentials header
-dropped.
+repository on the embedded Postgres: allowed origin → echoed origin, **no
+credentials header**, `Vary`, and the response body unchanged; disallowed (and
+`null`, suffix, prefix, scheme, port, case variants) → no CORS headers, same
+status/body, `Vary`; no `Origin` → only `Vary`; preflight from allowed → 204,
+the preflight headers, no credentials header, echoed request-headers, and the
+route handler was **not** invoked (a counter); preflight from disallowed → 403
+envelope, no CORS headers; router-prefix path → untouched (no `Vary` either).
+Invalidation: with the TTL set to an hour, `POST /api/platform/cors` as anchor
+then an immediate request from the new origin is allowed; the mutant that
+drops `invalidate()` must fail that test. `CorsCredentialsIntegrationTest`
+(composed platform, real `__Host-fc_session` cookie, real bearer): a cookie
+read from a listed sibling origin is answered without the credentials grant,
+its preflight too; a bearer caller on the listed origin keeps its preflight
+(`authorization` allowed) and its echoed origin; a non-listed origin is
+neither reflected nor granted; the same-origin SPA is untouched. Mutants:
+echo replaced by `*`; wildcard matching the apex; the preflight not stopping
+the chain (handler counter); credentials restored (everywhere, and on
+preflights only); any origin reflected; `Vary` only with an `Origin`; `Vary`
+dropped; `Vary` replacing an existing value.
 
 ## 10. Open questions for the owner (summary)
 
@@ -239,8 +283,8 @@ dropped.
    and returns 400 `ID_REQUIRED`. Only reachable with a whitespace path
    segment. Keep the template rule?
 3. *Settled 2026-09-05 (§9, no ruling arrived):* exact match, `*` as a
-   one-or-more-labels host wildcard, credentials allowed with the origin
-   echoed. Filter matching semantics (exact vs wildcard host; whether
+   one-or-more-labels host wildcard, the origin echoed. Credentials were
+   allowed until 2026-10-14 and are now never granted (§9.3). Filter matching semantics (exact vs wildcard host; whether
    `Access-Control-Allow-Credentials` is emitted) — decided when the filter
    is specified, not here.
 4. `description` `""` vs `null` on the wire are stored as given — normalise

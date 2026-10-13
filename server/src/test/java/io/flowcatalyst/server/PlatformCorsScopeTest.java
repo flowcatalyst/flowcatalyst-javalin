@@ -41,6 +41,15 @@ class PlatformCorsScopeTest {
         var r = http.get("/api/scope-probe", "Origin", ORIGIN);
         assertThat(r.statusCode()).isEqualTo(200);
         assertThat(r.headers().firstValue("Access-Control-Allow-Origin")).contains(ORIGIN);
+        assertThat(r.headers().firstValue("Access-Control-Allow-Credentials")).isEmpty();
+    }
+
+    @Test
+    void platformPathWithoutAnOriginStillVariesOnOrigin() {
+        var r = http.get("/api/scope-probe");
+        assertThat(r.statusCode()).isEqualTo(200);
+        assertThat(r.headers().firstValue("Access-Control-Allow-Origin")).isEmpty();
+        assertThat(r.headers().allValues("Vary")).anyMatch(v -> v.contains("Origin"));
     }
 
     @Test
@@ -49,6 +58,7 @@ class PlatformCorsScopeTest {
         assertThat(r.statusCode()).isEqualTo(200);
         assertThat(r.headers().firstValue("Access-Control-Allow-Origin")).isEmpty();
         assertThat(r.headers().firstValue("Vary")).isEmpty();
+        assertThat(http.get("/router/scope-probe").headers().firstValue("Vary")).as("nor without an Origin").isEmpty();
     }
 
     @Test
