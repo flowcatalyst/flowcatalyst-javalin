@@ -13,7 +13,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 
 /// The cookie-session request guard (Go `middleware.SessionCSRF`,
 /// `docs/go-mirror/2026-10-14-platform-bug-fixes-7.md`). A `before` filter
@@ -61,27 +60,13 @@ public final class SessionCsrf implements Handler {
     static final String UNSUPPORTED_MEDIA_TYPE_MESSAGE =
             "Requests authenticated by the session cookie must send a JSON body (Content-Type: application/json).";
 
-    private final Set<String> trustedOrigins;
+    private final Provenance provenance;
 
     /// `trustedOrigins`: `scheme://host[:port]` origins, compared with the
     /// `Origin` header exactly. A blank entry is skipped; anything that is not
     /// an http(s) origin is a configuration error.
     public SessionCsrf(List<String> trustedOrigins) {
-        var set = new HashSet<String>();
-        for (String o : trustedOrigins) {
-            if (o == null || o.isBlank()) continue;
-            URI u;
-            try {
-                u = new URI(o);
-            } catch (URISyntaxException e) {
-                throw new IllegalArgumentException("trusted origin '" + o + "' is not an http(s) origin", e);
-            }
-            if (!("http".equals(u.getScheme()) || "https".equals(u.getScheme())) || u.getRawAuthority() == null) {
-                throw new IllegalArgumentException("trusted origin '" + o + "' is not an http(s) origin");
-            }
-            set.add(u.getScheme() + "://" + u.getRawAuthority());
-        }
-        this.trustedOrigins = Set.copyOf(set);
+        this.provenance = new Provenance(trustedOrigins);
     }
 
     /// The public base URL (`FC_JWT_ISSUER`) as the one trusted origin, as
@@ -112,7 +97,7 @@ public final class SessionCsrf implements Handler {
 
         String secFetchSite = ctx.header("Sec-Fetch-Site");
         String origin = ctx.header("Origin");
-        String refusal = provenance(secFetchSite, origin, ctx.host());
+        String refusal = provenance.check(secFetchSite, origin, ctx.host(), true);
         if (refusal != null) {
             LOG.atWarn().setMessage("cookie-session request refused: not from this origin")
                     .addKeyValue("method", ctx.method())
@@ -145,32 +130,7 @@ public final class SessionCsrf implements Handler {
         return "application/octet-stream".equals(mediaType) || "application/wasm".equals(mediaType);
     }
 
-    /// `null` when the request comes from this origin, else why not.
-    String provenance(String secFetchSite, String origin, String host) {
-        if (secFetchSite != null && !secFetchSite.isEmpty()) {
-            if (secFetchSite.equals("same-origin") || secFetchSite.equals("none")) return null;
-            if (origin != null && trustedOrigins.contains(origin)) return null;
-            return "cross-origin request detected from Sec-Fetch-Site header";
-        }
-        if (origin == null || origin.isEmpty()) {
-            return "unsafe request without Sec-Fetch-Site or Origin";
-        }
-        if (host != null && !host.isEmpty() && host.equals(originHost(origin))) return null;
-        if (trustedOrigins.contains(origin)) return null;
-        return "cross-origin request detected, and/or browser is out of date: Sec-Fetch-Site is missing, and Origin does not match Host";
-    }
-
-    /// The `host[:port]` of an `Origin` value (Go `url.Parse(origin).Host`),
-    /// `null` when it has none (`null`, an opaque or malformed origin).
-    private static String originHost(String origin) {
-        try {
-            return new URI(origin).getRawAuthority();
-        } catch (URISyntaxException _) {
-            return null;
-        }
-    }
-
-    private static boolean safeMethod(String m) {
+    static boolean safeMethod(String m) {
         return m.equals("GET") || m.equals("HEAD") || m.equals("OPTIONS");
     }
 
@@ -271,7 +231,7 @@ public final class SessionCsrf implements Handler {
         return c == ' ' || c == '\t';
     }
 
-    private static void refuse(Exchange ctx, int status, String code, String message) {
+    static void refuse(Exchange ctx, int status, String code, String message) {
         HttpError.write(ctx, status, code, message, Map.of());
         ctx.header("Cache-Control", "no-store");
         ctx.skipRemainingHandlers();

@@ -131,6 +131,7 @@ import io.flowcatalyst.platform.process.api.ProcessApi;
 import io.flowcatalyst.platform.publicapi.Branding;
 import io.flowcatalyst.platform.publicapi.api.PublicApi;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
+import io.flowcatalyst.platform.shared.auth.CredentialCsrf;
 import io.flowcatalyst.platform.shared.auth.ProfileOnlyGate;
 import io.flowcatalyst.platform.shared.auth.SessionCsrf;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstanceRepository;
@@ -256,6 +257,12 @@ public final class Platform {
         // Before the profile gate, so a refused request gets the same answer whatever the
         // caller's roles. The public base URL is trusted for a proxy that rewrites Host.
         routes.before(new SessionCsrf(SessionCsrf.publicOrigins(env.jwtIssuer())));
+        // The public routes that sign a browser in or set its credentials (login CSRF;
+        // CredentialCsrf, Go middleware.CredentialCSRF): JSON only for every caller, and
+        // refused when a browser says another origin sent them. Exact paths, outside the
+        // authenticator; every other public unsafe route is decided in
+        // CredentialCsrfIntegrationTest.
+        routes.before(new CredentialCsrf(SessionCsrf.publicOrigins(env.jwtIssuer())));
         // The profile-only gate (docs/spec/portal-apps.md §6): immediately after the
         // authenticator, so it sees exactly the AuthContext (or lack of one) the
         // authenticator bound, and before every other before-filter/handler.

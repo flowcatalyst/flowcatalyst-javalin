@@ -200,6 +200,6 @@ class SessionCsrfTest {
         assertThat(SessionCsrf.publicOrigins("ftp://platform.example.com")).isEmpty();
         assertThat(SessionCsrf.publicOrigins("")).isEmpty();
         assertThatThrownBy(() -> new SessionCsrf(List.of("ftp://x"))).isInstanceOf(IllegalArgumentException.class);
-        assertThat(new SessionCsrf(List.of("", TRUSTED)).provenance(null, TRUSTED, "internal:9000")).isNull();
+        assertThat(new Provenance(List.of("", TRUSTED)).check(null, TRUSTED, "internal:9000", true)).isNull();
     }
 }
