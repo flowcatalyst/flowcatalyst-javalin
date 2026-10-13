@@ -216,29 +216,33 @@ class PortalSsoTest {
         PortalLoginFlow flow = PortalLoginFlow.start(portalClient.clientId(), clientId, redirect, "openid", "st-" + RUN, "n-" + RUN, null, null, Instant.now());
         FLOWS.insert(flow);
 
-        var missing = http.get("/portal/auth/oidc/login?flow=" + flow.id());
+        var missing = portalStart("/portal/auth/oidc/login?flow=" + flow.id());
         assertThat(missing.statusCode()).isEqualTo(400);
         assertThat(json(missing).get("error").asString()).isEqualTo("MISSING_PARAM");
 
-        var start = http.get("/portal/auth/oidc/login?flow=" + flow.id() + "&provider_id=" + idpId);
+        var start = portalStart("/portal/auth/oidc/login?flow=" + flow.id() + "&provider_id=" + idpId);
         assertThat(start.statusCode()).as(start.body()).isEqualTo(302);
         String loc = location(start);
         assertThat(loc).startsWith(idpBase + "/authorize?");
         Map<String, String> q = query(loc);
+        // SSO login CSRF (F16 follow-up): the portal start binds the state to this browser too.
+        assertThat(start.headers().allValues("set-cookie")).anyMatch(c -> c.startsWith("fc_sso_") && c.contains("=" + q.get("state") + ";")
+                && c.contains("HttpOnly") && c.contains("SameSite=Lax") && c.contains("Max-Age=600"));
         assertThat(FLOWS.findLive(flow.id())).as("ruling Q10: the flow is consumed at SSO start").isEmpty();
-        var again = http.get("/portal/auth/oidc/login?flow=" + flow.id() + "&provider_id=" + idpId);
+        var again = portalStart("/portal/auth/oidc/login?flow=" + flow.id() + "&provider_id=" + idpId);
         assertThat(json(again).get("error").asString()).isEqualTo("FLOW_EXPIRED");
 
         String email = "Jane-" + RUN + "@" + domain;
         NEXT_CLAIMS.set(new JWTClaimsSet.Builder().issuer(idpBase).audience(CLIENT_ID).subject("sub-" + RUN)
                 .issueTime(Date.from(Instant.now())).expirationTime(Date.from(Instant.now().plusSeconds(300)))
                 .claim("nonce", q.get("nonce")).claim("email", email).claim("name", "Jane Doe"));
-        var cb = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        var cb = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", "Cookie", BINDINGS.getOrDefault(q.get("state"), "none=x"));
         assertThat(cb.statusCode()).as(cb.body()).isEqualTo(302);
         Map<String, String> back = query(location(cb));
         assertThat(location(cb)).startsWith(redirect + "?code=");
         assertThat(back.get("state")).isEqualTo("st-" + RUN);
-        assertThat(cb.headers().firstValue("set-cookie")).as("never an fc_session for the portal plane").isEmpty();
+        assertThat(cb.headers().allValues("set-cookie")).as("never an fc_session for the portal plane (the SSO binding is cleared)")
+                .noneMatch(c -> c.contains("fc_session")).allMatch(c -> c.startsWith("fc_sso_") && c.contains("Max-Age=0"));
 
         PortalIdentity identity = IDENTITIES.findByClientAndEmail(clientId, email.toLowerCase(Locale.ROOT)).orElseThrow();
         assertThat(identity.source()).isEqualTo(PortalIdentitySource.JIT);
@@ -268,11 +272,11 @@ class PortalSsoTest {
         UOW.inTransaction(tx -> { IDENTITIES.persist(identity.deactivate(), tx.dbTx()); return null; });
         PortalLoginFlow flow2 = PortalLoginFlow.start(portalClient.clientId(), clientId, redirect, "openid", "st2-" + RUN, null, null, null, Instant.now());
         FLOWS.insert(flow2);
-        Map<String, String> q2 = query(location(http.get("/portal/auth/oidc/login?flow=" + flow2.id() + "&provider_id=" + idpId)));
+        Map<String, String> q2 = query(location(portalStart("/portal/auth/oidc/login?flow=" + flow2.id() + "&provider_id=" + idpId)));
         NEXT_CLAIMS.set(new JWTClaimsSet.Builder().issuer(idpBase).audience(CLIENT_ID).subject("sub-" + RUN)
                 .issueTime(Date.from(Instant.now())).expirationTime(Date.from(Instant.now().plusSeconds(300)))
                 .claim("nonce", q2.get("nonce")).claim("email", email));
-        var denied = http.get("/auth/oidc/callback?state=" + q2.get("state") + "&code=c");
+        var denied = http.get("/auth/oidc/callback?state=" + q2.get("state") + "&code=c", "Cookie", BINDINGS.getOrDefault(q2.get("state"), "none=x"));
         assertThat(denied.statusCode()).isEqualTo(302);
         Map<String, String> d = query(location(denied));
         assertThat(d.get("error")).isEqualTo("access_denied");
@@ -293,11 +297,11 @@ class PortalSsoTest {
         String redirect = "https://portal-" + RUN + ".example/cb";
         PortalLoginFlow flow = PortalLoginFlow.start(portalClient.clientId(), clientId, redirect, null, "st3-" + RUN, null, null, null, Instant.now());
         FLOWS.insert(flow);
-        Map<String, String> q = query(location(http.get("/portal/auth/oidc/login?flow=" + flow.id() + "&provider_id=" + idpId)));
+        Map<String, String> q = query(location(portalStart("/portal/auth/oidc/login?flow=" + flow.id() + "&provider_id=" + idpId)));
         NEXT_CLAIMS.set(new JWTClaimsSet.Builder().issuer(idpBase).audience(CLIENT_ID).subject("s")
                 .issueTime(Date.from(Instant.now())).expirationTime(Date.from(Instant.now().plusSeconds(300)))
                 .claim("nonce", q.get("nonce")).claim("email", "outsider-" + RUN + "@elsewhere.example"));
-        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", "Cookie", BINDINGS.getOrDefault(q.get("state"), "none=x"));
         assertThat(r.statusCode()).isEqualTo(403);
         assertThat(json(r).get("error").asString()).isEqualTo("EMAIL_DOMAIN_MISMATCH");
         assertThat(IDENTITIES.findByClientAndEmail(clientId, "outsider-" + RUN + "@elsewhere.example")).isEmpty();
@@ -423,13 +427,27 @@ class PortalSsoTest {
 
     // ── helpers ────────────────────────────────────────────────────────────
 
+    /// The binding cookie each portal start set, by state (a browser's cookie jar).
+    private static final Map<String, String> BINDINGS = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /// `GET` a portal SSO start, as a browser: keeps the binding cookie for the callback.
+    private static HttpResponse<String> portalStart(String pathAndQuery) {
+        var r = http.get(pathAndQuery);
+        if (r.statusCode() == 302) {
+            String state = query(location(r)).get("state");
+            r.headers().allValues("set-cookie").stream().filter(c -> c.startsWith("fc_sso_"))
+                    .findFirst().ifPresent(c -> BINDINGS.put(state, c.substring(0, c.indexOf(';'))));
+        }
+        return r;
+    }
+
     /// Parks a flow against `oc`, drives the fake IdP round trip and lands
     /// on the sink's callback — the raw response, so callers can inspect
     /// either a success redirect (`code=…`) or an `access_denied` one.
     private static HttpResponse<String> ssoLogin(OAuthClient oc, String redirect, String state, String nonce, String email, String name) {
         PortalLoginFlow flow = PortalLoginFlow.start(oc.clientId(), clientId, redirect, "openid", state, nonce, null, null, Instant.now());
         FLOWS.insert(flow);
-        Map<String, String> q = query(location(http.get("/portal/auth/oidc/login?flow=" + flow.id() + "&provider_id=" + idpId)));
+        Map<String, String> q = query(location(portalStart("/portal/auth/oidc/login?flow=" + flow.id() + "&provider_id=" + idpId)));
         var claims = new JWTClaimsSet.Builder().issuer(idpBase).audience(CLIENT_ID).subject("sub-" + RUN)
                 .issueTime(Date.from(Instant.now())).expirationTime(Date.from(Instant.now().plusSeconds(300)))
                 .claim("nonce", q.get("nonce")).claim("email", email);
@@ -437,7 +455,7 @@ class PortalSsoTest {
             claims.claim("name", name);
         }
         NEXT_CLAIMS.set(claims);
-        return http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        return http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", "Cookie", BINDINGS.getOrDefault(q.get("state"), "none=x"));
     }
 
     /// A portal-flagged, active OAuth client linked to `appId` — the

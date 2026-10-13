@@ -77,6 +77,26 @@ every `isPublicPath` route (login, 2FA, password reset, the dispatch callbacks),
 Tests: `SessionCsrfTest` (the matrix), `SessionCsrfIntegrationTest` (a real `__Host-fc_session`
 through the composed platform). Ledger: `docs/go-mirror/2026-10-14-platform-bug-fixes-7.md`.
 
+## 5. Login CSRF: the sign-in routes (Go F16 follow-up, 2026-10-14)
+
+`CredentialCsrf` (`platform.shared.auth`, Go `middleware.CredentialCSRF`), a `before` filter
+over the exact paths in `CredentialCsrf.ROUTES` (`/auth/login`, the public `/auth/2fa/*` steps,
+`/auth/webauthn/authenticate/{begin,complete}`, `/auth/password-reset/{request,confirm}`,
+`/auth/password-setup/request`, `/portal/auth/{check-domain,login,password-reset}`), every unsafe
+request, authenticated or not: the provenance rule of §4 (shared `Provenance`), except that a
+request with **neither** `Sec-Fetch-Site` nor `Origin` passes (not a browser); then JSON only for
+every caller (415). Every other public unsafe route is decided, with its reason, in
+`CredentialCsrfIntegrationTest.NOT_CREDENTIAL_GUARDED`; the test walks the composed server's
+registrations and fails on an unsafe route outside `/api/`, `/bff/` with no decision.
+
+## 6. SSO callback binding (Go F16 follow-up)
+
+`GET /auth/oidc/login` and `GET /portal/auth/oidc/login` set `fc_sso_<16 hex of sha256(state)>`
+(value the state; `__Host-` prefix and `Secure` when the session cookie is secure; `HttpOnly`,
+`SameSite=Lax`, `Path=/`, `Max-Age=600`) through `LoginBinding`. `GET /auth/oidc/callback`, after
+consuming the state, requires it (constant-time compare) or answers **400
+`LOGIN_NOT_STARTED_HERE`**, the state spent, no login-attempt row; it always clears the cookie.
+
 ## Docs
 
 `docs/spec/auth-core.md` §6.1 cookie attributes; `docs/deployments.md` (the refusal, the one-time

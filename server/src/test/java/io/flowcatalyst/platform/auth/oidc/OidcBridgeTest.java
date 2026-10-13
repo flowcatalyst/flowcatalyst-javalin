@@ -265,23 +265,23 @@ class OidcBridgeTest {
 
     @Test
     void loginNeedsADomainOrAProviderAndRefusesAnInternalOrUnmappedDomain() {
-        var none = http.get("/auth/oidc/login");
+        var none = start("/auth/oidc/login");
         assertThat(none.statusCode()).isEqualTo(400);
         assertThat(json(none).get("error").asString()).isEqualTo("DOMAIN_REQUIRED");
 
-        var internal = http.get("/auth/oidc/login?domain=" + internalDomain);
+        var internal = start("/auth/oidc/login?domain=" + internalDomain);
         assertThat(internal.statusCode()).isEqualTo(400);
         assertThat(json(internal).get("error").asString()).isEqualTo("OIDC_NOT_CONFIGURED");
 
         // Owner ruling 2026-09-25 (backlog item 8): a user's typo, not a server fault.
-        var unmapped = http.get("/auth/oidc/login?domain=nobody-" + RUN + ".example");
+        var unmapped = start("/auth/oidc/login?domain=nobody-" + RUN + ".example");
         assertThat(unmapped.statusCode()).isEqualTo(404);
         assertThat(json(unmapped).get("error").asString()).isEqualTo("EMAIL_DOMAIN_NOT_MAPPED");
     }
 
     @Test
     void loginRedirectsToTheProviderWithPkceStateAndNonceAndStoresATenMinuteState() {
-        var r = http.get("/auth/oidc/login?email=Someone@" + oidcDomain.toUpperCase(Locale.ROOT) + "&returnUrl=/reports");
+        var r = start("/auth/oidc/login?email=Someone@" + oidcDomain.toUpperCase(Locale.ROOT) + "&returnUrl=/reports");
         assertThat(r.statusCode()).as(r.body()).isEqualTo(302);
         String loc = location(r);
         assertThat(loc).startsWith(idpBase + "/authorize?");
@@ -309,10 +309,10 @@ class OidcBridgeTest {
         Map<String, String> q = begin("domain=" + oidcDomain + "&return_url=/reports");
         idTokenFor(q, email).claim("name", "New Person").claim("roles", List.of("Reader-" + RUN, "Admin-" + RUN, "Unknown-" + RUN));
 
-        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=code-" + RUN);
+        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=code-" + RUN, bound(q.get("state")));
         assertThat(r.statusCode()).as(r.body()).isEqualTo(302);
         assertThat(location(r)).isEqualTo("/reports");
-        String cookie = r.headers().firstValue("set-cookie").orElseThrow();
+        String cookie = r.headers().allValues("set-cookie").stream().filter(c -> c.startsWith("fc_session=")).findFirst().orElseThrow();
         assertThat(cookie).startsWith("fc_session=").contains("HttpOnly").contains("SameSite=Lax");
         String token = cookie.substring("fc_session=".length(), cookie.indexOf(';'));
         assertThat(VERIFIER.verify(token)).isInstanceOf(JwtVerifier.Verified.class);
@@ -333,9 +333,77 @@ class OidcBridgeTest {
         assertThat(((JwtVerifier.Verified) VERIFIER.verify(token)).claims().subject()).isEqualTo(p.id());
 
         // Replaying the callback: the state is burned.
-        var replay = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=code-" + RUN);
+        var replay = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=code-" + RUN, bound(q.get("state")));
         assertThat(replay.statusCode()).isEqualTo(400);
         assertThat(json(replay).get("error").asString()).isEqualTo("INVALID_STATE");
+    }
+
+    /// SSO login CSRF (Go F16 follow-up, `sso_binding_pg_test.go`): a callback link is
+    /// completed only in the browser that started the login.
+    @Test
+    void aCallbackThisBrowserDidNotStartIsRefusedAndItsStateSpent() {
+        String email = "sso-victim-" + RUN + "@" + oidcDomain;
+        emails.add(email);
+        // The attacker starts a login and stops before the callback.
+        var started = start("/auth/oidc/login?domain=" + oidcDomain);
+        Map<String, String> q = query(location(started));
+        String setCookie = started.headers().allValues("set-cookie").stream().filter(c -> c.startsWith("fc_sso_")).findFirst()
+                .orElseThrow(() -> new AssertionError("the start set no binding cookie: " + started.headers().map()));
+        assertThat(setCookie).matches("fc_sso_[0-9a-f]{16}=" + java.util.regex.Pattern.quote(q.get("state")) + ";.*")
+                .contains("Path=/").contains("Max-Age=600").contains("HttpOnly").contains("SameSite=Lax")
+                .doesNotContain("Secure").doesNotContain("Domain=");
+        idTokenFor(q, email);
+
+        // The victim's browser opens the link: no binding cookie.
+        var victim = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        assertThat(victim.statusCode()).as(victim.body()).isEqualTo(400);
+        assertThat(json(victim).get("error").asString()).isEqualTo("LOGIN_NOT_STARTED_HERE");
+        assertThat(victim.headers().allValues("set-cookie")).noneMatch(c -> c.startsWith("fc_session="));
+        assertThat(PRINCIPALS.findByEmail(email)).as("nothing provisioned").isEmpty();
+        // The state is spent: even the right browser must start again.
+        var spent = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
+        assertThat(json(spent).get("error").asString()).isEqualTo("INVALID_STATE");
+
+        // Another login's cookie, and a forged value under the right name, are refused too.
+        Map<String, String> other = begin("domain=" + oidcDomain);
+        Map<String, String> third = begin("domain=" + oidcDomain);
+        idTokenFor(third, email);
+        var wrongCookie = http.get("/auth/oidc/callback?state=" + third.get("state") + "&code=c", bound(other.get("state")));
+        assertThat(json(wrongCookie).get("error").asString()).isEqualTo("LOGIN_NOT_STARTED_HERE");
+        Map<String, String> fourth = begin("domain=" + oidcDomain);
+        idTokenFor(fourth, email);
+        var forged = http.get("/auth/oidc/callback?state=" + fourth.get("state") + "&code=c",
+                "Cookie", new LoginBinding(false).cookieName(fourth.get("state")) + "=forged");
+        assertThat(json(forged).get("error").asString()).isEqualTo("LOGIN_NOT_STARTED_HERE");
+
+        // The browser that started it: signed in, and the binding cleared.
+        Map<String, String> mine = begin("domain=" + oidcDomain);
+        idTokenFor(mine, email);
+        String bindingName = BINDINGS.get(mine.get("state")).substring(0, BINDINGS.get(mine.get("state")).indexOf('='));
+        var ok = http.get("/auth/oidc/callback?state=" + mine.get("state") + "&code=c", bound(mine.get("state")));
+        assertThat(ok.statusCode()).as(ok.body()).isEqualTo(302);
+        assertThat(ok.headers().allValues("set-cookie")).anyMatch(c -> c.startsWith("fc_session="))
+                .anyMatch(c -> c.startsWith(bindingName + "=;") && c.contains("Max-Age=0"));
+    }
+
+    @Test
+    void theBindingCookieIsHostPrefixedAndSecureWhenSecure() {
+        var secure = new LoginBinding(true);
+        assertThat(secure.cookieName("abc")).startsWith("__Host-fc_sso_").hasSize("__Host-fc_sso_".length() + 16);
+        assertThat(new LoginBinding(false).cookieName("abc")).isEqualTo(secure.cookieName("abc").substring("__Host-".length()));
+        assertThat(new LoginBinding(false).cookieName("abc")).isNotEqualTo(new LoginBinding(false).cookieName("abd"));
+        try (var h = TestHttp.routes(routes -> routes.get("/bind", ctx -> {
+            secure.bind(ctx, "abc");
+            secure.clear(ctx, "xyz");
+            ctx.result("ok");
+        }))) {
+            var cookies = h.get("/bind").headers().allValues("set-cookie");
+            assertThat(cookies).anyMatch(c -> c.startsWith(secure.cookieName("abc") + "=abc;") && c.contains("Secure")
+                    && c.contains("HttpOnly") && c.contains("SameSite=Lax") && c.contains("Path=/") && c.contains("Max-Age=600")
+                    && !c.contains("Domain="));
+            assertThat(cookies).anyMatch(c -> c.startsWith(secure.cookieName("xyz") + "=;") && c.contains("Max-Age=0")
+                    && c.contains("Secure"));
+        }
     }
 
     @Test
@@ -350,7 +418,7 @@ class OidcBridgeTest {
 
         Map<String, String> q = begin("domain=" + oidcDomain);
         idTokenFor(q, email).claim("roles", List.of()); // the IdP now sends no roles
-        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
         assertThat(r.statusCode()).as(r.body()).isEqualTo(302);
         assertThat(location(r)).isEqualTo("/dashboard");
 
@@ -366,7 +434,7 @@ class OidcBridgeTest {
         emails.add(email);
         Map<String, String> q = begin("domain=" + oidcDomain + "&oauth_client_id=spa&oauth_redirect_uri=https://spa.example/cb&oauth_state=st&oauth_scope=openid&oauth_code_challenge=ch");
         idTokenFor(q, email);
-        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
         assertThat(location(r)).isEqualTo("/oauth/authorize?response_type=code&client_id=spa&redirect_uri=https%3A%2F%2Fspa.example%2Fcb&scope=openid&state=st&code_challenge=ch");
 
         // S2.6: `/<TAB>/evil.example` is what `?return_url=/%09/evil.example` decodes to — a browser
@@ -375,7 +443,7 @@ class OidcBridgeTest {
                 "/\t/evil.example", "/%09/evil.example")) {
             Map<String, String> q2 = begin("domain=" + oidcDomain + "&return_url=" + URLEncoder.encode(bad, StandardCharsets.UTF_8));
             idTokenFor(q2, email);
-            var r2 = http.get("/auth/oidc/callback?state=" + q2.get("state") + "&code=c");
+            var r2 = http.get("/auth/oidc/callback?state=" + q2.get("state") + "&code=c", bound(q2.get("state")));
             assertThat(location(r2)).as("return_url " + bad).isEqualTo("/dashboard");
         }
     }
@@ -387,42 +455,42 @@ class OidcBridgeTest {
 
         Map<String, String> q = begin("domain=" + oidcDomain);
         idTokenFor(q, email).claim("nonce", "not-the-nonce");
-        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c")).get("error").asString()).isEqualTo("NONCE_MISMATCH");
+        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")))).get("error").asString()).isEqualTo("NONCE_MISMATCH");
 
         q = begin("domain=" + oidcDomain);
         idTokenFor(q, "someone@other-" + RUN + ".example");
-        var domain = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        var domain = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
         assertThat(domain.statusCode()).isEqualTo(403);
         assertThat(json(domain).get("error").asString()).isEqualTo("EMAIL_DOMAIN_MISMATCH");
 
         q = begin("domain=" + oidcDomain);
         idTokenFor(q, "guest_outlook.com#EXT#@" + oidcDomain);
-        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c")).get("error").asString()).isEqualTo("EXTERNAL_GUEST");
+        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")))).get("error").asString()).isEqualTo("EXTERNAL_GUEST");
 
         q = begin("domain=" + oidcDomain);
         idTokenFor(q, null);
-        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c")).get("error").asString()).isEqualTo("NO_EMAIL");
+        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")))).get("error").asString()).isEqualTo("NO_EMAIL");
 
         // preferred_username stands in for email.
         q = begin("domain=" + oidcDomain);
         idTokenFor(q, null).claim("preferred_username", "pref-" + RUN + "@" + oidcDomain);
         emails.add("pref-" + RUN + "@" + oidcDomain);
-        assertThat(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c").statusCode()).isEqualTo(302);
+        assertThat(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state"))).statusCode()).isEqualTo(302);
 
         // The tenant-pinned domain needs a matching tid.
         String tenantEmail = "t-" + RUN + "@" + tenantDomain;
         emails.add(tenantEmail);
         q = begin("domain=" + tenantDomain);
         idTokenFor(q, tenantEmail);
-        var noTid = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        var noTid = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
         assertThat(noTid.statusCode()).isEqualTo(403);
         assertThat(json(noTid).get("message").asString()).contains("no tenant id");
         q = begin("domain=" + tenantDomain);
         idTokenFor(q, tenantEmail).claim("tid", "other");
-        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c")).get("error").asString()).isEqualTo("TENANT_MISMATCH");
+        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")))).get("error").asString()).isEqualTo("TENANT_MISMATCH");
         q = begin("domain=" + tenantDomain);
         idTokenFor(q, tenantEmail).claim("tid", "tid-" + RUN);
-        assertThat(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c").statusCode()).isEqualTo(302);
+        assertThat(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state"))).statusCode()).isEqualTo(302);
     }
 
     @Test
@@ -432,7 +500,7 @@ class OidcBridgeTest {
         idTokenFor(q, email);
         SIGN_WITH_ROGUE_KEY.set(true);
         try {
-            var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+            var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
             assertThat(r.statusCode()).isEqualTo(403);
             assertThat(json(r).get("error").asString()).isEqualTo("OIDC_VERIFY");
             assertThat(json(r).get("message").asString()).as("ruling Q3: no library text on the wire").isEqualTo("id_token verification failed");
@@ -443,17 +511,17 @@ class OidcBridgeTest {
 
         q = begin("domain=" + oidcDomain);
         idTokenFor(q, email).expirationTime(Date.from(Instant.now().minusSeconds(600)));
-        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c")).get("error").asString()).isEqualTo("OIDC_VERIFY");
+        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")))).get("error").asString()).isEqualTo("OIDC_VERIFY");
 
         q = begin("domain=" + oidcDomain);
         idTokenFor(q, email).audience("someone-else");
-        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c")).get("error").asString()).isEqualTo("OIDC_VERIFY");
+        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")))).get("error").asString()).isEqualTo("OIDC_VERIFY");
 
         q = begin("domain=" + oidcDomain);
         idTokenFor(q, email);
         OMIT_ID_TOKEN.set(true);
         try {
-            var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+            var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
             assertThat(r.statusCode()).isEqualTo(400);
             assertThat(json(r).get("error").asString()).isEqualTo("NO_ID_TOKEN");
         } finally {
@@ -469,12 +537,12 @@ class OidcBridgeTest {
         emails.add(email);
         Map<String, String> q = begin("domain=" + multiPinnedDomain);
         idTokenFor(q, email).issuer("http://tenant-acme.example").claim("tid", "tid-multi-" + RUN);
-        var ok = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        var ok = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
         assertThat(ok.statusCode()).as(ok.body()).isEqualTo(302);
 
         q = begin("domain=" + multiPinnedDomain);
         idTokenFor(q, email).issuer("http://evil.example").claim("tid", "tid-multi-" + RUN);
-        var bad = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        var bad = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
         assertThat(bad.statusCode()).isEqualTo(403);
         assertThat(json(bad).get("error").asString()).isEqualTo("OIDC_VERIFY");
     }
@@ -487,7 +555,7 @@ class OidcBridgeTest {
         String unpinnedEmail = "nopin-" + RUN + "@" + multiDomain;
         Map<String, String> q = begin("domain=" + multiDomain);
         idTokenFor(q, unpinnedEmail).issuer("http://tenant-acme.example").claim("tid", "attacker-tenant");
-        var unpinned = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        var unpinned = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
         assertThat(unpinned.statusCode()).as(unpinned.body()).isEqualTo(403);
         assertThat(json(unpinned).get("error").asString()).isEqualTo("TENANT_NOT_PINNED");
         assertThat(PRINCIPALS.findByEmail(unpinnedEmail)).as("nothing provisioned").isEmpty();
@@ -495,50 +563,50 @@ class OidcBridgeTest {
         String pinnedEmail = "pin-" + RUN + "@" + multiPinnedDomain;
         q = begin("domain=" + multiPinnedDomain);
         idTokenFor(q, pinnedEmail).issuer("http://tenant-acme.example").claim("tid", "attacker-tenant");
-        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c")).get("error").asString())
+        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")))).get("error").asString())
                 .as("the mapping's pin").isEqualTo("TENANT_MISMATCH");
 
         String providerEmail = "prov-" + RUN + "@" + multi2Domain;
         emails.add(providerEmail);
         q = begin("domain=" + multi2Domain);
         idTokenFor(q, providerEmail).issuer("http://tenant-acme.example").claim("tid", "attacker-tenant");
-        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c")).get("error").asString())
+        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")))).get("error").asString())
                 .as("the provider's pin covers a mapping without its own").isEqualTo("TENANT_MISMATCH");
         q = begin("domain=" + multi2Domain);
         idTokenFor(q, providerEmail).issuer("http://tenant-acme.example").claim("tid", "tid-b-" + RUN);
-        var viaProvider = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        var viaProvider = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
         assertThat(viaProvider.statusCode()).as(viaProvider.body()).isEqualTo(302);
 
         // Provider-direct: the provider's own list, or refused.
-        var r = http.get("/auth/oidc/login?provider_id=" + multiIdpId);
+        var r = start("/auth/oidc/login?provider_id=" + multiIdpId);
         q = query(location(r));
         idTokenFor(q, "direct-nopin-" + RUN + "@" + multiDomain).issuer("http://tenant-acme.example").claim("tid", "any");
-        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c")).get("error").asString())
+        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")))).get("error").asString())
                 .isEqualTo("TENANT_NOT_PINNED");
-        r = http.get("/auth/oidc/login?provider_id=" + multi2IdpId);
+        r = start("/auth/oidc/login?provider_id=" + multi2IdpId);
         q = query(location(r));
         idTokenFor(q, "direct-" + RUN + "@" + multi2Domain).issuer("http://tenant-acme.example").claim("tid", "attacker-tenant");
-        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c")).get("error").asString())
+        assertThat(json(http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")))).get("error").asString())
                 .isEqualTo("TENANT_MISMATCH");
     }
 
     @Test
     void providerDirectLoginBindsToTheProvidersDomainsAndProvisionsAnInertUser() {
-        var r = http.get("/auth/oidc/login?provider_id=" + oidcIdpId);
+        var r = start("/auth/oidc/login?provider_id=" + oidcIdpId);
         assertThat(r.statusCode()).as(r.body()).isEqualTo(302);
         Map<String, String> q = query(location(r));
         String outside = "outsider-" + RUN + "@elsewhere-" + RUN + ".example";
         idTokenFor(q, outside);
-        var refused = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        var refused = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
         assertThat(refused.statusCode()).isEqualTo(403);
         assertThat(json(refused).get("message").asString()).contains("not allowed for this identity provider");
 
-        r = http.get("/auth/oidc/login?provider_id=" + oidcIdpId);
+        r = start("/auth/oidc/login?provider_id=" + oidcIdpId);
         q = query(location(r));
         String inside = "direct-" + RUN + "@" + tenantDomain; // routed to this provider by its mapping
         emails.add(inside);
         idTokenFor(q, inside).claim("roles", List.of("Reader-" + RUN));
-        var ok = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        var ok = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
         assertThat(ok.statusCode()).as(ok.body()).isEqualTo(302);
         Principal p = PRINCIPALS.findByEmail(inside).orElseThrow();
         assertThat(p.scope()).as("an inert portal-style user").isEqualTo(UserScope.CLIENT);
@@ -546,7 +614,7 @@ class OidcBridgeTest {
         assertThat(p.allApplications()).isFalse();
         assertThat(p.roles()).as("no role sync on the provider-direct path").isEmpty();
 
-        var notOidc = http.get("/auth/oidc/login?provider_id=" + DB.select(OAUTH_IDENTITY_PROVIDERS.ID).from(OAUTH_IDENTITY_PROVIDERS)
+        var notOidc = start("/auth/oidc/login?provider_id=" + DB.select(OAUTH_IDENTITY_PROVIDERS.ID).from(OAUTH_IDENTITY_PROVIDERS)
                 .where(OAUTH_IDENTITY_PROVIDERS.CODE.eq("idp-int-" + RUN)).fetchOne(OAUTH_IDENTITY_PROVIDERS.ID));
         assertThat(notOidc.statusCode()).isEqualTo(500);
         assertThat(json(notOidc).get("error").asString()).isEqualTo("OIDC_RESOLVE_FAILED");
@@ -595,7 +663,7 @@ class OidcBridgeTest {
         emails.add(email);
         Map<String, String> q = begin("domain=" + oidcDomain);
         idTokenFor(q, email);
-        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", "X-Forwarded-For", ATTEMPT_XFF, "User-Agent", ATTEMPT_UA);
+        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", "Cookie", BINDINGS.get(q.get("state")), "X-Forwarded-For", ATTEMPT_XFF, "User-Agent", ATTEMPT_UA);
         assertThat(r.statusCode()).as(r.body()).isEqualTo(302);
 
         String principalId = PRINCIPALS.findByEmail(email).orElseThrow().id();
@@ -615,7 +683,7 @@ class OidcBridgeTest {
         String email = "attempt-mismatch-" + RUN + "@other-" + RUN + ".example";
         Map<String, String> q = begin("domain=" + oidcDomain);
         idTokenFor(q, email);
-        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", "X-Forwarded-For", ATTEMPT_XFF, "User-Agent", ATTEMPT_UA);
+        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", "Cookie", BINDINGS.get(q.get("state")), "X-Forwarded-For", ATTEMPT_XFF, "User-Agent", ATTEMPT_UA);
         assertThat(json(r).get("error").asString()).isEqualTo("EMAIL_DOMAIN_MISMATCH");
 
         List<LoginAttempt> rows = ATTEMPTS.findRecentByIdentifier(email, 10);
@@ -637,7 +705,7 @@ class OidcBridgeTest {
         idTokenFor(q, email);
         SIGN_WITH_ROGUE_KEY.set(true);
         try {
-            var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", "X-Forwarded-For", ATTEMPT_XFF, "User-Agent", ATTEMPT_UA);
+            var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", "Cookie", BINDINGS.get(q.get("state")), "X-Forwarded-For", ATTEMPT_XFF, "User-Agent", ATTEMPT_UA);
             assertThat(json(r).get("error").asString()).isEqualTo("OIDC_VERIFY");
         } finally {
             SIGN_WITH_ROGUE_KEY.set(false);
@@ -682,7 +750,7 @@ class OidcBridgeTest {
                 null, null, rp.id(), Instant.now(), Instant.now().plus(Duration.ofMinutes(10)));
         STATES.insert(okState);
         idTokenFor(Map.of("nonce", "portal-nonce-ok-" + RUN), okEmail);
-        var ok = http.get("/auth/oidc/callback?state=portal-ok-" + RUN + "&code=c", "X-Forwarded-For", ATTEMPT_XFF, "User-Agent", ATTEMPT_UA);
+        var ok = http.get("/auth/oidc/callback?state=portal-ok-" + RUN + "&code=c", "Cookie", bindingCookie("portal-ok-" + RUN), "X-Forwarded-For", ATTEMPT_XFF, "User-Agent", ATTEMPT_UA);
         assertThat(ok.statusCode()).as("PortalSink.disabled(): the identity checks passed, only the sink is unwired").isEqualTo(500);
         assertThat(json(ok).get("error").asString()).isEqualTo("PORTAL_DISABLED");
         assertThat(ATTEMPTS.findRecentByIdentifier(okEmail, 10)).as("a successful portal-plane login writes no row").isEmpty();
@@ -696,7 +764,7 @@ class OidcBridgeTest {
                 null, null, rp.id(), Instant.now(), Instant.now().plus(Duration.ofMinutes(10)));
         STATES.insert(refusedState);
         idTokenFor(Map.of("nonce", "portal-nonce-refused-" + RUN), refusedEmail);
-        var refused = http.get("/auth/oidc/callback?state=portal-refused-" + RUN + "&code=c", "X-Forwarded-For", ATTEMPT_XFF, "User-Agent", ATTEMPT_UA);
+        var refused = http.get("/auth/oidc/callback?state=portal-refused-" + RUN + "&code=c", "Cookie", bindingCookie("portal-refused-" + RUN), "X-Forwarded-For", ATTEMPT_XFF, "User-Agent", ATTEMPT_UA);
         assertThat(json(refused).get("error").asString()).isEqualTo("EMAIL_DOMAIN_MISMATCH");
         assertThat(ATTEMPTS.findRecentByIdentifier(refusedEmail, 10)).as("a refused portal-plane login writes no row either").isEmpty();
     }
@@ -709,7 +777,7 @@ class OidcBridgeTest {
         emails.add(email);
         Map<String, String> q = begin("domain=" + oidcDomain);
         idTokenFor(q, email);
-        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
         assertThat(r.statusCode()).as(r.body()).isEqualTo(302);
 
         String userId = PRINCIPALS.findByEmail(email).orElseThrow().id();
@@ -725,7 +793,7 @@ class OidcBridgeTest {
         emails.add(email);
         Map<String, String> q = begin("domain=" + oidcDomain);
         idTokenFor(q, email).claim("department", "engineering");
-        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
         assertThat(r.statusCode()).as(r.body()).isEqualTo(302);
 
         String userId = PRINCIPALS.findByEmail(email).orElseThrow().id();
@@ -743,7 +811,7 @@ class OidcBridgeTest {
         try {
             Map<String, String> q = begin("domain=" + oidcDomain);
             idTokenFor(q, jwtEmail);
-            var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+            var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
             assertThat(r.statusCode()).as(r.body()).isEqualTo(302);
             String userId = PRINCIPALS.findByEmail(jwtEmail).orElseThrow().id();
             JsonNode accessToken = onlyLoggedInEvent(userId).path("federatedClaims").path("accessToken");
@@ -756,7 +824,7 @@ class OidcBridgeTest {
         emails.add(opaqueEmail);
         Map<String, String> q2 = begin("domain=" + oidcDomain);
         idTokenFor(q2, opaqueEmail); // the fixture's default access_token, "x", is opaque
-        var r2 = http.get("/auth/oidc/callback?state=" + q2.get("state") + "&code=c");
+        var r2 = http.get("/auth/oidc/callback?state=" + q2.get("state") + "&code=c", bound(q2.get("state")));
         assertThat(r2.statusCode()).as(r2.body()).isEqualTo(302);
         String opaqueUserId = PRINCIPALS.findByEmail(opaqueEmail).orElseThrow().id();
         JsonNode accessToken = onlyLoggedInEvent(opaqueUserId).path("federatedClaims").path("accessToken");
@@ -769,7 +837,7 @@ class OidcBridgeTest {
         emails.add(email);
         Map<String, String> q = begin("domain=" + oidcDomain);
         idTokenFor(q, email).claim("roles", List.of("Reader-" + RUN));
-        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
         assertThat(r.statusCode()).as(r.body()).isEqualTo(302);
 
         String userId = PRINCIPALS.findByEmail(email).orElseThrow().id();
@@ -785,7 +853,7 @@ class OidcBridgeTest {
         String email = "nomatch-" + RUN + "@" + oidcDomain;
         Map<String, String> q = begin("domain=" + oidcDomain);
         idTokenFor(q, email).claim("nonce", "not-the-nonce");
-        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
         assertThat(json(r).get("error").asString()).isEqualTo("NONCE_MISMATCH");
 
         assertThat(DB.fetch("SELECT id FROM msg_events WHERE type = ? AND data::text LIKE ?",
@@ -800,7 +868,7 @@ class OidcBridgeTest {
         emails.add(email);
         Map<String, String> q = begin("domain=" + oidcDomain);
         idTokenFor(q, email).claim("department", "engineering").claim("roles", List.of("Reader-" + RUN));
-        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c");
+        var r = http.get("/auth/oidc/callback?state=" + q.get("state") + "&code=c", bound(q.get("state")));
         assertThat(r.statusCode()).as(r.body()).isEqualTo(302);
 
         String userId = PRINCIPALS.findByEmail(email).orElseThrow().id();
@@ -848,9 +916,34 @@ class OidcBridgeTest {
 
     // ── helpers ────────────────────────────────────────────────────────────
 
+    /// The binding cookie each start set, by state (a browser's cookie jar, LoginBinding).
+    private static final Map<String, String> BINDINGS = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /// `GET` a login start, as a browser: the binding cookie it sets is kept for the callback.
+    private static HttpResponse<String> start(String pathAndQuery) {
+        var r = http.get(pathAndQuery);
+        if (r.statusCode() == 302) {
+            String state = query(location(r)).get("state");
+            r.headers().allValues("set-cookie").stream().filter(c -> c.startsWith("fc_sso_"))
+                    .findFirst().ifPresent(c -> BINDINGS.put(state, c.substring(0, c.indexOf(';'))));
+        }
+        return r;
+    }
+
+    /// The `Cookie` header of the browser that started the login for `state`.
+    private static String[] bound(String state) {
+        String cookie = BINDINGS.get(state);
+        return cookie == null ? new String[0] : new String[] {"Cookie", cookie};
+    }
+
+    /// The binding cookie for a state written straight to the store.
+    private static String bindingCookie(String state) {
+        return new LoginBinding(false).cookieName(state) + "=" + state;
+    }
+
     /// Starts a login and returns the authorize redirect's query.
     private static Map<String, String> begin(String query) {
-        var r = http.get("/auth/oidc/login?" + query);
+        var r = start("/auth/oidc/login?" + query);
         assertThat(r.statusCode()).as(r.body()).isEqualTo(302);
         return query(location(r));
     }

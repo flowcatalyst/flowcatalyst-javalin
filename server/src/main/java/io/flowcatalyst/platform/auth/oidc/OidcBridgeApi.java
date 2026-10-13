@@ -116,6 +116,11 @@ public final class OidcBridgeApi {
     private OidcBridgeApi() {
     }
 
+    /// The browser binding of a login state, secure exactly when the session cookie is.
+    public static LoginBinding binding(State s) {
+        return new LoginBinding(s.cookie().secure());
+    }
+
     public static void register(Routes routes, State s) {
         routes.get("/auth/oidc/login", ctx -> login(ctx, s));
         routes.get(CALLBACK_PATH, ctx -> callback(ctx, s));
@@ -191,6 +196,8 @@ public final class OidcBridgeApi {
             HttpError.write(ctx, 500, "OIDC_STATE", "persist state failed", Map.of());
             return;
         }
+        // Bind the state to this browser: the callback requires this cookie (LoginBinding).
+        binding(s).bind(ctx, state.state());
         ctx.redirect(provider.authorizeUrl(callbackUrl(ctx, s), state), 302);
     }
 
@@ -217,6 +224,22 @@ public final class OidcBridgeApi {
         }
         // From here the state is burned: any failure means restarting.
         LoginState state = consumed.get();
+
+        // The state must have been started in this browser (LoginBinding): otherwise this
+        // is someone else's callback link, and completing it would sign this browser in to
+        // their account (login CSRF). Checked after the consume, so a refused link is spent.
+        // No login-attempt row: nothing has named an identity yet.
+        var binding = binding(s);
+        boolean bound = binding.boundToBrowser(ctx, stateParam);
+        binding.clear(ctx, stateParam);
+        if (!bound) {
+            LOG.atWarn().setMessage("OIDC callback refused: the login was not started in this browser")
+                    .addKeyValue("identityProviderId", state.identityProviderId())
+                    .log();
+            HttpError.write(ctx, 400, "LOGIN_NOT_STARTED_HERE",
+                    "This sign-in was not started in this browser. Start the sign-in again.", Map.of());
+            return;
+        }
 
         OidcProvider provider;
         IdentityProvider idp;

@@ -111,6 +111,8 @@ public final class PortalSso implements OidcBridgeApi.PortalSink {
             HttpError.write(ctx, 500, "OIDC_STATE", "persist state failed", Map.of());
             return;
         }
+        // Bind the state to this browser: the shared callback requires this cookie (LoginBinding).
+        OidcBridgeApi.binding(s.bridge()).bind(ctx, state.state());
         ctx.redirect(r.provider().orElseThrow().authorizeUrl(OidcBridgeApi.callbackUrl(ctx, s.bridge()), state), 302);
     }
 
