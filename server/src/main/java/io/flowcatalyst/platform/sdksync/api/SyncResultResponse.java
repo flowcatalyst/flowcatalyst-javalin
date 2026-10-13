@@ -21,15 +21,21 @@ import java.util.List;
 /// `passwordHashIgnored` (principal sync only, omitted when empty): the emails
 /// whose `passwordHash` was not applied because the principal already existed
 /// (owner ruling 2026-09-25, backlog "Overnight review" item 4).
+///
+/// `skippedRoles` (principal sync only, omitted when empty): the role names
+/// that are not roles, so were not assigned to anyone (Go F15; lower-cased,
+/// each once, in payload order).
 public record SyncResultResponse(String applicationCode, int created, int updated, int deleted, List<String> syncedCodes,
-                                 @JsonInclude(JsonInclude.Include.NON_EMPTY) List<String> passwordHashIgnored) {
+                                 @JsonInclude(JsonInclude.Include.NON_EMPTY) List<String> passwordHashIgnored,
+                                 @JsonInclude(JsonInclude.Include.NON_EMPTY) List<String> skippedRoles) {
 
     public SyncResultResponse(String applicationCode, int created, int updated, int deleted, List<String> syncedCodes) {
-        this(applicationCode, created, updated, deleted, syncedCodes, List.of());
+        this(applicationCode, created, updated, deleted, syncedCodes, List.of(), List.of());
     }
 
     public SyncResultResponse {
         passwordHashIgnored = passwordHashIgnored == null ? List.of() : List.copyOf(passwordHashIgnored);
+        skippedRoles = skippedRoles == null ? List.of() : List.copyOf(skippedRoles);
         syncedCodes = syncedCodes == null ? List.of() : List.copyOf(syncedCodes);
     }
 
@@ -59,7 +65,7 @@ public record SyncResultResponse(String applicationCode, int created, int update
 
     static SyncResultResponse from(PrincipalsSynced e, List<String> passwordHashIgnored) {
         return new SyncResultResponse(e.applicationCode(), e.created(), e.updated(), e.deactivated(), e.syncedEmails(),
-                passwordHashIgnored);
+                passwordHashIgnored, e.skippedRoles());
     }
 
     /// Docs emit no event: the store's replace result, named by the resolved application.

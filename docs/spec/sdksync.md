@@ -61,6 +61,14 @@ array (`[]` when empty). Each route maps its aggregate's rollup:
 
 Scheduled jobs and OpenAPI have their own response shapes (§3).
 
+Two optional arrays, principal sync only, omitted when empty (so every other
+route's response is unchanged): `passwordHashIgnored` (emails whose
+`passwordHash` was not applied because the user already existed) and
+`skippedRoles` (Go F15, owner ruling 2026-10-13: role names that are not
+roles, so were not assigned to anyone; lower-cased, each once across the
+request, in payload order; `principal.md` §2, "Principal sync's per-resource
+rules").
+
 ## 3. Routes (lockfile, tag `sdk-sync`)
 
 All `POST`, all `200`, request bodies `application/json` (unparseable → 400

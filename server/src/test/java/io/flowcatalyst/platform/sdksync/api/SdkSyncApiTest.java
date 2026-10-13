@@ -229,6 +229,79 @@ class SdkSyncApiTest {
         assertThat(principals.findByEmail(upEmail)).as("nothing written").isEmpty();
     }
 
+    // ── Principals: names that are not roles (Go F15, 3aeb08c) ───────────────
+
+    /// Go `TestSyncPrincipals_AppRouteSkipsUnknownRoles`. On the application's
+    /// route a name that is not a role, whatever its prefix, is not assigned,
+    /// creates nothing and refuses nothing: the entry syncs with its other
+    /// roles and the response lists the name in `skippedRoles` (lower-cased,
+    /// each once across the request, in payload order; omitted when none). A
+    /// known role of another application still refuses the whole sync.
+    @Test
+    void principalsSyncSkipsRoleNamesThatAreNotRoles() {
+        var roles = new RoleRepository(TestPg.dataSource());
+        var clerk = io.flowcatalyst.platform.role.Role.create(APP, "f15-clerk", "Clerk")
+                .withPermissions(java.util.List.of(APP + ":order:view"));
+        var foreign = io.flowcatalyst.platform.role.Role.create(OTHER_APP, "f15-clerk", "Clerk")
+                .withPermissions(java.util.List.of(OTHER_APP + ":order:view"));
+        UOW.inTransaction(tx -> { roles.persist(clerk, tx.dbTx()); roles.persist(foreign, tx.dbTx()); return null; });
+        String[] caller = {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_APPLICATIONS, appId,
+                Authenticator.TEST_PERMISSIONS, "platform:iam:user:update"};
+        var principals = new PrincipalRepository(TestPg.dataSource());
+        String a = "f15a" + RUN + "@example.test";
+        String b = "f15b" + RUN + "@example.test";
+        String c = "f15c" + RUN + "@example.test";
+        String pending = APP + ":f15-not-yet-synced";
+
+        // Own-prefixed, unprefixed and another application's prefix alike are
+        // skipped; the known role is assigned; the sync is not refused.
+        var r = post(syncPath("principals"), "{\"principals\":["
+                + "{\"email\":\"" + a + "\",\"name\":\"A\",\"roles\":[\"" + clerk.name() + "\",\"" + pending
+                + "\",\"Unprefixed\",\"ghostapp:admin\"]},"
+                + "{\"email\":\"" + b + "\",\"name\":\"B\",\"roles\":[\"" + pending.toUpperCase(Locale.ROOT)
+                + "\",\"unprefixed\"]}]}", caller);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        var body = json(r);
+        assertThat(body.get("created").asInt()).isEqualTo(2);
+        assertThat(body.get("syncedCodes").toString()).isEqualTo("[\"" + a + "\",\"" + b + "\"]");
+        assertThat(body.get("skippedRoles").toString())
+                .isEqualTo("[\"" + pending + "\",\"unprefixed\",\"ghostapp:admin\"]");
+        assertThat(principals.findByEmail(a).orElseThrow().roleNames()).as("no assignment for a name that is not a role")
+                .containsExactly(clerk.name());
+        assertThat(principals.findByEmail(b).orElseThrow().roleNames()).as("every name skipped: still synced, no role")
+                .isEmpty();
+
+        // Once the role exists, the same sync assigns it and reports nothing.
+        var synced = post(syncPath("roles"), "{\"roles\":[{\"name\":\"f15-not-yet-synced\"}]}", anchor());
+        assertThat(synced.statusCode()).as(synced.body()).isEqualTo(200);
+        r = post(syncPath("principals"), "{\"principals\":[{\"email\":\"" + a + "\",\"name\":\"A\",\"roles\":[\""
+                + clerk.name() + "\",\"" + pending + "\"]}]}", caller);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        assertThat(r.body()).as("omitted when nothing was skipped").doesNotContain("skippedRoles");
+        assertThat(principals.findByEmail(a).orElseThrow().roleNames()).containsExactlyInAnyOrder(clerk.name(), pending);
+
+        // An existing user whose every name is skipped keeps none of this
+        // application's SDK_SYNC roles: the merge replaces the set with the empty one.
+        r = post(syncPath("principals"), "{\"principals\":[{\"email\":\"" + a + "\",\"name\":\"A\",\"roles\":[\"Nope:Gone\"]}]}", caller);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        assertThat(json(r).get("updated").asInt()).isEqualTo(1);
+        assertThat(json(r).get("skippedRoles").toString()).isEqualTo("[\"nope:gone\"]");
+        assertThat(principals.findByEmail(a).orElseThrow().roleNames()).isEmpty();
+
+        // A known role of another application still refuses the whole sync,
+        // even beside an unknown name.
+        r = post(syncPath("principals"), "{\"principals\":[{\"email\":\"" + c + "\",\"name\":\"C\",\"roles\":[\"ghostapp:admin\",\""
+                + foreign.name() + "\"]}]}", caller);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(403);
+        assertThat(json(r).get("error").asText()).isEqualTo("ROLE_APP_FORBIDDEN");
+        assertThat(json(r).get("message").asText())
+                .isEqualTo("role '" + foreign.name() + "' does not belong to application '" + APP + "'");
+        assertThat(principals.findByEmail(c)).as("a refused sync writes nothing").isEmpty();
+    }
+
     // ── Roles: the permission ceiling (Go F15, 2ba9763) ──────────────────────
 
     /// The wire shape of the role sync's ceiling: an application role a

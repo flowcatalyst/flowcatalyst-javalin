@@ -95,12 +95,21 @@ touched only when the caller could administer it
 a non-anchor reaches only `CLIENT`-scope principals of a client it can
 access) — otherwise the whole batch is refused `SYNC_TARGET_FORBIDDEN`
 (the `removeUnlisted` sweep instead skips such a principal, since it
-ranges over every user). Every role name must exist (`UNKNOWN_ROLE`); on
-the app-scoped route it must also belong to the sync's application
-(`ROLE_APP_FORBIDDEN`); on the platform route (no application code) a
-non-anchor may only name roles it could assign through `PUT
-/api/principals/{id}/roles` (§5.3's assignability rule; an anchor, any
-existing role). `passwordHash` is stored verbatim on a principal the sync
+ranges over every user). Role names are lower-cased and matched exactly
+(no `app:` prefix is added). On the app-scoped route a role must belong to
+the sync's application (403 `ROLE_APP_FORBIDDEN` "role '<name>' does not
+belong to application '<appCode>'", the whole sync refused); a name that is
+not a role, whatever its prefix, is not assigned, creates nothing and is not
+refused (Go F15, owner ruling 2026-10-13): the entry syncs with its other
+roles (one whose every name is skipped is still created or updated, with
+none of this application's `SDK_SYNC` roles), the name is logged (warn) and
+listed in the response's `skippedRoles` (lower-cased, each once across the
+request, in payload order, omitted when empty). Before 2026-10-13 such a
+name was 400 `UNKNOWN_ROLE`. On the platform route (no application code)
+every name must exist (`UNKNOWN_ROLE`, unchanged) and a non-anchor may only
+name roles it could assign through `PUT /api/principals/{id}/roles` (§5.3's
+assignability rule; an anchor, any existing role); it has no
+`skippedRoles`. `passwordHash` is stored verbatim on a principal the sync
 creates; on an *existing* principal it is applied only when the caller is
 a super-admin and otherwise silently ignored — **owner question**: should
 a non-super-admin's hash on an existing principal be refused outright

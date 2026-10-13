@@ -26,6 +26,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -57,10 +58,17 @@ import java.util.Set;
 ///     `SYNC_TARGET_FORBIDDEN`; the `removeUnlisted` sweep skips such
 ///     principals instead (it ranges over every user, so refusing would make
 ///     any non-anchor sweep impossible).
-///   - **Role names must exist** (`UNKNOWN_ROLE`). On the app-scoped route
-///     each must belong to the sync's application (`ROLE_APP_FORBIDDEN`),
-///     whoever the caller is. On the platform route (no application) a
-///     non-anchor may only name roles it could assign through
+///   - **Role names.** Each is lower-cased and matched exactly (no `app:`
+///     prefix is added). On the app-scoped route a role must belong to the
+///     sync's application (`ROLE_APP_FORBIDDEN`, the whole sync refused),
+///     whoever the caller is; a name that is not a role, whatever its prefix,
+///     is neither refused nor assigned (Go F15, owner ruling 2026-10-13): the
+///     entry syncs with its other roles (one whose every name is skipped keeps
+///     none of this application's `SDK_SYNC` roles), nothing is created, the
+///     name is logged and reported in [PrincipalsSynced#skippedRoles]
+///     (lower-cased, each once across the request, in payload order). On the
+///     platform route (no application) every name must exist (`UNKNOWN_ROLE`),
+///     and a non-anchor may only name roles it could assign through
 ///     `PUT /api/principals/{id}/roles` — application roles of an application
 ///     the target's home client is entitled to ([Access#assignableRolesProblem];
 ///     a new principal has no client, so no role at all); an anchor, as there,
@@ -110,18 +118,20 @@ public final class SyncPrincipals {
                     int created = 0;
                     int updated = 0;
                     int deactivated = 0;
+                    // The app route's names that are not roles (F15), each once, in payload order.
+                    var skipped = new LinkedHashSet<String>();
 
                     for (SyncPrincipalInput in : cmd.principals()) {
                         String email = EmailAddress.normalise(in.email());
                         syncedEmails.add(email);
-                        List<String> roleNames = in.roles().stream().map(r -> r.toLowerCase(Locale.ROOT)).toList();
+                        List<String> requested = in.roles().stream().map(r -> r.toLowerCase(Locale.ROOT)).toList();
 
                         Principal existing = repo.findByEmail(email).orElse(null);
                         if (existing != null && !Access.administers(ac, existing)) {
                             throw UseCaseException.authorization("SYNC_TARGET_FORBIDDEN",
                                     "Not authorised to manage principal '" + email + "'");
                         }
-                        requireSyncableRoles(roles, clientConfigs, ac, cmd, roleNames, existing);
+                        List<String> roleNames = syncableRoles(roles, clientConfigs, ac, cmd, requested, existing, skipped);
 
                         if (existing != null) {
                             Principal p = existing.syncSourcedRoles(RoleAssignment.SDK_SYNC, cmd.applicationCode(), roleNames).principal()
@@ -166,7 +176,15 @@ public final class SyncPrincipals {
                         }
                     }
 
-                    var rollup = PrincipalsSynced.of(ec, cmd.applicationCode(), created, updated, deactivated, syncedEmails);
+                    if (!skipped.isEmpty()) {
+                        // Never silently: logged here, and the route reports them.
+                        LOG.atWarn().setMessage("principal sync: role names that are not roles were not assigned")
+                                .addKeyValue("applicationCode", cmd.applicationCode())
+                                .addKeyValue("roles", List.copyOf(skipped))
+                                .log();
+                    }
+                    var rollup = PrincipalsSynced.of(ec, cmd.applicationCode(), created, updated, deactivated, syncedEmails,
+                            List.copyOf(skipped));
                     return Plan.sync(repo.withRoles(), saves, List.<SyncDelete<Principal>>of(), rollup);
                 });
     }
@@ -201,27 +219,44 @@ public final class SyncPrincipals {
         return cmd.applicationCode() != null && !cmd.applicationCode().isBlank();
     }
 
-    /// The role rule of the class doc: every name exists; app-scoped → each
-    /// belongs to the sync's application; platform route + non-anchor → each
-    /// is assignable to `target` (`null` = a principal this sync creates).
+    /// The role rule of the class doc, returning the names to assign, in the
+    /// order given. App-scoped: a name that is not a role is added to `skipped`
+    /// and left out; a role of another application refuses. Platform route:
+    /// every name exists; a non-anchor's are each assignable to `target`
+    /// (`null` = a principal this sync creates); all are assigned.
     ///
-    /// @throws UseCaseException validation `UNKNOWN_ROLE`; authorization
+    /// @throws UseCaseException validation `UNKNOWN_ROLE` (platform route); authorization
     ///                          `ROLE_APP_FORBIDDEN` | `PLATFORM_ROLE_FORBIDDEN`
-    private static void requireSyncableRoles(RoleRepository roles, ClientConfigRepository clientConfigs, AuthContext ac,
-                                             SyncPrincipalsCommand cmd, List<String> roleNames, Principal target) {
+    private static List<String> syncableRoles(RoleRepository roles, ClientConfigRepository clientConfigs, AuthContext ac,
+                                              SyncPrincipalsCommand cmd, List<String> roleNames, Principal target,
+                                              Set<String> skipped) {
+        if (appScoped(cmd)) {
+            var assign = new ArrayList<String>(roleNames.size());
+            for (String name : roleNames) {
+                Role role = roles.findByName(name).orElse(null);
+                if (role == null) {
+                    skipped.add(name);
+                    continue;
+                }
+                if (!role.owningApplicationCode().equals(cmd.applicationCode())) {
+                    throw UseCaseException.authorization("ROLE_APP_FORBIDDEN",
+                            "role '" + name + "' does not belong to application '" + cmd.applicationCode() + "'");
+                }
+                assign.add(name);
+            }
+            return assign;
+        }
         for (String name : roleNames) {
-            Role role = roles.findByName(name)
-                    .orElseThrow(() -> UseCaseException.validation("UNKNOWN_ROLE", "role not found: " + name));
-            if (appScoped(cmd) && !role.owningApplicationCode().equals(cmd.applicationCode())) {
-                throw UseCaseException.authorization("ROLE_APP_FORBIDDEN",
-                        "role '" + name + "' does not belong to application '" + cmd.applicationCode() + "'");
+            if (roles.findByName(name).isEmpty()) {
+                throw UseCaseException.validation("UNKNOWN_ROLE", "role not found: " + name);
             }
         }
-        if (!appScoped(cmd) && (ac == null || !ac.isAnchor())) {
+        if (ac == null || !ac.isAnchor()) {
             Set<String> allowed = Access.clientApplicationIds(clientConfigs, target == null ? null : target.clientId());
             Access.assignableRolesProblem(roles, roleNames, allowed).ifPresent(problem -> {
                 throw new UseCaseException(problem);
             });
         }
+        return roleNames;
     }
 }

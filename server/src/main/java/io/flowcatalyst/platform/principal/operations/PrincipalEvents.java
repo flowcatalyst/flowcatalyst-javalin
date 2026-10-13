@@ -317,17 +317,24 @@ public final class PrincipalEvents {
     /// The rollup emitted by [SyncPrincipals]: counts plus the synced emails;
     /// `deactivated` counts principals stripped of their `SDK_SYNC` roles.
     /// Message group `platform:principals` so syncs are delivered in order.
+    ///
+    /// `skippedRoles`: the role names the application's route did not assign
+    /// because they are not roles (Go F15), for the route's response. Not part
+    /// of the event's [#data()], so the catalogued schema is unchanged.
     public record PrincipalsSynced(EventMetadata metadata, String applicationCode, int created, int updated,
-                                   int deactivated, List<String> syncedEmails) implements DomainEvent {
+                                   int deactivated, List<String> syncedEmails, List<String> skippedRoles)
+            implements DomainEvent {
 
         public PrincipalsSynced {
             syncedEmails = syncedEmails == null ? List.of() : List.copyOf(syncedEmails);
+            skippedRoles = skippedRoles == null ? List.of() : List.copyOf(skippedRoles);
         }
 
         public static PrincipalsSynced of(ExecutionContext ec, String applicationCode, int created, int updated,
-                                          int deactivated, List<String> syncedEmails) {
+                                          int deactivated, List<String> syncedEmails, List<String> skippedRoles) {
             return new PrincipalsSynced(EventMetadata.of(ec, PRINCIPALS_SYNCED, SOURCE, syncSubjectFor(applicationCode))
-                    .withMessageGroup("platform:principals"), applicationCode, created, updated, deactivated, syncedEmails);
+                    .withMessageGroup("platform:principals"), applicationCode, created, updated, deactivated, syncedEmails,
+                    skippedRoles);
         }
 
         @Override

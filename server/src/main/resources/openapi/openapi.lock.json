@@ -7694,11 +7694,11 @@
             "type": "string"
           },
           "passwordHash": {
-            "description": "Pre-hashed password (bcrypt/argon2i/argon2id), stored verbatim; migrated on first login",
+            "description": "Pre-hashed password (bcrypt/argon2i/argon2id), stored verbatim on a user the sync creates; migrated on first login. Never applied to an existing user (reported in passwordHashIgnored).",
             "type": "string"
           },
           "roles": {
-            "description": "Role short names (prefixed with applicationCode)",
+            "description": "Role names, the application's own (app:role, matched case-insensitively and not prefixed by the platform). A name that is not a role is not assigned and is reported in skippedRoles; another application's role refuses the sync (403 ROLE_APP_FORBIDDEN).",
             "items": {
               "type": "string"
             },
@@ -7847,6 +7847,14 @@
             "type": "integer"
           },
           "passwordHashIgnored": {
+            "description": "Principal sync only: emails whose passwordHash was ignored because the user already exists (omitted when none)",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "skippedRoles": {
+            "description": "Principal sync only: role names that are not roles and so were not assigned to anyone (lower-cased, each once, in payload order; omitted when none). The rest of the sync applied.",
             "items": {
               "type": "string"
             },

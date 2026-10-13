@@ -647,20 +647,31 @@ class PrincipalOperationsTest {
                 new SyncPrincipalInput(email("f8up"), "Up", List.of(elevated.name()), true, null)), false)).created()).isEqualTo(1);
     }
 
-    /// Role names must exist and, on an application's route, belong to that
-    /// application — for an anchor super-admin too: an SDK credential cannot
-    /// hand out another application's (or the platform's) roles.
+    /// On an application's route a role must belong to that application — for
+    /// an anchor super-admin too: an SDK credential cannot hand out another
+    /// application's (or the platform's) roles. A name that is not a role is
+    /// skipped there (Go F15, owner ruling 2026-10-13): not assigned, not
+    /// refused, reported in `skippedRoles`. The platform route is unchanged:
+    /// an unknown name refuses the sync, 400 `UNKNOWN_ROLE`.
     @Test
-    void syncRefusesAnUnknownRoleAndAnotherApplicationsRole() {
+    void syncRefusesAnotherApplicationsRoleAndSkipsAnUnknownOne() {
         Role other = seedRole("s13oth", "admin");
-        assertUseCaseError(() -> runAsAnchor(sync(), new SyncPrincipalsCommand("s13mine" + RUN, List.of(
-                        new SyncPrincipalInput(email("s13unknown"), "U", List.of("s13mine" + RUN + ":nope"), true, null)), false)),
-                UseCaseError.Validation.class, "UNKNOWN_ROLE");
+        var ev = runAsAnchor(sync(), new SyncPrincipalsCommand("s13mine" + RUN, List.of(
+                new SyncPrincipalInput(email("s13unknown"), "U", List.of("s13mine" + RUN + ":Nope"), true, null)), false));
+        assertThat(ev.created()).isEqualTo(1);
+        assertThat(ev.skippedRoles()).containsExactly("s13mine" + RUN + ":nope");
+        assertThat(repo.findByEmail(email("s13unknown")).orElseThrow().roleNames()).as("nothing assigned").isEmpty();
+        assertThat(roles.findByName("s13mine" + RUN + ":nope")).as("no role created").isEmpty();
+
         assertUseCaseError(() -> runAsAnchor(sync(), new SyncPrincipalsCommand("s13mine" + RUN, List.of(
                         new SyncPrincipalInput(email("s13other"), "O", List.of(other.name()), true, null)), false)),
                 UseCaseError.Authorization.class, "ROLE_APP_FORBIDDEN");
-        assertThat(repo.findByEmail(email("s13unknown"))).as("refused batch creates nothing").isEmpty();
-        assertThat(repo.findByEmail(email("s13other"))).isEmpty();
+        assertThat(repo.findByEmail(email("s13other"))).as("refused batch creates nothing").isEmpty();
+
+        assertUseCaseError(() -> runAsAnchor(sync(), new SyncPrincipalsCommand(null, List.of(
+                        new SyncPrincipalInput(email("s13platunknown"), "P", List.of("s13mine" + RUN + ":nope"), true, null)), false)),
+                UseCaseError.Validation.class, "UNKNOWN_ROLE");
+        assertThat(repo.findByEmail(email("s13platunknown"))).as("the platform route is unchanged").isEmpty();
     }
 
     /// Pinned: a client admin cannot set an anchor user's password hash (the
