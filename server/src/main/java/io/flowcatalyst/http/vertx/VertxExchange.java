@@ -417,6 +417,11 @@ final class VertxExchange implements Exchange {
         if (resp.ended() || resp.closed()) return io.vertx.core.Future.succeededFuture();
         boolean bodiless = status == 204 || body == null;
         writeHead(resp, bodiless);
+        if (!bodiless && "HEAD".equals(method())) {
+            // A HEAD answer is the GET's head: its length, never its body.
+            resp.putHeader("Content-Length", Integer.toString(body.length));
+            return resp.end();
+        }
         return bodiless ? resp.end() : resp.end(Buffer.buffer(body));
     }
 

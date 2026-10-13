@@ -80,6 +80,11 @@ public final class VertxRoutes implements Routes, RouteRegistry {
     }
 
     @Override
+    public Routes head(String path, Handler h) {
+        return add("HEAD", path, h);
+    }
+
+    @Override
     public Routes post(String path, Handler h) {
         return add("POST", path, h);
     }

@@ -17,6 +17,10 @@ public interface Routes {
 
     Routes get(String path, Handler h);
 
+    /// A `HEAD` route. A `GET` route does not answer `HEAD` by itself; the
+    /// adapter writes the head of what the handler produces, never the body.
+    Routes head(String path, Handler h);
+
     Routes post(String path, Handler h);
 
     Routes put(String path, Handler h);

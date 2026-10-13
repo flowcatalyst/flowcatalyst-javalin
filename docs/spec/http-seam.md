@@ -66,12 +66,14 @@ Dropped, not ported: `res()` (raw servlet response; its only use was the bodiles
 ## 2. `Routes`
 
 ```
-Routes get(String path, Handler h);   post, put, patch, delete likewise
+Routes get(String path, Handler h);   head, post, put, patch, delete likewise
 Routes before(Handler h);  Routes before(String path, Handler h);
 Routes after(Handler h);
 <E extends Exception> Routes exception(Class<E> type, ExceptionHandler<E> h);
 Routes in(Group group);   // a view: registrations made through it carry the group
 ```
+
+`head` (added with the SPA fallback, Go F16): a GET route does not answer HEAD by itself; for a HEAD request the Vert.x adapter writes the status, headers and `Content-Length` of what the handler produced, never the body.
 
 Path syntax is Javalin's and stays so on Vert.x: `{id}` one segment, `<path>` the rest
 (`Frontend` uses `/<path>`). The adapter translates; handlers never see the difference.
