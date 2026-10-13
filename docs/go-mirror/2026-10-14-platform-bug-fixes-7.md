@@ -16,6 +16,7 @@ Source: `../flowcatalyst-go/docs/platform-bug-fixes.md` F16 and "F16 follow-up",
 | `e31f0e62` | 4. SSO callback bound to the browser that started it (`LoginBinding`). |
 | `c2709781` | 5. Diagnostics (this port's debug surface) refuse cross-site and same-site browser fetches. |
 | (this file) | Ledger. |
+| `092920cb` | Follow-up: CORS never grants credentials (section at the end). |
 
 ## Observed before the fixes (Java, empirically)
 
@@ -252,6 +253,7 @@ refused. The router API itself and its dashboard (Basic in dev mode, ambient too
 - **CORS with credentials** (Java-only `CorsFilter`): an allow-listed origin gets
   `Access-Control-Allow-Credentials: true`, so a same-site allow-listed page can still **read**
   cookie-authenticated GET responses. Go has no CORS filter. Writes are now covered by `SessionCsrf`.
+  **Fixed in the follow-up below** (`092920cb`).
 - **Router API Basic auth in dev mode** is ambient too (state-changing router routes, the
   dashboard); only the diagnostics got the provenance rule, as Go scopes it to its debug gate.
 
@@ -290,3 +292,85 @@ refused. The router API itself and its dashboard (Basic in dev mode, ambient too
   tests run HTTP/1.1.
 - No SSO against a real IdP, no deployed environment behind a proxy, the e2e and parity suites not
   run (see above). The Rust port was not checked.
+
+## Follow-up: CORS never grants credentials (`092920cb`, Java-only)
+
+**The finding** (above, "Found, not changed"). `CorsFilter` (`platform/cors/filter`, spec
+`docs/spec/cors.md` §9) answered every allow-listed `Origin` with the origin echoed **and**
+`Access-Control-Allow-Credentials: true`, preflights included. A page on a listed origin that is a
+same-site sibling of the platform (Lax cookies reach it) could `fetch(url, {credentials:
+"include"})`, send the user's `__Host-fc_session`, and read the answer. `SessionCsrf` refuses its
+writes since `38b94bfb`; reads stayed open.
+
+**What relied on credentialed CORS: nothing found.** Searched the server, `fcdev`, the frontend,
+`e2e/`, `parity/`, the SDKs, `docs/` and `docs/go-mirror/`:
+
+- The SPA is served by the platform and calls relative paths (`frontend/src/api/client.ts`,
+  `credentials: "include"` on a same-origin URL); no build-time API base URL exists.
+- In development Vite (`frontend/vite.config.ts`, port 4200) **proxies** `/api`, `/bff`, `/auth`,
+  `/oauth`, `/.well-known` to the backend, so the browser sees one origin and never asks for CORS.
+- Playwright (`e2e/`) and the parity harness drive the platform's own origin; neither adds an
+  allow-list entry beyond the CORS admin page's own add/remove scenario.
+- The TypeScript, Laravel and Java SDKs call server-side with bearer tokens; none uses browser
+  credentials. `fcdev` seeds no CORS origin.
+- History: the filter landed 2026-09-05 (`8c3ae31f`, spec `0b3b6df0`) on the owner's ruling that the
+  stored allowlist should drive real headers (backlog: "CORS filter driven by the allowlist");
+  "credentials allowed" was the orchestrator's own default, justified in the spec as "the SPA
+  authenticates with the `fc_session` cookie" — which is true but same-origin, so it never needed
+  the grant. Go stores the same table and emits no CORS headers at all.
+
+So no dev-mode switch was added: there is no legitimate cookie-credentialed cross-origin caller to
+keep. Should one appear (an SPA served from another port without the proxy), the spec now says it
+must be an explicit dev-only flag, off by default, refused when the public base URL is `https`.
+
+**The change.** `CorsFilter`:
+
+- never sends `Access-Control-Allow-Credentials` (simple requests, error responses, preflights);
+- keeps the allow-list for bearer callers: a listed `Origin` is still echoed on
+  `Access-Control-Allow-Origin` and its preflight still answered 204 with the requested headers
+  (`authorization` included);
+- never reflects an `Origin` that does not match, never answers `*`;
+- sends `Vary: Origin` on **every** platform-surface response, with or without an `Origin` (was:
+  only when one was sent), appended to an existing `Vary`. The router prefix is still untouched.
+
+**Tests** (failing first: 10 tests across the three classes failed on the unchanged filter):
+`CorsFilterTest` (credentials absent on simple, preflight and wildcard matches; not-listed
+variants — `null`, suffix, prefix, scheme, port, case, trailing `/`, empty — never reflected;
+`Vary` on disallowed simple, disallowed preflight and no-`Origin` responses),
+`PlatformCorsScopeTest` (no credentials through `Platform.cors`; `Vary` on a platform path without
+an `Origin`, still none on the router prefix), and the new `CorsCredentialsIntegrationTest`
+(composed platform, real `__Host-fc_session`, real service-account bearer, a real allow-list entry
+added through the API: a cookie read from the listed sibling is answered with no credentials grant;
+its preflight too; a bearer caller on the listed origin keeps its preflight and echoed origin; a
+not-listed origin is neither reflected nor granted, its preflight 403; the same-origin SPA
+unaffected).
+
+**Mutants** (each killed, `-Dsurefire.timeout=300`): credentials restored on every match;
+credentials on preflights only; any `Origin` reflected; `*` instead of the echo; `Vary` only with
+an `Origin`; `Vary` dropped; `Vary` replacing an existing value; the preflight not stopping the
+chain.
+
+**Behaviour changes for clients**
+
+- A browser page on an allow-listed origin that calls with `credentials: "include"` (or
+  XHR `withCredentials`) now fails in the browser: the preflight lacks the credentials grant, and a
+  simple GET's response is not exposed to the page. The server still answers the simple GET (CORS is
+  a browser control). Such a page must use a bearer token (omit credentials).
+- A bearer-token page on an allow-listed origin: unchanged.
+- The platform SPA (same-origin, and the Vite proxy in dev), curl, SDKs: unchanged, except that every
+  platform-surface response now carries `Vary: Origin`.
+
+**Verification**: `CorsFilterTest` 10, `PlatformCorsScopeTest` 4, `CorsCredentialsIntegrationTest` 5,
+`CorsAllowlistTest`, `CorsOriginApiTest` green; server module 5,814 tests, 0 failures. **Full reactor,
+`mvn clean test` at `092920cb`: BUILD SUCCESS**, 0 failures, 0 errors (12:32 min): server 5,814 (1
+skipped), function-host 485 (2), fcdev 274, sdk 93 (1), parity 56 (1), usecase 46, function-api 145,
+eventloop-check 16.
+
+**Go**: nothing to mirror — Go has no CORS middleware and answers no preflight, which is stricter.
+If Go ever adds one, it must not send `Access-Control-Allow-Credentials` for this allow-list.
+
+**Not verified**: no real browser run (Chrome's handling of a credentialed preflight without the
+grant and of a non-exposed credentialed GET is per the Fetch standard, not observed); the e2e and
+parity suites not run; no deployed environment. Function-host endpoints declare their own
+`cors.allowCredentials` (`docs/functions.md` §6a); that is the function author's choice and is not
+changed here.
