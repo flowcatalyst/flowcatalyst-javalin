@@ -69,6 +69,11 @@ public interface Exchange {
     /// Request scheme, e.g. `"http"`.
     String scheme();
 
+    /// The host the request was addressed to, as the client sent it: the
+    /// `Host` header (HTTP/1.x) or the `:authority` (HTTP/2), port included
+    /// when the client gave one (Go's `Request.Host`). `""` when absent.
+    String host();
+
     /// Request `Content-Length`, `-1` when absent.
     long contentLength();
 

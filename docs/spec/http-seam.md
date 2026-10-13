@@ -44,6 +44,7 @@ Request side:
 - `String method()` — upper-case, `"GET"`… (Javalin returned `HandlerType`; the one comparison site becomes a string comparison).
 - `String ip()` — remote address as Javalin reports it (no XFF parsing here; `RateLimit.ClientIP` does that).
 - `String scheme()`.
+- `String host()` — the `Host` header (HTTP/1.x) or `:authority` (HTTP/2), port included when sent; `""` when absent (Go `Request.Host`; added for the session-cookie guard, `cookie-hardening.md` §4).
 - `long contentLength()` — request `Content-Length`, −1 when absent (Javalin's `int`; widen).
 - `String cookie(String name)` — request cookie value or `null`.
 - `<T> T attribute(String key)` / `void attribute(String key, Object value)` — per-request map.

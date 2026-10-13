@@ -169,6 +169,17 @@ final class VertxExchange implements Exchange {
     }
 
     @Override
+    public String host() {
+        String header = rc.request().getHeader("Host");
+        if (header != null) return header;
+        var authority = rc.request().authority();
+        if (authority == null || authority.host() == null) return "";
+        String h = authority.host();
+        if (h.indexOf(':') >= 0 && !h.startsWith("[")) h = "[" + h + "]";
+        return authority.port() >= 0 ? h + ":" + authority.port() : h;
+    }
+
+    @Override
     public long contentLength() {
         String v = rc.request().getHeader("Content-Length");
         if (v == null) return -1;

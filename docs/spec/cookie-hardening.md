@@ -53,6 +53,30 @@ Tests (mutant each): an `Authenticator` in secure mode authenticates `__Host-fc_
 and **rejects** `fc_session=<the same valid token>` (mutant: read both names); insecure mode the
 reverse; logout in secure mode emits both expiries (mutant: drop the legacy one); the §2 test.
 
+## 4. Cookie-session writes: provenance and JSON only (Go F16, 2026-10-14)
+
+`SameSite=Lax` keeps the cookie off cross-site POSTs, not off a sibling subdomain's (same-site).
+`SessionCsrf` (`platform.shared.auth`, Go `middleware.SessionCSRF`), a `before` filter right
+after the authenticator and before the profile-only gate, applies to a POST, PUT, PATCH or
+DELETE whose context the session cookie authenticated (`AuthContext.viaSessionCookie()`), except
+under `/oauth/` and `/.well-known/` (outside Go's authenticated group):
+
+1. `Sec-Fetch-Site` `same-origin` or `none` passes; another value passes only with a trusted
+   `Origin`. Without it, `Origin`'s host must equal the request's `Exchange.host()` (`Host` or
+   `:authority`) or `Origin` must be trusted. The trusted origin is the public base URL
+   (`FC_JWT_ISSUER`'s scheme and authority), for a proxy that rewrites `Host`. Neither header:
+   refused. Refusal: **403 `CROSS_ORIGIN_REQUEST`**, logged (warn).
+2. Then a request with a body (non-zero or unknown length) must be `application/json` or
+   `application/*+json` (a malformed or absent `Content-Type` is not): **415
+   `UNSUPPORTED_MEDIA_TYPE`**. Java only: `PUT /api/functions/{address}/artifacts/{digest}`
+   also takes `application/octet-stream` and `application/wasm`, which this port's SPA (the
+   Publish drawer) sends with the cookie.
+
+Not affected: bearer requests (the bearer wins when both are sent), test headers, a stale cookie,
+every `isPublicPath` route (login, 2FA, password reset, the dispatch callbacks), safe methods.
+Tests: `SessionCsrfTest` (the matrix), `SessionCsrfIntegrationTest` (a real `__Host-fc_session`
+through the composed platform). Ledger: `docs/go-mirror/2026-10-14-platform-bug-fixes-7.md`.
+
 ## Docs
 
 `docs/spec/auth-core.md` §6.1 cookie attributes; `docs/deployments.md` (the refusal, the one-time

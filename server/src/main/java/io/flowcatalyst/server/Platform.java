@@ -132,6 +132,7 @@ import io.flowcatalyst.platform.publicapi.Branding;
 import io.flowcatalyst.platform.publicapi.api.PublicApi;
 import io.flowcatalyst.platform.shared.auth.Authenticator;
 import io.flowcatalyst.platform.shared.auth.ProfileOnlyGate;
+import io.flowcatalyst.platform.shared.auth.SessionCsrf;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobInstanceRepository;
 import io.flowcatalyst.platform.scheduledjob.ScheduledJobRepository;
 import io.flowcatalyst.platform.sdksync.api.SdkSyncApi;
@@ -250,6 +251,11 @@ public final class Platform {
         // the enforcement side can never drift apart.
         var cookiesSecure = !env.authAllowTestHeaders();
         routes.before(authenticated(buildAuthenticator(cookiesSecure)));
+        // An unsafe request the session cookie authenticated must come from this origin and
+        // carry JSON (SessionCsrf, Go middleware.SessionCSRF); bearer callers are not affected.
+        // Before the profile gate, so a refused request gets the same answer whatever the
+        // caller's roles. The public base URL is trusted for a proxy that rewrites Host.
+        routes.before(new SessionCsrf(SessionCsrf.publicOrigins(env.jwtIssuer())));
         // The profile-only gate (docs/spec/portal-apps.md §6): immediately after the
         // authenticator, so it sees exactly the AuthContext (or lack of one) the
         // authenticator bound, and before every other before-filter/handler.
