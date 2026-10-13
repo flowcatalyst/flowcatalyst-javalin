@@ -1,6 +1,7 @@
 package io.flowcatalyst.platform.role.operations;
 
 import io.flowcatalyst.platform.role.Role;
+import io.flowcatalyst.platform.role.RoleCeiling;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.role.RoleSource;
 import io.flowcatalyst.platform.role.operations.RoleEvents.RoleCreated;
@@ -35,6 +36,17 @@ import java.util.stream.Collectors;
 /// Authorization is resource-level here: the caller must have access to
 /// the target application (the handler's coarse "may sync roles" gate and
 /// the `{appCode}` resolution are separate).
+///
+/// **Confinement** (S1.5, [Role]): a synced role may hold only this
+/// application's permissions, 400 `PERMISSION_OUTSIDE_APPLICATION`, per role
+/// as it is built. **The permission ceiling** ([RoleCeiling], Go F15 ruling 1,
+/// the role-edit routes' rule): every `platform:` permission a synced role
+/// gains or loses ([RoleCeiling#changed] of the stored and the sent list,
+/// only when the sent list is non-empty), every permission of a new role and
+/// of a role `removeUnlisted` deletes, is collected across the request and
+/// checked once, after confinement and `ROLE_HAS_ASSIGNMENTS`: 403
+/// `PERMISSION_ABOVE_CALLER`, the whole sync refused before anything is
+/// written. A same-named `CODE`/`DATABASE` role is skipped, so not counted.
 public final class SyncRoles {
 
     private SyncRoles() {
@@ -56,6 +68,9 @@ public final class SyncRoles {
                     var saves = new ArrayList<SyncSave<Role>>(cmd.roles().size());
                     var deletes = new ArrayList<SyncDelete<Role>>();
                     var syncedNames = new ArrayList<String>(cmd.roles().size());
+                    // The ceiling's input, in collection order (per role in payload
+                    // order: added then removed; then the deleted roles').
+                    var changed = new ArrayList<String>();
                     int created = 0;
                     int updated = 0;
                     for (SyncRoleInput in : cmd.roles()) {
@@ -70,6 +85,9 @@ public final class SyncRoles {
                                 continue; // never touch CODE / DATABASE rows
                             }
                             Role role = existing.syncedFromSdk(displayName, in.description(), in.permissions(), in.clientManaged());
+                            if (!in.permissions().isEmpty()) {
+                                changed.addAll(RoleCeiling.changed(existing.permissions(), in.permissions()));
+                            }
                             saves.add(new SyncSave<>(role, RoleUpdated.of(ec, role)));
                             updated++;
                         } else {
@@ -79,6 +97,7 @@ public final class SyncRoles {
                                     .withDescription(in.description())
                                     .withPermissions(in.permissions())
                                     .withClientManaged(in.clientManaged());
+                            changed.addAll(in.permissions());
                             saves.add(new SyncSave<>(role, RoleCreated.of(ec, role)));
                             created++;
                         }
@@ -95,9 +114,11 @@ public final class SyncRoles {
                                         "Cannot remove role '" + stale.name() + "' — " + held
                                                 + " principal(s) still hold it. Strip the assignments before syncing.");
                             }
+                            changed.addAll(stale.permissions());
                             deletes.add(new SyncDelete<>(stale, RoleDeleted.of(ec, stale)));
                         }
                     }
+                    RoleCeiling.requirePermissions(Auth.current(), changed);
 
                     var rollup = RolesSynced.ofApplication(ec, cmd.applicationCode(), created, updated, deletes.size(),
                             cmd.roles().size(), List.copyOf(syncedNames));

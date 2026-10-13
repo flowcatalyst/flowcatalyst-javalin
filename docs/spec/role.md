@@ -161,6 +161,7 @@ segment counts are not checked). Malformed JSON body → 400 `INVALID_JSON`
 | Handler | coarse permission (table in §3); unauthenticated → 403 `UNAUTHENTICATED` |
 | Create / Update / Delete / Grant / Revoke / SyncPlatformRoles | `publicAccess` — roles have no per-instance dimension; each entry point keeps its own gate |
 | SyncRoles — `authorize` phase | `canAccessApplication(cmd.applicationId)` (all-applications, or the id is in the principal's application list) → else 403 `FORBIDDEN` `Not authorised for application '<applicationCode>'`; no principal → `UNAUTHENTICATED` |
+| SyncRoles — execute phase | the permission ceiling over the whole request (§7.1), 403 `PERMISSION_ABOVE_CALLER` |
 | Reads | handler only |
 
 ## 6. Conflicts and not-found (execute phase)
@@ -197,6 +198,29 @@ For each input row, canonical name = `{applicationCode}:{short}` where
 
 Rollup `RolesSynced{created, updated, removed, total = input row count,
 applicationCode, syncedCodes = canonical names in input order}`.
+
+**Confinement and the permission ceiling** (Go F15 ruling 1, 2026-10-13; the
+role-edit routes' rule, `RoleCeiling`). Confinement (S1.5) refuses, per role as
+it is built, a permission outside the application: 400
+`PERMISSION_OUTSIDE_APPLICATION`. Then the changes of every role are collected:
+
+- an updated `SDK` role with a **non-empty** `permissions`:
+  `RoleCeiling.changed(stored, sent)` (added, then removed); an empty or
+  omitted list keeps the stored permissions and records nothing;
+- a new role: all its permissions;
+- a role `removeUnlisted` deletes: all its permissions;
+- a same-named `CODE`/`DATABASE` role is skipped untouched, so not counted.
+
+After `ROLE_HAS_ASSIGNMENTS`, the collected changes are checked once: a
+`platform:` permission the caller does not hold (`Permission.grants`, segment
+wildcards; `platform:*:*:*` holds everything) refuses the **whole** sync, nothing
+written: 403 `PERMISSION_ABOVE_CALLER` "You may only add or remove permissions you
+hold yourself: `<p1>, <p2>`" (each once, in collection order: per role in payload
+order its added then removed permissions, then the deleted roles'). An
+application's own permissions are never checked, so an SDK syncing them passes
+for any caller; on an ordinary application confinement stops a platform
+permission first, so additions reach the ceiling on the `platform` application,
+removals on a role a super-admin gave a platform permission.
 
 **load-bearing or accident?** The "existing" set is scoped by
 `applicationId`, but role names are globally unique. A `DATABASE` role created

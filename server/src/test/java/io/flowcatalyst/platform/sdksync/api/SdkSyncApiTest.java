@@ -229,6 +229,40 @@ class SdkSyncApiTest {
         assertThat(principals.findByEmail(upEmail)).as("nothing written").isEmpty();
     }
 
+    // ── Roles: the permission ceiling (Go F15, 2ba9763) ──────────────────────
+
+    /// The wire shape of the role sync's ceiling: an application role a
+    /// super-admin gave a platform permission cannot lose it through the SDK
+    /// sync of a caller who lacks it, 403 `PERMISSION_ABOVE_CALLER` with the
+    /// role-edit routes' message, nothing written; a re-sync that keeps it passes.
+    @Test
+    void rolesSyncIsBoundedByThePermissionCeiling() {
+        var roles = new RoleRepository(TestPg.dataSource());
+        var role = io.flowcatalyst.platform.role.Role.create(APP, "ceil-http", "Ceiling")
+                .withApplicationId(appId)
+                .withSource(io.flowcatalyst.platform.role.RoleSource.SDK)
+                .withPermissions(java.util.List.of(APP + ":order:view", "platform:iam:user:view"),
+                        io.flowcatalyst.platform.role.Role.CrossApplication.ALLOWED);
+        UOW.inTransaction(tx -> { roles.persist(role, tx.dbTx()); return null; });
+        String[] sdk = {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_APPLICATIONS, appId,
+                Authenticator.TEST_PERMISSIONS, "platform:application-service:role:update"};
+
+        var refused = post(syncPath("roles"),
+                "{\"roles\":[{\"name\":\"ceil-http\",\"permissions\":[\"" + APP + ":order:view\"]}]}", sdk);
+        assertThat(refused.statusCode()).as(refused.body()).isEqualTo(403);
+        assertThat(json(refused).get("error").asText()).isEqualTo("PERMISSION_ABOVE_CALLER");
+        assertThat(json(refused).get("message").asText())
+                .isEqualTo("You may only add or remove permissions you hold yourself: platform:iam:user:view");
+        assertThat(roles.findByName(role.name()).orElseThrow().permissions()).as("nothing written")
+                .containsExactlyInAnyOrder(APP + ":order:view", "platform:iam:user:view");
+
+        var kept = post(syncPath("roles"), "{\"roles\":[{\"name\":\"ceil-http\"}]}", sdk);
+        assertThat(kept.statusCode()).as(kept.body()).isEqualTo(200);
+    }
+
     // ── Gates ──────────────────────────────────────────────────────────────
 
     @Test

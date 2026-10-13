@@ -532,6 +532,167 @@ class RoleOperationsTest {
         assertThat(repo.findByName(application + ":other")).as("refused sync must be atomic").isEmpty();
     }
 
+    // ── SyncRoles: the permission ceiling (Go F15, 2ba9763) ────────────────
+
+    /// The SDK grants an application's service account these two (the role
+    /// sync's coarse gate); none of the tests' platform permissions.
+    private static final List<String> SDK_PERMISSIONS = List.of(
+            "platform:application-service:role:create", "platform:application-service:role:update");
+
+    private static final String ABOVE = "You may only add or remove permissions you hold yourself: ";
+
+    /// An anchor-tier caller bound to `applicationId` and holding exactly `permissions`.
+    private static AuthContext boundCaller(String applicationId, List<String> permissions) {
+        return new AuthContext(EntityType.PRINCIPAL.generate(), Scope.ANCHOR, null, List.of("*"), List.of(),
+                List.of(applicationId), false, permissions);
+    }
+
+    private static RoleEvents.RolesSynced syncAs(AuthContext caller, String applicationCode, String applicationId,
+                                                 boolean removeUnlisted, SyncRoleInput... roles) {
+        return Auth.runAs(caller, () -> SyncRoles.of(repo).run(uow,
+                new SyncRolesCommand(applicationCode, applicationId, List.of(roles), removeUnlisted),
+                ExecutionContext.of(caller.principalId())));
+    }
+
+    private static SyncRoleInput sdkRole(String name, String... permissions) {
+        return new SyncRoleInput(name, null, null, List.of(permissions), false);
+    }
+
+    /// 403 `PERMISSION_ABOVE_CALLER` naming exactly `named` (the message is the role-edit routes').
+    private static void aboveCaller(String label, ThrowingCallable call, String named) {
+        assertThatThrownBy(call).as(label)
+                .isInstanceOf(UseCaseException.class)
+                .extracting(t -> ((UseCaseException) t).error())
+                .satisfies(err -> {
+                    assertThat(err).as(label).isInstanceOf(UseCaseError.Authorization.class);
+                    assertThat(err.code()).as(label).isEqualTo("PERMISSION_ABOVE_CALLER");
+                    assertThat(err.message()).as(label).isEqualTo(ABOVE + named);
+                });
+    }
+
+    private static List<String> permissionsOf(String name) {
+        return repo.findByName(name).map(Role::permissions).orElse(null);
+    }
+
+    /// Go `TestSyncRoles_PlatformApplicationAdditionsBoundedByCaller`. On an
+    /// ordinary application confinement refuses a platform permission first,
+    /// so additions are reachable on the `platform` application, whose SDK
+    /// roles may hold platform permissions, but only ones the caller holds.
+    /// Only the change is checked; a refusal refuses the whole sync and writes
+    /// nothing; removal counts, by a replacing list or by `removeUnlisted`.
+    @Test
+    void syncRolesBoundsPlatformPermissionChangesByTheCaller() {
+        String appId = EntityType.APPLICATION.generate();
+        String viewer = "ceilplat-viewer-" + RUN;
+        String viewerName = "platform:" + viewer;
+        var held = new ArrayList<>(SDK_PERMISSIONS);
+        held.add("platform:iam:user:view");
+        var sdkOnly = boundCaller(appId, SDK_PERMISSIONS);
+
+        // A held platform permission: synced.
+        syncAs(boundCaller(appId, held), "platform", appId, false, sdkRole(viewer, "platform:iam:user:view"));
+        assertThat(permissionsOf(viewerName)).containsExactly("platform:iam:user:view");
+
+        // One the caller lacks, on a new role and added to an existing one:
+        // refused, the whole sync with it, nothing written.
+        aboveCaller("new role", () -> syncAs(boundCaller(appId, held), "platform", appId, false,
+                sdkRole("ceilplat-other-" + RUN, "platform:iam:user:view"),
+                sdkRole("ceilplat-escalated-" + RUN, "platform:*:*:*")), "platform:*:*:*");
+        assertThat(repo.findByName("platform:ceilplat-other-" + RUN)).as("the whole sync is refused").isEmpty();
+        assertThat(repo.findByName("platform:ceilplat-escalated-" + RUN)).isEmpty();
+        aboveCaller("existing role", () -> syncAs(boundCaller(appId, held), "platform", appId, false,
+                sdkRole(viewer, "platform:iam:user:view", "platform:iam:user:delete")), "platform:iam:user:delete");
+        assertThat(permissionsOf(viewerName)).containsExactly("platform:iam:user:view");
+
+        // Only the change: a caller lacking the kept permission re-syncs the
+        // same list, or none (which keeps the stored list), but cannot remove it.
+        assertThat(syncAs(sdkOnly, "platform", appId, false, sdkRole(viewer, "platform:iam:user:view")).updated()).isEqualTo(1);
+        assertThat(syncAs(sdkOnly, "platform", appId, false, sdkRole(viewer)).updated()).isEqualTo(1);
+        aboveCaller("removal", () -> syncAs(sdkOnly, "platform", appId, false,
+                sdkRole(viewer, "platform:application-service:role:create")), "platform:iam:user:view");
+        aboveCaller("removeUnlisted", () -> syncAs(sdkOnly, "platform", appId, true,
+                sdkRole("ceilplat-next-" + RUN)), "platform:iam:user:view");
+        assertThat(permissionsOf(viewerName)).as("nothing written").containsExactly("platform:iam:user:view");
+        assertThat(repo.findByName("platform:ceilplat-next-" + RUN)).isEmpty();
+
+        // A holder of the permission adds it.
+        var holder = new ArrayList<>(held);
+        holder.add("platform:iam:user:delete");
+        syncAs(boundCaller(appId, holder), "platform", appId, false,
+                sdkRole(viewer, "platform:iam:user:view", "platform:iam:user:delete"));
+        assertThat(permissionsOf(viewerName)).containsExactlyInAnyOrder("platform:iam:user:view", "platform:iam:user:delete");
+    }
+
+    /// The changes of every role are collected and checked once: per role in
+    /// payload order its added then its removed permissions, a new role's
+    /// all, then each role `removeUnlisted` deletes; each named once. Held
+    /// permissions drop out by the enforcement match (segment wildcards), and
+    /// `platform:*:*:*` holds everything.
+    @Test
+    void syncRolesChecksTheCollectedChangesOnceInCollectionOrder() {
+        String appId = EntityType.APPLICATION.generate();
+        String kept = "ceilord-kept-" + RUN;
+        String gone = "ceilord-gone-" + RUN;
+        var superAdmin = boundCaller(appId, List.of("platform:*:*:*"));
+        syncAs(superAdmin, "platform", appId, false,
+                sdkRole(kept, "platform:iam:role:view"), sdkRole(gone, "platform:iam:client:view"));
+
+        SyncRoleInput[] change = {
+                sdkRole(kept, "platform:iam:user:view"),
+                sdkRole("ceilord-new-" + RUN, "platform:iam:group:view", "platform:iam:user:view")};
+        aboveCaller("collection order", () -> syncAs(boundCaller(appId, SDK_PERMISSIONS), "platform", appId, true, change),
+                "platform:iam:user:view, platform:iam:role:view, platform:iam:group:view, platform:iam:client:view");
+        aboveCaller("a held wildcard covers what it names", () -> syncAs(
+                        boundCaller(appId, List.of("platform:application-service:role:*", "platform:iam:role:*")),
+                        "platform", appId, true, change),
+                "platform:iam:user:view, platform:iam:group:view, platform:iam:client:view");
+        assertThat(permissionsOf("platform:" + kept)).as("nothing written").containsExactly("platform:iam:role:view");
+        assertThat(repo.findByName("platform:" + gone)).isPresent();
+
+        var ev = syncAs(superAdmin, "platform", appId, true, change);
+        assertThat(ev.created()).isEqualTo(1);
+        assertThat(ev.removed()).isEqualTo(1);
+        assertThat(permissionsOf("platform:" + kept)).containsExactly("platform:iam:user:view");
+        assertThat(repo.findByName("platform:" + gone)).isEmpty();
+    }
+
+    /// The ceiling runs after the sync's other refusals: confinement (400
+    /// `PERMISSION_OUTSIDE_APPLICATION`, per role) and `ROLE_HAS_ASSIGNMENTS`.
+    /// A same-named `CODE` or `DATABASE` role is skipped untouched, so its
+    /// permissions and the ones sent for it are not counted.
+    @Test
+    void syncRolesCeilingFollowsConfinementAndAssignmentsAndSkipsNonSdkRows() {
+        // Confinement first: an ordinary application's role may not gain a
+        // platform permission at all, whoever the caller.
+        String application = app("ceilconf");
+        String confAppId = EntityType.APPLICATION.generate();
+        assertUseCaseError(() -> syncAs(boundCaller(confAppId, SDK_PERMISSIONS), application, confAppId, false,
+                        sdkRole("viewer", application + ":order:view"), sdkRole("escalated", "platform:*:*:*")),
+                UseCaseError.Validation.class, "PERMISSION_OUTSIDE_APPLICATION");
+
+        // ROLE_HAS_ASSIGNMENTS before the ceiling.
+        String appId = EntityType.APPLICATION.generate();
+        String held = "ceilasgn-held-" + RUN;
+        syncAs(boundCaller(appId, List.of("platform:*:*:*")), "platform", appId, false, sdkRole(held, "platform:iam:user:view"));
+        seedPrincipalHolding("platform:" + held);
+        assertUseCaseError(() -> syncAs(boundCaller(appId, SDK_PERMISSIONS), "platform", appId, true,
+                        sdkRole("ceilasgn-new-" + RUN, "platform:*:*:*")),
+                UseCaseError.BusinessRule.class, "ROLE_HAS_ASSIGNMENTS");
+
+        // A DATABASE row of the same name: skipped, not counted, untouched.
+        String dbAppId = EntityType.APPLICATION.generate();
+        String manual = "ceilskip-manual-" + RUN;
+        var row = Role.create("platform", manual, "Manual").withApplicationId(dbAppId).withSource(RoleSource.DATABASE)
+                .withPermissions(List.of("platform:iam:user:delete"));
+        uow.inTransaction(tx -> { repo.persist(row, tx.dbTx()); return null; });
+        var ev = syncAs(boundCaller(dbAppId, SDK_PERMISSIONS), "platform", dbAppId, true,
+                sdkRole(manual, "platform:iam:client:delete"));
+        assertThat(ev.created()).isZero();
+        assertThat(ev.updated()).isZero();
+        assertThat(ev.removed()).isZero();
+        assertThat(permissionsOf("platform:" + manual)).containsExactly("platform:iam:user:delete");
+    }
+
     // ── SyncPlatformRoles (static CODE catalogue) ──────────────────────────
 
     /// Every call passes the real catalogue plus the test's own entries, so
