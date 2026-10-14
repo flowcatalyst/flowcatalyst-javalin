@@ -15,6 +15,8 @@ import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.testpg.TestPg;
+import org.jooq.SQLDialect;
+import org.jooq.impl.DSL;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -23,6 +25,7 @@ import java.net.http.HttpResponse;
 import java.util.Locale;
 import java.util.UUID;
 
+import static io.flowcatalyst.db.generated.Tables.IAM_ROLE_PERMISSIONS;
 import static org.assertj.core.api.Assertions.assertThat;
 import io.flowcatalyst.platform.shared.auth.WriteGates;
 import io.flowcatalyst.platform.shared.auth.WriteGates.Write;
@@ -190,6 +193,9 @@ class RolesBffTest {
                 Authenticator.TEST_SCOPE, "ANCHOR",
                 Authenticator.TEST_PERMISSIONS, "platform:iam:role:view,platform:iam:role:create,platform:iam:role:update,platform:iam:role:delete"};
         assertThat(http.put("/bff/roles/" + fullName, "{\"displayName\":\"After\"}", anchorRoleWriter).statusCode()).isEqualTo(204);
+        // The permission ceiling bounds what the sync changes (Go F10): settle the catalogue as
+        // the wildcard holder first, so the gate is what this asserts.
+        assertThat(http.post("/bff/roles/sync-platform", null, ANCHOR).statusCode()).isEqualTo(200);
         assertThat(http.post("/bff/roles/sync-platform", null, anchorRoleWriter).statusCode()).isEqualTo(200);
         assertThat(http.post("/bff/roles/permissions",
                 "{\"application\":\"rbffapp" + RUN + "\",\"context\":\"s12\",\"aggregate\":\"z\",\"action\":\"w\"}",
@@ -235,6 +241,36 @@ class RolesBffTest {
         assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
         assertThat(json(r).propertyNames()).containsExactlyInAnyOrder("created", "updated", "removed", "total");
         assertThat(json(r).get("total").asInt()).isGreaterThan(0);
+    }
+
+    /// The permission ceiling on the platform role sync (Go F10, `c56a68c`): a
+    /// role writer holding neither the wildcard nor the permission the
+    /// catalogue would restore to a role trimmed by hand is refused, 403
+    /// `PERMISSION_ABOVE_CALLER` naming it, and nothing is written; the
+    /// wildcard holder restores it.
+    @Test
+    void syncPlatformIsBoundedByTheCallersPermissions() {
+        assertThat(http.post("/bff/roles/sync-platform", null, ANCHOR).statusCode()).isEqualTo(200);
+        var db = DSL.using(TestPg.dataSource(), SQLDialect.POSTGRES);
+        String roleId = state.roles().findByName("platform:messaging-admin").orElseThrow().id();
+        String trimmed = "platform:messaging:connection:sync";
+        db.deleteFrom(IAM_ROLE_PERMISSIONS)
+                .where(IAM_ROLE_PERMISSIONS.ROLE_ID.eq(roleId).and(IAM_ROLE_PERMISSIONS.PERMISSION.eq(trimmed)))
+                .execute();
+        String[] roleWriter = {Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "ANCHOR",
+                Authenticator.TEST_PERMISSIONS, "platform:iam:role:view,platform:iam:role:create,platform:iam:role:update,platform:iam:role:delete"};
+
+        var refused = http.post("/bff/roles/sync-platform", null, roleWriter);
+        assertThat(refused.statusCode()).as(refused.body()).isEqualTo(403);
+        assertThat(json(refused).get("error").asText()).isEqualTo("PERMISSION_ABOVE_CALLER");
+        assertThat(json(refused).get("message").asText())
+                .isEqualTo("You may only add or remove permissions you hold yourself: " + trimmed);
+        assertThat(state.roles().findByName("platform:messaging-admin").orElseThrow().permissions())
+                .as("nothing written").doesNotContain(trimmed);
+
+        assertThat(http.post("/bff/roles/sync-platform", null, ANCHOR).statusCode()).isEqualTo(200);
+        assertThat(state.roles().findByName("platform:messaging-admin").orElseThrow().permissions()).contains(trimmed);
     }
 
     // ── Load-bearing: permission catalogue = seed ∪ table, deduplicated by code ──

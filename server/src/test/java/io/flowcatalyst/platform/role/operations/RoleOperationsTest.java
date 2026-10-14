@@ -703,7 +703,9 @@ class RoleOperationsTest {
         String application = app("roleplat");
         List<RoleDefinition> catalogue = PlatformRoles.all();
         int n = catalogue.size();
-        var anchorCtx = ANCHOR;
+        // The wildcard holder: on this class's fresh database the first sync creates the
+        // catalogue, and the permission ceiling bounds what the sync adds (Go testpg.AnchorCtx).
+        var anchorCtx = SUPER_ADMIN;
 
         // The shared database may already carry the catalogue (and CODE rows seeded by other tests
         // that may be swept); only our own rows and the production catalogue are asserted on.
@@ -795,7 +797,7 @@ class RoleOperationsTest {
         List<RoleDefinition> catalogue = PlatformRoles.all();
         // Establish both real rows first (idempotent: a no-op if another test
         // already synced the full catalogue onto this shared database).
-        Auth.runAs(ANCHOR, () -> SyncPlatformRoles.of(repo, catalogue).run(uow, new SyncPlatformRolesCommand(), EC));
+        Auth.runAs(SUPER_ADMIN, () -> SyncPlatformRoles.of(repo, catalogue).run(uow, new SyncPlatformRolesCommand(), EC));
 
         String messagingAdminId = byName("platform:messaging-admin").id();
         String applicationServiceId = byName("platform:application-service").id();
@@ -819,13 +821,164 @@ class RoleOperationsTest {
                 .as("pre-K2 snapshot: the four app-svc connection perms stripped")
                 .doesNotContainAnyElementsOf(newAppSvcConnectionPerms);
 
-        Auth.runAs(ANCHOR, () -> SyncPlatformRoles.of(repo, catalogue).run(uow, new SyncPlatformRolesCommand(), EC));
+        Auth.runAs(SUPER_ADMIN, () -> SyncPlatformRoles.of(repo, catalogue).run(uow, new SyncPlatformRolesCommand(), EC));
 
         assertThat(byName("platform:messaging-admin").permissions())
                 .as("rollout step 3 restores connection:sync").contains("platform:messaging:connection:sync");
         assertThat(byName("platform:application-service").permissions())
                 .as("rollout step 3 restores the four app-svc connection perms")
                 .containsAll(newAppSvcConnectionPerms);
+    }
+
+    // ── SyncPlatformRoles: the permission ceiling (Go F10, c56a68c) ────────
+
+    /// A full platform administrator: the super-admin wildcard (Go
+    /// `testpg.AnchorCtx`). Anchor scope alone grants nothing.
+    private static final AuthContext SUPER_ADMIN = anchorHolding(List.of("platform:*:*:*"));
+
+    /// The route's coarse gate: the three role-write permissions.
+    private static final List<String> ROLE_WRITE = List.of(
+            "platform:iam:role:create", "platform:iam:role:update", "platform:iam:role:delete");
+
+    private static AuthContext anchorHolding(List<String> permissions) {
+        return new AuthContext(EntityType.PRINCIPAL.generate(), Scope.ANCHOR, null, List.of("*"), List.of(), List.of(), true,
+                permissions);
+    }
+
+    private static RoleEvents.RolesSynced syncPlatformAs(AuthContext caller, List<RoleDefinition> catalogue) {
+        return Auth.runAs(caller, () -> SyncPlatformRoles.of(repo, catalogue)
+                .run(uow, new SyncPlatformRolesCommand(), ExecutionContext.of(caller.principalId())));
+    }
+
+    /// A `platform` catalogue entry (confinement refuses platform permissions
+    /// on any other application's role before the ceiling is reached).
+    private static RoleDefinition platformDef(String shortName, String... permissions) {
+        return new RoleDefinition("platform:" + shortName, "Ceiling " + shortName, "platform-sync ceiling test role",
+                "platform", RoleDefinition.SOURCE_CODE, List.of(permissions));
+    }
+
+    /// Go `TestSyncPlatformRoles_BoundedByCallersPermissions`: the catalogue is
+    /// code, but the sync adds and removes platform permissions (restoring a
+    /// role trimmed by hand, sweeping a stale one), so a caller may run it only
+    /// when every platform permission it changes is one it holds. Only the
+    /// change is checked; removal counts (by the catalogue's list and by the
+    /// sweep); a refusal refuses the whole sync and writes nothing.
+    @Test
+    void syncPlatformRolesBoundsPlatformPermissionChangesByTheCaller() {
+        String code = "roleceil-code-" + RUN;
+        String name = "platform:" + code;
+        String view = "platform:roleceil" + RUN + ":thing:view";
+        String edit = "platform:roleceil" + RUN + ":thing:edit";
+        var held = new ArrayList<>(ROLE_WRITE);
+        held.add(view);
+        var lesser = anchorHolding(held);
+        List<RoleDefinition> catalogue = PlatformRoles.all();
+
+        syncPlatformAs(SUPER_ADMIN, withTest(catalogue, platformDef(code, view)));
+        assertThat(permissionsOf(name)).containsExactly(view);
+        assertThat(syncPlatformAs(lesser, withTest(catalogue, platformDef(code, view))).updated())
+                .as("nothing changes, nothing to check").isPositive();
+
+        // Adding one the caller lacks, to an existing role.
+        aboveCaller("added to an existing role", () -> syncPlatformAs(lesser, withTest(catalogue, platformDef(code, view, edit))), edit);
+        assertThat(permissionsOf(name)).as("a refused sync writes nothing").containsExactly(view);
+
+        // A new role holding one, beside a new role the caller could create:
+        // the whole sync is refused.
+        String within = "roleceil-within-" + RUN;
+        String above = "roleceil-above-" + RUN;
+        aboveCaller("new role", () -> syncPlatformAs(lesser, withTest(catalogue, platformDef(code, view),
+                platformDef(within, view), platformDef(above, edit))), edit);
+        assertThat(repo.findByName("platform:" + within)).as("the whole sync is refused").isEmpty();
+        assertThat(repo.findByName("platform:" + above)).isEmpty();
+
+        // The wildcard holder may; removal then counts, by the list and by the sweep.
+        syncPlatformAs(SUPER_ADMIN, withTest(catalogue, platformDef(code, view, edit)));
+        assertThat(permissionsOf(name)).containsExactlyInAnyOrder(view, edit);
+        aboveCaller("removed by the catalogue's list", () -> syncPlatformAs(lesser, withTest(catalogue, platformDef(code, view))), edit);
+        aboveCaller("removed by sweeping the stale role", () -> syncPlatformAs(lesser, catalogue), edit);
+        assertThat(permissionsOf(name)).as("nothing written").containsExactlyInAnyOrder(view, edit);
+
+        // A held segment wildcard covers what it names.
+        var wildcard = anchorHolding(List.of("platform:iam:role:*", "platform:roleceil" + RUN + ":thing:*"));
+        assertThat(syncPlatformAs(wildcard, withTest(catalogue, platformDef(code, view))).updated()).isPositive();
+        assertThat(permissionsOf(name)).containsExactly(view);
+
+        assertThat(syncPlatformAs(SUPER_ADMIN, catalogue).removed()).isGreaterThanOrEqualTo(1);
+        assertThat(repo.findByName(name)).isEmpty();
+    }
+
+    /// The changes of every role are collected and checked once: per
+    /// catalogue role in catalogue order its added then its removed
+    /// permissions, a new role's all, then each swept role's; each named
+    /// once. Application permissions are outside the ceiling.
+    @Test
+    void syncPlatformRolesChecksTheCollectedChangesOnceInCollectionOrder() {
+        String p = "platform:ceilpord" + RUN + ":thing:";
+        String kept = "ceilpord-kept-" + RUN;
+        String gone = "ceilpord-gone-" + RUN;
+        String fresh = "ceilpord-new-" + RUN;
+        String appRole = "ceilpord-app-" + RUN;
+        String appCode = app("ceilpordapp");
+        List<RoleDefinition> catalogue = PlatformRoles.all();
+        syncPlatformAs(SUPER_ADMIN, withTest(catalogue, platformDef(kept, p + "a"), platformDef(gone, p + "d")));
+
+        List<RoleDefinition> change = withTest(catalogue,
+                platformDef(kept, p + "b"),
+                platformDef(fresh, p + "c", p + "b"),
+                new RoleDefinition(appCode + ":" + appRole, "App", "application permissions", appCode,
+                        RoleDefinition.SOURCE_CODE, List.of(appCode + ":thing:read:*")));
+        aboveCaller("collection order", () -> syncPlatformAs(anchorHolding(ROLE_WRITE), change),
+                p + "b, " + p + "a, " + p + "c, " + p + "d");
+        assertThat(permissionsOf("platform:" + kept)).as("nothing written").containsExactly(p + "a");
+        assertThat(repo.findByName("platform:" + gone)).isPresent();
+        assertThat(repo.findByName("platform:" + fresh)).isEmpty();
+        assertThat(repo.findByName(appCode + ":" + appRole)).isEmpty();
+
+        var ev = syncPlatformAs(SUPER_ADMIN, change);
+        assertThat(ev.removed()).isGreaterThanOrEqualTo(1);
+        assertThat(permissionsOf("platform:" + kept)).containsExactly(p + "b");
+        assertThat(repo.findByName("platform:" + gone)).isEmpty();
+
+        // Application permissions alone: any role writer may sync them.
+        String onlyApp = "ceilpord-onlyapp-" + RUN;
+        syncPlatformAs(anchorHolding(ROLE_WRITE), withTest(change,
+                new RoleDefinition(appCode + ":" + onlyApp, "App", "application permissions", appCode,
+                        RoleDefinition.SOURCE_CODE, List.of(appCode + ":thing:write:*"))));
+        assertThat(permissionsOf(appCode + ":" + onlyApp)).containsExactly(appCode + ":thing:write:*");
+        syncPlatformAs(SUPER_ADMIN, catalogue);
+    }
+
+    /// Confinement (400 `PERMISSION_OUTSIDE_APPLICATION`, per role as it is
+    /// built) wins over the ceiling. A same-named non-`CODE` role is skipped,
+    /// so neither its permissions nor the catalogue's are counted; a stale
+    /// `CODE` role still assigned is kept (warn), so not counted either.
+    @Test
+    void syncPlatformRolesCeilingFollowsConfinementAndSkipsWhatItDoesNotTouch() {
+        String p = "platform:ceilpskip" + RUN + ":thing:";
+        List<RoleDefinition> catalogue = PlatformRoles.all();
+        var writer = anchorHolding(ROLE_WRITE);
+
+        // Confinement first, whoever the caller.
+        String conf = "ceilpskip-conf-" + RUN;
+        assertUseCaseError(() -> syncPlatformAs(writer, withTest(catalogue, platformDef(conf, p + "a", "other:thing:view"))),
+                UseCaseError.Validation.class, "PERMISSION_OUTSIDE_APPLICATION");
+
+        // A DATABASE role of a catalogue name: skipped, not counted, untouched.
+        String manual = "ceilpskip-manual-" + RUN;
+        var row = Role.create("platform", manual, "Manual").withSource(RoleSource.DATABASE)
+                .withPermissions(List.of(p + "held-by-db"));
+        uow.inTransaction(tx -> { repo.persist(row, tx.dbTx()); return null; });
+        syncPlatformAs(SUPER_ADMIN, catalogue);
+        syncPlatformAs(writer, withTest(catalogue, platformDef(manual, p + "from-catalogue")));
+        assertThat(permissionsOf("platform:" + manual)).containsExactly(p + "held-by-db");
+
+        // A stale CODE role still held by a principal: kept, not counted.
+        String assigned = "ceilpskip-assigned-" + RUN;
+        syncPlatformAs(SUPER_ADMIN, withTest(catalogue, platformDef(assigned, p + "assigned")));
+        seedPrincipalHolding("platform:" + assigned);
+        syncPlatformAs(writer, catalogue);
+        assertThat(permissionsOf("platform:" + assigned)).containsExactly(p + "assigned");
     }
 
     private static RoleDefinition def(String applicationCode, String roleName, String displayName) {
