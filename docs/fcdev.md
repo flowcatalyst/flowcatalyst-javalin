@@ -477,10 +477,11 @@ metadata.
 types) are registered by `io.flowcatalyst.tools.NativeReflectConfig`
 exactly as the server profile does, scanning `fcdev/target/classes`,
 `server/target/classes` and `usecase/target/classes` — the fcdev binary
-contains the whole server. `// SPEC?` the brief for this unit additionally
-named the `flowcatalyst-sdk` client module in that scan; fcdev has no
-dependency on it (confirmed with `mvn dependency:tree`) — it is not scanned
-here.
+contains the whole server. The `flowcatalyst-sdk` module is in the binary
+as well (server and usecase mint every id with its
+`io.flowcatalyst.sdk.tsid.Tsid`) but is not scanned: `Tsid` is the only
+SDK class the platform uses, it needs no reflection, and a scan would
+register the client's generated OpenAPI models for nothing.
 
 **`fcdev/native-config/`** (see its own README) covers what's specific to
 the dev monolith in production: `com.mysql.cj.jdbc.*` (the outbox

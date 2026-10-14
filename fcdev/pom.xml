@@ -23,6 +23,8 @@
     <native.optimization>-Os</native.optimization>
     <!-- Stamped into fcdev-build.properties; a release build passes -Dfcdev.vcs.revision=<sha>. -->
     <fcdev.vcs.revision></fcdev.vcs.revision>
+    <!-- Default for the shaded-jar-completeness gate's <skip> (a command-line -D overrides). -->
+    <maven.test.skip>false</maven.test.skip>
   </properties>
 
   <dependencies>
@@ -40,16 +42,22 @@
       <artifactId>flowcatalyst-function-host</artifactId>
       <version>${project.version}</version>
     </dependency>
-    <!-- Test-only: the K4 end-to-end pin drives the REAL sdk/ DefinitionSynchronizer
-         over HTTP against a `fcdev start`-booted in-process platform
-         (docs/spec/code-first-connections.md §4a). fcdev's own main code has no
-         dependency on the client SDK (see the native-reflect-config comment
-         below) — this is test scope only, so it does not affect that. -->
+    <!-- The SDK is a RUNTIME dependency of the jar, not a test one: server and
+         usecase generate every id with io.flowcatalyst.sdk.tsid.Tsid, which has lived
+         in sdk/ since 70e7d1a3 (sdk standalone). It arrives transitively at compile
+         scope (server -> usecase -> sdk) and is declared here only because the K4
+         end-to-end pin (ConnectionSyncEndToEndTest) drives the real sdk/
+         DefinitionSynchronizer directly. NEVER give this declaration `test` scope: a
+         direct declaration's scope beats the transitive one, so `test` here takes the
+         SDK out of the runtime classpath, the shade plugin leaves it out of the jar,
+         and `fcdev start` dies in the seeder with NoClassDefFoundError: Tsid (it did,
+         2026-10-08 to 2026-10-14). The shaded-jar-completeness execution below fails
+         the build if any io.flowcatalyst class in the jar references a class the jar
+         does not contain. -->
     <dependency>
       <groupId>io.flowcatalyst</groupId>
       <artifactId>flowcatalyst-sdk</artifactId>
       <version>${project.version}</version>
-      <scope>test</scope>
     </dependency>
 
     <dependency>
@@ -365,6 +373,36 @@
           </execution>
         </executions>
       </plugin>
+      <!--
+        Gate on the jar the shade plugin just wrote (declared AFTER maven-shade-plugin: two
+        executions bound to the same phase run in declaration order). Fails the build when an
+        io.flowcatalyst class in the jar references a class the jar does not contain — the
+        SDK-at-test-scope bug that shipped a jar dying with NoClassDefFoundError: Tsid
+        (see the flowcatalyst-sdk dependency comment above). jdeps (missing-deps mode) over our
+        own classes, about a second. Runs under -DskipTests (CI, releases, e2e all build that
+        way); skipped only with -Dmaven.test.skip, which leaves the checker uncompiled.
+      -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>shaded-jar-completeness</id>
+            <phase>package</phase>
+            <goals>
+              <goal>java</goal>
+            </goals>
+            <configuration>
+              <mainClass>io.flowcatalyst.fcdev.ShadedJarCompleteness</mainClass>
+              <classpathScope>test</classpathScope>
+              <skip>${maven.test.skip}</skip>
+              <arguments>
+                <argument>${project.build.directory}/${project.build.finalName}.jar</argument>
+              </arguments>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
     </plugins>
   </build>
 
@@ -390,9 +428,11 @@
                server test scope — additionalClasspathElements puts it on the classpath
                here since fcdev has no dependency on server's test-jar). Scans fcdev's own
                classes plus the sibling modules the fcdev binary actually embeds
-               (server, usecase — fcdev has no dependency on the flowcatalyst-sdk client
-               module, so unlike the brief's literal list that one is not scanned; see
-               docs/fcdev.md "native binary" // SPEC?). -->
+               (server, usecase). The flowcatalyst-sdk module is in the binary too (Tsid,
+               see the dependency comment above) but is deliberately not scanned: the
+               platform uses only Tsid from it, a plain class that needs no reflection,
+               and a scan would register the client's generated OpenAPI models; see
+               docs/fcdev.md "native binary". -->
           <plugin>
             <groupId>org.codehaus.mojo</groupId>
             <artifactId>exec-maven-plugin</artifactId>
