@@ -1,5 +1,5 @@
 import { test as base, expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
-import { loginAndLand, ADMIN_EMAIL, ADMIN_PASSWORD } from "./admin.js";
+import { loginAndLand, ADMIN_EMAIL, ADMIN_PASSWORD, ORIGIN_HEADERS } from "./admin.js";
 
 /// A `page` already signed in as the bootstrap admin.
 export const test = base.extend<{ adminPage: Page }>({
@@ -101,6 +101,7 @@ export async function createInternalIdentityProviderViaApi(page: Page, opts?: { 
     const code = opts?.code ?? unique("e2e-idp");
     const name = opts?.name ?? `E2E Identity Provider ${code}`;
     const res = await page.request.post("/api/identity-providers", {
+        headers: ORIGIN_HEADERS,
         data: { code, name, type: "INTERNAL", oidcMultiTenant: false },
     });
     if (res.status() !== 201) {
@@ -118,6 +119,7 @@ export async function createClientViaApi(request: APIRequestContext): Promise<{ 
     const identifier = unique("e2e-authadmin-client");
     const name = `E2E Auth Admin Client ${identifier}`;
     const res = await request.post("/api/clients", {
+        headers: ORIGIN_HEADERS,
         data: { name, identifier },
     });
     if (!res.ok()) {

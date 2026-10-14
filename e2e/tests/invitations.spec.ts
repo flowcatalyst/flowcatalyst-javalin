@@ -28,7 +28,7 @@
 import path from "node:path";
 import { readFile } from "node:fs/promises";
 import type { Page } from "@playwright/test";
-import { test, expect, loginAndLand, ADMIN_EMAIL, ADMIN_PASSWORD, SESSION_COOKIE_NAME } from "../fixtures/admin.js";
+import { test, expect, loginAndLand, ADMIN_EMAIL, ADMIN_PASSWORD, SESSION_COOKIE_NAME, ORIGIN_HEADERS } from "../fixtures/admin.js";
 import { waitForMailTo, firstLink, parseMailLog } from "../runner/mail.js";
 
 const MAIL_LOG_PATH = path.join(import.meta.dirname, "..", "test-results", `${process.env.E2E_SIDE ?? "unknown"}.log`);
@@ -79,6 +79,7 @@ test.describe("invitations", () => {
         const admin = await browser.newContext().then((c) => c.newPage());
         await loginAndLand(admin, ADMIN_EMAIL, ADMIN_PASSWORD);
         const createRes = await admin.request.post("/api/principals/users", {
+            headers: ORIGIN_HEADERS,
             data: { email, name: "E2E Invite Login", sendInvitation: false, scope: "ANCHOR" },
         });
         expect(createRes.ok(), await createRes.text()).toBe(true);
@@ -130,6 +131,7 @@ test.describe("invitations", () => {
         const admin = await browser.newContext().then((c) => c.newPage());
         await loginAndLand(admin, ADMIN_EMAIL, ADMIN_PASSWORD);
         const createRes = await admin.request.post("/api/principals/users", {
+            headers: ORIGIN_HEADERS,
             data: { email, name: "E2E Invite Embed", returnInviteLink: true, scope: "ANCHOR" },
         });
         expect(createRes.ok(), await createRes.text()).toBe(true);

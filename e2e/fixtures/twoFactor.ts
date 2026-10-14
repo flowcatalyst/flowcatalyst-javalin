@@ -1,6 +1,7 @@
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
 import { TOTP, Secret } from "otpauth";
 import { unique } from "./clientScoped.js";
+import { ORIGIN_HEADERS } from "./admin.js";
 
 /// A plain internal-auth principal on an unmapped email domain: self-service
 /// 2FA enrollment allows both TOTP and EMAIL_PIN (the backend's `allMethods`
@@ -20,6 +21,7 @@ const PASSWORD = "Bergen-Compass-8814!";
 export async function createTwoFactorTestUser(request: APIRequestContext): Promise<TwoFactorTestUser> {
     const email = `${unique("e2e-2fa")}@example.com`;
     const res = await request.post("/api/principals/users", {
+        headers: ORIGIN_HEADERS,
         data: { email, name: "E2E 2FA User", password: PASSWORD, scope: "ANCHOR" },
     });
     if (!res.ok()) {
@@ -38,6 +40,7 @@ export async function createTwoFactorTestUser(request: APIRequestContext): Promi
 export async function createRememberDeviceUser(request: APIRequestContext): Promise<TwoFactorTestUser> {
     const idpCode = unique("e2e-2fa-idp");
     const idpRes = await request.post("/api/identity-providers", {
+        headers: ORIGIN_HEADERS,
         data: { code: idpCode, name: `E2E 2FA IdP ${idpCode}`, type: "INTERNAL", oidcMultiTenant: false }, // required by the lockfile on both sides
     });
     if (!idpRes.ok()) {
@@ -47,6 +50,7 @@ export async function createRememberDeviceUser(request: APIRequestContext): Prom
 
     const domain = `${unique("e2e-2fa-remember")}.test`;
     const mappingRes = await request.post("/api/email-domain-mappings", {
+        headers: ORIGIN_HEADERS,
         data: {
             emailDomain: domain,
             identityProviderId: idp.id,
@@ -63,6 +67,7 @@ export async function createRememberDeviceUser(request: APIRequestContext): Prom
 
     const email = `${unique("e2e-user")}@${domain}`;
     const userRes = await request.post("/api/principals/users", {
+        headers: ORIGIN_HEADERS,
         data: { email, name: "E2E Remember-Device User", password: PASSWORD, scope: "ANCHOR" },
     });
     if (!userRes.ok()) {

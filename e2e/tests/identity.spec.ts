@@ -12,7 +12,7 @@
 // seeded only by the portal app itself (POST /api/portal-users) — so the
 // Portal Users flow below seeds through the API and exercises the list/
 // search/revoke surface instead of an invite dialog.
-import { test, expect, loginAndLand } from "../fixtures/admin.js";
+import { test, expect, loginAndLand, ORIGIN_HEADERS } from "../fixtures/admin.js";
 import { createClientScopedPrincipal, unique } from "../fixtures/clientScoped.js";
 
 test.describe("identity", () => {
@@ -123,12 +123,14 @@ test.describe("identity", () => {
         const appCode = unique("e2e-portal-app-for-users");
         const appName = `E2E Portal App For Users ${appCode}`;
         const appRes = await adminPage.request.post("/api/portal-apps", {
+            headers: ORIGIN_HEADERS,
             data: { clientId, code: appCode, name: appName, redirectUris: [`https://${appCode}.example.com/callback`] },
         });
         expect(appRes.ok(), await appRes.text()).toBe(true);
 
         const email = `${unique("e2e-portal-user")}@example.com`;
         const ensureRes = await adminPage.request.post("/api/portal-users", {
+            headers: ORIGIN_HEADERS,
             data: { clientId, email, portalAppCode: appCode, returnInviteLink: true },
         });
         expect(ensureRes.ok(), await ensureRes.text()).toBe(true);

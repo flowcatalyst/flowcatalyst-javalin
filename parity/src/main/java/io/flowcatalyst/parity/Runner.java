@@ -197,7 +197,17 @@ public final class Runner {
                 .timeout(REQUEST_TIMEOUT);
         if (impliedContentType != null) builder.header("Content-Type", impliedContentType);
         if (!cookieJar.isEmpty()) builder.header("Cookie", cookieHeader());
-        Substitution.resolve(request.headers(), vars).forEach(builder::header);
+        Map<String, String> stepHeaders = Substitution.resolve(request.headers(), vars);
+        stepHeaders.forEach(builder::header);
+        // A browser always sends provenance with a cookie-carrying write; both platforms refuse a
+        // session-cookie POST/PUT/PATCH/DELETE with neither Sec-Fetch-Site nor Origin (403
+        // CROSS_ORIGIN_REQUEST, F16). Send the base URL's origin unless the step sets its own
+        // Origin or Sec-Fetch-Site (the CSRF and CORS scenarios do, to pin the refusals).
+        boolean carriesCookie = !cookieJar.isEmpty()
+                || stepHeaders.entrySet().stream().anyMatch(e -> e.getKey().equalsIgnoreCase("Cookie") && !e.getValue().isEmpty());
+        boolean stepSetsProvenance = stepHeaders.keySet().stream()
+                .anyMatch(k -> k.equalsIgnoreCase("Origin") || k.equalsIgnoreCase("Sec-Fetch-Site"));
+        if (carriesCookie && !stepSetsProvenance) builder.header("Origin", baseUrl);
         if (request.auth() != null) builder.header("Authorization", "Bearer " + Substitution.resolve(request.auth(), vars));
 
         try {

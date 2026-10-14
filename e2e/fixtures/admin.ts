@@ -7,6 +7,12 @@ export const SESSION_COOKIE_NAME = "fc_session";
 export const ADMIN_EMAIL = process.env.E2E_ADMIN_EMAIL ?? "e2e-admin@example.com";
 export const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? "Tromso-Nebula-7734!";
 
+/// Cookie-authenticated writes made outside the SPA (page.request / APIRequestContext) must
+/// carry the provenance a browser always sends: the platform refuses a session-cookie
+/// POST/PUT/PATCH/DELETE with neither Sec-Fetch-Site nor Origin (403 CROSS_ORIGIN_REQUEST,
+/// Go F16 / Java SessionCsrf). Spread into every such call: `headers: ORIGIN_HEADERS`.
+export const ORIGIN_HEADERS: Record<string, string> = { Origin: new URL(process.env.E2E_BASE_URL ?? "http://localhost").origin };
+
 /// Fills and submits the SPA's two-step login form on whatever page the
 /// browser is already on (`LoginPage.vue`: an email step that resolves
 /// internal-vs-SSO, then a password step) — does **not** navigate first,

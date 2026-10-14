@@ -1,5 +1,5 @@
 import { test as base, expect, type APIRequestContext, type Page } from "@playwright/test";
-import { loginAndLand, loginViaUi } from "./admin.js";
+import { loginAndLand, loginViaUi, ORIGIN_HEADERS } from "./admin.js";
 import { ADMIN_EMAIL, ADMIN_PASSWORD } from "./admin.js";
 
 /// A client and a `CLIENT`-scoped user under it, created through the admin
@@ -26,6 +26,7 @@ export function unique(prefix: string): string {
 export async function createClientScopedPrincipal(request: APIRequestContext): Promise<ClientScopedPrincipal> {
     const identifier = unique("e2e-client");
     const clientRes = await request.post("/api/clients", {
+        headers: ORIGIN_HEADERS,
         data: { name: `E2E Client ${identifier}`, identifier },
     });
     if (!clientRes.ok()) {
@@ -39,6 +40,7 @@ export async function createClientScopedPrincipal(request: APIRequestContext): P
     const email = `${unique("e2e-user")}@example.com`;
     const password = "Kolkata-Ferry-4471!";
     const userRes = await request.post("/api/principals/users", {
+        headers: ORIGIN_HEADERS,
         data: { email, name: "E2E Client User", password, scope: "CLIENT", clientId: client.id },
     });
     if (!userRes.ok()) {

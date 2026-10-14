@@ -1,5 +1,6 @@
 import type { APIRequestContext, CDPSession, Page } from "@playwright/test";
 import { unique } from "./clientScoped.js";
+import { ORIGIN_HEADERS } from "./admin.js";
 
 /// A plain internal-auth principal for the passkeys group — its own file per
 /// the brief (`docs/process/briefs/2026-09-06-frontend-e2e-groups.md`) so
@@ -14,6 +15,7 @@ export async function createPasskeyTestUser(request: APIRequestContext): Promise
     const email = `${unique("e2e-passkey")}@example.com`;
     const password = "Reykjavik-Fjord-2291!";
     const res = await request.post("/api/principals/users", {
+        headers: ORIGIN_HEADERS,
         data: { email, name: "E2E Passkey User", password, scope: "ANCHOR" },
     });
     if (!res.ok()) {

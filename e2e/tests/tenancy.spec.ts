@@ -9,7 +9,7 @@
 // user must see only its own client's rows, and a deliberate (not
 // first-load) navigation to a page it lacks permission for must show the
 // permission-denied modal, not just silently redirect.
-import { test, expect } from "../fixtures/admin.js";
+import { test, expect, ORIGIN_HEADERS } from "../fixtures/admin.js";
 import { createClientScopedPrincipal, unique } from "../fixtures/clientScoped.js";
 
 test.describe("tenancy", () => {
@@ -69,6 +69,7 @@ test.describe("tenancy", () => {
         const clientIdentifier = unique("e2e-tenancy-uclient");
         const clientName = `E2E Tenancy UClient ${clientIdentifier}`;
         const clientRes = await adminPage.request.post("/api/clients", {
+            headers: ORIGIN_HEADERS,
             data: { name: clientName, identifier: clientIdentifier },
         });
         if (!clientRes.ok()) throw new Error(`POST /api/clients -> ${clientRes.status()} ${await clientRes.text()}`);
@@ -111,6 +112,7 @@ test.describe("tenancy", () => {
         // administrator can see — `platform:client-admin`, the seeded role
         // for exactly this (internal/platform/seed/roles.go).
         const rolesResponse = await adminPage.request.put(`/api/principals/${userA.id}/roles`, {
+            headers: ORIGIN_HEADERS,
             data: { roles: ["platform:client-admin"] },
         });
         expect(rolesResponse.ok(), await rolesResponse.text()).toBe(true);
