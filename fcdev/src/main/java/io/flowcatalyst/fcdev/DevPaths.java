@@ -30,7 +30,17 @@ import java.util.Map;
 /// `userCacheDir` = Go's `os.UserCacheDir()` (`~/Library/Caches`,
 /// `%LocalAppData%`, `$XDG_CACHE_HOME` / `~/.cache`), else `~/.cache`, else
 /// `./.flowcatalyst-cache`.
-public record DevPaths(Path userDataDir, Path userCacheDir) {
+public record DevPaths(Path userDataDir, Path userCacheDir, Path fnCliCredentialsOverride) {
+
+    /// Env var overriding the `fn-cli.json` location (writer and reader both).
+    /// Isolated/test instances set it so they never touch the developer's real
+    /// file. Same name as the Go fcdev's override for its own credential file.
+    public static final String FN_CLI_CREDENTIALS_ENV = "FC_FN_CLI_CREDENTIALS_PATH";
+
+    /// No override: `fn-cli.json` lives under the state dir.
+    public DevPaths(Path userDataDir, Path userCacheDir) {
+        this(userDataDir, userCacheDir, null);
+    }
 
     /// Resolve for the running OS and the given environment.
     public static DevPaths resolve(Map<String, String> env) {
@@ -41,7 +51,9 @@ public record DevPaths(Path userDataDir, Path userCacheDir) {
     /// reading of `$HOME` / `%USERPROFILE%`). Exposed for tests.
     public static DevPaths resolve(Map<String, String> env, String osName, String home) {
         var reader = new EnvReader(env);
-        return new DevPaths(userDataDir(reader, osName, home), userCacheDir(reader, osName, home));
+        var fnCli = reader.get(FN_CLI_CREDENTIALS_ENV);
+        return new DevPaths(userDataDir(reader, osName, home), userCacheDir(reader, osName, home),
+                fnCli.isEmpty() ? null : Path.of(fnCli));
     }
 
     static Path userDataDir(EnvReader env, String osName, String home) {
@@ -117,6 +129,7 @@ public record DevPaths(Path userDataDir, Path userCacheDir) {
     /// (not the re-creatable cache) so `fcdev fn …` needs no flags locally.
     /// Removed on `fcdev stop`.
     public Path fnCliCredentialsPath() {
+        if (fnCliCredentialsOverride != null) return fnCliCredentialsOverride;
         return flowcatalystDir().resolve("fn-cli.json");
     }
 

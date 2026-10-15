@@ -90,6 +90,10 @@ export async function startSide(side: Side): Promise<RunningSide> {
             adminEmail: ADMIN_EMAIL, adminPassword: ADMIN_PASSWORD,
         }),
     };
+    // Both fcdevs (Go and Java) honour this: keep the dev fn-CLI credential
+    // file inside this run's scratch dir so a test instance can never
+    // overwrite the developer's real one.
+    env.FC_FN_CLI_CREDENTIALS_PATH = path.join(scratchDir, "fn-cli.json");
     delete env.FC_SMTP_HOST;
     delete env.SMTP_HOST;
 

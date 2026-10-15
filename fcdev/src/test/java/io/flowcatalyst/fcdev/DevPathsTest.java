@@ -22,6 +22,17 @@ class DevPathsTest {
     }
 
     @Test
+    void fnCliCredentialsPathHonoursOverride() {
+        var def = DevPaths.resolve(Map.of(), "Mac OS X", "/Users/dev");
+        assertThat(def.fnCliCredentialsPath())
+                .isEqualTo(Path.of("/Users/dev/Library/Application Support/flowcatalyst/fn-cli.json"));
+        var p = DevPaths.resolve(Map.of("FC_FN_CLI_CREDENTIALS_PATH", "/tmp/x/fn.json"), "Mac OS X", "/Users/dev");
+        assertThat(p.fnCliCredentialsPath()).isEqualTo(Path.of("/tmp/x/fn.json"));
+        var blank = DevPaths.resolve(Map.of("FC_FN_CLI_CREDENTIALS_PATH", ""), "Mac OS X", "/Users/dev");
+        assertThat(blank.fnCliCredentialsPath()).isEqualTo(def.fnCliCredentialsPath());
+    }
+
+    @Test
     void linuxDefaults() {
         var p = DevPaths.resolve(Map.of(), "Linux", "/home/dev");
         assertThat(p.userDataDir()).isEqualTo(Path.of("/home/dev/.config"));

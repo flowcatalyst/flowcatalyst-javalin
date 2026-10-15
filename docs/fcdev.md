@@ -83,6 +83,12 @@ printf '%s\n' '#!/usr/bin/env bash' \
 It follows every `make jar`, since it points at the jar in `target/`. The `fn …` commands read the
 credentials the Java `start` wrote to `fn-cli.json`, so the running platform must be the Java one.
 
+`FC_FN_CLI_CREDENTIALS_PATH` overrides where `fn-cli.json` is written and read (default
+`<state dir>/flowcatalyst/fn-cli.json`). Any isolated or test instance (agent runs, the e2e harness
+- which sets it to a path in its scratch dir) must set it, otherwise a second `fcdev start` overwrites
+the developer's real credential file and `fcdev fn ...` talks to the wrong instance. The Go fcdev
+honours the same variable for its own file (`fng-cli.json`).
+
 ---
 
 ## 2. First run
