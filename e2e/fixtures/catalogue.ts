@@ -333,17 +333,18 @@ export interface CreatedSubscription {
 /// already-CURRENT event type ([createEventType] + [addAndFinaliseSchema])
 /// by its display `name` and an already-active dispatch pool
 /// ([createDispatchPool]) by its `name` — `isFormValid` on that drawer
-/// requires both, plus code/name/endpoint/queue.
+/// requires both, plus code/name/endpoint/queue. Queue is a select of
+/// "Default" | "High priority" (since 2026-10-10), not free text.
 export async function createSubscription(
     page: Page,
     eventTypeName: string,
     dispatchPoolName: string,
-    opts?: { code?: string; name?: string; endpoint?: string; queue?: string },
+    opts?: { code?: string; name?: string; endpoint?: string; queue?: "Default" | "High priority" },
 ): Promise<CreatedSubscription> {
     const code = opts?.code ?? unique("e2e-sub");
     const name = opts?.name ?? `E2E Subscription ${code}`;
     const endpoint = opts?.endpoint ?? "https://example.com/e2e-hook";
-    const queue = opts?.queue ?? "default";
+    const queue = opts?.queue ?? "Default";
 
     await page.goto("/subscriptions/new");
     await bareInput(page, "Code").fill(code);
@@ -361,7 +362,7 @@ export async function createSubscription(
     await page.keyboard.press("Escape");
 
     await bareInput(page, "Endpoint URL").fill(endpoint);
-    await bareInput(page, "Queue").fill(queue);
+    await choosePrimeOption(page, bareField(page, "Queue"), queue);
     await choosePrimeOption(page, bareField(page, "Dispatch Pool"), new RegExp(dispatchPoolName));
 
     const { id } = await submitDrawer(page, "Create Subscription", "/api/subscriptions");

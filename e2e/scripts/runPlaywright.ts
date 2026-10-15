@@ -14,7 +14,7 @@ export function runPlaywrightSuite(side: Side, baseUrl: string): Promise<number>
     return new Promise((resolve, reject) => {
         const child = spawn(
             "pnpm",
-            ["exec", "playwright", "test", "--project=chromium"],
+            ["exec", "playwright", "test", "--project=chromium", ...(process.env.E2E_PW_ARGS?.split(/\s+/).filter(Boolean) ?? [])],
             {
                 cwd: E2E_DIR,
                 stdio: "inherit",
