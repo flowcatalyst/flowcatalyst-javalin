@@ -20,6 +20,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
+import static io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS;
+import static io.flowcatalyst.db.generated.Tables.IAM_SERVICE_ACCOUNTS;
 import static io.flowcatalyst.db.generated.Tables.MSG_CONNECTIONS;
 
 /// `msg_connections` via jOOQ. Writes happen only on the unit of work's
@@ -39,6 +41,21 @@ public final class ConnectionRepository implements Persist<Connection> {
     /// id naming no client); create stores it beside the client id.
     public Optional<String> clientIdentifier(String clientId) {
         return ClientIdentifiers.of(dsl, clientId);
+    }
+
+    /// The service account (`iam_service_accounts.id`, `sac_…`) behind a SERVICE
+    /// principal (`iam_principals.id`, `prn_…`); empty when the principal does not
+    /// exist or has no service account. An application stores its account as the
+    /// PRINCIPAL id, a connection stores the account's OWN id (Go F17).
+    public Optional<String> serviceAccountForPrincipal(String principalId) {
+        return dsl.select(IAM_PRINCIPALS.SERVICE_ACCOUNT_ID).from(IAM_PRINCIPALS)
+                .where(IAM_PRINCIPALS.ID.eq(principalId))
+                .fetchOptional(IAM_PRINCIPALS.SERVICE_ACCOUNT_ID);
+    }
+
+    /// Whether a service account with exactly this id exists (a principal id is not one).
+    public boolean serviceAccountExists(String id) {
+        return dsl.fetchExists(dsl.selectOne().from(IAM_SERVICE_ACCOUNTS).where(IAM_SERVICE_ACCOUNTS.ID.eq(id)));
     }
 
     /// Equality filters for [#findWithFilters]; `null` = no filter on that column.

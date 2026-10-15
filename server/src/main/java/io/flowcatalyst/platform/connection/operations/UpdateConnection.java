@@ -5,6 +5,7 @@ import io.flowcatalyst.platform.connection.Connection;
 import io.flowcatalyst.platform.connection.ConnectionRepository;
 import io.flowcatalyst.platform.connection.ConnectionStatus;
 import io.flowcatalyst.platform.connection.operations.ConnectionEvents.ConnectionUpdated;
+import io.flowcatalyst.platform.serviceaccount.SigningReach;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.Checks;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
@@ -14,14 +15,15 @@ import io.flowcatalyst.sdk.usecase.op.Plan;
 import java.util.Objects;
 
 /// Replaces name, description and external id — and optionally the status
-/// and the owning application — on an existing connection and emits
+/// the owning application and the signing service account — on an existing connection and emits
 /// [ConnectionUpdated]. The code is immutable.
 public final class UpdateConnection {
 
     private UpdateConnection() {
     }
 
-    public static Operation<UpdateCommand, ConnectionUpdated> of(ConnectionRepository repo, ApplicationRepository apps) {
+    public static Operation<UpdateCommand, ConnectionUpdated> of(ConnectionRepository repo, ApplicationRepository apps,
+                                                               SigningReach reach) {
         return Operation.<UpdateCommand, ConnectionUpdated>named("UpdateConnection")
                 .validate(cmd -> {
                     UseCaseException.requireNonBlank(cmd.id(), "ID_REQUIRED", "id is required");
@@ -45,11 +47,33 @@ public final class UpdateConnection {
                                     "Connection with code '" + existing.code() + "' already exists");
                         }
                     }
+                    // serviceAccountId (Go F17): set-if-provided. Blank is refused, and the id
+                    // must be an existing service account's OWN id — an application's principal
+                    // id is not one. The caller must also be allowed to sign with it (as create).
+                    String serviceAccountId = null;
+                    if (cmd.serviceAccountId() != null) {
+                        serviceAccountId = cmd.serviceAccountId().trim();
+                        if (serviceAccountId.isEmpty()) {
+                            throw UseCaseException.validation("SERVICE_ACCOUNT_REQUIRED", "serviceAccountId cannot be empty");
+                        }
+                        String wanted = serviceAccountId;
+                        if (!repo.serviceAccountExists(wanted)) {
+                            throw UseCaseException.validation("SERVICE_ACCOUNT_NOT_FOUND", "serviceAccountId '" + wanted
+                                    + "' is not an existing service account (an application's principal id is not one)");
+                        }
+                        var account = reach.account(wanted)
+                                .orElseThrow(() -> UseCaseException.resourceNotFound("ServiceAccount", wanted));
+                        reach.mayUse(Auth.current(), account)
+                                .orElseThrow(refusal -> UseCaseException.authorization("SERVICE_ACCOUNT_OUT_OF_REACH", refusal.message()));
+                    }
                     Connection c = existing
                             .withName(cmd.name())
                             .withDescription(cmd.description())
                             .withExternalId(cmd.externalId())
                             .withApplicationCode(cmd.applicationCode());
+                    if (serviceAccountId != null) {
+                        c = c.withServiceAccountId(serviceAccountId);
+                    }
                     if (cmd.status() != null) {
                         // The status field selects one of the two transitions (spec §4, open question 4).
                         c = switch (ConnectionStatus.parseCommandStatus(cmd.status())) {

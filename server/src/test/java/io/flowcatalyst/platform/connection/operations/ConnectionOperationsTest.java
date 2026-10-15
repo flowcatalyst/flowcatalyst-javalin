@@ -262,6 +262,61 @@ class ConnectionOperationsTest {
         assertThat(reload(ev.connectionId()).clientId()).isEqualTo(ownClient);
     }
 
+    // ── Update: serviceAccountId (Go F17) ────────────────────────────────────
+
+    /// `PUT` used to have no way to change the signing account. Set-if-provided:
+    /// omitted leaves it alone; a real service account's own id replaces it.
+    @Test
+    void updateSetsTheServiceAccountWhenProvidedAndLeavesItWhenOmitted() {
+        var seeded = created(code("connupd-sa"), "Sa");
+        String replacement = SigningAccounts.seed(DS, List.of(), null);
+
+        runAsAnchor(UpdateConnection.of(repo, apps, REACH), new UpdateCommand(seeded.connectionId(), "Sa", null, null, null, null));
+        assertThat(reload(seeded.connectionId()).serviceAccountId()).as("omitted: untouched").isEqualTo(SERVICE_ACCOUNT);
+
+        runAsAnchor(UpdateConnection.of(repo, apps, REACH),
+                new UpdateCommand(seeded.connectionId(), "Sa", null, null, null, null, "  " + replacement + " "));
+        assertThat(reload(seeded.connectionId()).serviceAccountId()).as("provided: replaced").isEqualTo(replacement);
+    }
+
+    @Test
+    void updateRefusesABlankUnknownOrPrincipalServiceAccountAndChangesNothing() {
+        var seeded = created(code("connupd-sabad"), "Sa");
+        String account = SigningAccounts.seed(DS, List.of(), null);
+        String principalId = SigningAccounts.servicePrincipal(DS, account);
+
+        assertUseCaseError(() -> runAsAnchor(UpdateConnection.of(repo, apps, REACH),
+                        new UpdateCommand(seeded.connectionId(), "X", null, null, null, null, "  ")),
+                UseCaseError.Validation.class, "SERVICE_ACCOUNT_REQUIRED");
+        assertUseCaseError(() -> runAsAnchor(UpdateConnection.of(repo, apps, REACH),
+                        new UpdateCommand(seeded.connectionId(), "X", null, null, null, null, "sac_doesnotexist")),
+                UseCaseError.Validation.class, "SERVICE_ACCOUNT_NOT_FOUND");
+        // The application's principal id (prn_…) is not a service account id.
+        assertUseCaseError(() -> runAsAnchor(UpdateConnection.of(repo, apps, REACH),
+                        new UpdateCommand(seeded.connectionId(), "X", null, null, null, null, principalId)),
+                UseCaseError.Validation.class, "SERVICE_ACCOUNT_NOT_FOUND");
+        assertThat(reload(seeded.connectionId()).serviceAccountId()).isEqualTo(SERVICE_ACCOUNT);
+        assertThat(reload(seeded.connectionId()).name()).isEqualTo("Sa");
+    }
+
+    /// Setting the account on update chooses where its credentials go, exactly
+    /// as create does — the same reach rule applies.
+    @Test
+    void updateRefusesAServiceAccountOutsideTheCallersReach() {
+        String ownClient = EntityType.CLIENT.generate();
+        var clientCtx = new AuthContext(EntityType.PRINCIPAL.generate(), Scope.CLIENT, "c@x.io", List.of(ownClient),
+                List.of(), List.of(), true, List.of("platform:messaging:connection:update"));
+        var clientEc = ExecutionContext.of(clientCtx.principalId());
+        var own = runAsAnchor(CreateConnection.of(repo, apps, REACH),
+                new CreateCommand(code("connupd-reach"), "R", null, SERVICE_ACCOUNT, null, ownClient, null));
+        String operatorAccount = SigningAccounts.seed(DS, List.of(), null);
+
+        assertUseCaseError(() -> Auth.runAs(clientCtx, () -> UpdateConnection.of(repo, apps, REACH).run(uow,
+                        new UpdateCommand(own.connectionId(), "R", null, null, null, null, operatorAccount), clientEc)),
+                UseCaseError.Authorization.class, "SERVICE_ACCOUNT_OUT_OF_REACH");
+        assertThat(reload(own.connectionId()).serviceAccountId()).isEqualTo(SERVICE_ACCOUNT);
+    }
+
     // ── Signing account (security-fixes-2026-09-24 S3.1) ─────────────────────
 
     /// The connection's account signs every delivery through it, so it must
@@ -367,7 +422,7 @@ class ConnectionOperationsTest {
                 List.of(), List.of(EntityType.APPLICATION.generate()), false, List.of("platform:messaging:connection:update"));
         var scopedEc = ExecutionContext.of(scopedCtx.principalId());
 
-        assertUseCaseError(() -> Auth.runAs(scopedCtx, () -> UpdateConnection.of(repo, apps).run(uow,
+        assertUseCaseError(() -> Auth.runAs(scopedCtx, () -> UpdateConnection.of(repo, apps, REACH).run(uow,
                         new UpdateCommand(seeded.connectionId(), "X", null, null, null, app.code()), scopedEc)),
                 UseCaseError.Authorization.class, "FORBIDDEN");
         assertThat(reload(seeded.connectionId()).applicationCode())
@@ -389,13 +444,13 @@ class ConnectionOperationsTest {
                 new CreateCommand(codeUnderB, "Under B", null, "sva_x", null, null, appB.code()));
 
         // Unknown application on update: 404, nothing changes.
-        assertUseCaseError(() -> runAsAnchor(UpdateConnection.of(repo, apps),
+        assertUseCaseError(() -> runAsAnchor(UpdateConnection.of(repo, apps, REACH),
                         new UpdateCommand(underA.connectionId(), "X", null, null, null, "app-does-not-exist-" + RUN)),
                 UseCaseError.NotFound.class, "Application_NOT_FOUND");
         assertThat(reload(underA.connectionId()).applicationCode()).isEqualTo(appA.code());
 
         // Re-sending the row's own applicationCode must not 409 against itself.
-        runAsAnchor(UpdateConnection.of(repo, apps), new UpdateCommand(underA.connectionId(), "X", null, null, null, appA.code()));
+        runAsAnchor(UpdateConnection.of(repo, apps, REACH), new UpdateCommand(underA.connectionId(), "X", null, null, null, appA.code()));
         assertThat(reload(underA.connectionId()).applicationCode()).isEqualTo(appA.code());
 
         // Different code, but codeUnderA does not exist under appB yet — this
@@ -404,7 +459,7 @@ class ConnectionOperationsTest {
         // collide; it only proves the move itself is allowed when free.
         var freeToMove = runAsAnchor(CreateConnection.of(repo, apps, REACH),
                 new CreateCommand(code("connapp-updfree"), "Movable", null, "sva_x", null, null, appA.code()));
-        runAsAnchor(UpdateConnection.of(repo, apps), new UpdateCommand(freeToMove.connectionId(), "Movable", null, null, null, appB.code()));
+        runAsAnchor(UpdateConnection.of(repo, apps, REACH), new UpdateCommand(freeToMove.connectionId(), "Movable", null, null, null, appB.code()));
         assertThat(reload(freeToMove.connectionId()).applicationCode()).isEqualTo(appB.code());
 
         // Moving underA's application to appB WOULD collide with codeUnderB's
@@ -413,14 +468,14 @@ class ConnectionOperationsTest {
         // appB first, then try to move appA's row of that code onto appB.
         var sameCodeUnderA = runAsAnchor(CreateConnection.of(repo, apps, REACH),
                 new CreateCommand(codeUnderB, "Collider", null, "sva_x", null, null, appA.code()));
-        assertUseCaseError(() -> runAsAnchor(UpdateConnection.of(repo, apps),
+        assertUseCaseError(() -> runAsAnchor(UpdateConnection.of(repo, apps, REACH),
                         new UpdateCommand(sameCodeUnderA.connectionId(), "Collider", null, null, null, appB.code())),
                 UseCaseError.Conflict.class, "CODE_EXISTS");
         assertThat(reload(sameCodeUnderA.connectionId()).applicationCode())
                 .as("the failed move left the row's applicationCode alone").isEqualTo(appA.code());
 
         // applicationCode cannot be cleared: omitting it (null) leaves it alone.
-        runAsAnchor(UpdateConnection.of(repo, apps), new UpdateCommand(underA.connectionId(), "Untouched app", null, null, null, null));
+        runAsAnchor(UpdateConnection.of(repo, apps, REACH), new UpdateCommand(underA.connectionId(), "Untouched app", null, null, null, null));
         assertThat(reload(underA.connectionId()).applicationCode())
                 .as("a null applicationCode on update never clears the current owner").isEqualTo(appA.code());
     }
@@ -439,7 +494,7 @@ class ConnectionOperationsTest {
         runAsAnchor(CreateConnection.of(repo, apps, REACH), new CreateCommand(code, "Owned", null, "sva_x", null, client, app.code()));
         var shared = runAsAnchor(CreateConnection.of(repo, apps, REACH), new CreateCommand(code, "Shared", null, "sva_x", null, client, null));
 
-        assertUseCaseError(() -> runAsAnchor(UpdateConnection.of(repo, apps),
+        assertUseCaseError(() -> runAsAnchor(UpdateConnection.of(repo, apps, REACH),
                         new UpdateCommand(shared.connectionId(), "Shared", null, null, null, app.code())),
                 UseCaseError.Conflict.class, "CODE_EXISTS");
         assertThat(reload(shared.connectionId()).applicationCode()).isNull();
@@ -451,7 +506,7 @@ class ConnectionOperationsTest {
     void updateReplacesTheMutableFieldsAndMayFlipTheStatus() {
         var seeded = created(code("connupd-happy"), "Before");
 
-        var ev = runAsAnchor(UpdateConnection.of(repo, apps),
+        var ev = runAsAnchor(UpdateConnection.of(repo, apps, REACH),
                 new UpdateCommand(seeded.connectionId(), "  After  ", "after", "ext-connupd-1", "PAUSED", null));
         assertThat(ev.connectionId()).isEqualTo(seeded.connectionId());
         assertThat(ev.name()).isEqualTo("After");
@@ -465,7 +520,7 @@ class ConnectionOperationsTest {
         assertThat(got.code()).as("code is immutable on update").isEqualTo(code("connupd-happy"));
 
         // Absent status leaves it alone; absent description/externalId clear them (full replace).
-        runAsAnchor(UpdateConnection.of(repo, apps), new UpdateCommand(seeded.connectionId(), "Again", null, null, null, null));
+        runAsAnchor(UpdateConnection.of(repo, apps, REACH), new UpdateCommand(seeded.connectionId(), "Again", null, null, null, null));
         got = reload(seeded.connectionId());
         assertThat(got.status()).isEqualTo(ConnectionStatus.PAUSED);
         assertThat(got.description()).isNull();
@@ -473,7 +528,7 @@ class ConnectionOperationsTest {
 
         // Owner ruling 2026-09-06 #19 (X-06 at the wire): an unknown status is refused, nothing changes.
         org.assertj.core.api.Assertions.assertThatThrownBy(() ->
-                runAsAnchor(UpdateConnection.of(repo, apps), new UpdateCommand(seeded.connectionId(), "Again", null, null, "garbage", null)))
+                runAsAnchor(UpdateConnection.of(repo, apps, REACH), new UpdateCommand(seeded.connectionId(), "Again", null, null, "garbage", null)))
                 .isInstanceOf(io.flowcatalyst.sdk.usecase.UseCaseException.class)
                 .extracting(t -> ((io.flowcatalyst.sdk.usecase.UseCaseException) t).error().code())
                 .isEqualTo("INVALID_STATUS");
@@ -496,7 +551,7 @@ class ConnectionOperationsTest {
     @ParameterizedTest(name = "{0} → {3}")
     @MethodSource("malformedUpdateCommands")
     void updateRejectsAMalformedOrUnknownCommand(String label, UpdateCommand cmd, Class<? extends UseCaseError> kind, String expectedCode) {
-        assertUseCaseError(() -> runAsAnchor(UpdateConnection.of(repo, apps), cmd), kind, expectedCode);
+        assertUseCaseError(() -> runAsAnchor(UpdateConnection.of(repo, apps, REACH), cmd), kind, expectedCode);
     }
 
     // ── Pause / Activate ───────────────────────────────────────────────────
@@ -574,7 +629,7 @@ class ConnectionOperationsTest {
 
         assertUseCaseError(() -> Auth.runAs(clientCtx, () -> PauseConnection.of(repo).run(uow, new PauseCommand(platformWide.connectionId()), clientEc)),
                 UseCaseError.Authorization.class, "SCOPE_FORBIDDEN");
-        assertUseCaseError(() -> Auth.runAs(clientCtx, () -> UpdateConnection.of(repo, apps).run(uow, new UpdateCommand(other.connectionId(), "X", null, null, null, null), clientEc)),
+        assertUseCaseError(() -> Auth.runAs(clientCtx, () -> UpdateConnection.of(repo, apps, REACH).run(uow, new UpdateCommand(other.connectionId(), "X", null, null, null, null), clientEc)),
                 UseCaseError.Authorization.class, "SCOPE_FORBIDDEN");
         assertUseCaseError(() -> Auth.runAs(clientCtx, () -> DeleteConnection.of(repo).run(uow, new DeleteCommand(other.connectionId()), clientEc)),
                 UseCaseError.Authorization.class, "SCOPE_FORBIDDEN");

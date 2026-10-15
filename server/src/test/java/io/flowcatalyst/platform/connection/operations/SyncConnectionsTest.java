@@ -105,18 +105,35 @@ class SyncConnectionsTest {
     /// A minimal `SERVICE` principal row satisfying `app_applications`'
     /// FK — mirrors `ApplicationOperationsTest#servicePrincipal`.
     private static String servicePrincipal(String tag) {
-        String id = EntityType.SERVICE_ACCOUNT.generate();
+        // The real shape: the principal (prn_) and the service account (sac_) are
+        // two rows with two ids; the principal's service_account_id names the
+        // account (Go F17 — a fixture where both ids were equal hid the bug).
+        String accountId = EntityType.SERVICE_ACCOUNT.generate();
+        String id = EntityType.PRINCIPAL.generate();
         var now = java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC);
+        DB.insertInto(io.flowcatalyst.db.generated.Tables.IAM_SERVICE_ACCOUNTS)
+                .set(io.flowcatalyst.db.generated.Tables.IAM_SERVICE_ACCOUNTS.ID, accountId)
+                .set(io.flowcatalyst.db.generated.Tables.IAM_SERVICE_ACCOUNTS.CODE, "sa-" + tag + "-" + RUN + "-" + accountId)
+                .set(io.flowcatalyst.db.generated.Tables.IAM_SERVICE_ACCOUNTS.NAME, "sa " + tag)
+                .execute();
         DB.insertInto(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS)
                 .set(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS.ID, id)
                 .set(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS.TYPE, "SERVICE")
                 .set(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS.NAME, "sa " + tag)
                 .set(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS.ACTIVE, true)
-                .set(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS.SERVICE_ACCOUNT_ID, id)
+                .set(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS.SERVICE_ACCOUNT_ID, accountId)
                 .set(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS.CREATED_AT, now)
                 .set(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS.UPDATED_AT, now)
                 .execute();
         return id;
+    }
+
+    /// The service account (sac_) behind an application's principal id.
+    private static String accountOf(Application app) {
+        return DB.select(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS.SERVICE_ACCOUNT_ID)
+                .from(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS)
+                .where(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS.ID.eq(app.serviceAccountId()))
+                .fetchOne(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS.SERVICE_ACCOUNT_ID);
     }
 
     private static Application applicationWithoutServiceAccount(String tag) {
@@ -287,8 +304,9 @@ class SyncConnectionsTest {
         assertThat(first.created()).isEqualTo(1);
         Connection createdRow = repo.findByCode(c, app.code(), null).orElseThrow();
         assertThat(createdRow.serviceAccountId())
-                .as("new rows carry the APPLICATION's service account, not the caller's principal id")
-                .isEqualTo(app.serviceAccountId())
+                .as("new rows carry the APPLICATION's service account (sac_), not its principal id (prn_) nor the caller's")
+                .isEqualTo(accountOf(app))
+                .isNotEqualTo(app.serviceAccountId())
                 .isNotEqualTo(EC.principalId());
 
         // A row whose stored service account has drifted from the
@@ -296,11 +314,11 @@ class SyncConnectionsTest {
         // provisioning change): the NEXT sync corrects it back — mutant:
         // skip the re-stamp on update.
         Connection drifted = seedConnection(code("sa-drift"), app.code(), null, ConnectionSource.API);
-        assertThat(drifted.serviceAccountId()).isNotEqualTo(app.serviceAccountId());
+        assertThat(drifted.serviceAccountId()).isNotEqualTo(accountOf(app));
         var second = sync(new SyncConnectionsCommand(app.id(), app.code(), null,
                 List.of(new SyncConnectionInput(code("sa-drift"), "Drifted", null, null)), false));
         assertThat(second.updated()).isEqualTo(1);
-        assertThat(reload(drifted.id()).serviceAccountId()).isEqualTo(app.serviceAccountId());
+        assertThat(reload(drifted.id()).serviceAccountId()).isEqualTo(accountOf(app));
     }
 
     /// What a sync creates, the NEXT sync must still own: the new row is stamped
@@ -337,6 +355,32 @@ class SyncConnectionsTest {
     void syncRefusesWithoutAnApplicationServiceAccountAndWritesNothing() {
         Application app = applicationWithoutServiceAccount("connnosa");
         String c = code("nosa");
+
+        assertUseCaseError(() -> sync(new SyncConnectionsCommand(app.id(), app.code(), null,
+                        List.of(new SyncConnectionInput(c, "X", null, null)), false)),
+                UseCaseError.Validation.class, "APPLICATION_SERVICE_ACCOUNT_REQUIRED");
+        assertThat(repo.findByCode(c, app.code(), null)).as("nothing written").isEmpty();
+    }
+
+    /// Go F17: the application points at a principal that has NO service account
+    /// behind it (the FK to `iam_principals` is satisfied, the account link is
+    /// null). The sync refuses it — it must not store the principal id.
+    @Test
+    void syncRefusesAnApplicationPrincipalWithNoServiceAccountBehindIt() {
+        String bare = EntityType.PRINCIPAL.generate();
+        var now = java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC);
+        DB.insertInto(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS)
+                .set(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS.ID, bare)
+                .set(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS.TYPE, "SERVICE")
+                .set(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS.NAME, "bare")
+                .set(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS.ACTIVE, true)
+                .set(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS.CREATED_AT, now)
+                .set(io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS.UPDATED_AT, now)
+                .execute();
+        Application app = Application.create(ApplicationType.APPLICATION, "connbare-" + RUN, "connbare")
+                .attachServiceAccount(bare);
+        persistRawApp(app);
+        String c = code("bare");
 
         assertUseCaseError(() -> sync(new SyncConnectionsCommand(app.id(), app.code(), null,
                         List.of(new SyncConnectionInput(c, "X", null, null)), false)),

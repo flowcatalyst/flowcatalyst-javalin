@@ -99,7 +99,7 @@ public final class ConnectionApi {
     private static void update(Exchange ctx, State s) {
         Checks.require(Auth.current(), CONNECTION_UPDATE);
         var cmd = ctx.bodyAsClass(UpdateConnectionRequest.class).toCommand(ctx.pathParam("id"));
-        UpdateConnection.of(s.repo(), s.apps()).run(s.uow(), cmd, Auth.executionContext());
+        UpdateConnection.of(s.repo(), s.apps(), s.signing()).run(s.uow(), cmd, Auth.executionContext());
         ctx.status(204);
     }
 
@@ -164,9 +164,11 @@ public final class ConnectionApi {
     /// Body of `PUT /api/connections/{id}`; the path id is authoritative.
     /// `applicationCode` is set-if-provided and never cleared (spec §3).
     public record UpdateConnectionRequest(String name, String description, String externalId, String status,
-                                          String applicationCode) {
+                                          String applicationCode, String serviceAccountId) {
         public UpdateCommand toCommand(String id) {
-            return new UpdateCommand(id, name, description, externalId, status, blankToNull(applicationCode));
+            // serviceAccountId is NOT blank-normalised: blank is refused (SERVICE_ACCOUNT_REQUIRED), not ignored.
+            return new UpdateCommand(id, name, description, externalId, status, blankToNull(applicationCode),
+                    serviceAccountId);
         }
     }
 

@@ -8429,6 +8429,9 @@
           "name": {
             "type": "string"
           },
+          "serviceAccountId": {
+            "type": "string"
+          },
           "status": {
             "type": "string"
           }

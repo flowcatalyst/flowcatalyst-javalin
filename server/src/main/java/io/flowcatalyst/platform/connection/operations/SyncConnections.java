@@ -82,7 +82,15 @@ public final class SyncConnections {
                                 "Application '" + cmd.applicationCode()
                                         + "' has no provisioned service account; connections cannot be synced without one");
                     }
-                    String appServiceAccountId = app.serviceAccountId();
+                    // The application holds its service account's PRINCIPAL id (prn_…); a
+                    // connection stores the account's OWN id (sac_…) — Go F17. A principal
+                    // with no account behind it refuses the whole sync, nothing persisted.
+                    String appServiceAccountId = repo.serviceAccountForPrincipal(app.serviceAccountId())
+                            .filter(id -> !id.isBlank())
+                            .orElseThrow(() -> UseCaseException.validation("APPLICATION_SERVICE_ACCOUNT_REQUIRED",
+                                    "Application '" + cmd.applicationCode() + "' points at principal '"
+                                            + app.serviceAccountId()
+                                            + "', which has no service account; connections cannot be synced without one"));
 
                     Map<String, Connection> existingByCode = repo.findByApplicationAndClient(cmd.applicationCode(), cmd.clientId()).stream()
                             .collect(Collectors.toMap(Connection::code, Function.identity(), (a, _) -> a, LinkedHashMap::new));
