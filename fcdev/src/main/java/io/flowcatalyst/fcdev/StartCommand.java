@@ -75,6 +75,16 @@ public final class StartCommand implements Callable<Integer> {
     private final StartOptions opts;
     private final PrometheusRegistry registry;
 
+    /// Test seam: runs right after the embedded Postgres is up, so a test can
+    /// inject a failure (including an [Error]) into the boot and assert the
+    /// cluster is stopped on the way out.
+    private Runnable afterPgStart = () -> { };
+
+    StartCommand afterPgStart(Runnable hook) {
+        this.afterPgStart = hook;
+        return this;
+    }
+
     public StartCommand(DevEnv env, DevPaths paths, StartOptions opts) {
         this(env, paths, opts, PrometheusRegistry.defaultRegistry);
     }
@@ -133,6 +143,10 @@ public final class StartCommand implements Callable<Integer> {
 
         EmbeddedPg pg = null;
         Pools pools = null;
+        // A signal (SIGTERM/SIGINT) that arrives during boot would otherwise
+        // kill the JVM before call() installs its shutdown hook, orphaning the
+        // postgres child. Held only until launch() returns or fails.
+        Thread bootHook = null;
         try {
             // ── embedded Postgres ─────────────────────────────────────────
             String databaseUrl = opts.databaseUrl();
@@ -150,6 +164,10 @@ public final class StartCommand implements Callable<Integer> {
                 EmbeddedPg.assertCompatible(dataPath);
                 Path embeddedDbBinary = opts.embeddedDbBinary().isEmpty() ? null : Path.of(opts.embeddedDbBinary());
                 pg = EmbeddedPg.start(dataPath, opts.embeddedDbPort(), paths.embeddedPgCacheDir(), embeddedDbBinary);
+                final EmbeddedPg bootPg = pg;
+                bootHook = Thread.ofPlatform().name("fcdev-boot-shutdown").unstarted(bootPg::close);
+                Runtime.getRuntime().addShutdownHook(bootHook);
+                afterPgStart.run();
                 databaseUrl = pg.url();
                 LOG.atInfo().setMessage("embedded postgres started")
                         .addKeyValue("port", pg.port())
@@ -226,13 +244,34 @@ public final class StartCommand implements Callable<Integer> {
                         .log();
             }
 
-            return new Started(running, pools, pg, ownsPid ? pidFile : null, pid, fnHost, fnCliJson,
+            Started started = new Started(running, pools, pg, ownsPid ? pidFile : null, pid, fnHost, fnCliJson,
                     flightRecording);
-        } catch (IOException | RuntimeException e) {
-            if (pools != null) pools.close();
-            if (pg != null) pg.close();
-            if (ownsPid) PidFile.removeIfOwned(pidFile, pid);
+            dropBootHook(bootHook);
+            return started;
+        } catch (Throwable e) {
+            // Throwable, not IOException|RuntimeException: a LinkageError such as
+            // NoClassDefFoundError during boot must still stop the postgres child,
+            // or it outlives the JVM holding the port and the data directory.
+            try {
+                if (pools != null) pools.close();
+            } finally {
+                try {
+                    if (pg != null) pg.close();
+                } finally {
+                    if (ownsPid) PidFile.removeIfOwned(pidFile, pid);
+                    dropBootHook(bootHook);
+                }
+            }
             throw e;
+        }
+    }
+
+    private static void dropBootHook(Thread hook) {
+        if (hook == null) return;
+        try {
+            Runtime.getRuntime().removeShutdownHook(hook);
+        } catch (IllegalStateException ignored) {
+            // already shutting down: the hook is running (or about to) — fine
         }
     }
 

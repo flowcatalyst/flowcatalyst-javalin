@@ -143,6 +143,11 @@ public final class EmbeddedPg implements AutoCloseable {
         } catch (SQLException e) {
             handle.close();
             throw new IOException("prepare embedded database: " + e.getMessage(), e);
+        } catch (Throwable t) {
+            // RuntimeException / Error (e.g. NoClassDefFoundError) from the
+            // provisioning steps: the cluster is already up — stop it.
+            handle.close();
+            throw t;
         }
         return handle;
     }
