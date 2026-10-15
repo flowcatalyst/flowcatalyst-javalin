@@ -55,6 +55,38 @@ test.describe("identity", () => {
         // The secret is never shown again — the detail view only offers to
         // regenerate it, never displays the one just created.
         await expect(adminPage.getByText(clientSecret!)).toHaveCount(0);
+
+        // Regenerating a credential asks first: Cancel is focused, Escape
+        // cancels (and leaves the drawer open), and nothing is sent until the
+        // action-labelled confirm button is pressed.
+        const credentialCalls: string[] = [];
+        adminPage.on("request", (r) => {
+            if (r.method() === "POST" && /\/service-accounts\/[^/]+\/(regenerate-|token)/.test(r.url())) {
+                credentialCalls.push(r.url());
+            }
+        });
+        const confirm = adminPage.getByRole("alertdialog", { name: "Regenerate signing secret?" });
+        await adminPage.getByRole("button", { name: "Regenerate Secret", exact: true }).click();
+        await expect(confirm).toBeVisible();
+        await expect(confirm).toContainText("stops being used immediately");
+        await expect(confirm.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+        await adminPage.keyboard.press("Escape");
+        await expect(confirm).toBeHidden();
+        await expect(adminPage.getByRole("button", { name: "Regenerate Secret", exact: true })).toBeVisible();
+        expect(credentialCalls).toHaveLength(0);
+
+        await adminPage.getByRole("button", { name: "Generate Token", exact: true }).click();
+        const mintConfirm = adminPage.getByRole("alertdialog", { name: "Generate a bearer token?" });
+        await expect(mintConfirm).toContainText("not revoked");
+        await mintConfirm.getByRole("button", { name: "Cancel", exact: true }).click();
+        await expect(mintConfirm).toBeHidden();
+        expect(credentialCalls).toHaveLength(0);
+
+        const regenerated = adminPage.waitForResponse((r) => r.url().endsWith("/regenerate-secret") && r.request().method() === "POST");
+        await adminPage.getByRole("button", { name: "Regenerate Secret", exact: true }).click();
+        await confirm.getByRole("button", { name: "Regenerate secret", exact: true }).click();
+        expect((await regenerated).ok()).toBe(true);
+        await expect(adminPage.getByRole("dialog", { name: /New Signing Secret/i })).toBeVisible();
     });
 
     test("creating a portal app with a callback shows its credentials once, lists it with its OAuth client id after reload, then deleting removes it", async ({ adminPage }) => {

@@ -2,6 +2,8 @@
 import { toast } from "@/utils/errorBus";
 import { ref, computed, watch } from "vue";
 import { useRoute } from "vue-router";
+import { useConfirm } from "primevue/useconfirm";
+import { credentialConfirmOptions } from "@/composables/credentialConfirm";
 import { oauthClientsApi, type OAuthClient } from "@/api/oauth-clients";
 import { applicationsApi, type Application } from "@/api/applications";
 import { clientsApi, type Client } from "@/api/clients";
@@ -73,8 +75,9 @@ const { id, goToList } = useDrawerRoute({
 	dirty: computed(() => isEditing.value && dirty.value),
 });
 
+const confirm = useConfirm();
+
 // Secret rotation dialogs — local modals, so they stack above the drawer
-const showRotateSecretDialog = ref(false);
 const rotateLoading = ref(false);
 const showNewSecretDialog = ref(false);
 const newClientSecret = ref<string | null>(null);
@@ -145,7 +148,6 @@ async function loadData(clientId: string) {
 	newRedirectUri.value = "";
 	newPostLogoutRedirectUri.value = "";
 	newAllowedOrigin.value = "";
-	showRotateSecretDialog.value = false;
 	showNewSecretDialog.value = false;
 	newClientSecret.value = null;
 	try {
@@ -323,6 +325,10 @@ async function saveChanges() {
 	}
 }
 
+function confirmRotateSecret() {
+	confirm.require(credentialConfirmOptions("rotate-oauth-secret", rotateSecret));
+}
+
 async function rotateSecret() {
 	if (!client.value) return;
 
@@ -333,7 +339,6 @@ async function rotateSecret() {
 		// clientSecret is optional on the wire shape (PUBLIC clients have no
 		// secret to rotate); normalise undefined → null for the dialog ref.
 		newClientSecret.value = response.clientSecret ?? null;
-		showRotateSecretDialog.value = false;
 		showNewSecretDialog.value = true;
 		toast.success("Success", "Client secret rotated successfully");
 		emit("changed");
@@ -755,7 +760,7 @@ function getClientTypeSeverity(clientType: string) {
           label="Rotate Secret"
           icon="pi pi-refresh"
           severity="warn"
-          @click="showRotateSecretDialog = true"
+          @click="confirmRotateSecret"
         />
       </FcFormSection>
 
@@ -798,38 +803,6 @@ function getClientTypeSeverity(clientType: string) {
       </FcFormActions>
     </template>
   </EntityDrawer>
-
-  <!-- Rotate Secret Confirmation Dialog -->
-  <Dialog
-    v-model:visible="showRotateSecretDialog"
-    header="Rotate Client Secret"
-    modal
-    :style="{ width: '450px' }"
-  >
-    <div class="dialog-content">
-      <Message severity="warn" :closable="false">
-        This will invalidate the current secret. Any applications using the old secret will stop
-        working.
-      </Message>
-      <p>Are you sure you want to rotate the client secret?</p>
-    </div>
-
-    <template #footer>
-      <Button
-        label="Cancel"
-        text
-        @click="showRotateSecretDialog = false"
-        :disabled="rotateLoading"
-      />
-      <Button
-        label="Rotate Secret"
-        icon="pi pi-refresh"
-        severity="warn"
-        @click="rotateSecret"
-        :loading="rotateLoading"
-      />
-    </template>
-  </Dialog>
 
   <!-- New Secret Display Dialog (one-time reveal — stays a local modal) -->
   <Dialog

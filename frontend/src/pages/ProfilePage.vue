@@ -5,6 +5,7 @@ import { toast } from "@/utils/errorBus";
 import { getErrorMessage } from "@/utils/errors";
 import { passwordPolicyError } from "@/utils/passwordPolicy";
 import { useConfirm } from "primevue/useconfirm";
+import { credentialConfirmOptions } from "@/composables/credentialConfirm";
 import {
 	changePassword,
 	sendChangePasswordEmailCode,
@@ -196,6 +197,14 @@ onMounted(async () => {
 	}
 });
 
+function requestRotateDevCredential() {
+	if (!hasDevCredential.value) {
+		void rotateDevCredential();
+		return;
+	}
+	confirm.require(credentialConfirmOptions("rotate-dev-secret", () => void rotateDevCredential()));
+}
+
 async function rotateDevCredential() {
 	if (!authStore.user) return;
 	devCredentialBusy.value = true;
@@ -352,7 +361,7 @@ function formatDevCredentialDate(iso: string | null): string {
               icon="pi pi-key"
               outlined
               :loading="devCredentialBusy"
-              @click="rotateDevCredential"
+              @click="requestRotateDevCredential"
             />
           </FcFormActions>
         </div>

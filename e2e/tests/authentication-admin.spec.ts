@@ -55,8 +55,23 @@ test.describe("authentication admin / oauth clients", () => {
         const rotateButton = page.getByRole("button", { name: "Rotate Secret", exact: true });
         await expect(rotateButton).toBeVisible();
 
+        // Rotating asks first: Cancel is focused, Escape cancels, and nothing
+        // is rotated until the confirm button is pressed.
+        let rotateCalls = 0;
+        page.on("request", (r) => {
+            if (r.method() === "POST" && r.url().includes("/rotate-secret")) rotateCalls++;
+        });
         await rotateButton.click();
-        await dialogWithHeader(page, "Rotate Client Secret").getByRole("button", { name: "Rotate Secret", exact: true }).click();
+        const confirmDialog = page.getByRole("alertdialog", { name: "Rotate client secret?" });
+        await expect(confirmDialog).toBeVisible();
+        await expect(confirmDialog).toContainText("24-hour overlap");
+        await expect(confirmDialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+        await page.keyboard.press("Escape");
+        await expect(confirmDialog).toBeHidden();
+        expect(rotateCalls).toBe(0);
+
+        await rotateButton.click();
+        await confirmDialog.getByRole("button", { name: "Rotate secret", exact: true }).click();
         const newSecretDialog = dialogWithHeader(page, "New Client Secret");
         await expect(newSecretDialog).toBeVisible();
         const newSecret = (await newSecretDialog.locator(".secret-code").innerText()).trim();

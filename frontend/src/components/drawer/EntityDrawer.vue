@@ -47,7 +47,13 @@ async function requestClose(force = false) {
 }
 
 function onVisibleUpdate(value: boolean) {
-	if (!value) void requestClose();
+	if (value) return;
+	// A modal dialog (confirm, secret reveal, picker) stacked above the drawer
+	// owns Escape: PrimeVue's document-level Escape handlers fire for the
+	// dialog AND this drawer, so without this guard cancelling a confirm
+	// would also close the drawer behind it.
+	if (typeof document !== "undefined" && document.querySelector(".p-dialog-mask")) return;
+	void requestClose();
 }
 
 defineExpose({

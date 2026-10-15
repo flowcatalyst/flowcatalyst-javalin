@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { useConfirm } from "primevue/useconfirm";
+import { credentialConfirmOptions } from "@/composables/credentialConfirm";
 import { toast } from "@/utils/errorBus";
 import { usersApi, type User } from "@/api/users";
 import { useListState } from "@/composables/useListState";
@@ -138,6 +139,20 @@ const newSecret = ref<string | null>(null);
 const secretForUser = ref<User | null>(null);
 const busyUserId = ref<string | null>(null);
 
+// First-time "Set" creates a credential (nothing to lose); "Rotate" replaces a
+// live one, so it confirms first.
+function requestSetSecret(user: User) {
+	if (!user.hasDeveloperCredential) {
+		void setSecret(user);
+		return;
+	}
+	confirm.require(
+		credentialConfirmOptions("rotate-dev-secret", () => void setSecret(user), {
+			message: `The current developer client secret for "${user.name}" stops working immediately. Any scripts or tools using it will fail to authenticate until they are given the new one. The new value is shown once, so copy it before closing.`,
+		}),
+	);
+}
+
 async function setSecret(user: User) {
 	busyUserId.value = user.id;
 	const wasSet = user.hasDeveloperCredential;
@@ -254,7 +269,7 @@ function copyToClipboard(text: string) {
                 rounded
                 severity="secondary"
                 :loading="busyUserId === data.id"
-                @click="setSecret(data)"
+                @click="requestSetSecret(data)"
               />
               <Button
                 v-if="data.hasDeveloperCredential"
