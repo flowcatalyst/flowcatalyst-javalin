@@ -21,6 +21,7 @@ import {
     createInternalIdentityProvider, createInternalIdentityProviderViaApi,
     createClientViaApi,
 } from "../fixtures/authenticationAdmin.js";
+import { expectCompactConfirmDialog } from "../fixtures/admin.js";
 
 test.describe("authentication admin / oauth clients", () => {
     test("a CONFIDENTIAL client shows its secret once, then never again", async ({ adminPage: page }) => {
@@ -65,6 +66,7 @@ test.describe("authentication admin / oauth clients", () => {
         const confirmDialog = page.getByRole("alertdialog", { name: "Rotate client secret?" });
         await expect(confirmDialog).toBeVisible();
         await expect(confirmDialog).toContainText("24-hour overlap");
+        await expectCompactConfirmDialog(page, confirmDialog, process.env.E2E_CONFIRM_SHOT);
         await expect(confirmDialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
         await page.keyboard.press("Escape");
         await expect(confirmDialog).toBeHidden();

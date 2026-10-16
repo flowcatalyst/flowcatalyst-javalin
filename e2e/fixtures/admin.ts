@@ -1,4 +1,4 @@
-import { test as base, expect, type Page } from "@playwright/test";
+import { test as base, expect, type Locator, type Page } from "@playwright/test";
 
 /// The session cookie both sides write (`SessionCookie.NAME` /
 /// `platformmw.SessionCookieName`) — `fc_session`.
@@ -76,3 +76,27 @@ export const test = base.extend<{ adminPage: Page }>({
 });
 
 export { expect };
+
+/// A confirm dialog must be a compact modal, not a viewport-wide bar: at the
+/// current (desktop) viewport its box is <= 640px wide, and at a 390px phone
+/// viewport it fits inside the window. Restores the original viewport.
+export async function expectCompactConfirmDialog(page: Page, dialog: Locator, shotPrefix?: string): Promise<void> {
+    const original = page.viewportSize();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.waitForTimeout(500); // let the open transition (scale/fade) settle before measuring
+    const desktop = await dialog.boundingBox();
+    expect(desktop, "confirm dialog has a box").not.toBeNull();
+    expect(desktop!.width).toBeLessThanOrEqual(640);
+    expect(desktop!.width).toBeGreaterThan(280);
+    console.log(`confirm dialog width @1280: ${desktop!.width}`);
+    if (shotPrefix) await page.screenshot({ path: `${shotPrefix}-1280.png` });
+    await page.setViewportSize({ width: 390, height: 800 });
+    await page.waitForTimeout(500);
+    const phone = await dialog.boundingBox();
+    expect(phone, "confirm dialog has a box on a phone").not.toBeNull();
+    console.log(`confirm dialog @390: x=${phone!.x} width=${phone!.width}`);
+    expect(phone!.x).toBeGreaterThanOrEqual(0);
+    expect(phone!.x + phone!.width).toBeLessThanOrEqual(390);
+    if (shotPrefix) await page.screenshot({ path: `${shotPrefix}-390.png` });
+    if (original) await page.setViewportSize(original);
+}

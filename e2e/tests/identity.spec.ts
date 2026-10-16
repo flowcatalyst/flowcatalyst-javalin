@@ -12,7 +12,7 @@
 // seeded only by the portal app itself (POST /api/portal-users) — so the
 // Portal Users flow below seeds through the API and exercises the list/
 // search/revoke surface instead of an invite dialog.
-import { test, expect, loginAndLand, ORIGIN_HEADERS } from "../fixtures/admin.js";
+import { test, expect, loginAndLand, ORIGIN_HEADERS, expectCompactConfirmDialog } from "../fixtures/admin.js";
 import { createClientScopedPrincipal, unique } from "../fixtures/clientScoped.js";
 
 test.describe("identity", () => {
@@ -69,6 +69,7 @@ test.describe("identity", () => {
         await adminPage.getByRole("button", { name: "Regenerate Secret", exact: true }).click();
         await expect(confirm).toBeVisible();
         await expect(confirm).toContainText("stops being used immediately");
+        await expectCompactConfirmDialog(adminPage, confirm);
         await expect(confirm.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
         await adminPage.keyboard.press("Escape");
         await expect(confirm).toBeHidden();
