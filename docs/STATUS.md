@@ -2,6 +2,10 @@
 
 > The function service, in one document for a newcomer: `docs/function-service-overview.md`.
 
+> **Go -> Java mirroring is PAUSED (owner, 2026-10-16).** The outstanding Go changes (F20, F21, `fn.dispatch`,
+> fcdev, `x-sdk`, requeue-by-filter) and how to resume are in `docs/go-mirror/PENDING.md`.
+> Read it before assuming Java matches Go `main`.
+
 Updated whenever a unit lands. A fresh session (human or agent) should be
 able to resume from this file + `CONVENTIONS.md` + `docs/backlog.md` +
 `docs/process/agent-prompts.md` without re-deriving anything.

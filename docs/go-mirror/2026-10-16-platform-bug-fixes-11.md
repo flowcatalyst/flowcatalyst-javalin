@@ -1,3 +1,5 @@
+> Mirroring is paused (2026-10-16); what Java is still missing from Go is in `PENDING.md` in this directory.
+
 # Java mirror of Go F18: malformed role names rejected; assignments name existing roles; roles carry their application id (2026-10-16)
 
 Source: `../flowcatalyst-go/docs/platform-bug-fixes.md` F18 (owner report 2026-10-15) and
