@@ -27,3 +27,5 @@ V26__prune_unemitted_event_types.sql
 V27__platform_event_schema_fixes.sql
 V28__passkey_event_type_codes.sql
 V29__connection_service_account_principal_ids.sql
+V30__dispatch_pool_application_owner.sql
+V31__application_service_dispatch_pool_sync.sql

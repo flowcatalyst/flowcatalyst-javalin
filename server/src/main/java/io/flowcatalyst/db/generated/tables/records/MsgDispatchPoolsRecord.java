@@ -174,6 +174,20 @@ public class MsgDispatchPoolsRecord extends UpdatableRecordImpl<MsgDispatchPools
         return (OffsetDateTime) get(10);
     }
 
+    /**
+     * Setter for <code>public.msg_dispatch_pools.application_id</code>.
+     */
+    public void setApplicationId(String value) {
+        set(11, value);
+    }
+
+    /**
+     * Getter for <code>public.msg_dispatch_pools.application_id</code>.
+     */
+    public String getApplicationId() {
+        return (String) get(11);
+    }
+
     // -------------------------------------------------------------------------
     // Primary key information
     // -------------------------------------------------------------------------
@@ -197,7 +211,7 @@ public class MsgDispatchPoolsRecord extends UpdatableRecordImpl<MsgDispatchPools
     /**
      * Create a detached, initialised MsgDispatchPoolsRecord
      */
-    public MsgDispatchPoolsRecord(String id, String code, String name, String description, Integer rateLimit, Integer concurrency, String clientId, String clientIdentifier, String status, OffsetDateTime createdAt, OffsetDateTime updatedAt) {
+    public MsgDispatchPoolsRecord(String id, String code, String name, String description, Integer rateLimit, Integer concurrency, String clientId, String clientIdentifier, String status, OffsetDateTime createdAt, OffsetDateTime updatedAt, String applicationId) {
         super(MsgDispatchPools.MSG_DISPATCH_POOLS);
 
         setId(id);
@@ -211,6 +225,7 @@ public class MsgDispatchPoolsRecord extends UpdatableRecordImpl<MsgDispatchPools
         setStatus(status);
         setCreatedAt(createdAt);
         setUpdatedAt(updatedAt);
+        setApplicationId(applicationId);
         resetTouchedOnNotNull();
     }
 }

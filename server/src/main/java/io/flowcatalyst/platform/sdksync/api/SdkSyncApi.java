@@ -190,6 +190,10 @@ public final class SdkSyncApi {
     private static void syncDispatchPools(Exchange ctx, State s) {
         Checks.requireAny(Auth.current(), DISPATCH_POOL_SYNC, DISPATCH_POOL_MANAGE);
         var app = application(ctx, s);
+        // Go F19: the application-service role holds the sync permission, so the handler confines the
+        // caller to the applications it is bound to (the operation's authorize phase checks it too) and
+        // the operation to the pools that application owns.
+        Checks.checkApplicationAccess(Auth.current(), app.id(), app.code());
         // function-invocation.md §4.2: pools have no source column, so a
         // function's one dispatch pool is protected by id here, read fresh
         // from fn_trigger_objects — the operation never learns why.

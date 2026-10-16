@@ -6,6 +6,7 @@ import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository;
 import io.flowcatalyst.platform.dispatchpool.DispatchPoolRepository.ListFilter;
 import io.flowcatalyst.platform.dispatchpool.DispatchPoolStatus;
 import io.flowcatalyst.platform.dispatchpool.operations.DispatchPoolEvents.DispatchPoolCreated;
+import io.flowcatalyst.platform.dispatchpool.operations.DispatchPoolEvents.DispatchPoolsSynced;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.Scope;
@@ -514,6 +515,142 @@ class DispatchPoolOperationsTest {
                 .isEqualTo(DispatchPoolStatus.ACTIVE);
         assertThat(repo.findByCode(ordinary, null).orElseThrow().status())
                 .as("an ordinary unlisted pool is still archived in the same call").isEqualTo(DispatchPoolStatus.ARCHIVED);
+    }
+
+    // ── Sync: pool ownership (Go F19) ──────────────────────────────────────
+
+    private static final String OTHER_APP_ID = EntityType.APPLICATION.generate();
+
+    /// An application service account: bound to exactly `appIds`, not all-applications.
+    private static AuthContext appCaller(Scope scope, String... appIds) {
+        return new AuthContext(EntityType.PRINCIPAL.generate(), scope, "svc@x.io",
+                scope == Scope.ANCHOR ? List.of("*") : List.of(), List.of(), List.of(appIds), false,
+                List.of("platform:messaging:dispatch-pool:sync"));
+    }
+
+    private static DispatchPoolsSynced syncAs(AuthContext caller, String appId, String appCode, boolean removeUnlisted,
+                                              SyncDispatchPoolInput... pools) {
+        return Auth.runAs(caller, () -> SyncDispatchPools.of(repo).run(uow,
+                new SyncDispatchPoolsCommand(appId, appCode, List.of(pools), removeUnlisted),
+                ExecutionContext.of(caller.principalId())));
+    }
+
+    @Test
+    void anApplicationCallerCreatesPoolsOwnedByItsApplicationAndSyncsThemAgain() {
+        var caller = appCaller(Scope.CLIENT, APP_ID);
+        String own = code("dpown-mine");
+        var first = syncAs(caller, APP_ID, "dpown" + RUN, false, input(own, "Mine", null, 2));
+        assertThat(first.created()).isEqualTo(1);
+        assertThat(repo.findByCode(own, null).orElseThrow().applicationId()).as("created owned by the target application").isEqualTo(APP_ID);
+
+        var second = syncAs(caller, APP_ID, "dpown" + RUN, false, input(own, "Mine renamed", null, 5));
+        assertThat(second.updated()).isEqualTo(1);
+        var got = repo.findByCode(own, null).orElseThrow();
+        assertThat(got.name()).isEqualTo("Mine renamed");
+        assertThat(got.applicationId()).isEqualTo(APP_ID);
+    }
+
+    @Test
+    void anApplicationCallerCannotTakeOverAnotherApplicationsPoolOrAPlatformPool() {
+        String theirs = code("dptake-theirs");
+        syncAs(appCaller(Scope.CLIENT, OTHER_APP_ID), OTHER_APP_ID, "dptakeother" + RUN, false, input(theirs, "Theirs", null, 2));
+        String platform = created(code("dptake-platform"), "Platform pool").poolId();
+        String platformCode = reload(platform).code();
+        var caller = appCaller(Scope.CLIENT, APP_ID);
+
+        assertUseCaseError(() -> syncAs(caller, APP_ID, "dptake" + RUN, false, input(theirs, "Hijacked", null, 9)),
+                UseCaseError.Authorization.class, "DISPATCH_POOL_NOT_OWNED");
+        assertThat(repo.findByCode(theirs, null).orElseThrow().name()).isEqualTo("Theirs");
+        assertThat(repo.findByCode(theirs, null).orElseThrow().applicationId()).isEqualTo(OTHER_APP_ID);
+
+        assertUseCaseError(() -> syncAs(caller, APP_ID, "dptake" + RUN, false, input(platformCode, "Hijacked", null, 9)),
+                UseCaseError.Authorization.class, "DISPATCH_POOL_NOT_OWNED");
+        assertThat(reload(platform).name()).isEqualTo("Platform pool");
+        assertThat(reload(platform).applicationId()).as("an unowned pool stays unowned").isNull();
+
+        // All-or-nothing: a list mixing a new code with one it does not own writes neither.
+        String fresh = code("dptake-fresh");
+        assertUseCaseError(() -> syncAs(caller, APP_ID, "dptake" + RUN, false,
+                        input(fresh, "Fresh", null, 2), input(theirs, "Hijacked", null, 9)),
+                UseCaseError.Authorization.class, "DISPATCH_POOL_NOT_OWNED");
+        assertThat(repo.findByCode(fresh, null)).as("nothing of a refused list is written").isEmpty();
+    }
+
+    @Test
+    void aClientsPoolIsNeverMatchedByCodeAndItsCodeIsNotAvailableToAnApplicationCaller() {
+        String clientId = EntityType.CLIENT.generate();
+        String shared = code("dpclientcode");
+        var clientPool = runAsAnchor(CreateDispatchPool.of(repo), new CreateCommand(shared, "Client pool", null, null, null, clientId));
+
+        assertUseCaseError(() -> syncAs(appCaller(Scope.CLIENT, APP_ID), APP_ID, "dpclientcode" + RUN, false,
+                        input(shared, "Hijacked", null, 9)),
+                UseCaseError.Authorization.class, "DISPATCH_POOL_NOT_OWNED");
+        assertThat(reload(clientPool.poolId()).name()).isEqualTo("Client pool");
+
+        // An admin may create the platform pool of that code; the client's pool is not the match.
+        var ev = runAsAnchor(SyncDispatchPools.of(repo), sync("dpclientcode" + RUN, false, input(shared, "Platform", null, 2)));
+        assertThat(ev.created()).as("a platform pool, not an update of the client's").isEqualTo(1);
+        assertThat(reload(clientPool.poolId()).name()).isEqualTo("Client pool");
+    }
+
+    @Test
+    void removeUnlistedByANonAnchorCallerIsRefused() {
+        String own = code("dpsweepna-own");
+        syncAs(appCaller(Scope.CLIENT, APP_ID), APP_ID, "dpsweepna" + RUN, false, input(own, "Own", null, 2));
+        assertUseCaseError(() -> syncAs(appCaller(Scope.CLIENT, APP_ID), APP_ID, "dpsweepna" + RUN, true),
+                UseCaseError.Authorization.class, "ANCHOR_REQUIRED_FOR_PLATFORM_SWEEP");
+        assertThat(repo.findByCode(own, null).orElseThrow().status()).isEqualTo(DispatchPoolStatus.ACTIVE);
+    }
+
+    @Test
+    void anAnchorTierApplicationCallerSweepsOnlyThePoolsItsApplicationOwns() {
+        String sweepApp = EntityType.APPLICATION.generate(); // fresh: no other test's pools are owned by it
+        String mine = code("dpsweepown-mine");
+        String keep = code("dpsweepown-keep");
+        String theirs = code("dpsweepown-theirs");
+        syncAs(appCaller(Scope.CLIENT, sweepApp), sweepApp, "dpsweepown" + RUN, false, input(mine, "Mine", null, 2), input(keep, "Keep", null, 2));
+        syncAs(appCaller(Scope.CLIENT, OTHER_APP_ID), OTHER_APP_ID, "dpsweepownx" + RUN, false, input(theirs, "Theirs", null, 2));
+        String platform = created(code("dpsweepown-platform"), "Platform").poolId();
+
+        var ev = syncAs(appCaller(Scope.ANCHOR, sweepApp), sweepApp, "dpsweepown" + RUN, true, input(keep, "Keep", null, 2));
+        assertThat(ev.deleted()).as("only its own unlisted pool is archived").isEqualTo(1);
+        assertThat(repo.findByCode(mine, null).orElseThrow().status()).isEqualTo(DispatchPoolStatus.ARCHIVED);
+        assertThat(repo.findByCode(keep, null).orElseThrow().status()).isEqualTo(DispatchPoolStatus.ACTIVE);
+        assertThat(repo.findByCode(theirs, null).orElseThrow().status()).as("another application's pool").isEqualTo(DispatchPoolStatus.ACTIVE);
+        assertThat(reload(platform).status()).as("a platform pool").isEqualTo(DispatchPoolStatus.ACTIVE);
+    }
+
+    @Test
+    void anAllApplicationsAnchorSweepsPlatformWide() {
+        String theirs = code("dpsweepall-theirs");
+        syncAs(appCaller(Scope.CLIENT, OTHER_APP_ID), OTHER_APP_ID, "dpsweepallx" + RUN, false, input(theirs, "Theirs", null, 2));
+        String platform = created(code("dpsweepall-platform"), "Platform").poolId();
+
+        runAsAnchor(SyncDispatchPools.of(repo), sync("dpsweepall" + RUN, true));
+        assertThat(repo.findByCode(theirs, null).orElseThrow().status()).isEqualTo(DispatchPoolStatus.ARCHIVED);
+        assertThat(reload(platform).status()).isEqualTo(DispatchPoolStatus.ARCHIVED);
+    }
+
+    @Test
+    void anAllApplicationsCallerSyncsAnyPoolClaimsUnownedOnesAndNeverReassignsOwnedOnes() {
+        String platform = code("dpadmin-platform");
+        created(platform, "Platform pool");
+        String theirs = code("dpadmin-theirs");
+        syncAs(appCaller(Scope.CLIENT, OTHER_APP_ID), OTHER_APP_ID, "dpadminx" + RUN, false, input(theirs, "Theirs", null, 2));
+
+        var ev = runAsAnchor(SyncDispatchPools.of(repo), sync("dpadmin" + RUN, false,
+                input(platform, "Platform renamed", null, 3), input(theirs, "Theirs renamed", null, 3)));
+        assertThat(ev.updated()).isEqualTo(2);
+        var claimed = repo.findByCode(platform, null).orElseThrow();
+        assertThat(claimed.name()).isEqualTo("Platform renamed");
+        assertThat(claimed.applicationId()).as("an unowned pool is handed to the target application").isEqualTo(APP_ID);
+        var kept = repo.findByCode(theirs, null).orElseThrow();
+        assertThat(kept.name()).isEqualTo("Theirs renamed");
+        assertThat(kept.applicationId()).as("an owned pool is never reassigned").isEqualTo(OTHER_APP_ID);
+
+        // Once claimed, the application's own caller syncs it.
+        assertThat(syncAs(appCaller(Scope.CLIENT, APP_ID), APP_ID, "dpadmin" + RUN, false,
+                input(platform, "Platform by owner", null, 4)).updated()).isEqualTo(1);
     }
 
     static Stream<Arguments> badSyncCommands() {

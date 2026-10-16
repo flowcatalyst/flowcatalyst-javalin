@@ -97,6 +97,15 @@ class SchemaFingerprintTest {
             "INDEX\tmsg_subscription_event_types_archive\tidx_msg_sub_event_types_archive_subscription\tCREATE INDEX idx_msg_sub_event_types_archive_subscription ON public.msg_subscription_event_types_archive USING btree (subscription_id)\ttrue",
             "TABLE\tmsg_subscription_event_types_archive\tr\t");
 
+    /// V30 (Go `078_dispatch_pool_application_owner.sql`, statement for statement) adds
+    /// `msg_dispatch_pools.application_id` and its index. The fixture is the Go schema
+    /// captured at goose 57, before Go 078, so it lacks both: named and exact, and any other
+    /// change to the table still fails. Drop the list when the fixture is next re-captured
+    /// from a Go database at 078 or later.
+    static final List<String> DISPATCH_POOL_OWNER_LINES_GO_078 = List.of(
+            "COLUMN\tmsg_dispatch_pools\tapplication_id\t12\tcharacter varying\t17\t\tYES\t\tNO",
+            "INDEX\tmsg_dispatch_pools\tidx_msg_dispatch_pools_application_id\tCREATE INDEX idx_msg_dispatch_pools_application_id ON public.msg_dispatch_pools USING btree (application_id)\ttrue");
+
     static boolean isArchiveTableLine(String fingerprintLine) {
         String[] fields = fingerprintLine.split("\t", -1);
         return fields.length > 1 && ARCHIVE_TABLE_GO_071.equals(fields[1]);
@@ -214,8 +223,15 @@ class SchemaFingerprintTest {
         assertThat(expected.lines().filter(SchemaFingerprintTest::isArchiveTableLine).toList())
                 .as("the fixture predates Go 071").isEmpty();
 
+        // V30's column and index (Go 078), which the fixture predates: exactly Go's two lines.
+        assertThat(javaLines).as("msg_dispatch_pools.application_id and its index as Go 078 creates them, exactly")
+                .containsAll(DISPATCH_POOL_OWNER_LINES_GO_078);
+        assertThat(expected.lines().toList()).as("the fixture predates Go 078")
+                .doesNotContainAnyElementsOf(DISPATCH_POOL_OWNER_LINES_GO_078);
+
         var javaLinesExceptDivergent = javaLines.stream().filter(l -> !isDivergentConstraintLine(l))
                 .filter(l -> !isArchiveTableLine(l))
+                .filter(l -> !DISPATCH_POOL_OWNER_LINES_GO_078.contains(l))
                 .filter(l -> !SCHEDULER_INDEXES_V22.contains(l)).toList();
         var expectedLinesExceptDivergent = expected.lines().filter(l -> !isDivergentConstraintLine(l))
                 .filter(l -> !SCHEDULER_INDEXES_GO_057.contains(l)).toList();

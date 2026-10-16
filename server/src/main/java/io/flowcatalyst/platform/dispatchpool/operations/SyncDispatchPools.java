@@ -7,6 +7,8 @@ import io.flowcatalyst.platform.dispatchpool.operations.DispatchPoolEvents.Dispa
 import io.flowcatalyst.platform.dispatchpool.operations.DispatchPoolEvents.DispatchPoolCreated;
 import io.flowcatalyst.platform.dispatchpool.operations.DispatchPoolEvents.DispatchPoolUpdated;
 import io.flowcatalyst.platform.dispatchpool.operations.DispatchPoolEvents.DispatchPoolsSynced;
+import io.flowcatalyst.platform.shared.auth.Auth;
+import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.jdbc.SyncSave;
 import io.flowcatalyst.sdk.usecase.op.Operation;
@@ -18,15 +20,30 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 /// Bulk-upserts an application SDK's dispatch pools in one transaction
-/// (spec §7). Pools are matched by code over **every** pool in the table:
+/// (spec §7). Pools are matched by code over the **client-less** pools:
 /// existing codes get name, description, rate limit and concurrency
 /// replaced (status and client untouched), new codes are created
 /// platform-wide, and with `removeUnlisted` every non-archived pool absent
 /// from the batch is **archived** (never hard-deleted). One per-row event
 /// per row touched plus one [DispatchPoolsSynced] rollup.
+///
+/// Ownership (Go F19). Pools are global rows matched by code, and the built-in
+/// application-service role holds the sync permission, so each pool records the
+/// application that owns it (`applicationId`; `null` for admin-created and
+/// pre-ownership pools). An all-applications caller (a platform admin) may sync
+/// any pool: new pools are created owned by the target application, unowned
+/// pools it touches are handed to that application, an owned pool is never
+/// re-assigned. Any other caller (an application service account, even at
+/// anchor tier) may only create pools and change pools the target application
+/// owns; a code that belongs to another application, to a client or to nobody
+/// is refused `DISPATCH_POOL_NOT_OWNED`, all-or-nothing. `removeUnlisted`: a
+/// non-anchor caller is refused `ANCHOR_REQUIRED_FOR_PLATFORM_SWEEP`; an
+/// all-applications anchor sweeps platform-wide; an anchor-tier
+/// application-scoped caller archives only the pools its application owns.
 ///
 /// A pool named in `cmd.protectedIds()` (a function's own pool,
 /// `function-invocation.md` §4.2) is skipped entirely: not updated even if
@@ -49,10 +66,29 @@ public final class SyncDispatchPools {
                             "Application code is required");
                     cmd.pools().forEach(SyncDispatchPools::validateInput);
                 })
-                .authorize(cmd -> Access.checkApplicationAccess(cmd.applicationId(), cmd.applicationCode()))
+                .authorize(cmd -> {
+                    Access.checkApplicationAccess(cmd.applicationId(), cmd.applicationCode());
+                    // A removeUnlisted sweep is anchor-tier only (Go X-02(d)); what it may archive is
+                    // narrowed in execute by pool ownership.
+                    AuthContext caller = Auth.current();
+                    if (cmd.removeUnlisted() && !caller.isAnchor() && !caller.isSuperAdmin()) {
+                        throw UseCaseException.authorization("ANCHOR_REQUIRED_FOR_PLATFORM_SWEEP",
+                                "Only anchor users may sweep (removeUnlisted) dispatch pools — they are platform-global");
+                    }
+                })
                 .execute((cmd, ec) -> {
-                    Map<String, DispatchPool> existingByCode = repo.findAll().stream()
+                    List<DispatchPool> all = repo.findAll();
+                    // The sync's pools are the client-less ones: (code, client_id) is unique, so a
+                    // client's pool may share a code with a platform one and must never be mistaken for it.
+                    Map<String, DispatchPool> existingByCode = all.stream()
+                            .filter(p -> p.clientId() == null)
                             .collect(Collectors.toMap(DispatchPool::code, Function.identity(), (a, _) -> a, LinkedHashMap::new));
+                    Set<String> clientCodes = all.stream().filter(p -> p.clientId() != null)
+                            .map(DispatchPool::code).collect(Collectors.toSet());
+                    // An all-applications caller (a platform admin) may change any pool; every other
+                    // caller only the pools the target application owns.
+                    boolean allApps = Auth.current().allApplications();
+                    Predicate<DispatchPool> owns = p -> cmd.applicationId() != null && cmd.applicationId().equals(p.applicationId());
                     Set<String> incomingCodes = cmd.pools().stream()
                             .map(SyncDispatchPoolInput::code).collect(Collectors.toSet());
 
@@ -64,11 +100,22 @@ public final class SyncDispatchPools {
                         DispatchPool existing = existingByCode.get(in.code());
                         if (existing != null) {
                             if (cmd.protectedIds().contains(existing.id())) continue; // a function's own pool — untouched
+                            if (!allApps && !owns.test(existing)) {
+                                throw UseCaseException.authorization("DISPATCH_POOL_NOT_OWNED", "Dispatch pool '" + in.code()
+                                        + "' is not owned by application '" + cmd.applicationCode()
+                                        + "' (it belongs to another application or the platform); only a platform administrator may sync it");
+                            }
                             DispatchPool p = applySettings(existing, in);
+                            if (p.applicationId() == null) p = p.withApplicationId(cmd.applicationId());
                             saves.add(new SyncSave<>(p, DispatchPoolUpdated.of(ec, p)));
                             updated++;
                         } else {
-                            DispatchPool p = applySettings(DispatchPool.create(in.code(), in.name()), in);
+                            if (!allApps && clientCodes.contains(in.code())) {
+                                throw UseCaseException.authorization("DISPATCH_POOL_NOT_OWNED", "Dispatch pool code '" + in.code()
+                                        + "' is not available to application '" + cmd.applicationCode() + "'");
+                            }
+                            DispatchPool p = applySettings(DispatchPool.create(in.code(), in.name())
+                                    .withApplicationId(cmd.applicationId()), in);
                             saves.add(new SyncSave<>(p, DispatchPoolCreated.of(ec, p)));
                             created++;
                         }
@@ -77,6 +124,7 @@ public final class SyncDispatchPools {
                         for (DispatchPool existing : existingByCode.values()) {
                             if (incomingCodes.contains(existing.code()) || existing.isArchived()) continue;
                             if (cmd.protectedIds().contains(existing.id())) continue; // a function's own pool — never archived by an SDK sync
+                            if (!allApps && !owns.test(existing)) continue; // an application sweeps only its own pools
                             DispatchPool p = existing.archive();
                             saves.add(new SyncSave<>(p, DispatchPoolArchived.of(ec, p)));
                             archived++;

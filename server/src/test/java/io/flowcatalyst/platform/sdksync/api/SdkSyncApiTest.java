@@ -396,6 +396,48 @@ class SdkSyncApiTest {
         assertThat(json(r).get("error").asText()).isEqualTo("FORBIDDEN");
     }
 
+    /// Go F19: the application-service role holds the messaging dispatch-pool sync permission, so an
+    /// application's deploy syncs its own pools; the handler confines it to the applications it is
+    /// bound to and the operation to the pools that application owns.
+    @Test
+    @DisplayName("dispatch-pools sync: an application account syncs its own pools, nobody else's")
+    void dispatchPoolsSyncIsConfinedToTheBoundApplicationAndItsPools() {
+        String perm = "platform:messaging:dispatch-pool:sync";
+        String ownCode = "dpapi-own-" + RUN.toLowerCase();
+        String body = "{\"pools\":[{\"code\":\"" + ownCode + "\",\"name\":\"Own\",\"concurrency\":3}]}";
+
+        var own = post(syncPath("dispatch-pools"), body, boundTo(appId, perm));
+        assertThat(own.statusCode()).as("body was: %s", own.body()).isEqualTo(200);
+        assertThat(json(own).get("created").asInt()).isEqualTo(1);
+
+        // Another application's account, an unbound one, and a CLIENT-scoped one bound elsewhere: refused
+        // with the same shape as the other syncs.
+        var other = post(syncPath("dispatch-pools"), body, boundTo(otherAppId, perm));
+        assertThat(other.statusCode()).as("body was: %s", other.body()).isEqualTo(403);
+        assertThat(json(other).get("error").asText()).isEqualTo("FORBIDDEN");
+        assertThat(json(other).get("message").asText()).contains(APP);
+        var unbound = post(syncPath("dispatch-pools"), body, new String[] {
+                Authenticator.TEST_PRINCIPAL, EntityType.PRINCIPAL.generate(),
+                Authenticator.TEST_SCOPE, "CLIENT",
+                Authenticator.TEST_CLIENTS, CALLER_CLIENT,
+                Authenticator.TEST_ALL_APPLICATIONS, "false",
+                Authenticator.TEST_PERMISSIONS, perm});
+        assertThat(unbound.statusCode()).as("body was: %s", unbound.body()).isEqualTo(403);
+        assertThat(json(unbound).get("error").asText()).isEqualTo("FORBIDDEN");
+
+        // The other application's account may not take over the pool by sending its code.
+        var takeover = post("/api/applications/" + OTHER_APP + "/dispatch-pools/sync",
+                body.replace("Own", "Hijacked"), boundTo(otherAppId, perm));
+        assertThat(takeover.statusCode()).as("body was: %s", takeover.body()).isEqualTo(403);
+        assertThat(json(takeover).get("error").asText()).isEqualTo("DISPATCH_POOL_NOT_OWNED");
+
+        // An admin (all applications) syncs any pool.
+        var admin = post("/api/applications/" + OTHER_APP + "/dispatch-pools/sync",
+                body.replace("Own", "Admin renamed"), anchor());
+        assertThat(admin.statusCode()).as("body was: %s", admin.body()).isEqualTo(200);
+        assertThat(json(admin).get("updated").asInt()).isEqualTo(1);
+    }
+
     /// The SDK definitions sync publishes the OpenAPI document as the application's own
     /// service account (mirrors Go's TestCanSyncApplicationOpenAPIAdmitsApplicationService).
     @Test

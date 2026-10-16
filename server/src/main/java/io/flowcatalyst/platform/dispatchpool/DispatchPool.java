@@ -25,6 +25,9 @@ import java.util.Objects;
 /// @param concurrency      max concurrent dispatches (default [#DEFAULT_CONCURRENCY])
 /// @param clientId         owning client; `null` = platform-wide
 /// @param clientIdentifier denormalised client identifier; set by create from the client id (2026-10-10)
+/// @param applicationId    the application that owns the pool: set when an application's SDK sync creates it,
+///                         `null` for pools made in the admin UI/API and pools that predate ownership. An
+///                         application-scoped sync may change only pools it owns (Go F19). Not on the wire.
 /// @param status           routing-eligibility state
 /// @param createdAt        creation time
 /// @param updatedAt        last change
@@ -37,6 +40,7 @@ public record DispatchPool(
         int concurrency,
         String clientId,
         String clientIdentifier,
+        String applicationId,
         DispatchPoolStatus status,
         Instant createdAt,
         Instant updatedAt) implements HasId {
@@ -61,7 +65,7 @@ public record DispatchPool(
         String validated = DispatchPoolCode.parse(code).value();
         Instant now = Instant.now();
         return new DispatchPool(EntityType.DISPATCH_POOL.generate(), validated, name, null, null, DEFAULT_CONCURRENCY,
-                null, null, DispatchPoolStatus.ACTIVE, now, now);
+                null, null, null, DispatchPoolStatus.ACTIVE, now, now);
     }
 
     public boolean isArchived() {
@@ -86,40 +90,45 @@ public record DispatchPool(
     }
 
     private DispatchPool withStatus(DispatchPoolStatus newStatus) {
-        return new DispatchPool(id, code, name, description, rateLimit, concurrency, clientId, clientIdentifier,
+        return new DispatchPool(id, code, name, description, rateLimit, concurrency, clientId, clientIdentifier, applicationId,
                 newStatus, createdAt, Instant.now());
     }
 
     // ── Copies ─────────────────────────────────────────────────────────────
 
     public DispatchPool withName(String newName) {
-        return new DispatchPool(id, code, newName, description, rateLimit, concurrency, clientId, clientIdentifier,
+        return new DispatchPool(id, code, newName, description, rateLimit, concurrency, clientId, clientIdentifier, applicationId,
                 status, createdAt, updatedAt);
     }
 
     public DispatchPool withDescription(String newDescription) {
-        return new DispatchPool(id, code, name, newDescription, rateLimit, concurrency, clientId, clientIdentifier,
+        return new DispatchPool(id, code, name, newDescription, rateLimit, concurrency, clientId, clientIdentifier, applicationId,
                 status, createdAt, updatedAt);
     }
 
     /// `null` clears the limiter (concurrency-only).
     public DispatchPool withRateLimit(Integer newRateLimit) {
-        return new DispatchPool(id, code, name, description, newRateLimit, concurrency, clientId, clientIdentifier,
+        return new DispatchPool(id, code, name, description, newRateLimit, concurrency, clientId, clientIdentifier, applicationId,
                 status, createdAt, updatedAt);
     }
 
     public DispatchPool withConcurrency(int newConcurrency) {
-        return new DispatchPool(id, code, name, description, rateLimit, newConcurrency, clientId, clientIdentifier,
+        return new DispatchPool(id, code, name, description, rateLimit, newConcurrency, clientId, clientIdentifier, applicationId,
                 status, createdAt, updatedAt);
     }
 
     public DispatchPool withClientIdentifier(String newClientIdentifier) {
-        return new DispatchPool(id, code, name, description, rateLimit, concurrency, clientId, newClientIdentifier,
+        return new DispatchPool(id, code, name, description, rateLimit, concurrency, clientId, newClientIdentifier, applicationId,
                 status, createdAt, updatedAt);
     }
 
     public DispatchPool withClientId(String newClientId) {
-        return new DispatchPool(id, code, name, description, rateLimit, concurrency, newClientId, clientIdentifier,
+        return new DispatchPool(id, code, name, description, rateLimit, concurrency, newClientId, clientIdentifier, applicationId,
                 status, createdAt, updatedAt);
+    }
+
+    public DispatchPool withApplicationId(String newApplicationId) {
+        return new DispatchPool(id, code, name, description, rateLimit, concurrency, clientId, clientIdentifier,
+                newApplicationId, status, createdAt, updatedAt);
     }
 }

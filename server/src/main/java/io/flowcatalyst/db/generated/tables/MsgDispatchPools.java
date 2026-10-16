@@ -111,6 +111,11 @@ public class MsgDispatchPools extends TableImpl<MsgDispatchPoolsRecord> {
      */
     public final TableField<MsgDispatchPoolsRecord, OffsetDateTime> UPDATED_AT = createField(DSL.name("updated_at"), SQLDataType.TIMESTAMPWITHTIMEZONE(6).nullable(false).defaultValue(DSL.field(DSL.raw("now()"), SQLDataType.TIMESTAMPWITHTIMEZONE)), this, "");
 
+    /**
+     * The column <code>public.msg_dispatch_pools.application_id</code>.
+     */
+    public final TableField<MsgDispatchPoolsRecord, String> APPLICATION_ID = createField(DSL.name("application_id"), SQLDataType.VARCHAR(17), this, "");
+
     private MsgDispatchPools(Name alias, Table<MsgDispatchPoolsRecord> aliased) {
         this(alias, aliased, (Field<?>[]) null, null);
     }
@@ -147,7 +152,7 @@ public class MsgDispatchPools extends TableImpl<MsgDispatchPoolsRecord> {
 
     @Override
     public List<Index> getIndexes() {
-        return Arrays.asList(Indexes.IDX_MSG_DISPATCH_POOLS_CLIENT_ID, Indexes.IDX_MSG_DISPATCH_POOLS_CODE_CLIENT, Indexes.IDX_MSG_DISPATCH_POOLS_STATUS);
+        return Arrays.asList(Indexes.IDX_MSG_DISPATCH_POOLS_APPLICATION_ID, Indexes.IDX_MSG_DISPATCH_POOLS_CLIENT_ID, Indexes.IDX_MSG_DISPATCH_POOLS_CODE_CLIENT, Indexes.IDX_MSG_DISPATCH_POOLS_STATUS);
     }
 
     @Override

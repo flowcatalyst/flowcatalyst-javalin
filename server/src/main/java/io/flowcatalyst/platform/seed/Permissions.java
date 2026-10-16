@@ -242,7 +242,11 @@ public final class Permissions {
             // do not widen reach.
             ADMIN_BATCH_EVENTS_WRITE,
             ADMIN_BATCH_DISPATCH_JOBS_WRITE,
-            ADMIN_BATCH_AUDIT_LOGS_WRITE);
+            ADMIN_BATCH_AUDIT_LOGS_WRITE,
+            // Sync its own application's dispatch pools (Go F19). The messaging permission itself (the
+            // sync route has no application-service variant): the handler confines the caller to its
+            // bound applications and SyncDispatchPools to pools that application owns.
+            ADMIN_DISPATCH_POOL_SYNC);
 
     // ── Function context — platform/client-owned functions (spec function-api.md §2) ──
     public static final String FUNCTION_VIEW = "platform:function:function:view";

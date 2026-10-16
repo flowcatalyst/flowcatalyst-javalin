@@ -107,12 +107,14 @@ class PlatformCatalogueTest {
             assertThat(r.permissions()).isNotEmpty().doesNotHaveDuplicates();
             total += r.permissions().size();
         }
-        assertThat(total).isEqualTo(213);
+        assertThat(total).isEqualTo(214);
         assertThat(roles.get(0).permissions()).containsExactly(Permissions.ADMIN_ALL);
         // router-api-auth.md rule 3: the application-service permissions, then router:view for
         // the SDK's in-flight check — and nothing that operates the router.
         assertThat(roles.get(13).permissions()).startsWith(Permissions.APPLICATION_SERVICE.toArray(String[]::new))
                 .endsWith(Permissions.ROUTER_VIEW).hasSize(Permissions.APPLICATION_SERVICE.size() + 1);
+        // Go F19: an application syncs its own dispatch pools.
+        assertThat(roles.get(13).permissions()).contains("platform:messaging:dispatch-pool:sync");
         assertThat(roles.get(17).name()).isEqualTo("platform:router-operator");
         assertThat(roles.get(17).permissions()).containsExactly(Permissions.ROUTER_VIEW, Permissions.ROUTER_OPERATE);
         // Owner ruling 2026-09-25 (item 13): admin and iam-admin provision service accounts;

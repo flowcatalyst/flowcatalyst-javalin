@@ -96,6 +96,7 @@ public final class DispatchPoolRepository implements Persist<DispatchPool> {
         row.put(T.CONCURRENCY, p.concurrency());
         row.put(T.CLIENT_ID, p.clientId());
         row.put(T.CLIENT_IDENTIFIER, p.clientIdentifier());
+        row.put(T.APPLICATION_ID, p.applicationId());
         row.put(T.STATUS, p.status().name());
         row.put(T.UPDATED_AT, utc(Instant.now()));
         txDsl.insertInto(T)
@@ -123,6 +124,7 @@ public final class DispatchPoolRepository implements Persist<DispatchPool> {
                 row.getConcurrency(),
                 row.getClientId(),
                 row.getClientIdentifier(),
+                row.getApplicationId(),
                 status(row.getId(), row.getStatus()),
                 row.getCreatedAt().toInstant(),
                 row.getUpdatedAt().toInstant());

@@ -259,6 +259,7 @@ perm	platform:application-service	platform:application-service:application-opena
 perm	platform:application-service	platform:messaging:batch:events-write
 perm	platform:application-service	platform:messaging:batch:dispatch-jobs-write
 perm	platform:application-service	platform:admin:batch:audit-logs-write
+perm	platform:application-service	platform:messaging:dispatch-pool:sync
 perm	platform:router	platform:messaging:dispatch-pool:view
 perm	platform:function-publisher	platform:function:function:view
 perm	platform:function-publisher	platform:function:version:publish

@@ -82,12 +82,15 @@ class GoAdoptionTest {
         // codes renamed, Go 073's statements): no seeded event types.
         // V29 (Go 075, connection service-account principal ids re-pointed) is
         // data-only and a no-op here: this fixture has no connections.
-        assertThat(result.migrationsExecuted).isEqualTo(28);
+        // V30 (Go 078, msg_dispatch_pools.application_id + its index) is a real change here: this
+        // goose-57 database predates it. V31 (Go 079, the application-service role's dispatch-pool
+        // sync grant) is data-only and a no-op here: this fixture never seeds iam_roles rows.
+        assertThat(result.migrationsExecuted).isEqualTo(30);
         assertThat(result.migrations).extracting(m -> m.version)
-                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29");
+                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31");
 
         MigrationInfo[] applied = Migrator.flyway(ds).info().applied();
-        assertThat(applied).hasSize(29);
+        assertThat(applied).hasSize(31);
         assertThat(applied[0].getVersion().getVersion()).isEqualTo("1");
         assertThat(applied[0].getState()).isEqualTo(MigrationState.BASELINE);
         for (int i = 1; i < applied.length; i++) {
@@ -107,7 +110,7 @@ class GoAdoptionTest {
                 assertThat(rs.getString(1)).isEqualTo("BASELINE");
                 assertThat(rs.getString(2)).isEqualTo("1");
                 assertThat(rs.getBoolean(3)).isTrue();
-                for (int v = 2; v <= 29; v++) {
+                for (int v = 2; v <= 31; v++) {
                     assertThat(rs.next()).isTrue();
                     assertThat(rs.getString(2)).isEqualTo(String.valueOf(v));
                     assertThat(rs.getBoolean(3)).isTrue();
@@ -301,8 +304,12 @@ class GoAdoptionTest {
         assertThat(before.lines().filter(SchemaFingerprintTest::isArchiveTableLine).toList()).isEmpty();
         assertThat(afterLines.stream().filter(SchemaFingerprintTest::isArchiveTableLine).toList())
                 .containsExactlyInAnyOrderElementsOf(SchemaFingerprintTest.ARCHIVE_TABLE_LINES_GO_071);
+        // V30 (Go 078) adds msg_dispatch_pools.application_id and its index: exactly Go's two lines arrive.
+        assertThat(before.lines().toList()).doesNotContainAnyElementsOf(SchemaFingerprintTest.DISPATCH_POOL_OWNER_LINES_GO_078);
+        assertThat(afterLines).containsAll(SchemaFingerprintTest.DISPATCH_POOL_OWNER_LINES_GO_078);
         List<String> afterWithoutNewLines = afterLines.stream()
                 .filter(l -> !javaOnlyTableLines.contains(l))
+                .filter(l -> !SchemaFingerprintTest.DISPATCH_POOL_OWNER_LINES_GO_078.contains(l))
                 .filter(l -> !SchemaFingerprintTest.isArchiveTableLine(l))
                 .filter(l -> !SchemaFingerprintTest.isDivergentConstraintLine(l))
                 .filter(l -> !SchemaFingerprintTest.SCHEDULER_INDEXES_V22.contains(l))
