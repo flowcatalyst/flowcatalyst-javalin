@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
+import static io.flowcatalyst.db.generated.Tables.APP_APPLICATIONS;
 import static io.flowcatalyst.db.generated.Tables.IAM_PRINCIPAL_ROLES;
 import static io.flowcatalyst.db.generated.Tables.IAM_ROLES;
 import static io.flowcatalyst.db.generated.Tables.IAM_ROLE_PERMISSIONS;
@@ -89,6 +90,16 @@ public final class RoleRepository implements Persist<Role> {
     /// (`iam_principal_roles` references roles by name, without a foreign key).
     public long countAssignments(String name) {
         return dsl.fetchCount(PR, PR.ROLE_NAME.eq(name));
+    }
+
+    /// The id of the application with `code`; empty when no such application
+    /// exists. The domain's way of keeping `iam_roles.application_id`
+    /// derivable from `application_code` (Go F18): a role is written with the
+    /// id of the application that owns it.
+    public Optional<String> applicationIdByCode(String code) {
+        if (code == null || code.isEmpty()) return Optional.empty();
+        return dsl.select(APP_APPLICATIONS.ID).from(APP_APPLICATIONS).where(APP_APPLICATIONS.CODE.eq(code))
+                .fetchOptional(APP_APPLICATIONS.ID);
     }
 
     /// The distinct non-null `application_code` values across all roles, ordered.

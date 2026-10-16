@@ -85,12 +85,14 @@ class GoAdoptionTest {
         // V30 (Go 078, msg_dispatch_pools.application_id + its index) is a real change here: this
         // goose-57 database predates it. V31 (Go 079, the application-service role's dispatch-pool
         // sync grant) is data-only and a no-op here: this fixture never seeds iam_roles rows.
-        assertThat(result.migrationsExecuted).isEqualTo(30);
+        // V32 (Go 076, whitespace role assignments normalised) and V33 (Go 077, iam_roles.application_id
+        // backfilled) are data-only and no-ops here: this fixture has no assignments and no roles.
+        assertThat(result.migrationsExecuted).isEqualTo(32);
         assertThat(result.migrations).extracting(m -> m.version)
-                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31");
+                .containsExactly("2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33");
 
         MigrationInfo[] applied = Migrator.flyway(ds).info().applied();
-        assertThat(applied).hasSize(31);
+        assertThat(applied).hasSize(33);
         assertThat(applied[0].getVersion().getVersion()).isEqualTo("1");
         assertThat(applied[0].getState()).isEqualTo(MigrationState.BASELINE);
         for (int i = 1; i < applied.length; i++) {
@@ -110,7 +112,7 @@ class GoAdoptionTest {
                 assertThat(rs.getString(1)).isEqualTo("BASELINE");
                 assertThat(rs.getString(2)).isEqualTo("1");
                 assertThat(rs.getBoolean(3)).isTrue();
-                for (int v = 2; v <= 31; v++) {
+                for (int v = 2; v <= 33; v++) {
                     assertThat(rs.next()).isTrue();
                     assertThat(rs.getString(2)).isEqualTo(String.valueOf(v));
                     assertThat(rs.getBoolean(3)).isTrue();

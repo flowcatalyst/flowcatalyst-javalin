@@ -29,3 +29,5 @@ V28__passkey_event_type_codes.sql
 V29__connection_service_account_principal_ids.sql
 V30__dispatch_pool_application_owner.sql
 V31__application_service_dispatch_pool_sync.sql
+V32__normalise_role_assignment_names.sql
+V33__backfill_role_application_id.sql

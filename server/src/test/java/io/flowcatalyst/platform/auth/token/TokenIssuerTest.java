@@ -40,7 +40,7 @@ class TokenIssuerTest {
         Instant updated = Instant.parse("2026-01-02T03:04:05Z");
         return new Principal("prn_user", PrincipalType.USER, UserScope.PARTNER, "clt_home", null, "Ann", true,
                 UserIdentity.of("ann@example.com"), null,
-                List.of(new RoleAssignment("hr:manager", RoleAssignment.ADMIN_ASSIGNED, NOW)),
+                List.of(new RoleAssignment(io.flowcatalyst.platform.role.RoleName.of("hr:manager"), RoleAssignment.ADMIN_ASSIGNED, NOW)),
                 List.of("clt_a"), List.of("app_1"), false, null, Instant.parse("2025-01-01T00:00:00Z"), updated);
     }
 

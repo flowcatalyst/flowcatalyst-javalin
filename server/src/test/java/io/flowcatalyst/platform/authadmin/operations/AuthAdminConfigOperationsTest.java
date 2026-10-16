@@ -427,6 +427,17 @@ class AuthAdminConfigOperationsTest {
         assertThatThrownBy(() -> runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo, name -> java.util.List.of()), cmd)).hasMessageContaining(expectedMessage);
     }
 
+    /// Go F18: the platform role of a mapping is a canonical role name; a malformed one is refused, not trimmed.
+    @Test
+    void createIdpRoleMappingRejectsAMalformedPlatformRole() {
+        for (String bad : java.util.List.of("irmbad: admin", " irmbad:admin", "irmbad", "irmbad:ad min")) {
+            assertUseCaseError(() -> runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo, name -> java.util.List.of()),
+                            new CreateIdpRoleMappingCommand("keycloak", tok("irm-bad-upstream"), bad)),
+                    UseCaseError.Validation.class, "INVALID_ROLE_NAME");
+        }
+        assertThat(idpRoleMappingRepo.findByIdpRoleName(tok("irm-bad-upstream"))).as("nothing stored").isEmpty();
+    }
+
     @Test
     void createIdpRoleMappingRejectsADuplicateIdpRoleName() {
         runAsAnchor(CreateIdpRoleMapping.of(idpRoleMappingRepo, name -> java.util.List.of()), new CreateIdpRoleMappingCommand("keycloak", tok("dup"), "app:role"));

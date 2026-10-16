@@ -4,11 +4,14 @@ import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.principal.operations.PrincipalEvents.RolesAssigned;
 import io.flowcatalyst.platform.role.RoleCeiling;
+import io.flowcatalyst.platform.role.RoleName;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.op.Operation;
 import io.flowcatalyst.sdk.usecase.op.Plan;
+
+import java.util.List;
 
 /// Replaces a user's full role set (every assignment becomes
 /// `ADMIN_ASSIGNED`) and emits [RolesAssigned] (spec §2). The per-resource
@@ -36,15 +39,14 @@ public final class AssignRoles {
                     if (!p.isUser()) {
                         throw UseCaseException.businessRule("NOT_A_USER", "Roles can only be assigned to USER type principals");
                     }
-                    for (String name : cmd.roles()) {
-                        if (roles.findByName(name).isEmpty()) {
-                            throw UseCaseException.validation("ROLE_NOT_FOUND", "Role not found: " + name);
-                        }
-                    }
+                    // Every name is shape-checked (400 INVALID_ROLE_NAME) and resolved to an
+                    // existing role (400 ROLE_NOT_FOUND); the assignments are built from the
+                    // resolved RoleName, never the raw string (Go F18).
+                    List<RoleName> resolved = RoleName.resolveAll(roles, cmd.roles());
                     // Owner ruling 2026-09-25: only roles whose permissions the caller holds may be
                     // added or removed; kept roles are not checked.
                     RoleCeiling.requireRoles(Auth.current(), RoleCeiling.changed(p.roleNames(), cmd.roles()), roles);
-                    var change = p.assignRoles(cmd.roles());
+                    var change = p.assignRoles(resolved);
                     return Plan.save(change.principal(), repo.withRoles(), RolesAssigned.of(ec, change));
                 });
     }

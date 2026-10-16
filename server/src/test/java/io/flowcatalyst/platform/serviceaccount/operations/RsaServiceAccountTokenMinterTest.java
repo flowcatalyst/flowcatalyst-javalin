@@ -26,7 +26,7 @@ class RsaServiceAccountTokenMinterTest {
     private static Principal servicePrincipal(UserScope scope, String clientId, List<String> apps) {
         return new Principal(EntityType.PRINCIPAL.generate(), PrincipalType.SERVICE, scope, clientId, null,
                 "Orders robot", true, null, EntityType.SERVICE_ACCOUNT.generate(),
-                List.of(new RoleAssignment("orders:admin", RoleAssignment.SDK_SYNC, Instant.EPOCH)),
+                List.of(new RoleAssignment(io.flowcatalyst.platform.role.RoleName.of("orders:admin"), RoleAssignment.SDK_SYNC, Instant.EPOCH)),
                 List.of(), apps, false, null, Instant.EPOCH, Instant.EPOCH);
     }
 

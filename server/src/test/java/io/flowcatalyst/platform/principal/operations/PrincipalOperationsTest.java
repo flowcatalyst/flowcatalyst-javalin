@@ -349,10 +349,106 @@ class PrincipalOperationsTest {
         assertThat(ev.roles()).containsExactly(admin.name(), g2.name());
         assertThat(ev.added()).containsExactly(g2.name());
         assertThat(ev.removed()).containsExactly(g1.name());
-        assertThat(reload(id).roles()).extracting(RoleAssignment::role, RoleAssignment::assignmentSource)
+        assertThat(reload(id).roles()).extracting(RoleAssignment::roleName, RoleAssignment::assignmentSource)
                 .containsExactlyInAnyOrder(org.assertj.core.groups.Tuple.tuple(admin.name(), RoleAssignment.ADMIN_ASSIGNED),
                         org.assertj.core.groups.Tuple.tuple(g2.name(), RoleAssignment.IDP_SYNC));
         assertUseCaseError(() -> runAsAnchor(SyncIdpRoles.of(repo, roles), new SyncIdpRolesCommand(id, List.of("nope:x"))), UseCaseError.Validation.class, "ROLE_NOT_FOUND");
+    }
+
+    // ── Go F18: role names are shape-checked at every assignment write ─────
+
+    private static final List<String> MALFORMED = List.of("f18app: admin", " f18app:admin", "f18app:admin ", "f18app:ad min",
+            "f18app :admin", "f18app:admin\n", "f18app:\u00a0admin", "f18app:\u200badmin", "admin", "f18app:", "");
+
+    /// The user path: a malformed name is 400 `INVALID_ROLE_NAME` (shape first), a well-formed
+    /// name no role bears 400 `ROLE_NOT_FOUND`; neither changes what is stored.
+    @Test
+    void assignRolesRefusesMalformedAndUnknownNamesAndStoresNothing() {
+        String id = createdUser("f18assign", "ANCHOR", null);
+        Role admin = seedRole("f18app", "admin");
+        runAsAnchor(AssignRoles.of(repo, roles), new AssignRolesCommand(id, List.of(admin.name())));
+        for (String bad : MALFORMED) {
+            assertUseCaseError(() -> runAsAnchor(AssignRoles.of(repo, roles), new AssignRolesCommand(id, List.of(admin.name(), bad))),
+                    UseCaseError.Validation.class, "INVALID_ROLE_NAME");
+        }
+        assertUseCaseError(() -> runAsAnchor(AssignRoles.of(repo, roles), new AssignRolesCommand(id, List.of(admin.name(), "f18app" + RUN + ":nosuchrole"))),
+                UseCaseError.Validation.class, "ROLE_NOT_FOUND");
+        assertThat(reload(id).roleNames()).as("a refused assignment leaves the stored roles alone").containsExactly(admin.name());
+        assertThatThrownBy(() -> runAsAnchor(AssignRoles.of(repo, roles), new AssignRolesCommand(id, List.of("f18app: admin"))))
+                .hasMessageContaining("\"f18app: admin\"");
+    }
+
+    /// The IdP role sync: shape first, then existence.
+    @Test
+    void syncIdpRolesRefusesAMalformedName() {
+        String id = createdUser("f18idp", "ANCHOR", null);
+        Role admin = seedRole("f18idp", "admin");
+        runAsAnchor(SyncIdpRoles.of(repo, roles), new SyncIdpRolesCommand(id, List.of(admin.name())));
+        assertUseCaseError(() -> runAsAnchor(SyncIdpRoles.of(repo, roles), new SyncIdpRolesCommand(id, List.of(admin.name(), admin.name().replace(":", ": ")))),
+                UseCaseError.Validation.class, "INVALID_ROLE_NAME");
+        assertUseCaseError(() -> runAsAnchor(SyncIdpRoles.of(repo, roles), new SyncIdpRolesCommand(id, List.of("f18idp" + RUN + ":nosuchrole"))),
+                UseCaseError.Validation.class, "ROLE_NOT_FOUND");
+        assertThat(reload(id).roleNames()).containsExactly(admin.name());
+    }
+
+    /// The SDK principal sync, both routes: a name with whitespace is not a role, so it is
+    /// skipped and reported (Go F15), never stored; a non-anchor's platform-route name that is
+    /// not a role is still refused, 400 `UNKNOWN_ROLE`.
+    @Test
+    void sdkSyncSkipsAMalformedNameOnBothRoutesAndNeverStoresIt() {
+        String code = "f18sync" + RUN;
+        Role dispatcher = seedRole("f18sync", "dispatcher");
+        var app = runAsAnchor(sync(), new SyncPrincipalsCommand(code, List.of(
+                new SyncPrincipalInput(email("f18app"), "A", List.of(code + ": dispatcher", dispatcher.name()), true, null)), false));
+        assertThat(app.skippedRoles()).containsExactly(code + ": dispatcher");
+        assertThat(repo.findByEmail(email("f18app")).orElseThrow().roleNames()).containsExactly(dispatcher.name());
+
+        var platform = runAsAnchor(sync(), new SyncPrincipalsCommand(null, List.of(
+                new SyncPrincipalInput(email("f18plat"), "P", List.of(code + ": dispatcher", dispatcher.name()), true, null)), false));
+        assertThat(platform.skippedRoles()).containsExactly(code + ": dispatcher");
+        assertThat(repo.findByEmail(email("f18plat")).orElseThrow().roleNames()).containsExactly(dispatcher.name());
+
+        String clientId = seedClient("f18sync");
+        assertUseCaseError(() -> runAs(clientAdmin(clientId), sync(), new SyncPrincipalsCommand(null, List.of(
+                        new SyncPrincipalInput(email("f18nonanchor"), "N", List.of(code + ": dispatcher"), true, null)), false)),
+                UseCaseError.Validation.class, "UNKNOWN_ROLE");
+        assertThat(repo.findByEmail(email("f18nonanchor"))).as("a refused sync creates nothing").isEmpty();
+    }
+
+    /// A malformed name is not a role even if a legacy definition bears it (Go F18): the sync
+    /// skips it on both routes instead of assigning the legacy row.
+    @Test
+    void sdkSyncDoesNotAssignALegacyRoleDefinitionWithWhitespaceInItsName() {
+        String code = "f18leg" + RUN;
+        var legacy = Role.create(code, " legacy", "Legacy"); // joined verbatim: "<code>: legacy"
+        uow.inTransaction(tx -> { roles.persist(legacy, tx.dbTx()); return null; });
+        assertThat(roles.findByName(code + ": legacy")).isPresent();
+
+        for (String route : new String[] {code, null}) {
+            String tag = route == null ? "f18legplat" : "f18legapp";
+            var ev = runAsAnchor(sync(), new SyncPrincipalsCommand(route, List.of(
+                    new SyncPrincipalInput(email(tag), "L", List.of(code + ": legacy"), true, null)), false));
+            assertThat(ev.skippedRoles()).as(tag).containsExactly(code + ": legacy");
+            assertThat(repo.findByEmail(email(tag)).orElseThrow().roleNames()).as(tag).isEmpty();
+        }
+    }
+
+    /// Platform roles carry the platform application's id once backfilled; that must not make
+    /// them assignable by a client administrator (Go F18 `Role.IsPlatform`).
+    @Test
+    void aBackfilledPlatformRoleIsStillNotAssignableByAClientAdministrator() {
+        String platformId = io.flowcatalyst.testpg.TestPg.ensureApplication(DS, "platform");
+        var r = Role.create("platform", "f18probe" + RUN, "probe").withApplicationId(platformId);
+        uow.inTransaction(tx -> { roles.persist(r, tx.dbTx()); return null; });
+        assertThat(r.isPlatform()).isTrue();
+        var problem = Access.assignableRolesProblem(roles, List.of(r.name()), java.util.Set.of(platformId));
+        assertThat(problem).isPresent();
+        assertThat(problem.get().code()).isEqualTo("PLATFORM_ROLE_FORBIDDEN");
+        // An ordinary application role with an id in the allowed set passes.
+        Role own = seedRole("f18own", "r");
+        String ownAppId = io.flowcatalyst.testpg.TestPg.ensureApplication(DS, own.applicationCode());
+        uow.inTransaction(tx -> { roles.persist(own.withApplicationId(ownAppId), tx.dbTx()); return null; });
+        assertThat(Access.assignableRolesProblem(roles, List.of(own.name()), java.util.Set.of(ownAppId))).isEmpty();
     }
 
     // ── Application access ─────────────────────────────────────────────────
@@ -651,8 +747,9 @@ class PrincipalOperationsTest {
     /// an anchor super-admin too: an SDK credential cannot hand out another
     /// application's (or the platform's) roles. A name that is not a role is
     /// skipped there (Go F15, owner ruling 2026-10-13): not assigned, not
-    /// refused, reported in `skippedRoles`. The platform route is unchanged:
-    /// an unknown name refuses the sync, 400 `UNKNOWN_ROLE`.
+    /// refused, reported in `skippedRoles`. The platform route follows the same
+    /// rule for an anchor caller (Go F18); a non-anchor's unknown name still
+    /// refuses the sync, 400 `UNKNOWN_ROLE`.
     @Test
     void syncRefusesAnotherApplicationsRoleAndSkipsAnUnknownOne() {
         Role other = seedRole("s13oth", "admin");
@@ -668,10 +765,12 @@ class PrincipalOperationsTest {
                 UseCaseError.Authorization.class, "ROLE_APP_FORBIDDEN");
         assertThat(repo.findByEmail(email("s13other"))).as("refused batch creates nothing").isEmpty();
 
-        assertUseCaseError(() -> runAsAnchor(sync(), new SyncPrincipalsCommand(null, List.of(
-                        new SyncPrincipalInput(email("s13platunknown"), "P", List.of("s13mine" + RUN + ":nope"), true, null)), false)),
-                UseCaseError.Validation.class, "UNKNOWN_ROLE");
-        assertThat(repo.findByEmail(email("s13platunknown"))).as("the platform route is unchanged").isEmpty();
+        // Go F18: the platform route, anchor caller, follows the same rule: skipped and reported, not stored.
+        var plat = runAsAnchor(sync(), new SyncPrincipalsCommand(null, List.of(
+                new SyncPrincipalInput(email("s13platunknown"), "P", List.of("s13mine" + RUN + ":nope"), true, null)), false));
+        assertThat(plat.created()).isEqualTo(1);
+        assertThat(plat.skippedRoles()).containsExactly("s13mine" + RUN + ":nope");
+        assertThat(repo.findByEmail(email("s13platunknown")).orElseThrow().roleNames()).as("nothing assigned").isEmpty();
     }
 
     /// Pinned: a client admin cannot set an anchor user's password hash (the

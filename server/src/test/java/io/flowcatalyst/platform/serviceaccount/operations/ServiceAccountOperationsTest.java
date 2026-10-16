@@ -80,6 +80,7 @@ class ServiceAccountOperationsTest {
     private static final PrincipalRepository principals = new PrincipalRepository(DS);
     private static final OAuthClientRepository oauthClients = new OAuthClientRepository(DS, new ApplicationRepository(DS));
     private static final ClientRepository clients = new ClientRepository(DS);
+    private static final io.flowcatalyst.platform.role.RoleRepository roleRepo = new io.flowcatalyst.platform.role.RoleRepository(DS);
     private static final UnitOfWork uow = new UnitOfWork(DS, new PlatformSink(Json.MAPPER));
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
@@ -497,6 +498,16 @@ class ServiceAccountOperationsTest {
                 UseCaseError.NotFound.class, "ServiceAccount_NOT_FOUND");
     }
 
+    /// Role assignment names existing roles (Go F18): create any of `names` that is missing.
+    private static void ensureRoles(String... names) {
+        for (String n : names) {
+            if (roleRepo.findByName(n).isPresent()) continue;
+            int colon = n.indexOf(':');
+            var r = io.flowcatalyst.platform.role.Role.create(n.substring(0, colon), n.substring(colon + 1), n);
+            uow.inTransaction(tx -> { roleRepo.persist(r, tx.dbTx()); return null; });
+        }
+    }
+
     // ── Assign roles ───────────────────────────────────────────────────────
 
     /// Pins Fix 1 (spec §9.1, §11): the account object's `roles` and the
@@ -506,7 +517,8 @@ class ServiceAccountOperationsTest {
     void assignRolesWritesThroughToThePrincipalAndAgreesWithTheAccountRead() {
         var seeded = createWithCredentials(code("saroles"), "Roles", null).serviceAccount();
 
-        var ev = runAsAnchor(AssignRolesToServiceAccount.of(repo, principals, name -> List.of()),
+        ensureRoles("orders:admin", "orders:viewer", "orders:auditor");
+        var ev = runAsAnchor(AssignRolesToServiceAccount.of(repo, principals, roleRepo, name -> List.of()),
                 new AssignRolesCommand(seeded.id(), List.of("orders:admin", "orders:viewer")));
         assertThat(ev.rolesAdded()).containsExactlyInAnyOrder("orders:admin", "orders:viewer");
         assertThat(ev.rolesRemoved()).isEmpty();
@@ -519,7 +531,7 @@ class ServiceAccountOperationsTest {
                 .containsExactlyInAnyOrder("orders:admin", "orders:viewer");
 
         // A second, different assignment reports the correct diff.
-        var second = runAsAnchor(AssignRolesToServiceAccount.of(repo, principals, name -> List.of()),
+        var second = runAsAnchor(AssignRolesToServiceAccount.of(repo, principals, roleRepo, name -> List.of()),
                 new AssignRolesCommand(seeded.id(), List.of("orders:viewer", "orders:auditor")));
         assertThat(second.rolesAdded()).containsExactly("orders:auditor");
         assertThat(second.rolesRemoved()).containsExactly("orders:admin");
@@ -527,11 +539,34 @@ class ServiceAccountOperationsTest {
                 .containsExactlyInAnyOrder("orders:viewer", "orders:auditor");
     }
 
+    /// Go F18: the assignment path stored whatever string it was sent, so "example: dispatcher" reached the
+    /// token's roles claim although no such role exists. A malformed name is 400 `INVALID_ROLE_NAME`, a
+    /// well-formed name that is not a role 400 `ROLE_NOT_FOUND`, and neither changes what is stored.
+    @Test
+    void assignRolesRejectsMalformedAndUnknownRolesAndLeavesTheStoredRolesAlone() {
+        var seeded = createWithCredentials(code("saf18"), "F18", null).serviceAccount();
+        ensureRoles("examplef18:dispatcher");
+        java.util.function.Consumer<String[]> assign = roles -> runAsAnchor(
+                AssignRolesToServiceAccount.of(repo, principals, roleRepo, name -> List.of()),
+                new AssignRolesCommand(seeded.id(), List.of(roles)));
+        assign.accept(new String[] {"examplef18:dispatcher"});
+
+        for (String bad : List.of("examplef18: dispatcher", "examplef18 :dispatcher", " examplef18:dispatcher",
+                "examplef18:dispatcher ", "examplef18:dis patcher", "dispatcher", "")) {
+            assertUseCaseError(() -> assign.accept(new String[] {"examplef18:dispatcher", bad}),
+                    UseCaseError.Validation.class, "INVALID_ROLE_NAME");
+        }
+        assertUseCaseError(() -> assign.accept(new String[] {"examplef18:nosuchrole"}), UseCaseError.Validation.class, "ROLE_NOT_FOUND");
+
+        assertThat(principals.findByServiceAccount(seeded.id()).orElseThrow().roleNames())
+                .as("a refused assignment leaves the stored roles alone").containsExactly("examplef18:dispatcher");
+    }
+
     @Test
     void assignRolesRejectsMissingIdOrUnknownAccount() {
-        assertUseCaseError(() -> runAsAnchor(AssignRolesToServiceAccount.of(repo, principals, name -> List.of()), new AssignRolesCommand(" ", List.of())),
+        assertUseCaseError(() -> runAsAnchor(AssignRolesToServiceAccount.of(repo, principals, roleRepo, name -> List.of()), new AssignRolesCommand(" ", List.of())),
                 UseCaseError.Validation.class, "SERVICE_ACCOUNT_ID_REQUIRED");
-        assertUseCaseError(() -> runAsAnchor(AssignRolesToServiceAccount.of(repo, principals, name -> List.of()), new AssignRolesCommand("sac_doesnotexist1", List.of())),
+        assertUseCaseError(() -> runAsAnchor(AssignRolesToServiceAccount.of(repo, principals, roleRepo, name -> List.of()), new AssignRolesCommand("sac_doesnotexist1", List.of())),
                 UseCaseError.NotFound.class, "ServiceAccount_NOT_FOUND");
     }
 
@@ -660,7 +695,8 @@ class ServiceAccountOperationsTest {
     void mintTokenComputesTheGrantFromThePrincipalsRolesAndApplications() {
         String appId = "app_" + code("samint");
         var res = createWithCredentials(code("samint"), "Mint", appId);
-        runAsAnchor(AssignRolesToServiceAccount.of(repo, principals, name -> List.of()), new AssignRolesCommand(res.serviceAccount().id(), List.of("orders:admin")));
+        ensureRoles("orders:admin");
+        runAsAnchor(AssignRolesToServiceAccount.of(repo, principals, roleRepo, name -> List.of()), new AssignRolesCommand(res.serviceAccount().id(), List.of("orders:admin")));
 
         var keys = SigningKeys.generateEphemeral();
         var minter = new RsaServiceAccountTokenMinter(keys, "https://fc.test", "https://fc.test");
@@ -744,7 +780,8 @@ class ServiceAccountOperationsTest {
     @Test
     void mintTokenIsBoundedByTheCallersPermissions() {
         var res = createWithCredentials(code("samintceil"), "MintCeiling", null);
-        runAsAnchor(AssignRolesToServiceAccount.of(repo, principals, name -> List.of()),
+        ensureRoles("ceil:platform-role", "ceil:app-role");
+        runAsAnchor(AssignRolesToServiceAccount.of(repo, principals, roleRepo, name -> List.of()),
                 new AssignRolesCommand(res.serviceAccount().id(), List.of("ceil:platform-role", "ceil:app-role")));
         RoleCeiling.RolePermissions perms = name -> switch (name) {
             case "ceil:platform-role" -> List.of("platform:messaging:event:create");

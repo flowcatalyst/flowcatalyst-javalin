@@ -581,7 +581,7 @@ public final class Platform {
         // repository instance, stateless over the pool like the ApplicationApi.State ones above.
         ServiceAccountApi.register(routes, new ServiceAccountApi.State(serviceAccountRepo, principalRepo, uow,
                 new OAuthClientRepository(pool, applicationRepo), clientRepo, Encryption.fromKeys(env.appKey(), env.appKeyPrevious()),
-                serviceAccountTokenMinter, flattenServiceAccountPermissions));
+                serviceAccountTokenMinter, flattenServiceAccountPermissions, roleRepo));
 
         // oauthclient (docs/spec/auth-core.md §3.6, §6.3; A-22 secret-rotation grace;
         // portal-apps.md §4.5 portalAppId): client secrets are encrypted at rest under

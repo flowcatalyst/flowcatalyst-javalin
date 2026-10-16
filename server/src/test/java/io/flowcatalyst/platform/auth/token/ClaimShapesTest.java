@@ -23,7 +23,7 @@ class ClaimShapesTest {
         Instant now = Instant.now();
         return new Principal("prn_1", PrincipalType.USER, scope, clientId, null, "Ann", true,
                 UserIdentity.of("ann@example.com"), null,
-                List.of(new RoleAssignment("hr:manager", RoleAssignment.ADMIN_ASSIGNED, now)),
+                List.of(new RoleAssignment(io.flowcatalyst.platform.role.RoleName.of("hr:manager"), RoleAssignment.ADMIN_ASSIGNED, now)),
                 assignedClients, apps, allApps, null, now, now);
     }
 

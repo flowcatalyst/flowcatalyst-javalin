@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.role.operations;
 import io.flowcatalyst.platform.role.RoleCeiling;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.role.Role;
+import io.flowcatalyst.platform.role.RoleName;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.role.operations.RoleEvents.RolePermissionGranted;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
@@ -23,6 +24,7 @@ public final class GrantPermission {
                 .validate(cmd -> {
                     UseCaseException.requireNonBlank(cmd.roleName(), "ROLE_NAME_REQUIRED", "Role name is required");
                     UseCaseException.requireNonBlank(cmd.permission(), "PERMISSION_REQUIRED", "Permission is required");
+                    RoleName.validatePermission(cmd.permission());
                 })
                 // Roles are global — no per-resource dimension; the handler's coarse gate is the whole check.
                 .authorize(Operation.Authorize.publicAccess())

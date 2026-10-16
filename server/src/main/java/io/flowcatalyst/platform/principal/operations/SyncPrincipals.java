@@ -11,6 +11,7 @@ import io.flowcatalyst.platform.principal.operations.PrincipalEvents.UserCreated
 import io.flowcatalyst.platform.principal.operations.PrincipalEvents.UserUpdated;
 import io.flowcatalyst.platform.role.Role;
 import io.flowcatalyst.platform.role.RoleCeiling;
+import io.flowcatalyst.platform.role.RoleName;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
@@ -67,8 +68,10 @@ import java.util.Set;
 ///     none of this application's `SDK_SYNC` roles), nothing is created, the
 ///     name is logged and reported in [PrincipalsSynced#skippedRoles]
 ///     (lower-cased, each once across the request, in payload order). On the
-///     platform route (no application) every name must exist (`UNKNOWN_ROLE`),
-///     and a non-anchor may only name roles it could assign through
+///     platform route (no application) an anchor follows the same rule (Go F18:
+///     a malformed or unknown name is skipped and reported, never stored); a
+///     non-anchor's every name must exist (`UNKNOWN_ROLE`),
+///     and it may only name roles it could assign through
 ///     `PUT /api/principals/{id}/roles` — application roles of an application
 ///     the target's home client is entitled to ([Access#assignableRolesProblem];
 ///     a new principal has no client, so no role at all); an anchor, as there,
@@ -131,7 +134,7 @@ public final class SyncPrincipals {
                             throw UseCaseException.authorization("SYNC_TARGET_FORBIDDEN",
                                     "Not authorised to manage principal '" + email + "'");
                         }
-                        List<String> roleNames = syncableRoles(roles, clientConfigs, ac, cmd, requested, existing, skipped);
+                        List<RoleName> roleNames = syncableRoles(roles, clientConfigs, ac, cmd, requested, existing, skipped);
 
                         if (existing != null) {
                             Principal p = existing.syncSourcedRoles(RoleAssignment.SDK_SYNC, cmd.applicationCode(), roleNames).principal()
@@ -220,20 +223,23 @@ public final class SyncPrincipals {
     }
 
     /// The role rule of the class doc, returning the names to assign, in the
-    /// order given. App-scoped: a name that is not a role is added to `skipped`
-    /// and left out; a role of another application refuses. Platform route:
-    /// every name exists; a non-anchor's are each assignable to `target`
-    /// (`null` = a principal this sync creates); all are assigned.
+    /// order given. App-scoped: a name that is not a role (a malformed one
+    /// included, Go F18) is added to `skipped` and left out; a role of another
+    /// application refuses. Platform route, anchor: the same rule (Go F18: it
+    /// used to store the names unchecked; Java refused unknown ones with
+    /// `UNKNOWN_ROLE`, now it skips and reports them like the application
+    /// route). Platform route, non-anchor: every name exists; each is
+    /// assignable to `target` (`null` = a principal this sync creates).
     ///
-    /// @throws UseCaseException validation `UNKNOWN_ROLE` (platform route); authorization
+    /// @throws UseCaseException validation `UNKNOWN_ROLE` (platform route, non-anchor); authorization
     ///                          `ROLE_APP_FORBIDDEN` | `PLATFORM_ROLE_FORBIDDEN`
-    private static List<String> syncableRoles(RoleRepository roles, ClientConfigRepository clientConfigs, AuthContext ac,
-                                              SyncPrincipalsCommand cmd, List<String> roleNames, Principal target,
-                                              Set<String> skipped) {
+    private static List<RoleName> syncableRoles(RoleRepository roles, ClientConfigRepository clientConfigs, AuthContext ac,
+                                                SyncPrincipalsCommand cmd, List<String> roleNames, Principal target,
+                                                Set<String> skipped) {
         if (appScoped(cmd)) {
-            var assign = new ArrayList<String>(roleNames.size());
+            var assign = new ArrayList<RoleName>(roleNames.size());
             for (String name : roleNames) {
-                Role role = roles.findByName(name).orElse(null);
+                Role role = findRole(roles, name);
                 if (role == null) {
                     skipped.add(name);
                     continue;
@@ -242,21 +248,33 @@ public final class SyncPrincipals {
                     throw UseCaseException.authorization("ROLE_APP_FORBIDDEN",
                             "role '" + name + "' does not belong to application '" + cmd.applicationCode() + "'");
                 }
-                assign.add(name);
+                assign.add(role.canonicalName());
             }
             return assign;
         }
-        for (String name : roleNames) {
-            if (roles.findByName(name).isEmpty()) {
-                throw UseCaseException.validation("UNKNOWN_ROLE", "role not found: " + name);
+        if (ac != null && ac.isAnchor()) {
+            var assign = new ArrayList<RoleName>(roleNames.size());
+            for (String name : roleNames) {
+                Role role = findRole(roles, name);
+                if (role == null) {
+                    skipped.add(name);
+                    continue;
+                }
+                assign.add(role.canonicalName());
             }
+            return assign;
         }
-        if (ac == null || !ac.isAnchor()) {
-            Set<String> allowed = Access.clientApplicationIds(clientConfigs, target == null ? null : target.clientId());
-            Access.assignableRolesProblem(roles, roleNames, allowed).ifPresent(problem -> {
-                throw new UseCaseException(problem);
-            });
-        }
-        return roleNames;
+        Set<String> allowed = Access.clientApplicationIds(clientConfigs, target == null ? null : target.clientId());
+        Access.assignableRolesProblem(roles, roleNames, allowed).ifPresent(problem -> {
+            throw new UseCaseException(problem);
+        });
+        return roleNames.stream().map(n -> findRole(roles, n).canonicalName()).toList();
+    }
+
+    /// The role named `name`, or `null` when it is not a role. A malformed
+    /// name is not a role (Go F18), even if a legacy definition bears it.
+    private static Role findRole(RoleRepository roles, String name) {
+        if (!RoleName.isWellFormed(name)) return null;
+        return roles.findByName(name).orElse(null);
     }
 }

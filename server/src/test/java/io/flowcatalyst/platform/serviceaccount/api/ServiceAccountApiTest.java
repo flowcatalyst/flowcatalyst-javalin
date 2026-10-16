@@ -155,7 +155,7 @@ class ServiceAccountApiTest {
 
         var minter = new RsaServiceAccountTokenMinter(KEYS, ISSUER, ISSUER);
         var state = new ServiceAccountApi.State(SA_REPO, PRINCIPALS, UOW, OAUTH_CLIENTS, CLIENTS, ENCRYPTION, minter,
-                roleNames -> roleNames.stream().flatMap(n -> ROLES.findByName(n).stream()).flatMap(r -> r.permissions().stream()).distinct().toList());
+                roleNames -> roleNames.stream().flatMap(n -> ROLES.findByName(n).stream()).flatMap(r -> r.permissions().stream()).distinct().toList(), ROLES);
 
         var keys = KEYS;
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(keys.publicKey())));
@@ -800,7 +800,7 @@ class ServiceAccountApiTest {
                 getClass().getClassLoader(), new Class<?>[] {javax.sql.DataSource.class},
                 (proxy, method, args) -> { throw new java.sql.SQLException("audit store down"); });
         var state = new ServiceAccountApi.State(SA_REPO, PRINCIPALS, new UnitOfWork(broken, new PlatformSink(Json.MAPPER)),
-                OAUTH_CLIENTS, CLIENTS, ENCRYPTION, new RsaServiceAccountTokenMinter(KEYS, ISSUER, ISSUER), roleNames -> List.of());
+                OAUTH_CLIENTS, CLIENTS, ENCRYPTION, new RsaServiceAccountTokenMinter(KEYS, ISSUER, ISSUER), roleNames -> List.of(), ROLES);
         var verifier = new JwtVerifier(new JwtVerifier.Config("http://localhost:8080", new JwtVerifier.RsaKeys(KEYS.publicKey())));
         var auth = new Authenticator(verifier, ClaimsResolver.none(), Authenticator.Config.of(true));
         try (var h = TestHttp.routes(routes -> {

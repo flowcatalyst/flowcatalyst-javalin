@@ -743,7 +743,7 @@ public final class PrincipalApi {
     /// unknown, or outside the allowed applications — which its SET preserves.
     private static List<String> protectedRoleNames(State s, List<String> roleNames, Set<String> allowed) {
         return roleNames.stream()
-                .filter(name -> s.roles().findByName(name).map(r -> r.applicationId() == null || !allowed.contains(r.applicationId())).orElse(true))
+                .filter(name -> s.roles().findByName(name).map(r -> r.applicationId() == null || r.isPlatform() || !allowed.contains(r.applicationId())).orElse(true))
                 .toList();
     }
 
@@ -1132,7 +1132,7 @@ public final class PrincipalApi {
             var out = new ArrayList<PrincipalRoleAssignmentDTO>(p.roles().size());
             int i = 0;
             for (RoleAssignment ra : p.roles()) {
-                out.add(new PrincipalRoleAssignmentDTO(p.id() + "-role-" + i++, ra.role(),
+                out.add(new PrincipalRoleAssignmentDTO(p.id() + "-role-" + i++, ra.roleName(),
                         ra.assignmentSource() == null ? "ADMIN" : ra.assignmentSource(), ra.assignedAt()));
             }
             return List.copyOf(out);

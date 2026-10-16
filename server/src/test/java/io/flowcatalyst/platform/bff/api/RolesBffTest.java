@@ -42,6 +42,11 @@ class RolesBffTest {
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
 
+    static {
+        // A role may only be created for an application that exists (Go F18).
+        TestPg.ensureApplication(TestPg.dataSource(), "rbffapp" + RUN);
+    }
+
     private static final RolesBff.State state = new RolesBff.State(
             new RoleRepository(TestPg.dataSource()), new PermissionRepository(TestPg.dataSource()),
             new ApplicationRepository(TestPg.dataSource()), new UnitOfWork(TestPg.dataSource(), new PlatformSink(Json.MAPPER)));
@@ -125,6 +130,7 @@ class RolesBffTest {
     @Test
     void listIsFilteredByApplicationAndSource() {
         String app = "rbfflist" + RUN;
+        TestPg.ensureApplication(TestPg.dataSource(), app);
         http.post("/bff/roles", "{\"applicationCode\":\"" + app + "\",\"roleName\":\"one\",\"displayName\":\"One\"}", ANCHOR);
 
         var list = json(http.get("/bff/roles?application=" + app, ANCHOR));

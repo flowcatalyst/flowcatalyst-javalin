@@ -1,6 +1,7 @@
 package io.flowcatalyst.platform.authadmin.operations;
 
 import io.flowcatalyst.platform.role.RoleCeiling;
+import io.flowcatalyst.platform.role.RoleName;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import java.util.List;
 
@@ -32,6 +33,9 @@ public final class CreateIdpRoleMapping {
                     UseCaseException.requireNonBlank(cmd.idpType(), "FIELD_REQUIRED", "idpType is required");
                     UseCaseException.requireNonBlank(cmd.idpRoleName(), "FIELD_REQUIRED", "idpRoleName is required");
                     UseCaseException.requireNonBlank(cmd.platformRoleName(), "FIELD_REQUIRED", "platformRoleName is required");
+                    // Go F18: the platform role is a canonical role name; a malformed one is
+                    // refused, never trimmed (existence is checked when the mapping is applied at login).
+                    RoleName.validate(cmd.platformRoleName());
                 })
                 // IdP role mappings are anchor-only with no per-resource dimension; the handler's requireAnchor is the whole check.
                 .authorize(Operation.Authorize.publicAccess())

@@ -103,7 +103,11 @@ class SeederTest {
                         r.getApplicationCode(), r.getClientManaged()))
                 .toList();
         assertThat(actual).hasSize(18).containsExactlyInAnyOrderElementsOf(expected.get("role"));
-        assertThat(db.selectFrom(IAM_ROLES).fetch()).allSatisfy(r -> assertThat(r.getApplicationId()).isNull());
+        // Go F18: platform roles carry the platform application's id like any other application's roles.
+        String platformAppId = db.select(APP_APPLICATIONS.ID).from(APP_APPLICATIONS)
+                .where(APP_APPLICATIONS.CODE.eq("platform")).fetchOne(APP_APPLICATIONS.ID);
+        assertThat(platformAppId).isNotNull();
+        assertThat(db.selectFrom(IAM_ROLES).fetch()).allSatisfy(r -> assertThat(r.getApplicationId()).isEqualTo(platformAppId));
         assertThat(db.selectFrom(IAM_ROLES).fetch()).allSatisfy(r -> assertThat(r.getId()).startsWith("rol_"));
     }
 

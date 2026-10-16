@@ -6,6 +6,7 @@ import io.flowcatalyst.db.generated.tables.IamPrincipalRoles;
 import io.flowcatalyst.db.generated.tables.IamPrincipals;
 import io.flowcatalyst.db.generated.tables.IamRoles;
 import io.flowcatalyst.db.generated.tables.records.IamPrincipalsRecord;
+import io.flowcatalyst.platform.role.RoleName;
 import io.flowcatalyst.sdk.usecase.jdbc.DbTx;
 import io.flowcatalyst.sdk.usecase.jdbc.Persist;
 import org.jooq.Condition;
@@ -149,7 +150,7 @@ public final class PrincipalRepository implements Persist<Principal> {
                 .where(PR.PRINCIPAL_ID.in(principalIds)).orderBy(PR.ASSIGNED_AT.asc())
                 .fetch().stream()
                 .collect(groupingBy(r -> r.get(PR.PRINCIPAL_ID),
-                        mapping(r -> new RoleAssignment(r.get(PR.ROLE_NAME), r.get(PR.ASSIGNMENT_SOURCE), r.get(PR.ASSIGNED_AT).toInstant()), toList())));
+                        mapping(r -> new RoleAssignment(RoleName.stored(r.get(PR.ROLE_NAME)), r.get(PR.ASSIGNMENT_SOURCE), r.get(PR.ASSIGNED_AT).toInstant()), toList())));
     }
 
     /// Granted client ids for many principals in one query, each list by `client_id`.
@@ -254,7 +255,7 @@ public final class PrincipalRepository implements Persist<Principal> {
             for (RoleAssignment ra : p.roles()) {
                 txDsl.insertInto(PR)
                         .set(PR.PRINCIPAL_ID, p.id())
-                        .set(PR.ROLE_NAME, ra.role())
+                        .set(PR.ROLE_NAME, ra.roleName())
                         .set(PR.ASSIGNMENT_SOURCE, ra.assignmentSource())
                         .set(PR.ASSIGNED_AT, utc(ra.assignedAt()))
                         .onConflict(PR.PRINCIPAL_ID, PR.ROLE_NAME).doUpdate()

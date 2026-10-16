@@ -60,7 +60,7 @@ public final class ClaimShapes {
 
     /// The principal's assigned role names, in assignment order.
     public static List<String> roleNames(Principal p) {
-        return p.roles().stream().map(RoleAssignment::role).toList();
+        return p.roles().stream().map(RoleAssignment::roleName).toList();
     }
 
     /// Go `intersectApps`: the client's application ids the user can actually

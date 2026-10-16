@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.role.operations;
 import io.flowcatalyst.platform.role.RoleCeiling;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.role.Role;
+import io.flowcatalyst.platform.role.RoleName;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.role.operations.RoleEvents.RoleUpdated;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
@@ -24,6 +25,7 @@ public final class UpdateRole {
                     if (cmd.displayName() != null) {
                         UseCaseException.requireNonBlank(cmd.displayName(), "DISPLAY_NAME_REQUIRED", "displayName cannot be empty");
                     }
+                    RoleName.validatePermissions(cmd.permissions());
                 })
                 // Roles are global — no per-resource dimension; the handler's coarse gate is the whole check.
                 .authorize(Operation.Authorize.publicAccess())

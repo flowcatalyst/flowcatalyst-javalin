@@ -1,5 +1,7 @@
 package io.flowcatalyst.platform.principal;
 
+import io.flowcatalyst.platform.role.RoleName;
+
 import java.time.Instant;
 import java.util.Objects;
 
@@ -11,10 +13,11 @@ import java.util.Objects;
 /// would silently rewrite a stored value it does not know. The three values
 /// this package writes are the constants below.
 ///
-/// @param role             role name (`platform:developer`, `orders:admin`…)
+/// @param role             role name (`platform:developer`, `orders:admin`…), a [RoleName]: an
+///                         assignment cannot be built from a raw string (Go F18)
 /// @param assignmentSource who assigned it; `null` on rows written before the column existed
 /// @param assignedAt       when
-public record RoleAssignment(String role, String assignmentSource, Instant assignedAt) {
+public record RoleAssignment(RoleName role, String assignmentSource, Instant assignedAt) {
 
     /// An administrator's explicit assignment (`AssignRoles`).
     public static final String ADMIN_ASSIGNED = "ADMIN_ASSIGNED";
@@ -26,6 +29,11 @@ public record RoleAssignment(String role, String assignmentSource, Instant assig
     public RoleAssignment {
         Objects.requireNonNull(role, "role");
         Objects.requireNonNull(assignedAt, "assignedAt");
+    }
+
+    /// The role name as text.
+    public String roleName() {
+        return role.value();
     }
 
     public boolean hasSource(String source) {

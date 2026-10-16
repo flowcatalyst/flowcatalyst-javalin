@@ -108,8 +108,10 @@ public final class ServiceAccountApi {
     /// @param flattenPermissions role names → permission ceiling for the token mint; `null` mints with no scope claim
     public record State(ServiceAccountRepository repo, PrincipalRepository principals, UnitOfWork uow,
                         OAuthClientRepository oauthClients, ClientRepository clients, Optional<Encryption> encryption,
-                        ServiceAccountTokenMinter minter, Function<List<String>, List<String>> flattenPermissions) {
+                        ServiceAccountTokenMinter minter, Function<List<String>, List<String>> flattenPermissions,
+                        io.flowcatalyst.platform.role.RoleRepository roles) {
         public State {
+            Objects.requireNonNull(roles, "roles");
             Objects.requireNonNull(repo, "repo");
             Objects.requireNonNull(principals, "principals");
             Objects.requireNonNull(uow, "uow");
@@ -231,7 +233,7 @@ public final class ServiceAccountApi {
         requireAnchorWriter(Auth.current(), SERVICE_ACCOUNT_UPDATE);
         String id = ctx.pathParam("id");
         var body = ctx.bodyAsClass(AssignRolesRequest.class);
-        var event = AssignRolesToServiceAccount.of(s.repo(), s.principals(), s.rolePermissions())
+        var event = AssignRolesToServiceAccount.of(s.repo(), s.principals(), s.roles(), s.rolePermissions())
                 .run(s.uow(), new AssignRolesCommand(id, body.roles()), Auth.executionContext());
         var roles = rolesOf(s, id).stream().map(RoleAssignmentResponse::from).toList();
         ctx.json(new ServiceAccountRolesAssignedResponse(roles, event.rolesAdded(), event.rolesRemoved()));

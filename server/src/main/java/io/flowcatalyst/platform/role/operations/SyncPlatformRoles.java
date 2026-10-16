@@ -80,11 +80,16 @@ public final class SyncPlatformRoles {
                                 continue;
                             }
                             Role role = current.syncedFromCatalogue(def.displayName(), def.description(), def.permissions());
+                            // Go F18: heal a row written without its application's id.
+                            if (role.applicationId() == null) {
+                                role = role.withApplicationId(ownerApplicationId(repo, role.owningApplicationCode()));
+                            }
                             changed.addAll(RoleCeiling.changed(current.permissions(), def.permissions()));
                             saves.add(new SyncSave<>(role, RoleUpdated.of(ec, role)));
                             updated++;
                         } else {
                             Role role = Role.create(def.applicationCode(), def.shortName(), def.displayName())
+                                    .withApplicationId(ownerApplicationId(repo, def.applicationCode()))
                                     .withDescription(def.description())
                                     .withPermissions(def.permissions())
                                     .withSource(RoleSource.CODE);
@@ -116,5 +121,18 @@ public final class SyncPlatformRoles {
                     var rollup = RolesSynced.ofCatalogue(ec, created, updated, deletes.size(), defs.size());
                     return Plan.sync(repo, saves, deletes, rollup);
                 });
+    }
+
+    /// The id a role of application `code` carries (Go F18). An application that
+    /// does not exist yields `null` with a warning rather than an error: the
+    /// built-in catalogue must still be installable on a database whose platform
+    /// application row has not been seeded yet.
+    private static String ownerApplicationId(RoleRepository repo, String code) {
+        return repo.applicationIdByCode(code).orElseGet(() -> {
+            LOG.atWarn().setMessage("role written without an application id: no such application")
+                    .addKeyValue("applicationCode", code)
+                    .log();
+            return null;
+        });
     }
 }

@@ -130,6 +130,6 @@ public final class DbClaimsResolver implements ClaimsResolver {
     }
 
     private static List<String> roleNames(Principal p) {
-        return p.roles().stream().map(RoleAssignment::role).toList();
+        return p.roles().stream().map(RoleAssignment::roleName).toList();
     }
 }

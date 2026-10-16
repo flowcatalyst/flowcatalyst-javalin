@@ -2,6 +2,7 @@ package io.flowcatalyst.platform.role.operations;
 
 import io.flowcatalyst.platform.role.Role;
 import io.flowcatalyst.platform.role.RoleCeiling;
+import io.flowcatalyst.platform.role.RoleName;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.role.RoleSource;
 import io.flowcatalyst.platform.role.operations.RoleEvents.RoleCreated;
@@ -59,11 +60,31 @@ public final class SyncRoles {
                     if (cmd.roles().isEmpty()) {
                         throw UseCaseException.validation("ROLES_REQUIRED", "At least one role must be provided");
                     }
+                    // Go F18: every role name and permission is shape-checked up front, so one
+                    // malformed entry refuses the whole sync before any write.
+                    for (SyncRoleInput in : cmd.roles()) {
+                        RoleName.validate(cmd.applicationCode() + ":"
+                                + Role.localName(in.name().toLowerCase(Locale.ROOT), cmd.applicationCode()));
+                        RoleName.validatePermissions(in.permissions());
+                    }
                 })
                 .authorize(cmd -> Checks.checkApplicationAccess(Auth.current(), cmd.applicationId(), cmd.applicationCode()))
                 .execute((cmd, ec) -> {
                     Map<String, Role> existingByName = repo.findByApplicationId(cmd.applicationId()).stream()
                             .collect(Collectors.toMap(Role::name, Function.identity(), (a, _) -> a, LinkedHashMap::new));
+
+                    // Go F18: a row of this application written without its id (the admin create
+                    // used to leave it null) is invisible to the lookup above, so the sync would
+                    // try to create it again and collide on the unique name. Adopt it: it is this
+                    // application's role, give it its id.
+                    for (SyncRoleInput in : cmd.roles()) {
+                        String full = cmd.applicationCode() + ":"
+                                + Role.localName(in.name().toLowerCase(Locale.ROOT), cmd.applicationCode());
+                        if (existingByName.containsKey(full)) continue;
+                        repo.findByName(full)
+                                .filter(o -> o.applicationId() == null && o.owningApplicationCode().equals(cmd.applicationCode()))
+                                .ifPresent(o -> existingByName.put(full, o.withApplicationId(cmd.applicationId())));
+                    }
 
                     var saves = new ArrayList<SyncSave<Role>>(cmd.roles().size());
                     var deletes = new ArrayList<SyncDelete<Role>>();

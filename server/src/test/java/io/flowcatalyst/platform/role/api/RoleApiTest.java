@@ -55,6 +55,12 @@ class RoleApiTest {
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 6).toLowerCase(Locale.ROOT);
     private static final String APP = "roleapi" + RUN;
 
+    static {
+        // A role may only be created for an application that exists (Go F18).
+        TestPg.ensureApplication(TestPg.dataSource(), APP);
+        TestPg.ensureApplication(TestPg.dataSource(), "platform");
+    }
+
     private static final String ANCHOR_PRINCIPAL = EntityType.PRINCIPAL.generate();
     private static final String[] ANCHOR = {
             Authenticator.TEST_PRINCIPAL, ANCHOR_PRINCIPAL,
@@ -158,10 +164,11 @@ class RoleApiTest {
         assertThat(role.get("permissions")).extracting(JsonNode::asText).containsExactly(APP + ":doc:a:*", APP + ":doc:b:*");
         assertThat(role.get("source").asText()).isEqualTo("DATABASE");
         assertThat(role.get("clientManaged").asBoolean()).isTrue();
-        assertThat(role.has("applicationId")).as("null applicationId omitted").isFalse();
+        assertThat(role.get("applicationId").asText()).as("Go F18: the admin create stamps the application's id")
+                .isEqualTo(TestPg.ensureApplication(TestPg.dataSource(), APP));
         assertThat(role.get("createdAt").asText()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z");
         assertThat(role.get("updatedAt").asText()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z");
-        assertThat(role.propertyNames()).containsExactly("id", "name", "displayName", "description",
+        assertThat(role.propertyNames()).containsExactly("id", "applicationId", "name", "displayName", "description",
                 "applicationCode", "permissions", "source", "clientManaged", "createdAt", "updatedAt");
 
         // The {id} routes also accept the name (SDK clients), and by-code is name-only.
@@ -436,6 +443,7 @@ class RoleApiTest {
     void eachWriteNeedsTheOperationsPermission() {
         String r = "/api/roles/gate:missing-role";
         String g = "gate" + Long.toString(System.nanoTime(), 36);
+        TestPg.ensureApplication(TestPg.dataSource(), g);
         WriteGates.assertEachWriteNeedsItsPermission(http, List.of(
                         Write.of("create", "POST", "/api/roles", "{\"applicationCode\":\"" + g + "\",\"roleName\":\"r\",\"displayName\":\"R\",\"clientManaged\":false}", ROLE_CREATE),
                         Write.of("update", "PUT", r, "{}", ROLE_UPDATE),

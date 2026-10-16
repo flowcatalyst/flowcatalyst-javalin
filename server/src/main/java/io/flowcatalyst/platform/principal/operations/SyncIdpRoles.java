@@ -4,6 +4,7 @@ import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.principal.RoleAssignment;
 import io.flowcatalyst.platform.principal.operations.PrincipalEvents.RolesAssigned;
+import io.flowcatalyst.platform.role.RoleName;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
 import io.flowcatalyst.sdk.usecase.op.Operation;
@@ -30,12 +31,8 @@ public final class SyncIdpRoles {
                     if (!p.isUser()) {
                         throw UseCaseException.businessRule("NOT_A_USER", "IDP role sync only applies to USER principals");
                     }
-                    for (String name : cmd.platformRoles()) {
-                        if (roles.findByName(name).isEmpty()) {
-                            throw UseCaseException.validation("ROLE_NOT_FOUND", "Role not found: " + name);
-                        }
-                    }
-                    var change = p.syncSourcedRoles(RoleAssignment.IDP_SYNC, cmd.platformRoles());
+                    // Shape first (400 INVALID_ROLE_NAME), then existence (ROLE_NOT_FOUND) — Go F18.
+                    var change = p.syncSourcedRoles(RoleAssignment.IDP_SYNC, RoleName.resolveAll(roles, cmd.platformRoles()));
                     return Plan.save(change.principal(), repo.withRoles(), RolesAssigned.of(ec, change));
                 });
     }

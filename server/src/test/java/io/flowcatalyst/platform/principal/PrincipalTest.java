@@ -247,8 +247,8 @@ class PrincipalTest {
     @Test
     void assignRolesReplacesEverythingAsAdminAssigned() {
         var p = Principal.newUser(EMAIL, UserScope.ANCHOR)
-                .syncSourcedRoles(RoleAssignment.IDP_SYNC, List.of("app:idp")).principal();
-        var change = p.assignRoles(List.of("app:idp", "app:admin"));
+                .syncSourcedRoles(RoleAssignment.IDP_SYNC, rn("app:idp")).principal();
+        var change = p.assignRoles(rn("app:idp", "app:admin"));
         assertThat(change.roles()).containsExactly("app:idp", "app:admin");
         assertThat(change.added()).containsExactly("app:admin");
         assertThat(change.removed()).isEmpty();
@@ -259,13 +259,13 @@ class PrincipalTest {
 
     @Test
     void syncSourcedRolesKeepsOtherSourcesAndDedupes() {
-        var p = Principal.newUser(EMAIL, UserScope.CLIENT).assignRoles(List.of("app:admin")).principal()
-                .syncSourcedRoles(RoleAssignment.SDK_SYNC, List.of("app:old")).principal();
-        var change = p.syncSourcedRoles(RoleAssignment.SDK_SYNC, List.of("app:admin", "app:new"));
+        var p = Principal.newUser(EMAIL, UserScope.CLIENT).assignRoles(rn("app:admin")).principal()
+                .syncSourcedRoles(RoleAssignment.SDK_SYNC, rn("app:old")).principal();
+        var change = p.syncSourcedRoles(RoleAssignment.SDK_SYNC, rn("app:admin", "app:new"));
         assertThat(change.roles()).containsExactly("app:admin", "app:new");
         assertThat(change.added()).containsExactly("app:new");
         assertThat(change.removed()).containsExactly("app:old");
-        assertThat(change.principal().roles()).extracting(RoleAssignment::role, RoleAssignment::assignmentSource)
+        assertThat(change.principal().roles()).extracting(RoleAssignment::roleName, RoleAssignment::assignmentSource)
                 .containsExactly(org.assertj.core.groups.Tuple.tuple("app:admin", RoleAssignment.ADMIN_ASSIGNED),
                         org.assertj.core.groups.Tuple.tuple("app:new", RoleAssignment.SDK_SYNC));
         assertThat(change.principal().hasRolesFrom(RoleAssignment.SDK_SYNC)).isTrue();
@@ -402,5 +402,9 @@ class PrincipalTest {
         assertThat(UserScopeDerivation.allowedClientIds(mapping(ScopeType.ANCHOR, "clt_p", List.of()))).isEmpty();
         assertThat(UserScopeDerivation.allowedClientIds(null)).isEmpty();
         assertThat(UserScopeDerivation.ownerClientIds(mapping(ScopeType.CLIENT, "clt_p", List.of("clt_g")))).as("grants are not ownership").containsExactly("clt_p");
+    }
+
+    private static List<io.flowcatalyst.platform.role.RoleName> rn(String... names) {
+        return java.util.Arrays.stream(names).map(io.flowcatalyst.platform.role.RoleName::of).toList();
     }
 }

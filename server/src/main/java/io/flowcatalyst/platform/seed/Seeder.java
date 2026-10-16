@@ -150,6 +150,12 @@ public final class Seeder {
     /// edits to permissions).
     private void seedRoles(DSLContext db) {
         int inserted = 0;
+        // Go F18: platform roles carry the platform application's id like any other
+        // application's roles. seedPlatformApplication has run; if the row is somehow
+        // absent the id stays null and the next role sync heals it.
+        String platformAppId = db.select(APP_APPLICATIONS.ID).from(APP_APPLICATIONS)
+                .where(APP_APPLICATIONS.CODE.eq(PLATFORM_APPLICATION_CODE))
+                .fetchOptional(APP_APPLICATIONS.ID).orElse(null);
         for (RoleDefinition r : PlatformRoles.all()) {
             if (db.fetchExists(IAM_ROLES, IAM_ROLES.NAME.eq(r.name()))) {
                 continue; // role already exists, leave it alone
@@ -157,7 +163,7 @@ public final class Seeder {
             OffsetDateTime now = now();
             db.insertInto(IAM_ROLES)
                     .set(IAM_ROLES.ID, EntityType.ROLE.generate())
-                    .set(IAM_ROLES.APPLICATION_ID, (String) null)
+                    .set(IAM_ROLES.APPLICATION_ID, platformAppId)
                     .set(IAM_ROLES.NAME, r.name())
                     .set(IAM_ROLES.DISPLAY_NAME, r.displayName())
                     .set(IAM_ROLES.DESCRIPTION, r.description())

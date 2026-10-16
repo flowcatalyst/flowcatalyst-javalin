@@ -107,6 +107,23 @@ public record Role(
         return colon < 0 ? name : name.substring(0, colon);
     }
 
+    /// The role's own name as a [RoleName]: holding one from a role in hand is
+    /// proof the lookup happened (Go F18 `Role.CanonicalName`).
+    public RoleName canonicalName() {
+        return RoleName.stored(name);
+    }
+
+    /// Whether this is a platform role: its owning application is the
+    /// `platform` application, by code (Go F18 `Role.IsPlatform`). A missing
+    /// `applicationId` no longer means "platform": platform roles carry the
+    /// platform application's id like any other application's roles.
+    public boolean isPlatform() {
+        return PLATFORM_APPLICATION_CODE.equals(owningApplicationCode());
+    }
+
+    /// The code of the built-in platform application.
+    public static final String PLATFORM_APPLICATION_CODE = "platform";
+
     /// Whether a change may put another application's permissions on this
     /// role. Owner ruling 2026-09-25 (backlog "Overnight review" item 15): only
     /// a super-admin, through the admin API; the SDK sync and the catalogue

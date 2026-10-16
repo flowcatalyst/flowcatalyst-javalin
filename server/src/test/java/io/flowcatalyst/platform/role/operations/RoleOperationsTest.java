@@ -85,6 +85,7 @@ class RoleOperationsTest {
     }
 
     private static RoleCreated created(String applicationCode, String roleName, String displayName, String... permissions) {
+        TestPg.ensureApplication(DS, applicationCode);
         return runAsAnchor(CreateRole.of(repo),
                 new CreateCommand(applicationCode, roleName, displayName, null, List.of(permissions), false));
     }
@@ -176,6 +177,7 @@ class RoleOperationsTest {
     @Test
     void createWritesTheRowThePermissionsTheEventAndTheAuditTogether() {
         String application = app("rolecrt");
+        String applicationId = TestPg.ensureApplication(DS, application);
         var ev = runAsAnchor(CreateRole.of(repo), new CreateCommand(application, "editor", "Document Editor",
                 "Edits documents", List.of(application + ":doc:edit:*", application + ":doc:read:*", application + ":doc:edit:*"), true));
 
@@ -191,7 +193,7 @@ class RoleOperationsTest {
         assertThat(got.displayName()).isEqualTo("Document Editor");
         assertThat(got.description()).isEqualTo("Edits documents");
         assertThat(got.applicationCode()).isEqualTo(application);
-        assertThat(got.applicationId()).isNull();
+        assertThat(got.applicationId()).as("Go F18: a role carries its application id").isEqualTo(applicationId);
         assertThat(got.source()).as("admin-created roles are DATABASE-sourced").isEqualTo(RoleSource.DATABASE);
         assertThat(got.clientManaged()).isTrue();
         assertThat(got.permissions()).as("de-duplicated and sorted")
@@ -1024,5 +1026,93 @@ class RoleOperationsTest {
         assertThat(repo.countAssignments(c)).isZero();
         seedPrincipalHolding(c);
         assertThat(repo.countAssignments(c)).isEqualTo(1);
+    }
+
+    // ── Go F18: names and permissions are shape-checked; roles carry their application id ──
+
+    /// A role name is rejected as sent, never trimmed; nothing is stored under any spelling.
+    @Test
+    void createRejectsMalformedNamesAndPermissions() {
+        String application = app("f18create");
+        TestPg.ensureApplication(DS, application);
+        for (CreateCommand c : List.of(
+                new CreateCommand(application, " dispatcher", "d", null, null, false),
+                new CreateCommand(application, "dis patcher", "d", null, null, false),
+                new CreateCommand(application + " ", "dispatcher", "d", null, null, false),
+                new CreateCommand(application, "dispatcher\n", "d", null, null, false),
+                new CreateCommand(application, "a:", "d", null, null, false))) {
+            assertUseCaseError(() -> runAsAnchor(CreateRole.of(repo), c), UseCaseError.Validation.class, "INVALID_ROLE_NAME");
+        }
+        assertUseCaseError(() -> runAsAnchor(CreateRole.of(repo), new CreateCommand(application, "ok", "d", null,
+                List.of(application + ": thing:view"), false)), UseCaseError.Validation.class, "INVALID_PERMISSION");
+        assertThat(repo.findByName(application + ": dispatcher")).isEmpty();
+        assertThat(repo.findByName(application + ":ok")).isEmpty();
+    }
+
+    /// The admin create resolves and sets the application id, and refuses an unknown application.
+    @Test
+    void createSetsTheApplicationIdAndRefusesAnUnknownApplication() {
+        String application = app("f18appid");
+        String appId = TestPg.ensureApplication(DS, application);
+        var ev = created(application, "dispatcher", "Dispatcher");
+        assertThat(reload(ev.roleId()).applicationId()).isEqualTo(appId);
+
+        assertUseCaseError(() -> runAsAnchor(CreateRole.of(repo), new CreateCommand(app("f18nosuchapp"), "x", "x", null, null, false)),
+                UseCaseError.Validation.class, "APPLICATION_NOT_FOUND");
+        assertThat(repo.findByName(app("f18nosuchapp") + ":x")).isEmpty();
+    }
+
+    @Test
+    void grantAndUpdateRejectAMalformedPermission() {
+        String application = app("f18grant");
+        var ev = created(application, "r", "R");
+        assertUseCaseError(() -> runAsAnchor(GrantPermission.of(repo), new GrantPermissionCommand(ev.name(), application + ":thing: view")),
+                UseCaseError.Validation.class, "INVALID_PERMISSION");
+        assertUseCaseError(() -> runAsAnchor(UpdateRole.of(repo), new UpdateCommand(ev.roleId(), null, null, List.of(application + ":a b"), null)),
+                UseCaseError.Validation.class, "INVALID_PERMISSION");
+        assertThat(reload(ev.roleId()).permissions()).isEmpty();
+    }
+
+    /// One malformed entry refuses the whole SDK role sync before any write; an id-less role of the
+    /// application is adopted instead of colliding on the unique name.
+    @Test
+    void syncRolesRejectsAMalformedEntryAndAdoptsAnIdlessRole() {
+        String application = app("f18sync");
+        String appId = TestPg.ensureApplication(DS, application);
+
+        assertUseCaseError(() -> runAsAnchor(SyncRoles.of(repo), new SyncRolesCommand(application, appId, List.of(
+                        new SyncRoleInput("good", null, null, List.of(), false),
+                        new SyncRoleInput("bad name", null, null, List.of(), false)), false)),
+                UseCaseError.Validation.class, "INVALID_ROLE_NAME");
+        assertThat(repo.findByName(application + ":good")).as("a malformed entry refuses the whole sync").isEmpty();
+        assertUseCaseError(() -> runAsAnchor(SyncRoles.of(repo), new SyncRolesCommand(application, appId, List.of(
+                        new SyncRoleInput("good", null, null, List.of(application + ": x"), false)), false)),
+                UseCaseError.Validation.class, "INVALID_PERMISSION");
+        assertThat(repo.findByName(application + ":good")).isEmpty();
+
+        // A legacy SDK row of the application with a null application_id.
+        seedRawRole(application + ":legacy", "Legacy", RoleSource.SDK, null);
+        var ev = runAsAnchor(SyncRoles.of(repo), new SyncRolesCommand(application, appId, List.of(
+                new SyncRoleInput("legacy", null, null, List.of(), false)), false));
+        assertThat(ev.created()).as("adopted, not created again").isZero();
+        assertThat(ev.updated()).isEqualTo(1);
+        assertThat(byName(application + ":legacy").applicationId()).as("the sync gives the adopted role its application id").isEqualTo(appId);
+    }
+
+    /// The platform catalogue sync gives a new role the platform application's id and heals an
+    /// existing row that lacks it.
+    @Test
+    void syncPlatformRolesSetsAndHealsTheApplicationId() {
+        String platformId = TestPg.ensureApplication(DS, "platform");
+        String shortName = "f18plat" + RUN;
+        var heal = platformDef(shortName + "heal");
+        var fresh = platformDef(shortName + "new");
+        seedRawRole(heal.name(), "Heal", RoleSource.CODE, null);
+
+        Auth.runAs(SUPER_ADMIN, () -> SyncPlatformRoles.of(repo, withTest(PlatformRoles.all(), heal, fresh))
+                .run(uow, new SyncPlatformRolesCommand(), EC));
+
+        assertThat(byName(fresh.name()).applicationId()).as("a new catalogue role carries the platform application's id").isEqualTo(platformId);
+        assertThat(byName(heal.name()).applicationId()).as("an existing row is healed").isEqualTo(platformId);
     }
 }

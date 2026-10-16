@@ -258,6 +258,24 @@ public final class TestPg {
         }
     }
 
+    /// Makes sure an application row with `code` exists in `ds` and returns its id.
+    /// A role may only be created for an application that exists (Go F18), so tests
+    /// that create roles under a hand-picked code call this first (Go's
+    /// `testpg.EnsureApplication`).
+    public static String ensureApplication(DataSource ds, String code) {
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            st.execute("INSERT INTO app_applications (id, code, name) VALUES ('"
+                    + io.flowcatalyst.platform.shared.tsid.EntityType.APPLICATION.generate() + "', '" + code + "', '" + code
+                    + "') ON CONFLICT (code) DO NOTHING");
+            try (var rs = st.executeQuery("SELECT id FROM app_applications WHERE code = '" + code + "'")) {
+                rs.next();
+                return rs.getString(1);
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("ensure application " + code, e);
+        }
+    }
+
     /// Runs `fn` with the named CHECK constraint on `table` temporarily
     /// removed, then restores it (even if `fn` throws). This is how an X-06
     /// "corrupt row fails loudly at read time" test seeds the corrupt row in

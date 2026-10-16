@@ -328,7 +328,7 @@ class OidcBridgeTest {
         assertThat(p.type()).isEqualTo(PrincipalType.USER);
         assertThat(p.scope()).as("the mapping's scope").isEqualTo(UserScope.ANCHOR);
         assertThat(p.isFederated()).as("provisioned as OIDC: no password ever").isTrue();
-        assertThat(p.roles()).extracting(RoleAssignment::role).as("mapped + allow-listed only").containsExactly(roleAllowed);
+        assertThat(p.roles()).extracting(RoleAssignment::roleName).as("mapped + allow-listed only").containsExactly(roleAllowed);
         assertThat(p.roles().getFirst().assignmentSource()).isEqualTo(RoleAssignment.IDP_SYNC);
         assertThat(((JwtVerifier.Verified) VERIFIER.verify(token)).claims().subject()).isEqualTo(p.id());
 
@@ -424,7 +424,7 @@ class OidcBridgeTest {
 
         Principal p = PRINCIPALS.findById(pid).orElseThrow();
         assertThat(p.email()).as("self-healed to lower case").isEqualTo(email);
-        assertThat(p.roles()).extracting(RoleAssignment::role).as("the admin-assigned role survives; the synced one is dropped")
+        assertThat(p.roles()).extracting(RoleAssignment::roleName).as("the admin-assigned role survives; the synced one is dropped")
                 .containsExactly(roleNotAllowed);
     }
 

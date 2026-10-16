@@ -3,6 +3,7 @@ package io.flowcatalyst.platform.role.operations;
 import io.flowcatalyst.platform.role.RoleCeiling;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.role.Role;
+import io.flowcatalyst.platform.role.RoleName;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.role.operations.RoleEvents.RoleCreated;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
@@ -22,6 +23,10 @@ public final class CreateRole {
                     UseCaseException.requireNonBlank(cmd.applicationCode(), "APPLICATION_REQUIRED", "applicationCode is required");
                     UseCaseException.requireNonBlank(cmd.roleName(), "ROLE_NAME_REQUIRED", "roleName is required");
                     UseCaseException.requireNonBlank(cmd.displayName(), "DISPLAY_NAME_REQUIRED", "displayName is required");
+                    // Go F18: rejected as sent, never trimmed. The name is the canonical
+                    // "{application}:{role}" the roles are assigned and minted by.
+                    RoleName.validate(cmd.applicationCode() + ":" + cmd.roleName());
+                    RoleName.validatePermissions(cmd.permissions());
                 })
                 // Roles are global — no per-resource dimension; the handler's coarse gate is the whole check.
                 .authorize(Operation.Authorize.publicAccess())
@@ -30,7 +35,13 @@ public final class CreateRole {
                     if (repo.findByName(name).isPresent()) {
                         throw UseCaseException.conflict("ROLE_EXISTS", "Role '" + name + "' already exists");
                     }
+                    // Go F18: the role is written with the id of the application that owns it,
+                    // and a role for an application that does not exist is refused.
+                    String applicationId = repo.applicationIdByCode(cmd.applicationCode())
+                            .orElseThrow(() -> UseCaseException.validation("APPLICATION_NOT_FOUND",
+                                    "Application '" + cmd.applicationCode() + "' does not exist"));
                     Role role = Role.create(cmd.applicationCode(), cmd.roleName(), cmd.displayName())
+                            .withApplicationId(applicationId)
                             .withDescription(cmd.description())
                             .withClientManaged(cmd.clientManaged())
                             .withPermissions(cmd.permissions(), Access.crossApplication());

@@ -6,6 +6,7 @@ import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.principal.UserScope;
 import io.flowcatalyst.platform.role.Role;
+import io.flowcatalyst.platform.role.RoleName;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
@@ -173,11 +174,12 @@ public final class Access {
     /// application in `allowed`.
     public static Optional<UseCaseError> assignableRolesProblem(RoleRepository roles, List<String> roleNames, Set<String> allowed) {
         for (String name : roleNames) {
-            Optional<Role> role = roles.findByName(name);
+            // A malformed name is not a role (Go F18), even if a legacy definition bears it.
+            Optional<Role> role = RoleName.isWellFormed(name) ? roles.findByName(name) : Optional.empty();
             if (role.isEmpty()) {
                 return Optional.of(new UseCaseError.Validation("UNKNOWN_ROLE", "role not found: " + name, Map.of()));
             }
-            if (role.get().applicationId() == null) {
+            if (role.get().applicationId() == null || role.get().isPlatform()) {
                 return Optional.of(new UseCaseError.Authorization("PLATFORM_ROLE_FORBIDDEN",
                         "client administrators cannot assign platform roles", Map.of()));
             }

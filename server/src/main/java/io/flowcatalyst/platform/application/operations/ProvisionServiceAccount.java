@@ -10,6 +10,7 @@ import io.flowcatalyst.platform.oauthclient.operations.OAuthClientEvents.OAuthCl
 import io.flowcatalyst.platform.oauthclient.operations.Secrets;
 import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
+import io.flowcatalyst.platform.role.RoleName;
 import io.flowcatalyst.platform.principal.RoleAssignment;
 import io.flowcatalyst.platform.role.RoleCeiling;
 import io.flowcatalyst.platform.role.RoleRepository;
@@ -121,7 +122,7 @@ public final class ProvisionServiceAccount {
                     // instead of leaning entirely on the anchor-tier bypass (spec §10).
                     Principal principal = Principal.newService(sa.id(), sa.name())
                             .assignApplicationAccess(List.of(app.id()), false).principal()
-                            .withRoles(List.of(new RoleAssignment(APPLICATION_SERVICE_ROLE, PROVISIONED, Instant.now())));
+                            .withRoles(List.of(new RoleAssignment(RoleName.constant(APPLICATION_SERVICE_ROLE), PROVISIONED, Instant.now())));
                     try {
                         principals.withApplicationAccess().persist(principal, scoped.dbTx());
                         principals.withRoles().persist(principal, scoped.dbTx());

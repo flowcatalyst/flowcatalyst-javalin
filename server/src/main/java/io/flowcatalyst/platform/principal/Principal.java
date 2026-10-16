@@ -1,5 +1,6 @@
 package io.flowcatalyst.platform.principal;
 
+import io.flowcatalyst.platform.role.RoleName;
 import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.usecase.HasId;
 import io.flowcatalyst.sdk.usecase.UseCaseException;
@@ -139,12 +140,12 @@ public record Principal(
     }
 
     public boolean hasRole(String roleName) {
-        return roles.stream().anyMatch(ra -> ra.role().equals(roleName));
+        return roles.stream().anyMatch(ra -> ra.role().value().equals(roleName));
     }
 
     /// Role names in assignment order (duplicates preserved as stored).
     public List<String> roleNames() {
-        return roles.stream().map(RoleAssignment::role).toList();
+        return roles.stream().map(RoleAssignment::roleName).toList();
     }
 
     public boolean hasDeveloperSecret() {
@@ -236,9 +237,10 @@ public record Principal(
     /// The administrator's set: **every** assignment is replaced by `names`,
     /// all tagged `ADMIN_ASSIGNED` (a previously IdP/SDK-sourced row is
     /// adopted — spec §2, open question 1). `names` is reported verbatim.
-    public RolesChanged assignRoles(List<String> names) {
+    public RolesChanged assignRoles(List<RoleName> roleNames) {
         Instant now = Instant.now();
-        List<RoleAssignment> assignments = names.stream()
+        List<String> names = roleNames.stream().map(RoleName::value).toList();
+        List<RoleAssignment> assignments = roleNames.stream()
                 .map(n -> new RoleAssignment(n, RoleAssignment.ADMIN_ASSIGNED, now)).toList();
         List<String> previous = roleNames();
         return new RolesChanged(withRoles(assignments, now), names, difference(names, previous), difference(previous, names));
@@ -247,7 +249,7 @@ public record Principal(
     /// A sync's set: the assignments tagged `source` are replaced by `names`
     /// (tagged `source`, stamped now); every other assignment is kept, and a
     /// name already kept is not duplicated. Reports the resulting names.
-    public RolesChanged syncSourcedRoles(String source, List<String> names) {
+    public RolesChanged syncSourcedRoles(String source, List<RoleName> names) {
         return syncSourcedRoles(source, null, names);
     }
 
@@ -258,20 +260,20 @@ public record Principal(
     /// Without it, application A syncing a user stripped application B's SDK
     /// roles from that user. A blank or `null` `applicationCode` (the
     /// platform-level sync) replaces every `source`-tagged assignment.
-    public RolesChanged syncSourcedRoles(String source, String applicationCode, List<String> names) {
+    public RolesChanged syncSourcedRoles(String source, String applicationCode, List<RoleName> names) {
         Instant now = Instant.now();
         var kept = new ArrayList<RoleAssignment>(roles.size() + names.size());
-        var keptNames = new LinkedHashSet<String>();
+        var keptNames = new LinkedHashSet<RoleName>();
         for (RoleAssignment ra : roles) {
             if (ra.hasSource(source) && belongsToApplicationSync(ra, applicationCode)) continue;
             kept.add(ra);
             keptNames.add(ra.role());
         }
-        for (String n : names) {
+        for (RoleName n : names) {
             if (keptNames.add(n)) kept.add(new RoleAssignment(n, source, now));
         }
         List<String> previous = roleNames();
-        List<String> current = kept.stream().map(RoleAssignment::role).toList();
+        List<String> current = kept.stream().map(RoleAssignment::roleName).toList();
         return new RolesChanged(withRoles(kept, now), current, difference(current, previous), difference(previous, current));
     }
 
@@ -306,7 +308,7 @@ public record Principal(
     }
 
     private static boolean belongsToApplicationSync(RoleAssignment ra, String applicationCode) {
-        return applicationCode == null || applicationCode.isBlank() || ra.role().startsWith(applicationCode + ":");
+        return applicationCode == null || applicationCode.isBlank() || ra.roleName().startsWith(applicationCode + ":");
     }
 
     /// The outcome of an application-access change.

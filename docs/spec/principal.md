@@ -106,10 +106,11 @@ none of this application's `SDK_SYNC` roles), the name is logged (warn) and
 listed in the response's `skippedRoles` (lower-cased, each once across the
 request, in payload order, omitted when empty). Before 2026-10-13 such a
 name was 400 `UNKNOWN_ROLE`. On the platform route (no application code)
-every name must exist (`UNKNOWN_ROLE`, unchanged) and a non-anchor may only
-name roles it could assign through `PUT /api/principals/{id}/roles` (§5.3's
-assignability rule; an anchor, any existing role); it has no
-`skippedRoles`. `passwordHash` is stored verbatim on a principal the sync
+an anchor caller follows the same rule (Go F18, 2026-10-16: a name that is not
+a role, a malformed one included, is skipped, reported in `skippedRoles` and
+never stored; before, it was 400 `UNKNOWN_ROLE`); a non-anchor's every name
+must exist (`UNKNOWN_ROLE`, unchanged) and may only name roles it could assign
+through `PUT /api/principals/{id}/roles` (§5.3's assignability rule). `passwordHash` is stored verbatim on a principal the sync
 creates; on an *existing* principal it is applied only when the caller is
 a super-admin and otherwise silently ignored — **owner question**: should
 a non-super-admin's hash on an existing principal be refused outright
@@ -254,6 +255,7 @@ any-of), `page` (0-based, default 0), `pageSize` (≤ 0 = all), `sortField`
 | SetClientAssociation (execute) | specific client needs a known mode | `MODE_REQUIRED` | `mode must be CHANGE_CLIENT or TO_PARTNER for a specific clientId (use "*" for anchor)` |
 | SetDeveloperCredential / RevokeDeveloperCredential | `principalId` non-blank | `PRINCIPAL_ID_REQUIRED` | `Principal ID is required` |
 | SyncPrincipals | at least one principal | `PRINCIPALS_REQUIRED` | `At least one principal must be provided` |
+| AssignRoles / SyncIdpRoles (execute) | every role name is well-formed (two or more colon-separated segments of ASCII letters, digits, `_`, `.`, `-`; no whitespace of any kind; rejected, never trimmed) — Go F18 | `INVALID_ROLE_NAME` | `Invalid role name "<name>": …` |
 | AssignRoles / SyncIdpRoles (execute) | every role name exists | `ROLE_NOT_FOUND` | `Role not found: <name>` |
 | AssignApplicationAccess (execute) | every application id exists | `APPLICATION_NOT_FOUND` | `Application not found: <id>` |
 

@@ -72,7 +72,7 @@ class ResetApprovalOperationsTest {
     private static Principal seedClientAdmin(String clientId) {
         String email = "rar-admin-" + UUID.randomUUID() + "@example.test";
         var p = Principal.newUser(EmailAddress.parse(email), UserScope.CLIENT).withClientId(clientId)
-                .withRoles(List.of(new RoleAssignment("platform:client-admin", RoleAssignment.ADMIN_ASSIGNED, Instant.now())));
+                .withRoles(List.of(new RoleAssignment(io.flowcatalyst.platform.role.RoleName.of("platform:client-admin"), RoleAssignment.ADMIN_ASSIGNED, Instant.now())));
         persistWithRoles(p);
         return p;
     }
