@@ -59,10 +59,17 @@ Size: S under half a day, M about a day, L several days. "Go tests" are under
 | E2 | fcdev: `fn delete` with typed confirmation | `9d017689` (CLI part) | S | none |
 | E3 | fcdev: connection profiles and the remote-target guard for `fn` | `410b38c4` | L | none |
 | F | OpenAPI `x-sdk` tagging, per-SDK app/admin documents, spec stubs for plain-handler routes | `21f9734d` | M | after A, B (tag the new routes) |
-| G | Dispatch-job requeue by filter (API + SPA dialog) | `165feb6d`, `5496c3ff` (2026-10-09) | M | none |
+| G | Dispatch-job requeue by filter (API + SPA dialog). **Absorbed by K4/K7**: port the final Go shape, not `165feb6d` | `165feb6d`, `5496c3ff` (2026-10-09) | M | see K4 |
 | H | SDK copies and generated clients (owner decides release stance) | `a59aab77`, `8376f6e1` (java-sdk resources), `cba73be8`, `1729294c`, `7f60a020` | M | after A, B, F |
 | I | Frontend follow-ons (function drawer dispatches, generated types) | `5796e829`, `ddf50c83`, `8376f6e1`, `21f9734d` | S | after A, B, C |
 | J | Owner decision: change-only confinement (F12) | `7f87172` | S | owner ruling |
+| K1 | Dispatch-job write permissions split (`requeue`, `redrive-completed`, `cancel`, `complete`, `edit-payload`), seed, grant migration (Go 085) | `ad37de21` | S | none |
+| K2 | Mandatory `created_at` window on dispatch-job list-shaped reads (`FC_DISPATCH_JOB_MAX_WINDOW_DAYS`, `X-Window-*`, `window{}`) | `ad37de21` | M | none |
+| K3 | Requeue status guard (in-flight never; COMPLETED only by confirmed redrive), `REDRIVE` transition, event/audit fields | `ad37de21` | M | K1 |
+| K4 | Requeue by filter: preview + run (absorbs G), with window, guard, redrive | `ad37de21` (final shape of `165feb6d`) | L | K1, K2, K3, K6 filter struct |
+| K5 | Edit payload `PUT /{id}/payload` + `payload-edited` event + audit masking | `29e8cb11`, `ad37de21` | S | K1 |
+| K6 | Event type / subscription / connection filters, `connection_id` on the read projection, index swap (Go 086), cached filter-options | `bbbb4bb3` | M | K2 |
+| K7 | SPA sync of the dispatch-jobs area (+ G's SPA, collapsible nav `a7497448`); hand merge, NOT `pull-frontend-from-go.sh` | `29e8cb11`, `ad37de21`, `bbbb4bb3`, `3f40c8d4`, `a7497448`, `165feb6d`/`5496c3ff` | M | after K1-K6 |
 
 ### A1. F20 part 1: permissions, migration, scoped reads (M)
 
@@ -253,6 +260,18 @@ checks the **whole supplied list**, so a non-super-admin cannot re-save a legacy
 foreign permission (see `2026-10-12-platform-bug-fixes-3.md` "Divergences" and
 `2026-10-14-platform-bug-fixes-6.md` line ~148). Go marks it "to mirror if the owner keeps Go's
 choice". No work until ruled.
+
+### K. Dispatch-job operator tooling (K1..K7): see `2026-10-19-dispatch-job-operator-tooling.md`
+
+Full hand-off written 2026-10-19 against Go `3f40c8d4`: every endpoint, parameter, default, limit, status and error code,
+the SQL guards, migrations 085/086 and the Java numbering (next free `V<n>`; V34 is reserved for A1 if it lands first),
+permission codes and role grants, event/schema fields, audit masking, env var, the Go tests to port by name, the Java
+classes each change lands in, and the material differences from Java today (notably: Java's requeue is *total* by
+documented ruling and is reversed by K3; all three writes are gated on `view`; no window; no requeue-by-filter; the
+SPA copy is far behind and must be merged by hand). Behaviour change for existing API clients: an unbounded
+`GET /api/dispatch-jobs` becomes the last 24 hours. Recommended order: K1, K2, K3, K5, K6, K4, K7. Go functions work in
+the same range (F35, version pruning, `clientCodes`, runner plumbing) is deliberately out of scope; F22..F34 of the Go
+ledger are not yet audited against Java.
 
 ## Known behavioural divergences today (an operator running Java instead of Go)
 
