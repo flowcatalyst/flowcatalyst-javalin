@@ -289,23 +289,14 @@ model updated.
 
 ### Event and audit
 
-- Go emits one rollup `platform:messaging:dispatch-jobs:resent` per request with data
-  `{ids, redrive, redrivenCount, redrivenIds?, skippedInFlight, skippedCompleted}` (schema in the seed:
-  `ids` string[] required, `redrive` boolean required, `redrivenCount` integer>=0 required, `redrivenIds` string[]
-  optional (omitted when empty), `skippedInFlight` integer>=0 required, `skippedCompleted` integer>=0 required;
-  `additionalProperties: false`). **Java keeps its own event names** (`platform:admin:dispatchjob:requeued` per job and
-  `platform:admin:dispatchjobs:requeued` rollup; the divergence is the old ledger DJ-5; do not rename). Port the
-  *content*: add to Java's rollup `DispatchJobsRequeued.data()` the fields `redrive` (bool), `redrivenCount` (int),
-  `redrivenIds` (omit when empty), `skippedInFlight`, `skippedCompleted`; the per-job `DispatchJobRequeued` already
-  carries `previousStatus`, which is `COMPLETED` for a redriven job. Update `PlatformEventSchemas`
-  (`platform:admin:dispatchjobs:requeued`, line ~293) and the data record; `EmittedEventSchemaTest` validates every
-  emitted event against the seeded schema, so the two must agree.
-- **Deployed databases keep the old stored schema.** The seeder attaches a schema only to a type that has no 1.0
-  version. Java has the V27 pattern (`V27__platform_event_schema_fixes.sql`: update the stored 1.0 while it is still
-  exactly the old seeded form). Either make the new rollup fields optional in the schema (still a schema change,
-  still needs the V27-style update) or add the same kind of update in the K3 migration. Go did not add a migration for
-  its changed `resent` schema (a Go gap: deployed Go databases still store `{ids}`); it is up to the Java owner whether
-  Java's stored schema is validated on emit anywhere in production; check before deciding it can be skipped.
+- Go's rollup `platform:messaging:dispatch-jobs:resent` is UNCHANGED by this work: data `{ids}` only (schema in the
+  seed: `ids` string[] required, `additionalProperties: false`). The redrive mark lives in the audit row, not the event,
+  and the skipped counts are in the HTTP response. **Java keeps its own event names** (`platform:admin:dispatchjob:requeued` per job and
+  `platform:admin:dispatchjobs:requeued` rollup; the divergence is the old ledger DJ-5; do not rename). No event
+  content or schema change is needed on the Java side for the redrive: the per-job `DispatchJobRequeued` already
+  carries `previousStatus`, which is `COMPLETED` for a redriven job, and the redrive mark is the audit row's
+  `redriveCompleted`.
+- No stored-schema migration is needed for this event: Go's `resent` schema is back to `{ids}`.
 - Audit: the command is the audit row's operation JSON, so `RequeueCommand` must carry `ids`, `redriveCompleted`,
   `confirmRedriveCompleted` (Go test reads `operation_json->>'redriveCompleted' = 'true'` from `aud_logs` where
   `operation` = the command name; Go's name is `ResendCommand`, Java's is `RequeueCommand`).
@@ -326,8 +317,7 @@ validation requires `ids` (`requeueRequiresTheViewPermissionAndTheIdsField`): ke
 `COMPLETED_REDRIVE_NOT_CONFIRMED`, response counts 4/0/2/1; an in-flight-only batch returns 0 and is not an error),
 `TestRequeueGuard_RedriveNeedsBothFieldsAndThePermission` (flag alone, word alone, `"redrive"` lowercase: skipped;
 no redrive permission: 403 `PERMISSION_REQUIRED`; redrive permission alone: 403; both fields + both permissions with an
-unknown id in the list: 5 requeued, 1 redriven, 2 skipped in flight; `attempt_count` 0; the event has `redrive: true`
-and `redrivenCount: 1`, an ordinary requeue's `redrive: false`; the audit row carries `redriveCompleted: true`),
+unknown id in the list: 5 requeued, 1 redriven, 2 skipped in flight; `attempt_count` 0; the event is only `{ids}`; the audit row carries `redriveCompleted: true`),
 `TestRequeueGuard_SQLRefusesInFlightAndCompleted` (lifecycle level), `operations/ops_pg_test.go`
 `TestResendDispatchJobs_Validation`, `_HappyPath`, `_ScopeFiltering`, `TestOperatorPersisters_RefuseNonFailedInSQL`;
 `lifecycletest/matrix_pg_test.go` `TestLifecycleMatrix`, `TestLifecycleMatrix_AgreesWithTransitionTable`;
@@ -799,20 +789,17 @@ One line each; none is in scope here:
 
 ## 12. Ambiguities I could not resolve from the code (for the owner or the implementer)
 
-1. **Java's stored event schemas** for the changed requeue rollup (section 4): whether to add a V27-style update migration
-   or make the new fields optional; depends on whether production validates emitted platform events against the stored
-   schema, which I did not trace in Java. Go itself did not migrate its changed `resent` schema.
-2. **`msg_dispatch_jobs.connection_id` in Java** (section 7.3): the recommendation (add the write column in the K6
+1. **`msg_dispatch_jobs.connection_id` in Java** (section 7.3): the recommendation (add the write column in the K6
    migration and project it) goes slightly beyond "mirror 086" because Go 082 is item C's prerequisite. If the owner would
    rather keep K6 independent of C, the alternative is to add the column to the read table and index only, and leave the
    projector alone until C; the connection filter's own-connection branch then matches nothing in Java-created data
    either way.
-3. **Whether the requeue-by-filter preview should live in `Group.API_READ`** (it is a POST that only counts) or
+2. **Whether the requeue-by-filter preview should live in `Group.API_READ`** (it is a POST that only counts) or
    `API_WRITE`: Go does not distinguish; I recommend `API_READ` since it opens no transaction.
-4. **Race-count quirk in requeue by ids**: Go counts a job as `requeued` from the in-memory pass even if the SQL guard
+3. **Race-count quirk in requeue by ids**: Go counts a job as `requeued` from the in-memory pass even if the SQL guard
    (a status change between read and write) then refuses the UPDATE silently. Not fixed in Go; Java may count the
    `RETURNING` rows instead. Not pinned by any Go test.
-5. **Which Java roles besides `messaging-admin` and `viewer` hold `view`** in a deployed database is data, not code; the
+4. **Which Java roles besides `messaging-admin` and `viewer` hold `view`** in a deployed database is data, not code; the
    85-equivalent migration handles it, but the owner may want a query before deploy:
    `SELECT r.name FROM iam_roles r JOIN iam_role_permissions p ON p.role_id = r.id WHERE p.permission =
    'platform:messaging:dispatch-job:view' ORDER BY 1;` to see who will gain write abilities.
