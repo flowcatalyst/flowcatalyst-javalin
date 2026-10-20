@@ -70,6 +70,20 @@ Size: S under half a day, M about a day, L several days. "Go tests" are under
 | K5 | Edit payload `PUT /{id}/payload` + `payload-edited` event + audit masking | `29e8cb11`, `ad37de21` | S | K1 |
 | K6 | Event type / subscription / connection filters, `connection_id` on the read projection, index swap (Go 086), cached filter-options | `bbbb4bb3` | M | K2 |
 | K7 | SPA sync of the dispatch-jobs area (+ G's SPA, collapsible nav `a7497448`); hand merge, NOT `pull-frontend-from-go.sh` | `29e8cb11`, `ad37de21`, `bbbb4bb3`, `3f40c8d4`, `a7497448`, `165feb6d`/`5496c3ff` | M | after K1-K6 |
+| L1 | F34: `token_use` allowlist (api or absent) on the bearer, the session cookie and the function-endpoint verifier | `8165e614` | S | none |
+| L2 | F40 + introspect ownership: `/oauth/revoke` only revokes the authenticated client's tokens (`FC_OAUTH_REVOKE_ENFORCE_CLIENT` default true); `FC_OAUTH_INTROSPECT_CLIENT_AUTH_ONLY` default false | `81a6f588` | S | none |
+| L3 | F33: IdP role mapping must name an existing role at write (`400 ROLE_NOT_FOUND`); a stale mapping is skipped with a warning at login | `281d40d3` | S | none |
+| L4 | F28: service-account `scope` must agree with its client links (`400 SCOPE_REACH_MISMATCH`) | `ebb18542` | S | none |
+| L5 | F31: `attemptCount` counts the terminal attempt; scheduled-job sync rollup subject `platform.scheduledjobs.<app>` | `4f2b3908` | S | none |
+| L6 | F30: unchanged roles, platform roles, connections, subscriptions are not rewritten or counted as updated | `87cbc30f` | M | none |
+| L7 | F29: router-config `ETag`/`304`, 30 s poll default, paced missing-queue recheck, in-process nudge | `0fb7f0c7` | M | pace the recheck before dropping the interval |
+| L8 | F41: `FC_OIDC_REJECT_UNVERIFIED_EMAIL` (default off), `403 EMAIL_NOT_VERIFIED` | `dabca1d8` | S | none |
+| L9 | F42: `FC_OIDC_ISSUER_PATTERN_STRICT` (default off) + once-per-pattern warning | `dabca1d8` | S | none |
+| L10 | F39: `FC_SESSION_COOKIE_SAME_SITE` (lax default; strict; none) on the existing `SessionCookie` | `53031d69` | S | none |
+| L11 | F32: amend A2 so another application's code, an unbound credential and an unknown code answer `404 Application_NOT_FOUND`, not 403 | `49ba1494` | S (inside A2) | A2 |
+| L12 | Tests only (production code already matches Go): F36 (leeway kept, do NOT remove), F37 concurrency, F43 passkey, F44 fuzz, redirect-matcher matrix, upstream JWKS rotation, kid-less id_token | `377fe770`, `d2827d89`, `26b78d4f`, `a24f549b` | S | none |
+| L13 | Decision: F38 gate is `FLOWCATALYST_DEV_MODE` in Java, `APP_ENV` in Go; document or also honour `APP_ENV` | `65e6787f` | S | owner |
+| L14 | F45 dependency audit (advisory; Java has its own libraries), JWT leeway 60 s on upstream id_tokens (decision) | `d7114f37` | S | owner |
 
 ### A1. F20 part 1: permissions, migration, scoped reads (M)
 
@@ -107,7 +121,8 @@ Size: S under half a day, M about a day, L several days. "Go tests" are under
 
 - **Behaviour/wire.** New routes, all confined by the A1 rule and by `{appCode}` binding (a foreign
   code, an unbound credential and, for scoped callers, an unknown code all answer
-  `403 "Not authorised for application '<code>'"`):
+  `403 "Not authorised for application '<code>'"` **(superseded by Go F32, row L11: all three answer
+  `404 Application_NOT_FOUND "Application not found: <code>"`; 403 stays only for a missing permission)**):
   `GET/POST /api/applications/{appCode}/users`, `GET .../users/{id}`, `GET .../invitations`,
   `POST .../invitations/{id}/resend`, `DELETE .../invitations/{id}`. Visible users: CLIENT-scope
   users homed at a client the application is **enabled** for (`app_client_configs.enabled`) who hold
@@ -270,8 +285,22 @@ classes each change lands in, and the material differences from Java today (nota
 documented ruling and is reversed by K3; all three writes are gated on `view`; no window; no requeue-by-filter; the
 SPA copy is far behind and must be merged by hand). Behaviour change for existing API clients: an unbounded
 `GET /api/dispatch-jobs` becomes the last 24 hours. Recommended order: K1, K2, K3, K5, K6, K4, K7. Go functions work in
-the same range (F35, version pruning, `clientCodes`, runner plumbing) is deliberately out of scope; F22..F34 of the Go
-ledger are not yet audited against Java.
+the same range (F35, version pruning, `clientCodes`, runner plumbing) is deliberately out of scope (the Java function
+runner is on hold). F28..F34 and F36..F45 of the Go ledger, and the Rust-found identity items, were audited against
+Java on 2026-10-20: see L below. F22..F27 and F35 are Go function-runner work and remain unaudited by design.
+
+### L. Identity, token, sync and router-config fixes (L1..L14): see `2026-10-20-identity-and-sync-fixes.md`
+
+Audited 2026-10-20 against Go `04b9c564` and Java `d2289701`, every item with the Java file:line it was read at, the
+exact Go behaviour to match (status codes, error codes, env switch names and defaults), the Go tests to port by name,
+and whether it ships default-on or behind a switch. No migration is needed (Java stays at `V33`; `V34` is A1's).
+Already matching Go, no code change: F36 (Java is *ahead*: it keeps the 10 s refresh replay leeway Go declined; do not
+remove it), F37, F38 (different gate, L13), F43 (passkey counter, persisted and refused), F44 (Java's `RelativeRedirect`
+is stricter), and from the Go vs Rust review: JWT leeway 0 on platform tokens, no bearer cache, password-login timing
+equalisation, URL-aware wildcard redirect matcher. Recommended order: L1, L2, L3, L4, L5, L6, L7, L8, L9, L10 (L11
+with A2; L12 tests any time; L13 and L14 need the owner). Behaviour changes for existing API clients are listed in
+section 19 of the hand-off; the notable ones are `attemptCount` one higher on settled jobs, the scheduled-job sync
+rollup event subject losing `.synced.`, sync `updated` counts reflecting rows written, and routers polling every 30 s.
 
 ## Known behavioural divergences today (an operator running Java instead of Go)
 
