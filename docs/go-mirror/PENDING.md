@@ -302,6 +302,16 @@ with A2; L12 tests any time; L13 and L14 need the owner). Behaviour changes for 
 section 19 of the hand-off; the notable ones are `attemptCount` one higher on settled jobs, the scheduled-job sync
 rollup event subject losing `.synced.`, sync `updated` counts reflecting rows written, and routers polling every 30 s.
 
+### L15..L17. Go follow-ups of 2026-10-20 (F46 to F49 in the Go ledger)
+
+- **L15 (F49, S):** `POST /api/dispatch-jobs` and `/batch` resolve a `serviceAccountId` given as a principal id (`prn_...`, which is what an
+  application's own `serviceAccountId` is) to the service account that principal fronts (`sac_...`), because a delivery is signed by the
+  service account. A principal that is not a service account (or does not exist) is `400 SERVICE_ACCOUNT_NOT_FOUND`; a `sac_` id passes through.
+  The dispatch-job **list row** gains `serviceAccountId`. Go: `shared/sdk.resolveJobServiceAccount`, test
+  `TestCreateDispatchJob_ResolvesPrincipalIDToServiceAccount`.
+- **L16 (F47, S):** a cookie built with `SameSite=None` always gets `Secure` (Java's L10 knob must do the same).
+- **L17 (F46, none):** Go added the replay leeway Java already has (default 10 s, `FC_REFRESH_REPLAY_LEEWAY_SECS`); do NOT remove Java's.
+
 ## Known behavioural divergences today (an operator running Java instead of Go)
 
 Application-facing (the framework's M4e application admin pages call the platform as the
