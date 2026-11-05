@@ -308,6 +308,9 @@ export async function validateResetToken(
 	requiresFactor?: boolean;
 	// Portal-identity token: the page shows portal framing (no platform brand).
 	portal?: boolean;
+	// The account's email, on a valid token: the form's username field, so a
+	// password manager saves the new password against the right account.
+	email?: string;
 }> {
 	try {
 		return await authFetch(

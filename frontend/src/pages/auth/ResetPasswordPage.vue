@@ -59,6 +59,8 @@ const enrollToken = ref("");
 const enrollMethods = ref<TwoFactorMethod[]>([]);
 const requiresFactor = ref(false);
 const factorCode = ref("");
+// The account the link sets a password for (from validate).
+const accountEmail = ref("");
 
 const token = (route.query["token"] as string | undefined) ?? "";
 
@@ -75,6 +77,7 @@ async function checkToken() {
 		if (isPortal.value) document.title = "Set your password";
 		if (result.valid) {
 			requiresFactor.value = result.requiresFactor ?? false;
+			accountEmail.value = result.email ?? "";
 			pageState.value = "form";
 		} else {
 			invalidReason.value =
@@ -93,8 +96,8 @@ async function checkToken() {
 
 // Password schema — mirrors the server policy (passwordPolicyError): length
 // bounds + not-a-common-password. The server additionally rejects passwords
-// derived from the account's email/name (unknown to this page — the reset
-// token doesn't expose it); that error surfaces via submitError on confirm.
+// derived from the account's email/name; that error surfaces via submitError
+// on confirm.
 const passwordSchema = toTypedSchema(
 	z
 		.object({
@@ -277,6 +280,22 @@ const onSubmit = handleSubmit(async (values) => {
           </div>
 
           <form class="login-form" @submit.prevent="onSubmit">
+            <!-- The account, as an autocomplete="username" field: without it a
+                 password manager offering to save the new password has to
+                 guess which account it belongs to. -->
+            <div v-if="accountEmail" class="form-field">
+              <label for="username">Email</label>
+              <InputText
+                id="username"
+                name="username"
+                :model-value="accountEmail"
+                type="email"
+                autocomplete="username"
+                readonly
+                class="w-full"
+              />
+            </div>
+
             <div class="form-field">
               <label for="password">{{ isInvite ? "Password" : "New password" }}</label>
               <!-- PrimeVue Password drops plain attrs (inheritAttrs:false) —

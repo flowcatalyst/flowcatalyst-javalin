@@ -32,6 +32,10 @@ import io.flowcatalyst.platform.principal.Principal;
 import io.flowcatalyst.platform.principal.PrincipalRepository;
 import io.flowcatalyst.platform.principal.PrincipalType;
 import io.flowcatalyst.platform.principal.UserScope;
+import io.flowcatalyst.platform.portalidentity.PortalIdentity;
+import io.flowcatalyst.platform.portalidentity.PortalIdentityAccess;
+import io.flowcatalyst.platform.portalidentity.PortalIdentityRepository;
+import io.flowcatalyst.platform.portalidentity.PortalIdentitySource;
 import io.flowcatalyst.platform.role.RoleRepository;
 import io.flowcatalyst.platform.publicapi.EmailTheme;
 import io.flowcatalyst.platform.shared.TestHttp;
@@ -85,6 +89,8 @@ import static io.flowcatalyst.db.generated.Tables.IAM_REFRESH_TOKENS;
 import static io.flowcatalyst.db.generated.Tables.IAM_USER_MFA_METHODS;
 import static io.flowcatalyst.db.generated.Tables.IAM_USER_MFA_RECOVERY_CODES;
 import static io.flowcatalyst.db.generated.Tables.OAUTH_IDENTITY_PROVIDERS;
+import static io.flowcatalyst.db.generated.Tables.PORTAL_IDENTITIES;
+import static io.flowcatalyst.db.generated.Tables.TNT_CLIENTS;
 import static io.flowcatalyst.db.generated.Tables.TNT_EMAIL_DOMAIN_MAPPINGS;
 import static io.flowcatalyst.db.generated.Tables.TNT_EMAIL_DOMAIN_MAPPING_2FA_METHODS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -364,10 +370,66 @@ class PasswordResetApiTest {
         String raw = linkToken(SENT.getFirst());
         var v = http.get("/auth/password-reset/validate?token=" + raw);
         assertThat(v.statusCode()).isEqualTo(200);
-        assertThat(v.body().trim()).isEqualTo("{\"valid\":true,\"reason\":null,\"requiresFactor\":true}");
+        assertThat(v.body().trim()).isEqualTo("{\"valid\":true,\"reason\":null,\"requiresFactor\":true,\"email\":\"" + email + "\"}");
         assertThat(http.get("/auth/password-reset/validate?token=" + raw).body()).as("validate does not consume").contains("\"valid\":true");
         assertThat(http.get("/auth/password-reset/validate?token=nope").body().trim())
                 .isEqualTo("{\"valid\":false,\"reason\":\"not_found\",\"requiresFactor\":false}");
+    }
+
+    /// §8.3: a valid token's validate answer names the account it sets a
+    /// password for — the user principal's email, or the portal identity's on a
+    /// portal token — so the set-password page can give a password manager the
+    /// username to save the new password against. An invalid token names none.
+    @Test
+    void validateNamesTheAccountByEmailForAUserAndAPortalToken() {
+        String email = "validate-email-" + RUN + "@example.com";
+        String pid = user(email, PasswordHash.hash(OLD_PASSWORD), null);
+        JsonNode u = json(http.get("/auth/password-reset/validate?token=" + LINKS.mint(pid, ResetToken.Purpose.RESET, false, false, null)));
+        assertThat(u.get("valid").asBoolean()).isTrue();
+        assertThat(u.get("email").asString()).isEqualTo(email);
+
+        String clientId = EntityType.CLIENT.generate();
+        DB.insertInto(TNT_CLIENTS).set(TNT_CLIENTS.ID, clientId).set(TNT_CLIENTS.NAME, "validate-email-" + RUN)
+                .set(TNT_CLIENTS.IDENTIFIER, "validate-email-" + RUN).set(TNT_CLIENTS.STATUS, "ACTIVE")
+                .set(TNT_CLIENTS.CREATED_AT, NOW).set(TNT_CLIENTS.UPDATED_AT, NOW).execute();
+        var identities = new PortalIdentityRepository(DS);
+        PortalIdentity pi = PortalIdentity.create(clientId, "portal-validate-" + RUN + "@example.com", "Pat", PortalIdentitySource.INVITE);
+        UOW.inTransaction(tx -> { identities.persist(pi, tx.dbTx()); return null; });
+        PORTAL.set(new PortalIdentityAccess(identities, UOW));
+        try {
+            JsonNode p = json(http.get("/auth/password-reset/validate?token=" + LINKS.mint(pi.id(), ResetToken.Purpose.INVITE, false, false, null)));
+            assertThat(p.get("valid").asBoolean()).isTrue();
+            assertThat(p.get("portal").asBoolean()).isTrue();
+            assertThat(p.get("email").asString()).as("the portal identity's address, not a principal's").isEqualTo("portal-validate-" + RUN + "@example.com");
+        } finally {
+            PORTAL.set(PortalPasswords.notWired());
+            DB.deleteFrom(IAM_PASSWORD_RESET_TOKENS).where(IAM_PASSWORD_RESET_TOKENS.PRINCIPAL_ID.eq(pi.id())).execute();
+            DB.deleteFrom(PORTAL_IDENTITIES).where(PORTAL_IDENTITIES.ID.eq(pi.id())).execute();
+            DB.deleteFrom(TNT_CLIENTS).where(TNT_CLIENTS.ID.eq(clientId)).execute();
+        }
+
+        JsonNode bad = json(http.get("/auth/password-reset/validate?token=not-a-token"));
+        assertThat(bad.get("valid").asBoolean()).isFalse();
+        assertThat(bad.has("email")).isFalse();
+    }
+
+    /// Best-effort: a failing account lookup omits `email` and the token still validates.
+    @Test
+    void validateOmitsTheEmailWhenTheLookupFails() {
+        String identityId = "ptu_" + RUN + "f";
+        String raw = LINKS.mint(identityId, ResetToken.Purpose.INVITE, false, false, null);
+        PORTAL.set(new PortalPasswords() {
+            @Override public Optional<Identity> find(String id) { throw new IllegalStateException("portal store down"); }
+            @Override public boolean setPasswordHash(String id, String hash) { return false; }
+        });
+        try {
+            JsonNode v = json(http.get("/auth/password-reset/validate?token=" + raw));
+            assertThat(v.get("valid").asBoolean()).isTrue();
+            assertThat(v.has("email")).isFalse();
+        } finally {
+            PORTAL.set(PortalPasswords.notWired());
+            DB.deleteFrom(IAM_PASSWORD_RESET_TOKENS).where(IAM_PASSWORD_RESET_TOKENS.PRINCIPAL_ID.eq(identityId)).execute();
+        }
     }
 
     // ── confirm ────────────────────────────────────────────────────────────

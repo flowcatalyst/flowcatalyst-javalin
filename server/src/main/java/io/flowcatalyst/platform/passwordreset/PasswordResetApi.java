@@ -354,8 +354,32 @@ public final class PasswordResetApi {
             if (t.get().portalSubject()) {
                 out.put("portal", true);
             }
+            tokenEmail(s, t.get()).ifPresent(email -> out.put("email", email));
         }
         ctx.status(200).contentType("application/json").result(Json.writeLine(out));
+    }
+
+    /// The email of the account a valid token sets a password for — the user
+    /// principal's, or the portal identity's on a portal token
+    /// (`docs/spec/auth-identity.md` §8.3). The set-password page shows it in
+    /// an `autocomplete="username"` field so a password manager saves the new
+    /// password against the right account; the link went to this mailbox, so
+    /// its holder learns nothing new. Best-effort: a failed or empty lookup
+    /// omits the field and the page shows the form without it (confirm
+    /// decides).
+    static Optional<String> tokenEmail(State s, ResetToken t) {
+        try {
+            Optional<String> email = t.portalSubject()
+                    ? s.portal().find(t.principalId()).map(PortalPasswords.Identity::email)
+                    : s.principals().findById(t.principalId()).map(Principal::email);
+            return email.filter(e -> !e.isBlank());
+        } catch (RuntimeException e) {
+            LOG.atWarn().setMessage("reset token account email lookup failed")
+                    .addKeyValue("id", t.principalId())
+                    .setCause(e)
+                    .log();
+            return Optional.empty();
+        }
     }
 
     // ── confirm ────────────────────────────────────────────────────────────

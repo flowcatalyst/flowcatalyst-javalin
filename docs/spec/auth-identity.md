@@ -1007,11 +1007,20 @@ every internal error is logged as "suppressed". `tryIssueToken`:
 
 ### 8.3 `GET /auth/password-reset/validate?token=` [C]
 
-`:562-578`. Always 200 `{valid, reason, requiresFactor, portal?}`: lookup
+`:562-578`. Always 200 `{valid, reason, requiresFactor, portal?, email?}`: lookup
 error / no row → `{"valid":false,"reason":"not_found","requiresFactor":false}`;
-expired → `reason:"expired"`; else `{"valid":true,"reason":null,"requiresFactor":<flag>,"portal":true?}`
+expired → `reason:"expired"`; else `{"valid":true,"reason":null,"requiresFactor":<flag>,"portal":true?,"email":"…"?}`
 (`reason` is emitted as JSON `null`, not omitted, `:419-428`). Does **not**
 consume, does **not** reveal an exhausted `factor_attempts`.
+
+`email` (2026-11-05, `docs/go-mirror/2026-11-05-partner-users.md`) is the
+account the valid token sets a password for: the user principal's email, or
+the portal identity's on a `ptu_` token. The set-password page shows it as a
+read-only `autocomplete="username"` field inside the form so a password
+manager saves the new password against the right account; the link went to
+that mailbox, so its holder learns nothing new. Best-effort: a lookup error
+or a blank address omits the field (WARN on error) and the token still
+validates. Never present on an invalid or expired token.
 
 ### 8.4 `POST /auth/password-reset/confirm` [C]
 
