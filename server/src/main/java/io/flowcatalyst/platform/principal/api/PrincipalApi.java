@@ -15,6 +15,7 @@ import io.flowcatalyst.platform.principal.AnchorDomains;
 import io.flowcatalyst.platform.principal.ClientAccessGrant;
 import io.flowcatalyst.platform.principal.ClientAccessGrantRepository;
 import io.flowcatalyst.platform.principal.EmailAddress;
+import io.flowcatalyst.platform.principal.EmailList;
 import io.flowcatalyst.platform.principal.InviteEmailer;
 import io.flowcatalyst.platform.principal.MfaService;
 import io.flowcatalyst.platform.principal.Notifier;
@@ -81,6 +82,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.net.URI;
@@ -116,6 +118,7 @@ import static io.flowcatalyst.platform.shared.auth.Permission.USER_VIEW;
 /// | POST | `/api/principals/users` | 200 [PrincipalResponse] |
 /// | POST | `/api/principals/bulk-import` | 200 [BulkImportResponse] |
 /// | POST | `/api/principals/sync` | 200 [SyncUsersResponse] |
+/// | POST | `/api/principals/match-emails` | 200 [MatchEmailsResponse] |
 /// | GET | `/api/principals/check-email-domain` | 200 [CheckEmailDomainResponse] |
 /// | GET | `/api/principals/developer-users` | 200 [DeveloperUserListResponse] |
 /// | GET | `/api/principals/{id}` | 200 [PrincipalResponse] |
@@ -134,6 +137,11 @@ public final class PrincipalApi {
 
     /// Bulk import's row cap.
     static final int BULK_IMPORT_MAX_ROWS = 1000;
+
+    /// Match-emails limits (spec §3): the pasted text in UTF-8 bytes, and the
+    /// distinct addresses parsed from it.
+    static final int MATCH_EMAILS_MAX_TEXT_BYTES = 200_000;
+    static final int MATCH_EMAILS_MAX = 1000;
 
     private PrincipalApi() {
     }
@@ -182,6 +190,7 @@ public final class PrincipalApi {
         write.post("/api/principals/users", Auth.scoped(ctx -> createUser(ctx, s)));
         write.post("/api/principals/bulk-import", Auth.scoped(ctx -> bulkImport(ctx, s)));
         write.post("/api/principals/sync", Auth.scoped(ctx -> syncUsers(ctx, s)));
+        routes.post("/api/principals/match-emails", Auth.scoped(ctx -> matchEmails(ctx, s)));
         routes.get("/api/principals/check-email-domain", Auth.scoped(ctx -> checkEmailDomain(ctx, s)));
         routes.get("/api/principals/developer-users", Auth.scoped(ctx -> listDeveloperUsers(ctx, s)));
         routes.get("/api/principals/{id}", Auth.scoped(ctx -> getById(ctx, s)));
@@ -215,11 +224,11 @@ public final class PrincipalApi {
         Checks.require(ac, USER_VIEW);
         ListQuery q = ListQuery.from(ctx);
         List<Principal> matched = s.repo().findAll().stream()
-                .filter(p -> ac.isAnchor() || (p.clientId() != null && ac.canAccessClient(p.clientId())))
+                .filter(p -> Access.visible(ac, p))
                 .filter(q::matches)
                 .sorted(q.order())
                 .toList();
-        List<PrincipalResponse> page = q.page(matched).stream().map(PrincipalResponse::from).toList();
+        List<PrincipalResponse> page = q.page(matched).stream().map(p -> PrincipalResponse.from(p).narrowedFor(ac)).toList();
         ctx.json(new PrincipalListResponse(page, matched.size()));
     }
 
@@ -237,7 +246,7 @@ public final class PrincipalApi {
         Principal p = principal(s, id);
         if (!self) Access.requireReadable(p);
         List<String> twoFactor = s.mfa().configured() ? s.mfa().confirmedMethods(p.id()) : null;
-        ctx.json(PrincipalResponse.from(p, twoFactor));
+        ctx.json(PrincipalResponse.from(p, twoFactor).narrowedFor(ac));
     }
 
     /// When the principal (or a role it holds) last changed — an SDK's
@@ -255,11 +264,87 @@ public final class PrincipalApi {
         ctx.json(new PrincipalVersionResponse(at));
     }
 
+    /// The users list's visibility rule ([Access#visible]) and grant
+    /// narrowing apply here too: a client administrator sees the developers
+    /// of its own clients (and partners granted one), never every developer
+    /// on the platform.
     private static void listDeveloperUsers(Exchange ctx, State s) {
-        Checks.require(Auth.current(), USER_VIEW);
+        AuthContext ac = Auth.current();
+        Checks.require(ac, USER_VIEW);
         List<PrincipalResponse> out = s.repo().findByRole(SetDeveloperCredential.DEVELOPER_ROLE).stream()
-                .map(PrincipalResponse::from).toList();
+                .filter(p -> Access.visible(ac, p))
+                .map(p -> PrincipalResponse.from(p).narrowedFor(ac)).toList();
         ctx.json(new DeveloperUserListResponse(out, out.size()));
+    }
+
+    /// Resolves a pasted email list against the users the caller may see
+    /// (spec §3, match-emails): entries of `emails` first, then `text`, each
+    /// through [EmailList#parse], de-duplicated across both. `matches` are in
+    /// input order, USER principals only, under [Access#visible] — a user the
+    /// caller may not see reads as `unmatched`, exactly like an unknown
+    /// address. Filters `findAll` in memory, as the list does: the same
+    /// visibility path, over a table small enough that a per-address lookup
+    /// would only add a second copy of the rule. A read: no operation, so the
+    /// route is not `API_WRITE`.
+    private static void matchEmails(Exchange ctx, State s) {
+        AuthContext ac = Auth.current();
+        Checks.require(ac, USER_VIEW);
+        var req = ctx.bodyAsClass(MatchEmailsRequest.class);
+        if (req.text() != null && utf8Length(req.text()) > MATCH_EMAILS_MAX_TEXT_BYTES) {
+            throw UseCaseException.validation("TEXT_TOO_LONG", "text is limited to 200000 bytes");
+        }
+        var emails = new LinkedHashSet<String>();
+        var invalid = new LinkedHashSet<String>();
+        for (String entry : req.emails()) {
+            EmailList parsed = EmailList.parse(entry);
+            emails.addAll(parsed.emails());
+            invalid.addAll(parsed.invalid());
+        }
+        EmailList fromText = EmailList.parse(req.text());
+        emails.addAll(fromText.emails());
+        invalid.addAll(fromText.invalid());
+        if (emails.isEmpty() && invalid.isEmpty()) {
+            throw UseCaseException.validation("EMAILS_REQUIRED", "no email addresses supplied");
+        }
+        if (emails.size() > MATCH_EMAILS_MAX) {
+            throw UseCaseException.validation("TOO_MANY_EMAILS", "matching is limited to 1000 distinct email addresses");
+        }
+        var byEmail = new HashMap<String, Principal>();
+        for (Principal p : s.repo().findAll()) {
+            if (p.type() == PrincipalType.USER && p.email() != null && Access.visible(ac, p)) {
+                byEmail.put(p.email().toLowerCase(Locale.ROOT), p);
+            }
+        }
+        var matches = new ArrayList<PrincipalResponse>();
+        var unmatched = new ArrayList<String>();
+        for (String e : emails) {
+            Principal p = byEmail.get(e);
+            if (p != null) {
+                matches.add(PrincipalResponse.from(p).narrowedFor(ac));
+            } else {
+                unmatched.add(e);
+            }
+        }
+        ctx.json(new MatchEmailsResponse(matches, unmatched, List.copyOf(invalid)));
+    }
+
+    /// UTF-8 byte length without allocating the encoded copy.
+    private static long utf8Length(String text) {
+        long n = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c < 0x80) {
+                n++;
+            } else if (c < 0x800) {
+                n += 2;
+            } else if (Character.isHighSurrogate(c) && i + 1 < text.length() && Character.isLowSurrogate(text.charAt(i + 1))) {
+                n += 4;
+                i++;
+            } else {
+                n += 3;
+            }
+        }
+        return n;
     }
 
     private static void listRoles(Exchange ctx, State s) {
@@ -1096,6 +1181,17 @@ public final class PrincipalApi {
             return from(p, twoFactorMethods, null);
         }
 
+        /// This response as `ac` may see it (spec §3): a non-anchor sees only
+        /// the granted clients it can access itself, so a client administrator
+        /// looking at a partner does not learn the partner's other clients.
+        /// Anchors see every grant.
+        public PrincipalResponse narrowedFor(AuthContext ac) {
+            if (ac == null || ac.isAnchor() || grantedClientIds == null) return this;
+            return new PrincipalResponse(id, type, scope, clientId, name, active, email, idpType, roles, isAnchorUser,
+                    grantedClientIds.stream().filter(ac::canAccessClient).toList(), createdAt, updatedAt,
+                    hasDeveloperCredential, developerCredentialUpdatedAt, twoFactorMethods, inviteLink, serviceAccountId);
+        }
+
         static PrincipalResponse from(Principal p, List<String> twoFactorMethods, String inviteLink) {
             var u = p.userIdentity();
             return new PrincipalResponse(p.id(), p.type().name(), p.scope().name(), p.clientId(), p.name(), p.active(),
@@ -1105,6 +1201,25 @@ public final class PrincipalApi {
                     p.hasDeveloperSecret(),
                     u == null || !u.hasDeveloperSecret() ? null : u.devClientSecretUpdatedAt(),
                     twoFactorMethods, inviteLink, p.serviceAccountId());
+        }
+    }
+
+    /// Body of `POST /api/principals/match-emails`. Both fields optional;
+    /// every entry of `emails` and then `text` go through [EmailList#parse].
+    public record MatchEmailsRequest(String text, List<String> emails) {
+        public MatchEmailsRequest {
+            emails = emails == null ? List.of() : emails.stream().filter(Objects::nonNull).toList();
+        }
+    }
+
+    /// The outcome, in input order. `unmatched` covers both unknown addresses
+    /// and users the caller may not see; `invalid` the entries that are not an
+    /// address.
+    public record MatchEmailsResponse(List<PrincipalResponse> matches, List<String> unmatched, List<String> invalid) {
+        public MatchEmailsResponse {
+            matches = List.copyOf(matches);
+            unmatched = List.copyOf(unmatched);
+            invalid = List.copyOf(invalid);
         }
     }
 

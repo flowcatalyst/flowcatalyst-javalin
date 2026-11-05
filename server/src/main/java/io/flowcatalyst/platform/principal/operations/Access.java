@@ -143,9 +143,30 @@ public final class Access {
     /// for "anyone else's" only. `Principal_NOT_FOUND` (spec §6, open
     /// question 7 pins this spelling for the whole by-id family, reads included).
     ///
+    ///
+    /// A partner granted one of the caller's clients is readable too
+    /// ([#visible]) — a client administrator sees it, read-only.
+    ///
     /// @throws UseCaseException authorization `UNAUTHENTICATED`; not-found `Principal_NOT_FOUND`
     public static void requireReadable(Principal p) {
-        requireInScope(Auth.current(), p, "Principal");
+        AuthContext ac = Auth.current();
+        if (ac != null && p.clientId() == null && visible(ac, p)) return;
+        requireInScope(ac, p, "Principal");
+    }
+
+    /// Whether `ac` may see `p` in a principal listing — the users list,
+    /// match-emails and the developer-users list share this one rule
+    /// (`docs/spec/principal.md` §3): anchors see every principal; anyone
+    /// else sees a principal homed at a client it can access, or — with no
+    /// home client — a `PARTNER` granted at least one client it can access.
+    /// Every other clientless principal (anchors, partners of other clients
+    /// only) is hidden from a non-anchor. What a visible partner's response
+    /// may then reveal is narrowed separately, to the grants the two share.
+    public static boolean visible(AuthContext ac, Principal p) {
+        if (ac == null) return false;
+        if (ac.isAnchor()) return true;
+        if (p.clientId() != null) return ac.canAccessClient(p.clientId());
+        return p.scope() == UserScope.PARTNER && p.assignedClients().stream().anyMatch(ac::canAccessClient);
     }
 
     /// Whether `ac` reaches `p` as its administrator — [#blockNonClientTarget]

@@ -4614,6 +4614,70 @@
         ],
         "type": "object"
       },
+      "MatchEmailsRequest": {
+        "additionalProperties": true,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/MatchEmailsRequest.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "emails": {
+            "description": "Addresses (each entry is parsed like text)",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "text": {
+            "description": "Pasted address list: commas, semicolons, whitespace or 'Name \u003caddr\u003e' entries",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "MatchEmailsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/MatchEmailsResponse.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "invalid": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "matches": {
+            "items": {
+              "$ref": "#/components/schemas/PrincipalResponse"
+            },
+            "type": "array"
+          },
+          "unmatched": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "matches",
+          "unmatched",
+          "invalid"
+        ],
+        "type": "object"
+      },
       "MetadataDTO": {
         "additionalProperties": false,
         "properties": {
@@ -17153,6 +17217,47 @@
           }
         },
         "summary": "List USER principals holding the developer role",
+        "tags": [
+          "principals"
+        ]
+      }
+    },
+    "/api/principals/match-emails": {
+      "post": {
+        "operationId": "matchPrincipalEmails",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatchEmailsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchEmailsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Match a pasted list of email addresses against the users the caller can see",
         "tags": [
           "principals"
         ]

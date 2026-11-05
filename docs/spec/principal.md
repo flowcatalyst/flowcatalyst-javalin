@@ -160,13 +160,14 @@ S1.2, commit `6068fe6b`: the anchor tier is reach, never authority, so
 
 | Method / path | Gate | Use case | Success |
 |---|---|---|---|
-| `GET /api/principals` | `USER_VIEW` | read | 200 `PrincipalListResponse {principals[], total}` |
+| `GET /api/principals` | `USER_VIEW` | read; rows filtered by the visibility rule below | 200 `PrincipalListResponse {principals[], total}`, each narrowed (below) |
 | `POST /api/principals` | non-anchor with `scope != CLIENT` → 403 `FORBIDDEN` "Client administrators can only create client-scope users"; then `requireUserAdmin(body.clientId)` | `CreateUser` | 201 `CreatedResponse {id}`; then best-effort notify (§7) |
 | `POST /api/principals/users` | after scope derivation (§7): same two gates against the *derived* scope/client | `CreateUser` (+ `GrantClientAccess` for PARTNER; partner-merge) | 200 `PrincipalResponse` (re-read) |
 | `POST /api/principals/bulk-import` | 400 `CLIENT_REQUIRED` (blank `clientId`); `requireUserAdmin(clientId)`; 400 `NO_ROWS`; 400 `TOO_MANY` (> 1000 rows) | per row: `CreateUser`, then `AssignRoles` | 200 `BulkImportResponse` |
 | `POST /api/principals/sync` | sync | `SyncPrincipals` (no application code) | 200 `SyncUsersResponse {created, updated, deleted, syncedEmails}` — `deleted` is the rollup's `deactivated` |
 | `GET /api/principals/check-email-domain?email=` | `USER_VIEW`; 400 `EMAIL_REQUIRED`; 400 `INVALID_EMAIL` | read | 200 `CheckEmailDomainResponse` |
-| `GET /api/principals/developer-users` | `USER_VIEW` | read (`findByRole("platform:developer")`, by name) | 200 `DeveloperUserListResponse {principals, total}` |
+| `POST /api/principals/match-emails` | `USER_VIEW`; 400 `TEXT_TOO_LONG` (`text` > 200000 UTF-8 bytes); 400 `EMAILS_REQUIRED` (nothing parsed — neither an address nor an invalid entry); 400 `TOO_MANY_EMAILS` (> 1000 distinct addresses) | read (`findAll`, in memory); not `API_WRITE` | 200 `MatchEmailsResponse {matches[], unmatched[], invalid[]}` (below) |
+| `GET /api/principals/developer-users` | `USER_VIEW` | read (`findByRole("platform:developer")`, by name; grants hydrated like every lookup); rows filtered by the visibility rule below | 200 `DeveloperUserListResponse {principals, total}`, each narrowed |
 | `GET /api/principals/{id}` | self (caller's own id) needs no permission; otherwise `USER_VIEW`; then non-self + `clientId != null` + no access → 403 `FORBIDDEN` "No access to this principal" | read | 200 `PrincipalResponse` (+ `twoFactorMethods` when an MFA service is configured) |
 | `GET /api/principals/{id}/version` | self or `USER_VIEW` | read `lookupVersion` | 200 `{updatedAt}` = `GREATEST(p.updated_at, MAX(updated_at of roles held))`; unknown id → 404 `Principal_NOT_FOUND` (§12 D1) |
 | `PUT /api/principals/{id}` | `USER_UPDATE` | `UpdateUser` | 200 `PrincipalResponse` (re-read) |
@@ -234,6 +235,41 @@ any-of), `page` (0-based, default 0), `pageSize` (≤ 0 = all), `sortField`
 `sortOrder` (`desc` or ascending). Non-anchors see only principals with a
 `clientId` they can access — platform-level principals are hidden from them
 (but readable by id, **accident?**).
+
+**Listing visibility** (`Access.visible`, 2026-11-05, `docs/go-mirror/2026-11-05-partner-users.md`)
+— one rule for the users list, match-emails and developer-users:
+
+| Caller | Principal | Visible |
+|---|---|---|
+| anchor | any | yes |
+| non-anchor | homed at a client (`clientId` set) | iff the caller can access that client |
+| non-anchor | clientless `PARTNER` | iff the caller can access **any** of its granted clients |
+| non-anchor | any other clientless principal (anchors) | no |
+
+The by-id read and its `/{id}/…` sub-reads (`roles`, `application-access`,
+`available-applications`, `version`) admit the clientless-partner row of
+this table too (`Access.requireReadable`), so a client administrator's
+read-only partner view loads; everything else they reject stays not-found.
+Mutations are unchanged: a non-anchor still manages only `CLIENT`-scope
+principals (§5.2 `blockNonClientTarget`), so a visible partner is read-only.
+
+**Grant narrowing** (`PrincipalResponse.narrowedFor`): for a non-anchor
+caller, every `PrincipalResponse` returned by the list, match-emails,
+developer-users and the by-id read carries `grantedClientIds` filtered to the
+clients the caller can access — a client administrator looking at a partner
+does not learn its other clients. Anchors get the grants unfiltered.
+
+**Match emails**: `{text?, emails?[]}`; every `emails` entry and then `text`
+go through `EmailList.parse` (commas, semicolons and whitespace separate;
+`Name <addr>` contributes `addr`; Outlook's `Smith, Ann <ann@x.com>; …` — a
+comma does not end a display name, only `;` or a new line does; addresses
+lower-cased; the full rule table is on `EmailList`), de-duplicated across both
+in first-seen order. `matches` are USER principals the caller may see, in
+input order; `unmatched` is every other address (unknown, or a user the caller
+may not see — indistinguishable on purpose; a SERVICE principal is never a
+match); `invalid` the entries that are not a single `local@domain`
+(original case, de-duplicated). Only-invalid input is a 200 with the invalid
+entries, not `EMAILS_REQUIRED`.
 
 ## 4. Validation (command shape, before authorization)
 

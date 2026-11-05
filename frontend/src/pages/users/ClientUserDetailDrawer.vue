@@ -8,7 +8,8 @@ import { useDrawerRoute } from "@/composables/useDrawerRoute";
 
 // Client-administrator user detail: the shared UserDetailBody in clientScoped
 // mode (no scope/client re-association, no client-access section, no
-// all-applications toggle, no delete). Every row here is CLIENT scope, so the
+// all-applications toggle, no delete). Rows are CLIENT users, plus partners
+// granted the caller's client, which UserDetailBody shows read-only; the
 // header shows only the Active tag — no type tag.
 
 const emit = defineEmits<{

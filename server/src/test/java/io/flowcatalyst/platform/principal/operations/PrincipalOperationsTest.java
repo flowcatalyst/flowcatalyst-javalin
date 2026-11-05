@@ -4,6 +4,8 @@ import io.flowcatalyst.platform.application.Application;
 import io.flowcatalyst.platform.application.ApplicationRepository;
 import io.flowcatalyst.platform.application.ApplicationType;
 import io.flowcatalyst.platform.application.ClientConfigRepository;
+import io.flowcatalyst.platform.auth.token.ClaimLabels;
+import io.flowcatalyst.platform.auth.token.TokenIssuer;
 import io.flowcatalyst.platform.client.Client;
 import io.flowcatalyst.platform.client.ClientIdentifier;
 import io.flowcatalyst.platform.client.ClientRepository;
@@ -19,6 +21,7 @@ import io.flowcatalyst.platform.shared.auth.Auth;
 import io.flowcatalyst.platform.shared.auth.AuthContext;
 import io.flowcatalyst.platform.shared.auth.PasswordHash;
 import io.flowcatalyst.platform.shared.auth.Scope;
+import io.flowcatalyst.platform.shared.auth.SigningKeys;
 import io.flowcatalyst.platform.shared.encryption.Encryption;
 import io.flowcatalyst.platform.shared.json.Json;
 import io.flowcatalyst.platform.shared.platformsink.PlatformSink;
@@ -519,6 +522,46 @@ class PrincipalOperationsTest {
         assertUseCaseError(() -> runAsAnchor(SetClientAssociation.of(repo, clients), new SetClientAssociationCommand(id, "clt_missing", ClientAssociationMode.CHANGE_CLIENT)), UseCaseError.NotFound.class, "Client_NOT_FOUND");
         assertUseCaseError(() -> runAsAnchor(SetClientAssociation.of(repo, clients), new SetClientAssociationCommand(id, " ", null)), UseCaseError.Validation.class, "CLIENT_ID_REQUIRED");
         assertUseCaseError(() -> runAsAnchor(SetClientAssociation.of(repo, clients), new SetClientAssociationCommand(seedService("assoc"), "*", null)), UseCaseError.BusinessRule.class, "NOT_A_USER");
+    }
+
+    /// A CLIENT user flipped to PARTNER, followed through to the tokens an
+    /// OIDC app (Integral, via the Laravel SDK) receives: tier `PARTNER`, no
+    /// home `client_id`, and a `clients` entry `id:identifier` for the old home
+    /// client and the new one — read back from the database (grants hydrated
+    /// by the email lookup login uses, identifiers through the store-backed
+    /// labels), not hand-built. The SDK admits a login to a tenant when the
+    /// identifier half matches the tenant code, so both must be there and an
+    /// ungranted client must not.
+    @Test
+    void toPartnerTokensCarryEveryGrantedClient() throws Exception {
+        String home = seedClient("plhome");
+        String added = seedClient("pladded");
+        String other = seedClient("plother");
+        String email = "prn-partner-login-" + RUN + "@example.com";
+        String id = runAsAnchor(CreateUser.of(repo), new CreateCommand(email, "Partner Login", "CLIENT", home, null, null)).userId();
+        runAsAnchor(SetClientAssociation.of(repo, clients), new SetClientAssociationCommand(id, added, ClientAssociationMode.TO_PARTNER));
+
+        Principal p = repo.findByEmail(email).orElseThrow(); // login resolves the user by email
+        var labels = ClaimLabels.of(clients, new ApplicationRepository(DS));
+        var issuer = new TokenIssuer(SigningKeys.generateEphemeral(), TokenIssuer.Config.of("https://fc.test"));
+        var authority = TokenIssuer.Authority.full(p, List.of(), labels);
+        String access = issuer.accessToken(p, authority, null);
+        String idToken = issuer.idToken(p, new TokenIssuer.IdTokenInput("integral", null, null, authority.roles(),
+                authority.applications(), authority.allApplications(), authority.clients()));
+
+        List<String> want = List.of(home + ":plhome" + RUN, added + ":pladded" + RUN);
+        for (var token : List.of(java.util.Map.entry("access", access), java.util.Map.entry("id", idToken))) {
+            var claims = Json.MAPPER.readTree(java.util.Base64.getUrlDecoder().decode(token.getValue().split("\\.")[1]));
+            assertThat(claims.get("tier").asString()).as(token.getKey()).isEqualTo("PARTNER");
+            assertThat(claims.has("client_id")).as(token.getKey() + ": a partner has no home client").isFalse();
+            var got = new java.util.ArrayList<String>();
+            claims.get("clients").forEach(c -> got.add(c.asString()));
+            assertThat(got).as(token.getKey()).containsExactlyInAnyOrderElementsOf(want);
+            // The Laravel SDK's hasClientAccessByIdentifier: the part after ":".
+            assertThat(got.stream().map(e -> e.substring(e.indexOf(':') + 1)).toList()).as(token.getKey())
+                    .contains("plhome" + RUN, "pladded" + RUN).doesNotContain("plother" + RUN);
+            assertThat(got).as(token.getKey()).noneMatch(e -> e.startsWith(other));
+        }
     }
 
     // ── Sync ───────────────────────────────────────────────────────────────

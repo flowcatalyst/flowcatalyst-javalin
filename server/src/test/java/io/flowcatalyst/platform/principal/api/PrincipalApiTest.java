@@ -33,6 +33,9 @@ import io.flowcatalyst.platform.shared.tsid.EntityType;
 import io.flowcatalyst.sdk.usecase.jdbc.UnitOfWork;
 import io.flowcatalyst.testpg.TestPg;
 import tools.jackson.databind.JsonNode;
+import org.jooq.DSLContext;
+import org.jooq.SQLDialect;
+import org.jooq.impl.DSL;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
@@ -41,10 +44,17 @@ import org.junit.jupiter.api.Test;
 import java.net.http.HttpResponse;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 
+import static io.flowcatalyst.db.generated.Tables.IAM_CLIENT_ACCESS_GRANTS;
+import static io.flowcatalyst.db.generated.Tables.IAM_PRINCIPALS;
+import static io.flowcatalyst.db.generated.Tables.IAM_PRINCIPAL_ROLES;
 import static org.assertj.core.api.Assertions.assertThat;
 import io.flowcatalyst.platform.shared.auth.Permission;
 import io.flowcatalyst.platform.shared.auth.WriteGates;
@@ -1018,5 +1028,218 @@ class PrincipalApiTest {
                         Write.of("add role", "POST", p + "/roles", "{\"role\":\"x\"}", Permission.USER_ASSIGN_ROLES),
                         Write.of("delete", "DELETE", "/api/principals/prn_gate000000001", null, Permission.USER_DELETE)),
                 Permission.USER_CREATE, Permission.USER_UPDATE, Permission.USER_DELETE);
+    }
+
+    // ── Match emails, partner visibility, developer users (spec §3) ───────
+
+    private static final DSLContext DB = DSL.using(TestPg.dataSource(), SQLDialect.POSTGRES);
+    private static final String VIEW = "platform:iam:user:view";
+
+    /// A raw principal row — the shapes match-emails and the list must read,
+    /// including a SERVICE principal carrying an email and a clientless PARTNER.
+    private static String seedPrincipal(String type, String scope, String clientId, String name, String email) {
+        String id = EntityType.PRINCIPAL.generate();
+        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        DB.insertInto(IAM_PRINCIPALS).set(IAM_PRINCIPALS.ID, id).set(IAM_PRINCIPALS.TYPE, type).set(IAM_PRINCIPALS.SCOPE, scope)
+                .set(IAM_PRINCIPALS.CLIENT_ID, clientId).set(IAM_PRINCIPALS.NAME, name).set(IAM_PRINCIPALS.ACTIVE, true)
+                .set(IAM_PRINCIPALS.ALL_APPLICATIONS, false).set(IAM_PRINCIPALS.EMAIL, email)
+                .set(IAM_PRINCIPALS.EMAIL_DOMAIN, email.substring(email.indexOf('@') + 1))
+                .set(IAM_PRINCIPALS.CREATED_AT, now).set(IAM_PRINCIPALS.UPDATED_AT, now).execute();
+        return id;
+    }
+
+    private static void grant(String principalId, String clientId) {
+        DB.insertInto(IAM_CLIENT_ACCESS_GRANTS).set(IAM_CLIENT_ACCESS_GRANTS.ID, EntityType.CLIENT_ACCESS_GRANT.generate())
+                .set(IAM_CLIENT_ACCESS_GRANTS.PRINCIPAL_ID, principalId).set(IAM_CLIENT_ACCESS_GRANTS.CLIENT_ID, clientId)
+                .set(IAM_CLIENT_ACCESS_GRANTS.GRANTED_BY, "prn_matchemadmin").execute();
+    }
+
+    private static HttpResponse<String> match(String body, String... headers) {
+        return http.post("/api/principals/match-emails", body, headers);
+    }
+
+    private static List<String> strings(JsonNode array) {
+        var out = new ArrayList<String>();
+        array.forEach(n -> out.add(n.asText()));
+        return out;
+    }
+
+    private static List<String> matchedEmails(JsonNode r) {
+        var out = new ArrayList<String>();
+        r.get("matches").forEach(m -> out.add(m.get("email").asText()));
+        return out;
+    }
+
+    private static String errorCode(HttpResponse<String> r) {
+        return json(r).get("error").asText();
+    }
+
+    @Test
+    @DisplayName("match-emails: an anchor matches every USER, in input order; a SERVICE principal is never a match")
+    void matchEmailsAnchorSeesAllInInputOrder() {
+        String a = "matchem-a-" + RUN + "@example.com";
+        String b = "matchem-b-" + RUN + "@example.com";
+        String c = "matchem-c-" + RUN + "@example.com";
+        String svc = "matchem-svc-" + RUN + "@example.com";
+        String nobody = "nobody-" + RUN + "@example.com";
+        seedPrincipal("USER", "CLIENT", clientA, "Match A", a);
+        seedPrincipal("USER", "CLIENT", clientB, "Match B", b);
+        seedPrincipal("USER", "ANCHOR", null, "Match C", c);
+        seedPrincipal("SERVICE", "CLIENT", clientA, "Match SVC", svc);
+
+        var r = match(Json.write(Map.of(
+                "emails", List.of(c.toUpperCase(Locale.ROOT)),
+                "text", "Bee <" + b + ">; " + nobody + "\n" + a + ", " + c + ", junk, " + svc)), anchor());
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        JsonNode j = json(r);
+        assertThat(matchedEmails(j)).as("emails entries first, then text, de-duplicated").containsExactly(c, b, a);
+        assertThat(strings(j.get("unmatched"))).as("a SERVICE principal is never a match").containsExactly(nobody, svc);
+        assertThat(strings(j.get("invalid"))).containsExactly("junk");
+    }
+
+    @Test
+    @DisplayName("match-emails: a client admin matches only users it may see; the rest read as not found")
+    void matchEmailsClientAdminCannotSeeOtherClient() {
+        String mine = "matchem-mine-" + RUN + "@example.com";
+        String theirs = "matchem-theirs-" + RUN + "@example.com";
+        String platform = "matchem-platform-" + RUN + "@example.com";
+        seedPrincipal("USER", "CLIENT", clientA, "Mine", mine);
+        seedPrincipal("USER", "CLIENT", clientB, "Theirs", theirs);
+        seedPrincipal("USER", "ANCHOR", null, "Platform", platform);
+
+        JsonNode j = json(match(Json.write(Map.of("text", mine + " " + theirs + " " + platform)), client(clientA, VIEW)));
+        assertThat(matchedEmails(j)).containsExactly(mine);
+        assertThat(strings(j.get("unmatched"))).as("users the caller may not see are reported as not found")
+                .containsExactly(theirs, platform);
+    }
+
+    @Test
+    @DisplayName("match-emails needs USER_VIEW")
+    void matchEmailsRequiresReadPermission() {
+        assertThat(match("{\"text\":\"a@example.com\"}", client(clientA, "")).statusCode()).isEqualTo(403);
+    }
+
+    @Test
+    @DisplayName("match-emails limits: 200000 bytes of text, 1000 distinct addresses, something parsed")
+    void matchEmailsLimits() {
+        var tooLong = match(Json.write(Map.of("text", "a".repeat(200_001))), anchor());
+        assertThat(tooLong.statusCode()).isEqualTo(400);
+        assertThat(errorCode(tooLong)).isEqualTo("TEXT_TOO_LONG");
+        // Bytes, not characters: 100001 two-byte characters are 200002 bytes.
+        assertThat(errorCode(match(Json.write(Map.of("text", "é".repeat(100_001))), anchor()))).isEqualTo("TEXT_TOO_LONG");
+        assertThat(match(Json.write(Map.of("text", "a".repeat(200_000))), anchor()).statusCode())
+                .as("exactly at the limit is accepted").isEqualTo(200);
+
+        var many = new StringBuilder();
+        for (int i = 0; i < 1001; i++) many.append("u").append(i).append("@example.com ");
+        var tooMany = match(Json.write(Map.of("text", many.toString())), anchor());
+        assertThat(tooMany.statusCode()).isEqualTo(400);
+        assertThat(errorCode(tooMany)).isEqualTo("TOO_MANY_EMAILS");
+        var thousand = new StringBuilder();
+        for (int i = 0; i < 1000; i++) thousand.append("u").append(i).append("@example.com ");
+        assertThat(match(Json.write(Map.of("text", thousand.toString())), anchor()).statusCode()).isEqualTo(200);
+
+        var nothing = match(Json.write(Map.of("text", " , ;\n", "emails", List.of(""))), anchor());
+        assertThat(nothing.statusCode()).isEqualTo(400);
+        assertThat(errorCode(nothing)).isEqualTo("EMAILS_REQUIRED");
+
+        // Only-invalid input is not "nothing parsed": it reports the invalid entries.
+        var junk = match("{\"text\":\"junk\"}", anchor());
+        assertThat(junk.statusCode()).isEqualTo(200);
+        assertThat(strings(json(junk).get("invalid"))).containsExactly("junk");
+        assertThat(json(junk).get("matches").isEmpty()).isTrue();
+    }
+
+    /// A partner has no home client. It is visible (match, list, by id and
+    /// its by-id sub-reads) to the administrators of a client it was granted,
+    /// carrying only the grants the two share; a partner of other clients
+    /// stays hidden; an anchor sees every grant; and the client admin still
+    /// cannot change it.
+    @Test
+    @DisplayName("a partner granted the caller's client is visible to its admins, read-only and narrowed")
+    void partnerVisibleToGrantedClientAdmins() {
+        String shared = "matchem-shared-" + RUN + "@example.com";
+        String other = "matchem-otherp-" + RUN + "@example.com";
+        String sharedId = seedPrincipal("USER", "PARTNER", null, "Shared Partner " + RUN, shared);
+        String otherId = seedPrincipal("USER", "PARTNER", null, "Other Partner " + RUN, other);
+        grant(sharedId, clientA);
+        grant(sharedId, clientB);
+        grant(otherId, clientB);
+        String[] caller = client(clientA, VIEW);
+
+        JsonNode m = json(match(Json.write(Map.of("text", shared + " " + other)), caller));
+        assertThat(matchedEmails(m)).containsExactly(shared);
+        assertThat(strings(m.get("unmatched"))).containsExactly(other);
+        assertThat(strings(m.get("matches").get(0).get("grantedClientIds")))
+                .as("the partner's other clients are not the caller's business").containsExactly(clientA);
+
+        JsonNode list = json(http.get("/api/principals?q=partner+" + RUN, caller));
+        var names = new ArrayList<String>();
+        list.get("principals").forEach(p -> {
+            names.add(p.get("name").asText());
+            if (p.get("id").asText().equals(sharedId)) {
+                assertThat(strings(p.get("grantedClientIds"))).containsExactly(clientA);
+            }
+        });
+        assertThat(names).contains("Shared Partner " + RUN).doesNotContain("Other Partner " + RUN);
+
+        var one = http.get("/api/principals/" + sharedId, caller);
+        assertThat(one.statusCode()).as(one.body()).isEqualTo(200);
+        assertThat(strings(json(one).get("grantedClientIds"))).containsExactly(clientA);
+        assertThat(http.get("/api/principals/" + sharedId + "/roles", caller).statusCode())
+                .as("the read-only detail view loads the partner's roles").isEqualTo(200);
+        assertThat(http.get("/api/principals/" + sharedId + "/application-access", caller).statusCode()).isEqualTo(200);
+        assertThat(http.get("/api/principals/" + otherId, caller).statusCode())
+                .as("a partner of other clients only reads as not found").isEqualTo(404);
+
+        // Already enforced, unchanged: a client admin manages only CLIENT users.
+        var admin = client(clientA, VIEW + ",platform:iam:user:update,platform:iam:user:assign-roles");
+        assertThat(http.put("/api/principals/" + sharedId, "{\"name\":\"nope\"}", admin).statusCode()).isEqualTo(403);
+        assertThat(http.put("/api/principals/" + sharedId + "/roles", "{\"roles\":[]}", admin).statusCode()).isEqualTo(403);
+
+        JsonNode all = json(http.get("/api/principals/" + sharedId, anchor()));
+        assertThat(strings(all.get("grantedClientIds"))).as("an anchor sees every grant").containsExactlyInAnyOrder(clientA, clientB);
+    }
+
+    /// The developer-users list applies the users list's visibility and grant
+    /// narrowing: a client admin sees the developer homed at its client and
+    /// the partner developer granted it — with that grant only — never one
+    /// homed elsewhere nor an anchor developer; an anchor sees all four, with
+    /// every grant (which also pins that the by-role lookup hydrates grants).
+    @Test
+    @DisplayName("developer-users is scoped like the users list")
+    void developerUsersScopedLikeTheUserList() {
+        String tag = "Dev " + RUN + " ";
+        var ids = new java.util.LinkedHashMap<String, String>();
+        ids.put("mine", seedPrincipal("USER", "CLIENT", clientA, tag + "mine", "devusers-mine-" + RUN + "@example.com"));
+        ids.put("theirs", seedPrincipal("USER", "CLIENT", clientB, tag + "theirs", "devusers-theirs-" + RUN + "@example.com"));
+        ids.put("anchor", seedPrincipal("USER", "ANCHOR", null, tag + "anchor", "devusers-anchor-" + RUN + "@example.com"));
+        ids.put("partner", seedPrincipal("USER", "PARTNER", null, tag + "partner", "devusers-partner-" + RUN + "@example.com"));
+        ids.values().forEach(id -> DB.insertInto(IAM_PRINCIPAL_ROLES).set(IAM_PRINCIPAL_ROLES.PRINCIPAL_ID, id)
+                .set(IAM_PRINCIPAL_ROLES.ROLE_NAME, "platform:developer").set(IAM_PRINCIPAL_ROLES.ASSIGNMENT_SOURCE, "MANUAL").execute());
+        grant(ids.get("partner"), clientA);
+        grant(ids.get("partner"), clientB);
+        // A grant row on a clientless non-partner (a partner later made anchor keeps its rows) does
+        // not make it visible: only a PARTNER is reached through its grants.
+        grant(ids.get("anchor"), clientA);
+
+        assertThat(devUsers(client(clientA, VIEW), tag)).isEqualTo(Map.of(
+                tag + "mine", List.of(),
+                tag + "partner", List.of(clientA)));
+
+        Map<String, List<String>> all = devUsers(anchor(), tag);
+        assertThat(all).containsOnlyKeys(tag + "mine", tag + "theirs", tag + "anchor", tag + "partner");
+        assertThat(all.get(tag + "partner")).as("an anchor sees every grant").containsExactlyInAnyOrder(clientA, clientB);
+    }
+
+    /// name → grantedClientIds of this run's developers in the list.
+    private static Map<String, List<String>> devUsers(String[] caller, String tag) {
+        var r = http.get("/api/principals/developer-users", caller);
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        var out = new java.util.HashMap<String, List<String>>();
+        json(r).get("principals").forEach(p -> {
+            if (p.get("name").asText().startsWith(tag)) out.put(p.get("name").asText(), strings(p.get("grantedClientIds")));
+        });
+        return out;
     }
 }

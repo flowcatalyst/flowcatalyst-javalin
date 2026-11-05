@@ -7,6 +7,7 @@ import type {
 	CheckEmailDomainResponse,
 	ClientAccessGrantResponse,
 	DeveloperUserListResponse as GenDeveloperUserListResponse,
+	MatchEmailsResponse as GenMatchEmailsResponse,
 	PrincipalAvailableApplication,
 	PrincipalAvailableApplicationsResponse,
 	PrincipalListResponse,
@@ -42,6 +43,7 @@ export type EmailDomainCheckResponse = CheckEmailDomainResponse;
 export type BulkImportResultRow = BulkImportResult;
 export type BulkImportResponse = GenBulkImportResponse;
 export type DeveloperUserListResponse = GenDeveloperUserListResponse;
+export type MatchEmailsResponse = GenMatchEmailsResponse;
 export type SetDeveloperCredentialResponse = GenSetDeveloperCredentialResponse;
 
 export interface CreateUserRequest {
@@ -312,6 +314,18 @@ export const usersApi = {
 		return apiFetch("/principals/bulk-import", {
 			method: "POST",
 			body: JSON.stringify({ clientId, users }),
+		});
+	},
+
+	/**
+	 * Match a pasted list of email addresses against the users the caller can
+	 * see. The server parses the text (commas, semicolons, whitespace,
+	 * "Name <email>"), so callers send it as typed.
+	 */
+	matchEmails(text: string): Promise<MatchEmailsResponse> {
+		return apiFetch("/principals/match-emails", {
+			method: "POST",
+			body: JSON.stringify({ text }),
 		});
 	},
 

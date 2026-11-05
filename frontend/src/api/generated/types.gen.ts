@@ -376,6 +376,9 @@ export type BatchEventItem = {
     deduplicationId?: string;
     id?: string;
     messageGroup?: string;
+    /**
+     * Event source. When absent or blank, the type's {application}:{subdomain} (its first two segments)
+     */
     source?: string;
     specVersion?: string;
     subject?: string;
@@ -811,9 +814,9 @@ export type CreateEventRequest = {
      */
     messageGroup?: string;
     /**
-     * Event source URI
+     * Event source URI. When absent or blank, the type's {application}:{subdomain} (its first two segments)
      */
-    source: string;
+    source?: string;
     /**
      * Event subject (optional context)
      */
@@ -1640,6 +1643,32 @@ export type MappingResponse = {
     requiredOidcTenantId?: string;
     scopeType: string;
     updatedAt: string;
+};
+
+export type MatchEmailsRequest = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    /**
+     * Addresses (each entry is parsed like text)
+     */
+    emails?: Array<string>;
+    /**
+     * Pasted address list: commas, semicolons, whitespace or 'Name <addr>' entries
+     */
+    text?: string;
+    [key: string]: unknown;
+};
+
+export type MatchEmailsResponse = {
+    /**
+     * A URL to the JSON Schema for this object.
+     */
+    readonly $schema?: string;
+    invalid: Array<string>;
+    matches: Array<PrincipalResponse>;
+    unmatched: Array<string>;
 };
 
 export type MetadataDto = {
@@ -2636,11 +2665,11 @@ export type SyncPrincipalInputRequest = {
     email: string;
     name: string;
     /**
-     * Pre-hashed password (bcrypt/argon2i/argon2id), stored verbatim; migrated on first login
+     * Pre-hashed password (bcrypt/argon2i/argon2id), stored verbatim on a user the sync creates; migrated on first login. Never applied to an existing user (reported in passwordHashIgnored).
      */
     passwordHash?: string;
     /**
-     * Role short names (prefixed with applicationCode)
+     * Role names, the application's own (app:role, matched case-insensitively and not prefixed by the platform). A name that is not a role is not assigned and is reported in skippedRoles; another application's role refuses the sync (403 ROLE_APP_FORBIDDEN).
      */
     roles?: Array<string>;
 };
@@ -2699,7 +2728,14 @@ export type SyncResultResponse = {
     applicationCode: string;
     created: number;
     deleted: number;
+    /**
+     * Principal sync only: emails whose passwordHash was ignored because the user already exists (omitted when none)
+     */
     passwordHashIgnored?: Array<string>;
+    /**
+     * Principal sync only: role names that are not roles and so were not assigned to anyone (lower-cased, each once, in payload order; omitted when none). The rest of the sync applied.
+     */
+    skippedRoles?: Array<string>;
     syncedCodes: Array<string>;
     updated: number;
 };
@@ -2912,6 +2948,7 @@ export type UpdateConnectionRequest = {
     description?: string;
     externalId?: string;
     name: string;
+    serviceAccountId?: string;
     status?: string;
     [key: string]: unknown;
 };
@@ -3622,9 +3659,9 @@ export type CreateEventRequestWritable = {
      */
     messageGroup?: string;
     /**
-     * Event source URI
+     * Event source URI. When absent or blank, the type's {application}:{subdomain} (its first two segments)
      */
-    source: string;
+    source?: string;
     /**
      * Event subject (optional context)
      */
@@ -4173,6 +4210,24 @@ export type MappingResponseWritable = {
     requiredOidcTenantId?: string;
     scopeType: string;
     updatedAt: string;
+};
+
+export type MatchEmailsRequestWritable = {
+    /**
+     * Addresses (each entry is parsed like text)
+     */
+    emails?: Array<string>;
+    /**
+     * Pasted address list: commas, semicolons, whitespace or 'Name <addr>' entries
+     */
+    text?: string;
+    [key: string]: unknown;
+};
+
+export type MatchEmailsResponseWritable = {
+    invalid: Array<string>;
+    matches: Array<PrincipalResponseWritable>;
+    unmatched: Array<string>;
 };
 
 export type MoveProviderRequestWritable = {
@@ -4725,7 +4780,14 @@ export type SyncResultResponseWritable = {
     applicationCode: string;
     created: number;
     deleted: number;
+    /**
+     * Principal sync only: emails whose passwordHash was ignored because the user already exists (omitted when none)
+     */
     passwordHashIgnored?: Array<string>;
+    /**
+     * Principal sync only: role names that are not roles and so were not assigned to anyone (lower-cased, each once, in payload order; omitted when none). The rest of the sync applied.
+     */
+    skippedRoles?: Array<string>;
     syncedCodes: Array<string>;
     updated: number;
 };
@@ -4812,6 +4874,7 @@ export type UpdateConnectionRequestWritable = {
     description?: string;
     externalId?: string;
     name: string;
+    serviceAccountId?: string;
     status?: string;
     [key: string]: unknown;
 };
@@ -9755,6 +9818,31 @@ export type ListDeveloperUsersResponses = {
 };
 
 export type ListDeveloperUsersResponse = ListDeveloperUsersResponses[keyof ListDeveloperUsersResponses];
+
+export type MatchPrincipalEmailsData = {
+    body: MatchEmailsRequestWritable;
+    path?: never;
+    query?: never;
+    url: '/api/principals/match-emails';
+};
+
+export type MatchPrincipalEmailsErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type MatchPrincipalEmailsError = MatchPrincipalEmailsErrors[keyof MatchPrincipalEmailsErrors];
+
+export type MatchPrincipalEmailsResponses = {
+    /**
+     * OK
+     */
+    200: MatchEmailsResponse;
+};
+
+export type MatchPrincipalEmailsResponse = MatchPrincipalEmailsResponses[keyof MatchPrincipalEmailsResponses];
 
 export type SyncUsersData = {
     body: SyncUsersRequestWritable;

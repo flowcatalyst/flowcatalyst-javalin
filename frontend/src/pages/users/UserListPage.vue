@@ -8,6 +8,7 @@ import { usersApi, type User } from "@/api/users";
 import { rolesApi, type Role } from "@/api/roles";
 import ClientFilter from "@/components/ClientFilter.vue";
 import UserImportDialog from "@/components/UserImportDialog.vue";
+import UserMatchEmailsDialog from "@/components/UserMatchEmailsDialog.vue";
 
 const router = useRouter();
 const route = useRoute();
@@ -158,6 +159,7 @@ function formatDate(dateStr: string | undefined | null) {
         <p class="page-subtitle">Manage platform users and their access</p>
       </div>
       <div class="header-actions">
+        <UserMatchEmailsDialog @select="viewUser" />
         <UserImportDialog :client-options="clientOptions" @imported="loadUsers" />
         <Button label="Add User" icon="pi pi-user-plus" @click="addUser" />
       </div>

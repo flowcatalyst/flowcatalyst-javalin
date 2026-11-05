@@ -28,9 +28,9 @@ class LockfileTest {
         // -2 paths / -3 operations at the config-permissions.md §A.3 edit: the access-grant
         // routes (listPlatformConfigAccess, grantPlatformConfigAccess, revokePlatformConfigAccess)
         // and their AccessListResponse/AccessResponse/GrantAccessRequest schemas are withdrawn.
-        assertThat(lock.pathCount()).isEqualTo(187);
+        assertThat(lock.pathCount()).isEqualTo(188);
         var ops = lock.operations();
-        assertThat(ops).hasSize(253);
+        assertThat(ops).hasSize(254);
         assertThat(ops).anyMatch(o -> o.method().equals("GET") && o.path().equals("/api/event-types"));
         assertThat(ops).anyMatch(o -> o.path().contains("{id}"));
         assertThat(lock.json().path("openapi").asText()).startsWith("3.");

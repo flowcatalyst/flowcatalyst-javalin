@@ -14,7 +14,8 @@ import UserImportDialog from "@/components/UserImportDialog.vue";
 // hits a scope 403. Detail/create render in a right-side drawer over this list
 // (ClientUserDetailDrawer / ClientUserCreateDrawer); role, application,
 // password and 2FA management live there now. The platform user-management
-// page (anchor scope) stays separate.
+// page (anchor scope) stays separate. Partners granted one of the caller's
+// clients are listed too, read-only: only CLIENT users are managed here.
 
 const router = useRouter();
 const route = useRoute();
@@ -216,7 +217,8 @@ function formatDate(dateStr: string | undefined | null) {
 
         <Column header="Client" style="width: 16%">
           <template #body="{ data }">
-            <span class="client-name-text">{{ clientName(data.clientId) }}</span>
+            <Tag v-if="data.scope === 'PARTNER'" value="Partner" severity="info" />
+            <span v-else class="client-name-text">{{ clientName(data.clientId) }}</span>
           </template>
         </Column>
 
@@ -256,6 +258,7 @@ function formatDate(dateStr: string | undefined | null) {
           <template #body="{ data }">
             <div class="action-buttons">
               <Button
+                v-if="data.scope === 'CLIENT'"
                 v-tooltip.top="'Edit'"
                 icon="pi pi-pencil"
                 text

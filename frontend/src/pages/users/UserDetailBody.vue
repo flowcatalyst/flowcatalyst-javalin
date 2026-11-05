@@ -149,11 +149,18 @@ const canSendPasswordReset = computed(
 );
 const canResetPassword = computed(() => user.value?.idpType === "INTERNAL");
 
+// A client administrator sees the partners granted their client but manages
+// only CLIENT users (the backend refuses the rest), so a partner is read-only.
+const readOnly = computed(
+	() => props.clientScoped && !!user.value && user.value.scope !== "CLIENT",
+);
 const isAnchorUser = computed(() => user.value?.isAnchorUser ?? false);
 // Changing roles needs user:assign-roles (not user:update); without it the
 // roles are shown read-only.
 const authStore = useAuthStore();
-const canAssignRoles = computed(() => canAssignUserRoles(authStore.user));
+const canAssignRoles = computed(
+	() => !readOnly.value && canAssignUserRoles(authStore.user),
+);
 
 // Confirmed second factors on the account (from the principal detail read).
 // Empty ⇒ no 2FA enrolled — which is the case that gets a self-service
@@ -329,7 +336,7 @@ watch(
 			if (!props.clientScoped) detailLoads.push(loadClientGrants());
 			await Promise.all(detailLoads);
 			// Check if we should start in edit mode
-			if (props.autoEdit) {
+			if (props.autoEdit && !readOnly.value) {
 				startEdit();
 			}
 		}
@@ -884,7 +891,7 @@ function formatDate(dateStr: string | null | undefined) {
   <template v-else-if="user">
     <!-- User Information -->
     <FcFormSection title="User Information" flat>
-      <template #actions>
+      <template v-if="!readOnly" #actions>
         <Button v-if="!editing" label="Edit" icon="pi pi-pencil" text @click="startEdit" />
         <template v-else>
           <Button v-if="dirty" label="Discard" text @click="cancelEdit" />
@@ -1067,7 +1074,7 @@ function formatDate(dateStr: string | null | undefined) {
 
     <!-- Application Access -->
     <FcFormSection title="Application Access" flat>
-      <template v-if="!allApplications" #actions>
+      <template v-if="!allApplications && !readOnly" #actions>
         <Button label="Manage Applications" icon="pi pi-pencil" text @click="openAppPicker" />
       </template>
 
@@ -1088,11 +1095,14 @@ function formatDate(dateStr: string | null | undefined) {
           </span>
         </label>
       </div>
+      <p v-else-if="allApplications" class="no-apps-notice">
+        This user has access to every application.
+      </p>
 
       <template v-if="!allApplications">
         <div v-if="applicationAccessGrants.length === 0" class="no-apps-notice">
           <p>No application access granted to this user.</p>
-          <Button label="Grant Application Access" icon="pi pi-plus" text @click="openAppPicker" />
+          <Button v-if="!readOnly" label="Grant Application Access" icon="pi pi-plus" text @click="openAppPicker" />
         </div>
 
         <DataTable v-else :value="applicationAccessGrants" size="small">
@@ -1109,7 +1119,7 @@ function formatDate(dateStr: string | null | undefined) {
     </FcFormSection>
 
     <!-- Account Actions -->
-    <FcFormSection title="Account Actions" flat>
+    <FcFormSection v-if="!readOnly" title="Account Actions" flat>
       <div class="action-items">
         <div v-if="canSendPasswordReset" class="action-item">
           <div class="action-info">
